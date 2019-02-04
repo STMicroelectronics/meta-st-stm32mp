@@ -1,0 +1,290 @@
+From 8db9dfe442ded4ec2d320d61a5b92d9bc1c771d4 Mon Sep 17 00:00:00 2001
+From: christophe montaud <christophe.montaud@st.com>
+Date: Mon, 28 Jan 2019 11:07:22 +0100
+Subject: [PATCH 8/8] ARM v2018.11 stm32mp r2 MISC
+
+---
+ Makefile                          |  2 +-
+ drivers/remoteproc/rproc-uclass.c | 10 +++++++--
+ drivers/remoteproc/stm32_copro.c  | 44 +++++++++++++++------------------------
+ drivers/video/stm32/stm32_dsi.c   | 41 ++++++++++++++++++++++--------------
+ 4 files changed, 51 insertions(+), 46 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 84cb372..693ffae 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3,7 +3,7 @@
+ VERSION = 2018
+ PATCHLEVEL = 11
+ SUBLEVEL =
+-EXTRAVERSION = -stm32mp-r1
++EXTRAVERSION = -stm32mp-r2
+ NAME =
+ 
+ # *DOCUMENTATION*
+diff --git a/drivers/remoteproc/rproc-uclass.c b/drivers/remoteproc/rproc-uclass.c
+index 8ea92f7..204e6e8 100644
+--- a/drivers/remoteproc/rproc-uclass.c
++++ b/drivers/remoteproc/rproc-uclass.c
+@@ -449,7 +449,10 @@ static int rproc_load_elf_image(struct udevice *dev, unsigned long addr,
+ 		if (phdr->p_filesz != phdr->p_memsz)
+ 			memset(dst + phdr->p_filesz, 0x00,
+ 			       phdr->p_memsz - phdr->p_filesz);
+-		flush_cache((unsigned long)dst, phdr->p_filesz);
++		flush_cache(rounddown((int)dst, ARCH_DMA_MINALIGN),
++			    roundup((int)dst + phdr->p_filesz,
++				    ARCH_DMA_MINALIGN) -
++			    rounddown((int)dst, ARCH_DMA_MINALIGN));
+ 		++phdr;
+ 	}
+ 
+@@ -561,7 +564,10 @@ static int rproc_elf_find_load_rsc_table(struct udevice *dev,
+ 	src = (void *)fw_addr + shdr->sh_offset;
+ 
+ 	memcpy(dst, src, shdr->sh_size);
+-	flush_cache((unsigned long)dst, shdr->sh_size);
++	flush_cache(rounddown((int)dst, ARCH_DMA_MINALIGN),
++		    roundup((int)dst + shdr->sh_size,
++			    ARCH_DMA_MINALIGN) -
++		    rounddown((int)dst, ARCH_DMA_MINALIGN));
+ 
+ 	return 0;
+ }
+diff --git a/drivers/remoteproc/stm32_copro.c b/drivers/remoteproc/stm32_copro.c
+index 310d077..44230ff 100644
+--- a/drivers/remoteproc/stm32_copro.c
++++ b/drivers/remoteproc/stm32_copro.c
+@@ -18,7 +18,6 @@
+ 
+ /**
+  * struct stm32_copro_privdata - power processor private data
+- * @loadaddr:	base address for loading the power processor
+  * @reset_ctl:	reset controller handle
+  * @hold_boot_regmap
+  * @hold_boot_offset
+@@ -26,7 +25,6 @@
+  * @secured_soc:	TZEN flag (register protection)
+  */
+ struct stm32_copro_privdata {
+-	phys_addr_t loadaddr;
+ 	struct reset_ctl reset_ctl;
+ 	struct regmap *hold_boot_regmap;
+ 	uint hold_boot_offset;
+@@ -46,21 +44,9 @@ static int st_of_to_priv(struct udevice *dev,
+ {
+ 	struct regmap *regmap;
+ 	const fdt32_t *cell;
+-	const void *blob = gd->fdt_blob;
+ 	uint tz_offset, tz_mask, tzen;
+ 	int len, ret;
+ 
+-	if (!blob) {
+-		dev_dbg(dev, "no dt?\n");
+-		return -EINVAL;
+-	}
+-
+-	priv->loadaddr = dev_read_addr(dev);
+-	if (priv->loadaddr == FDT_ADDR_T_NONE) {
+-		dev_dbg(dev, "no 'reg' property\n");
+-		return -EINVAL;
+-	}
+-
+ 	regmap = syscon_phandle_to_regmap(dev, "st,syscfg-holdboot");
+ 	if (IS_ERR(regmap)) {
+ 		dev_dbg(dev, "unable to find holdboot regmap (%ld)\n",
+@@ -123,8 +109,7 @@ static int stm32_copro_probe(struct udevice *dev)
+ 
+ 	ret = st_of_to_priv(dev, priv);
+ 
+-	dev_dbg(dev, "probed with slave_addr=0x%08lX (%d)\n",
+-		priv->loadaddr, ret);
++	dev_dbg(dev, "probed (%d)\n", ret);
+ 
+ 	return ret;
+ }
+@@ -163,6 +148,17 @@ static int stm32_copro_set_hold_boot(struct udevice *dev, bool hold)
+ 	return ret;
+ }
+ 
++static ulong stm32_copro_da_to_pa(struct udevice *dev, ulong da)
++{
++	/* to update with address translate by DT range  */
++
++	/* CM4 boot at address 0x0 = RETRAM alias, not available for CA7 load */
++	if (da >= 0 && da < STM32_RETRAM_SIZE)
++		return (da + STM32_RETRAM_BASE);
++
++	return da;
++}
++
+ /**
+  * stm32_copro_load() - Loadup the STM32 Cortex-M4 remote processor
+  * @dev:	corresponding STM32 remote processor device
+@@ -174,6 +170,7 @@ static int stm32_copro_set_hold_boot(struct udevice *dev, bool hold)
+ static int stm32_copro_load(struct udevice *dev, ulong addr, ulong size)
+ {
+ 	struct stm32_copro_privdata *priv;
++	phys_addr_t loadaddr;
+ 	int ret;
+ 
+ 	priv = dev_get_priv(dev);
+@@ -186,10 +183,12 @@ static int stm32_copro_load(struct udevice *dev, ulong addr, ulong size)
+ 		return ret;
+ 	}
+ 
++	/* by default load for copro BOOT address = 0x0 */
++	loadaddr = stm32_copro_da_to_pa(dev, 0x0);
+ 	dev_dbg(dev, "Loading binary from 0x%08lX, size 0x%08lX to 0x%08lX\n",
+-		addr, size, priv->loadaddr);
++		addr, size, loadaddr);
+ 
+-	memcpy((void *)priv->loadaddr, (void *)addr, size);
++	memcpy((void *)loadaddr, (void *)addr, size);
+ 
+ 	dev_dbg(dev, "Complete!\n");
+ 	return 0;
+@@ -241,15 +240,6 @@ static int stm32_copro_reset(struct udevice *dev)
+ 	return 0;
+ }
+ 
+-ulong stm32_copro_da_to_pa(struct udevice *dev, ulong da)
+-{
+-	/* to update according to lastest DT */
+-	if (da >= 0 && da < 0x10000)
+-		return (da + 0x38000000);
+-
+-	return da;
+-}
+-
+ static const struct dm_rproc_ops stm32_copro_ops = {
+ 	.load = stm32_copro_load,
+ 	.start = stm32_copro_start,
+diff --git a/drivers/video/stm32/stm32_dsi.c b/drivers/video/stm32/stm32_dsi.c
+index 09266fe..f8f7c83 100644
+--- a/drivers/video/stm32/stm32_dsi.c
++++ b/drivers/video/stm32/stm32_dsi.c
+@@ -242,7 +242,6 @@ static int dsi_get_lane_mbps(void *priv_data, struct display_timing *timings,
+ 	u32 val;
+ 
+ 	/* Update lane capabilities according to hw version */
+-	dsi->hw_version = dsi_read(dsi, DSI_VERSION) & VERSION;
+ 	dsi->lane_min_kbps = LANE_MIN_KBPS;
+ 	dsi->lane_max_kbps = LANE_MAX_KBPS;
+ 	if (dsi->hw_version == HWVER_131) {
+@@ -310,9 +309,9 @@ static const struct dw_mipi_dsi_phy_ops dw_mipi_dsi_stm_phy_ops = {
+ 
+ static int stm32_dsi_attach(struct udevice *dev)
+ {
+-	struct stm32_dsi_priv *priv = dev_get_priv(dev);
++	struct stm32_dsi_priv *dsi = dev_get_priv(dev);
+ 	struct dw_mipi_dsi_plat_data *platdata = dev_get_platdata(dev);
+-	struct mipi_dsi_device *device = &priv->device;
++	struct mipi_dsi_device *device = &dsi->device;
+ 	int ret;
+ 
+ 	platdata->max_data_lanes = 2;
+@@ -336,8 +335,8 @@ static int stm32_dsi_attach(struct udevice *dev)
+ static int stm32_dsi_set_backlight(struct udevice *dev, int percent)
+ {
+ 	struct dw_mipi_dsi_plat_data *dplat = dev_get_platdata(dev);
+-	struct stm32_dsi_priv *priv = dev_get_priv(dev);
+-	struct mipi_dsi_device *device = &priv->device;
++	struct stm32_dsi_priv *dsi = dev_get_priv(dev);
++	struct mipi_dsi_device *device = &dsi->device;
+ 	struct udevice *panel = dplat->panel;
+ 	struct mipi_dsi_panel_plat *mplat;
+ 	int ret;
+@@ -359,29 +358,29 @@ static int stm32_dsi_set_backlight(struct udevice *dev, int percent)
+ 
+ static int stm32_dsi_probe(struct udevice *dev)
+ {
+-	struct stm32_dsi_priv *priv = dev_get_priv(dev);
+-	struct mipi_dsi_device *device = &priv->device;
++	struct stm32_dsi_priv *dsi = dev_get_priv(dev);
++	struct mipi_dsi_device *device = &dsi->device;
+ 	struct reset_ctl rst;
+ 	struct clk clk;
+ 	int ret;
+ 
+ 	device->dev = dev;
+ 
+-	priv->base = (void *)dev_read_addr(dev);
+-	if ((fdt_addr_t)priv->base == FDT_ADDR_T_NONE) {
++	dsi->base = (void *)dev_read_addr(dev);
++	if ((fdt_addr_t)dsi->base == FDT_ADDR_T_NONE) {
+ 		dev_err(dev, "dsi dt register address error\n");
+ 		return -EINVAL;
+ 	}
+ 
+ 	if (IS_ENABLED(CONFIG_DM_REGULATOR)) {
+ 		ret =  device_get_supply_regulator(dev, "phy-dsi-supply",
+-						   &priv->vdd_reg);
++						   &dsi->vdd_reg);
+ 		if (ret && ret != -ENOENT) {
+ 			dev_err(dev, "Warning: cannot get phy dsi supply\n");
+ 			return -ENODEV;
+ 		}
+ 
+-		ret = regulator_set_enable(priv->vdd_reg, true);
++		ret = regulator_set_enable(dsi->vdd_reg, true);
+ 		if (ret)
+ 			return -ENODEV;
+ 	}
+@@ -389,14 +388,14 @@ static int stm32_dsi_probe(struct udevice *dev)
+ 	ret = clk_get_by_name(device->dev, "pclk", &clk);
+ 	if (ret) {
+ 		dev_err(dev, "peripheral clock get error %d\n", ret);
+-		regulator_set_enable(priv->vdd_reg, false);
++		regulator_set_enable(dsi->vdd_reg, false);
+ 		return -ENODEV;
+ 	}
+ 
+ 	ret = clk_enable(&clk);
+ 	if (ret) {
+ 		dev_err(dev, "peripheral clock enable error %d\n", ret);
+-		regulator_set_enable(priv->vdd_reg, false);
++		regulator_set_enable(dsi->vdd_reg, false);
+ 		return -ENODEV;
+ 	}
+ 
+@@ -404,23 +403,33 @@ static int stm32_dsi_probe(struct udevice *dev)
+ 	if (ret) {
+ 		dev_err(dev, "pll reference clock get error %d\n", ret);
+ 		clk_disable(&clk);
+-		regulator_set_enable(priv->vdd_reg, false);
++		regulator_set_enable(dsi->vdd_reg, false);
+ 		return ret;
+ 	}
+ 
+-	priv->pllref_clk = (unsigned int)clk_get_rate(&clk);
++	dsi->pllref_clk = (unsigned int)clk_get_rate(&clk);
+ 
+ 	ret = reset_get_by_index(device->dev, 0, &rst);
+ 	if (ret) {
+ 		dev_err(dev, "missing dsi hardware reset\n");
+ 		clk_disable(&clk);
+-		regulator_set_enable(priv->vdd_reg, false);
++		regulator_set_enable(dsi->vdd_reg, false);
+ 		return -ENODEV;
+ 	}
+ 
+ 	/* Reset */
+ 	reset_deassert(&rst);
+ 
++	/* check hardware version */
++	dsi->hw_version = dsi_read(dsi, DSI_VERSION) & VERSION;
++	if (dsi->hw_version != HWVER_130 &&
++	    dsi->hw_version != HWVER_131) {
++		dev_err(dev, "bad dsi hardware version\n");
++		clk_disable(&clk);
++		regulator_set_enable(dsi->vdd_reg, false);
++		return -ENODEV;
++	}
++
+ 	return 0;
+ }
+ 
+-- 
+2.7.4
+
