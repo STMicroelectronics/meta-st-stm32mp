@@ -1,0 +1,66 @@
+#!/bin/sh
+
+# Script which detect automaticaly the alsa-states file to put
+# in place in fuonction of board on which the script are executed.
+#
+# This script are use with systemd-generators
+# see man for more information or
+# https://www.freedesktop.org/software/systemd/man/systemd.generator.html
+#
+# How to debug:
+# mkdir /tmp/normal-dir /tmp/early-dir /tmp/late-dir
+# SYSTEMD_LOG_LEVEL=debug /lib/systemd/system-generators/system-generator-alsa-states \
+#        /tmp/normal-dir /tmp/early-dir /tmp/late-dir
+# find /tmp/normal-dir /tmp/early-dir /tmp/late-dir
+#
+#
+function debug_print() {
+    if `echo $SYSTEMD_LOG_LEVEL |grep -q debug` ;
+    then
+        echo "[DEBUG] $@"
+    fi
+}
+
+#
+# Main
+#
+if [ ! -d /proc/device-tree/ ];
+then
+    debug_print "Proc Device tree are not available, Could not detect on which board we are"
+    exit 1
+fi
+if [ -e /var/lib/alsa/asound.state ];
+then
+    LINE=`cat /var/lib/alsa/asound.state | wc -l`
+    if [ $LINE -lt 3 ];
+    then
+        # dummy alsa-state file contains only one comment
+        debug_print "remove previous dummy alsa-state file"
+        rm /var/lib/alsa/asound.state
+    else
+        debug_print "alsa-state file already configured"
+        exit 0
+    fi
+fi
+# get the name file available for alsa-states
+ALSA_STATE_FILES=`ls -1 /var/lib/alsa/asound-*`
+
+for f in $ALSA_STATE_FILES;
+do
+    #extract name of board
+    board=`echo $f | sed -e "s|/var/lib/alsa/asound-\(.*\).state|\1|"`
+    #search on device tree compatible entry if the board are present
+    if `grep -q $board /proc/device-tree/compatible` ;
+    then
+        # device tree compatible entry match with board name
+        # configure alsa-state
+        if test -x /usr/sbin/alsactl
+        then
+            debug_print "active alsactl with $f"
+            #/usr/sbin/alsactl -f $f restore
+            cp $f /var/lib/alsa/asound.state
+            break;
+        fi
+    fi
+done
+exit 0
