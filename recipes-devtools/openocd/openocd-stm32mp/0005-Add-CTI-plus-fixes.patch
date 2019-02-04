@@ -1,0 +1,424 @@
+From 4e6c43b1054ee6544f2f1758963c886fa03136ae Mon Sep 17 00:00:00 2001
+From: Antonio Borneo <antonio.borneo@st.com>
+Date: Fri, 18 Jan 2019 16:52:07 +0100
+Subject: [PATCH] Add CTI plus fixes
+
+---
+ src/target/arm_cti.c              |   4 +-
+ src/target/cortex_a.c             |  39 ++++---
+ tcl/target/stm32mp15x.cfg         | 162 ++++++++++++++++++++++++++++--
+ tcl/target/stm32mp15x_stpmic1.cfg |  62 +++---------
+ 4 files changed, 196 insertions(+), 71 deletions(-)
+
+diff --git a/src/target/arm_cti.c b/src/target/arm_cti.c
+index dcaf21e50..e6cb3cde3 100644
+--- a/src/target/arm_cti.c
++++ b/src/target/arm_cti.c
+@@ -173,7 +173,7 @@ int arm_cti_clear_channel(struct arm_cti *self, uint32_t channel)
+ 	return arm_cti_write_reg(self, CTI_APPCLEAR, CTI_CHNL(channel));
+ }
+ 
+-static uint32_t cti_regs[26];
++static uint32_t cti_regs[28];
+ 
+ static const struct {
+ 	uint32_t offset;
+@@ -206,6 +206,8 @@ static const struct {
+ 	{ CTI_CHOU_STATUS,	"CHOUT", &cti_regs[23] },
+ 	{ CTI_APPSET,	"APPSET",	&cti_regs[24] },
+ 	{ CTI_APPCLEAR,	"APPCLR",	&cti_regs[25] },
++	{ CTI_APPPULSE,	"APPPULSE",	&cti_regs[26] },
++	{ CTI_INACK,	"INACK",	&cti_regs[27] },
+ };
+ 
+ static int cti_find_reg_offset(const char *name)
+diff --git a/src/target/cortex_a.c b/src/target/cortex_a.c
+index b281233ca..499dacc9b 100644
+--- a/src/target/cortex_a.c
++++ b/src/target/cortex_a.c
+@@ -201,6 +201,7 @@ static int cortex_a_mmu_modify(struct target *target, int enable)
+ static int cortex_a_init_debug_access(struct target *target)
+ {
+ 	struct armv7a_common *armv7a = target_to_armv7a(target);
++	uint32_t dscr;
+ 	int retval;
+ 
+ 	/* lock memory-mapped access to debug registers to prevent
+@@ -230,6 +231,16 @@ static int cortex_a_init_debug_access(struct target *target)
+ 
+ 	/* Resync breakpoint registers */
+ 
++	/* Enable halt for breakpoint, watchpoint and vector catch */
++	retval = mem_ap_read_atomic_u32(armv7a->debug_ap,
++			armv7a->debug_base + CPUDBG_DSCR, &dscr);
++	if (retval != ERROR_OK)
++		return retval;
++	retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
++			armv7a->debug_base + CPUDBG_DSCR, dscr | DSCR_HALT_DBG_MODE);
++	if (retval != ERROR_OK)
++		return retval;
++
+ 	/* Since this is likely called from init or reset, update target state information*/
+ 	return cortex_a_poll(target);
+ }
+@@ -768,19 +779,6 @@ static int cortex_a_halt(struct target *target)
+ 	if (retval != ERROR_OK)
+ 		return retval;
+ 
+-	/*
+-	 * enter halting debug mode
+-	 */
+-	retval = mem_ap_read_atomic_u32(armv7a->debug_ap,
+-			armv7a->debug_base + CPUDBG_DSCR, &dscr);
+-	if (retval != ERROR_OK)
+-		return retval;
+-
+-	retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
+-			armv7a->debug_base + CPUDBG_DSCR, dscr | DSCR_HALT_DBG_MODE);
+-	if (retval != ERROR_OK)
+-		return retval;
+-
+ 	int64_t then = timeval_ms();
+ 	for (;; ) {
+ 		retval = mem_ap_read_atomic_u32(armv7a->debug_ap,
+@@ -2977,7 +2975,20 @@ static int cortex_r4_target_create(struct target *target, Jim_Interp *interp)
+ static void cortex_a_deinit_target(struct target *target)
+ {
+ 	struct cortex_a_common *cortex_a = target_to_cortex_a(target);
+-	struct arm_dpm *dpm = &cortex_a->armv7a_common.dpm;
++	struct armv7a_common *armv7a = &cortex_a->armv7a_common;
++	struct arm_dpm *dpm = &armv7a->dpm;
++	uint32_t dscr;
++	int retval;
++
++	if (target_was_examined(target)) {
++		/* Disable halt for breakpoint, watchpoint and vector catch */
++		retval = mem_ap_read_atomic_u32(armv7a->debug_ap,
++				armv7a->debug_base + CPUDBG_DSCR, &dscr);
++		if (retval == ERROR_OK)
++			mem_ap_write_atomic_u32(armv7a->debug_ap,
++					armv7a->debug_base + CPUDBG_DSCR,
++					dscr & ~DSCR_HALT_DBG_MODE);
++	}
+ 
+ 	free(cortex_a->brp_list);
+ 	free(dpm->dbp);
+diff --git a/tcl/target/stm32mp15x.cfg b/tcl/target/stm32mp15x.cfg
+index 0d10021ef..992975f87 100644
+--- a/tcl/target/stm32mp15x.cfg
++++ b/tcl/target/stm32mp15x.cfg
+@@ -47,6 +47,69 @@ if { [using_jtag] } {
+ 	swj_newdap $_CHIPNAME.clc tap -expected-id $_CLCTAPID -irlen 5
+ }
+ dap create $_CHIPNAME.dap -chain-position $_CHIPNAME.tap -ignore-syspwrupack
++
++# in smp mode, if one core is halted the event 'halted' get fired for the selected core only.
++# so the halt event remains unacknowledged for other cores.
++proc cti_prepare_restart_all {} {
++	global _CHIPNAME
++
++	cti_prepare_restart cti0
++	cti_prepare_restart cti1
++	if { [$_CHIPNAME.cpu2 curstate] ne "examine deferred" } {
++		cti_prepare_restart cti2
++	}
++}
++
++proc cti_prepare_restart {cti} {
++	global _CHIPNAME
++
++	# Acknowlodge EDBGRQ at TRIGOUT0
++	$_CHIPNAME.$cti write INACK 0x01
++	$_CHIPNAME.$cti write INACK 0x00
++}
++
++proc cti_start {} {
++	global _CHIPNAME
++
++	# Configure both Cortex-A CTIs to halt each other
++	# TRIGIN0 (DBGTRIGGER) and TRIGOUT0 (EDBGRQ) at CTM_CHANNEL_0
++	$_CHIPNAME.cti0 write INEN0 0x1
++	$_CHIPNAME.cti1 write INEN0 0x1
++	$_CHIPNAME.cti0 write OUTEN0 0x1
++	$_CHIPNAME.cti1 write OUTEN0 0x1
++
++        $_CHIPNAME.cpu0 configure -event halted { cti_prepare_restart_all }
++        $_CHIPNAME.cpu1 configure -event halted { cti_prepare_restart_all }
++
++	# enable CTIs
++	$_CHIPNAME.cti0 enable on
++	$_CHIPNAME.cti1 enable on
++
++	# Cortex-M4 CTI configuration (enable CM4.CTI and join same CTM channels)
++	if { [$_CHIPNAME.cpu2 curstate] ne "examine deferred" } {
++		$_CHIPNAME.cti2 write INEN0 0x1
++		$_CHIPNAME.cti2 write OUTEN0 0x1
++		$_CHIPNAME.cpu2 configure -event halted { cti_prepare_restart_all }
++		$_CHIPNAME.cti2 enable on
++	}
++}
++
++proc cti_stop {} {
++	global _CHIPNAME
++
++	$_CHIPNAME.cti0 enable off
++	$_CHIPNAME.cti1 enable off
++
++	if { [$_CHIPNAME.cpu2 curstate] ne "examine deferred" } {
++		$_CHIPNAME.cti2 enable off
++	}
++}
++
++cti create $_CHIPNAME.cti  -dap $_CHIPNAME.dap -ap-num 1 -ctibase 0xE0094000
++cti create $_CHIPNAME.cti0 -dap $_CHIPNAME.dap -ap-num 1 -ctibase 0xE00D8000
++cti create $_CHIPNAME.cti1 -dap $_CHIPNAME.dap -ap-num 1 -ctibase 0xE00D9000
++cti create $_CHIPNAME.cti2 -dap $_CHIPNAME.dap -ap-num 2 -ctibase 0xE0043000
++
+ target create $_CHIPNAME.cpu0 cortex_a -dap $_CHIPNAME.dap -coreid 0 -dbgbase 0xE00D0000
+ target create $_CHIPNAME.cpu1 cortex_a -dap $_CHIPNAME.dap -coreid 1 -dbgbase 0xE00D2000
+ target create $_CHIPNAME.axi mem_ap -dap $_CHIPNAME.dap -ap-num 0
+@@ -83,8 +146,23 @@ $_CHIPNAME.cpu0 configure -gdb-port [expr $_GDB_PORT + 1]
+ $_CHIPNAME.cpu1 configure -gdb-port [expr $_GDB_PORT + 2]
+ $_CHIPNAME.cpu2 configure -gdb-port [expr $_GDB_PORT + 0]
+ 
++$_CHIPNAME.cpu0 configure -event reset-assert-pre { pre_reset_halt_cpu0 }
+ $_CHIPNAME.cpu0 configure -event reset-deassert-post { delayed_reset_halt_cpu0 }
+ 
++proc pre_reset_halt_cpu0 {} {
++	global _CHIPNAME
++	global ENG_MODE
++	global arp_reset_mode
++	global workaround_revision_0x2000
++
++	catch { unset workaround_revision_0x2000 }
++	if { ([eval chip_revision] == 0x2000) && ![info exists ENG_MODE] && ([string compare "$arp_reset_mode" "run"] != 0) } {
++		set workaround_revision_0x2000 1
++		set_debugflag_in_backup_reg
++	}
++	arp_reset_default_handler pre $_CHIPNAME.cpu0
++}
++
+ # In production mode, reset-halt stops in bootrom when only
+ # cpu0 can be attached due to security mode.
+ # Set a breakpoint to stop cpu0 when cpu1 can be attached too.
+@@ -92,10 +170,27 @@ proc delayed_reset_halt_cpu0 { } {
+ 	global _CHIPNAME
+ 	global ENG_MODE
+ 	global arp_reset_mode
++	global workaround_revision_0x2000
+ 
+ 	if { [info exists ENG_MODE] || ([string compare "$arp_reset_mode" "run"] == 0) } {
+ 		# default reset-deassert-post handler
+ 		arp_reset_default_handler post $_CHIPNAME.cpu0
++	} elseif { [info exists workaround_revision_0x2000] } {
++		unset workaround_revision_0x2000
++		cortex_a smp_off
++		$_CHIPNAME.cpu0 arp_examine
++		catch { $_CHIPNAME.cpu0 arp_waitstate halted 500 }
++		halt
++		cortex_a smp_on
++		catch { clear_debugflag_in_backup_reg }
++
++		# incr PC if insn is "BKPT 5"
++		set pc [ocd_reg pc]
++		regsub {pc[^:]*: } $pc "" pc
++		if { ([expr $pc & 3] == 0) && ([mrw $pc] == 0xe1200075) } {
++			reg pc [expr $pc + 4]
++		}
++		arp_reset_halt_default_handler $_CHIPNAME.cpu0
+ 	} else {
+ 		# only in production mode for "reset halt" or "reset init"
+ 		cortex_a smp_off
+@@ -103,12 +198,7 @@ proc delayed_reset_halt_cpu0 { } {
+ 		arp_reset_default_handler post $_CHIPNAME.cpu0
+ 
+ 		set rom_halt_pc 0x000079ac
+-		# quick test for rev.A, check bootrom
+-		set v ""
+-		axi_non_secure_access
+-		$_CHIPNAME.axi mem2array v 32 0x0000a000 1 phys
+-		axi_secure_access
+-		if { $v(0) == 0x1e494610 } {
++		if { [eval chip_revision] == 0x1000 } {
+ 			set rom_halt_pc 0x0000688c
+ 		}
+ 
+@@ -176,6 +266,57 @@ $_CHIPNAME.cpu0 configure -event gdb-detach { catch { resume }; clients_dec_and_
+ $_CHIPNAME.cpu1 configure -event gdb-detach { catch { resume }; clients_dec_and_shutdown }
+ $_CHIPNAME.cpu2 configure -event gdb-detach { catch { resume }; clients_dec_and_shutdown }
+ 
++proc chip_revision {} {
++	global _CHIPNAME
++
++	# read DBGMCU_IDC
++	$_CHIPNAME.ap1 mem2array v 32 0xe0081000 1
++	return [expr $v(0) >> 16]
++}
++
++proc $_CHIPNAME.axi_mrw {reg} {
++	global _CHIPNAME
++
++	set value ""
++	$_CHIPNAME.axi mem2array value 32 $reg 1
++	return $value(0)
++}
++
++proc $_CHIPNAME.axi_mmw {reg setbits clearbits} {
++	global _CHIPNAME
++
++	set old [$_CHIPNAME.axi_mrw $reg]
++	set new [expr ($old & ~$clearbits) | $setbits]
++	$_CHIPNAME.axi mww $reg $new
++}
++
++# Backup registers are battery powered and keep the value both across power
++# cycles and reset pulses on NRST_CORE pin.
++# Bit 16 in TAMP_BACKUP_REGISTER(20) is used as special signal between the
++# debugger and the application across a reset.
++proc set_debugflag_in_backup_reg {} {
++	global _CHIPNAME
++
++	$_CHIPNAME.dap apsel 0
++	set old_csw [lindex [ocd_$_CHIPNAME.dap apcsw] 4]
++	axi_secure_access
++	catch { $_CHIPNAME.axi_mmw 0x50001000 0x00000100 0x00000000 }
++	catch { $_CHIPNAME.axi_mmw 0x50000208 0x00000100 0x00000000 }
++	axi_non_secure_access
++	$_CHIPNAME.axi_mmw 0x5c00a150 0x00010000 0x00000000
++	$_CHIPNAME.dap apcsw $old_csw
++}
++
++proc clear_debugflag_in_backup_reg {} {
++	global _CHIPNAME
++
++	$_CHIPNAME.dap apsel 0
++	set old_csw [lindex [ocd_$_CHIPNAME.dap apcsw] 4]
++	axi_non_secure_access
++	$_CHIPNAME.axi_mmw 0x5c00a150 0x00000000 0x00010000
++	$_CHIPNAME.dap apcsw $old_csw
++}
++
+ proc axi_secure_access {} {
+ 	global _CHIPNAME
+ 
+@@ -191,3 +332,12 @@ proc axi_non_secure_access {} {
+ }
+ 
+ axi_secure_access
++
++rename init __init
++proc init {} {
++	__init
++	if { [eval chip_revision] == 0x2000 } {
++		# srst pulse causes a reset of the debug port
++		reset_config srst_pulls_trst
++	}
++}
+diff --git a/tcl/target/stm32mp15x_stpmic1.cfg b/tcl/target/stm32mp15x_stpmic1.cfg
+index 2a32610fc..16cf9b0ae 100644
+--- a/tcl/target/stm32mp15x_stpmic1.cfg
++++ b/tcl/target/stm32mp15x_stpmic1.cfg
+@@ -2,7 +2,7 @@
+ 
+ source [find target/stm32mp15x.cfg]
+ 
+-$_CHIPNAME.cpu0 configure -event reset-halt { catch { pmic_init }}
++$_CHIPNAME.cpu0 configure -event reset-halt { catch { if { [eval chip_revision] != 0x2000 } { pmic_init } } }
+ 
+ # Wait for expression to be true with a timeout of 200ms
+ proc wait_state {condition} {
+@@ -15,24 +15,8 @@ proc wait_state {condition} {
+ 	return -code 1 "Timed out"
+ }
+ 
+-proc $_CHIPNAME.axi_mrw {reg} {
+-	global _CHIPNAME
+-
+-	set value ""
+-	$_CHIPNAME.axi mem2array value 32 $reg 1
+-	return $value(0)
+-}
+-
+-proc $_CHIPNAME.axi_mmw {reg setbits clearbits} {
+-	global _CHIPNAME
+-
+-	set old [$_CHIPNAME.axi_mrw $reg]
+-	set new [expr ($old & ~$clearbits) | $setbits]
+-	$_CHIPNAME.axi mww $reg $new
+-}
+-
+-# Set mask_reset bits in PMIC to keep all powers on at next reset event
+-# Only the mask_reset of SD-card power is not enabled to guarantee boot from SD
++# Set mask_reset bits in PMIC to keep VDD and VDD_CORE on at next reset event
++# Mask_reset for SD-card power "must" not be enabled to guarantee boot from SD
+ # This procedure requires Secure memory access
+ proc pmic_init {} {
+ 	global _CHIPNAME
+@@ -62,15 +46,11 @@ proc pmic_init {} {
+ 	set hsidiv [expr [$_CHIPNAME.axi_mrw [expr $RCC_BASE + 0x018]] & 0x3]
+ 	$_CHIPNAME.axi mww [expr $I2C_BASE + 0x010] [lindex $I2C_TIMING $hsidiv]
+ 	$_CHIPNAME.axi mww [expr $I2C_BASE + 0x000] 1; # set PE = 1
+-	$_CHIPNAME.axi mww [expr $I2C_BASE + 0x004] 0x02043066
++	$_CHIPNAME.axi mww [expr $I2C_BASE + 0x004] 0x02023066
+ 	wait_state {expr {([$_CHIPNAME.axi_mrw [expr $I2C_BASE + 0x018]] & 0x00000002) == 0}}; # wait TXIS
+ 	$_CHIPNAME.axi mww [expr $I2C_BASE + 0x028] 0x18
+ 	wait_state {expr {([$_CHIPNAME.axi_mrw [expr $I2C_BASE + 0x018]] & 0x00000002) == 0}}; # wait TXIS
+-	$_CHIPNAME.axi mww [expr $I2C_BASE + 0x028] 0x0f
+-	wait_state {expr {([$_CHIPNAME.axi_mrw [expr $I2C_BASE + 0x018]] & 0x00000002) == 0}}; # wait TXIS
+-	$_CHIPNAME.axi mww [expr $I2C_BASE + 0x028] 0x00
+-	wait_state {expr {([$_CHIPNAME.axi_mrw [expr $I2C_BASE + 0x018]] & 0x00000002) == 0}}; # wait TXIS
+-	$_CHIPNAME.axi mww [expr $I2C_BASE + 0x028] 0x6f
++	$_CHIPNAME.axi mww [expr $I2C_BASE + 0x028] 0x05
+ 	wait_state {expr {([$_CHIPNAME.axi_mrw [expr $I2C_BASE + 0x018]] & 0x00000020) == 0}}; # wait STOPF
+ 	$_CHIPNAME.axi mww [expr $I2C_BASE + 0x01c] 0x00000020
+ 	$_CHIPNAME.axi mww [expr $I2C_BASE + 0x004] 0x01ff14fe
+@@ -79,39 +59,21 @@ proc pmic_init {} {
+ #	$_CHIPNAME.axi mww [expr $RCC_BASE + 0x214] 1; # set GPIOZEN = 0 (disable GPIOZ)
+ }
+ 
+-# Set bit 16 in TAMP_BACKUP_REGISTER(20) to signal to SPL and TF-A that we
+-# are in a debug session. This will force them (at next reboot) to program
+-# the PMIC for keeping powered-on the debug unit during reset.
+-proc set_pmic_in_backup_reg {} {
+-	global _CHIPNAME
+-
+-	$_CHIPNAME.dap apsel 0
+-	set old_csw [lindex [ocd_$_CHIPNAME.dap apcsw] 4]
+-	axi_non_secure_access
+-	$_CHIPNAME.axi_mmw 0x5c00a150 0x00010000 0x00000000
+-	$_CHIPNAME.dap apcsw $old_csw
+-}
+-
+-proc clear_pmic_in_backup_reg {} {
+-	global _CHIPNAME
+-
+-	$_CHIPNAME.dap apsel 0
+-	set old_csw [lindex [ocd_$_CHIPNAME.dap apcsw] 4]
+-	axi_non_secure_access
+-	$_CHIPNAME.axi_mmw 0x5c00a150 0x00000000 0x00010000
+-	$_CHIPNAME.dap apcsw $old_csw
+-}
+-
+ # Wrap around init/shutdown. Typing CTRL-C will also invoke shutdown
+ rename init _init
+ proc init {} {
+ 	_init
+-	set_pmic_in_backup_reg
++	if { [eval chip_revision] != 0x2000 } {
++		# Use debug flag to signal to SPL and TF-A that we are in a debug
++		# session. This will force them (at next reboot) to program the PMIC
++		# for keeping powered-on the debug unit during reset.
++		set_debugflag_in_backup_reg
++	}
+ }
+ 
+ rename shutdown _shutdown
+ proc shutdown {} {
+-	catch { clear_pmic_in_backup_reg }
++	catch { clear_debugflag_in_backup_reg }
+ 	_shutdown
+ }
+ 
+-- 
+2.20.0
+

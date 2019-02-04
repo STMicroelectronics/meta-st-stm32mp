@@ -1,0 +1,5378 @@
+From 0998211996ffbc68670a07c49d3966b34c5b0a37 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Mon, 15 Oct 2018 17:40:36 +0200
+Subject: [PATCH] Add support of STLINK for stm32mp1
+
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
+---
+ contrib/60-openocd.rules                 |    7 +
+ src/helper/bits.h                        |   88 ++
+ src/helper/log.h                         |    1 +
+ src/jtag/adapter.c                       |  132 +++
+ src/jtag/core.c                          |   66 +-
+ src/jtag/drivers/stlink_usb.c            | 1413 ++++++++++++++++++++++++++----
+ src/jtag/interfaces.c                    |    6 +
+ src/jtag/startup.tcl                     |   12 +-
+ src/jtag/tcl.c                           |    6 +-
+ src/server/gdb_server.c                  |   49 +-
+ src/target/Makefile.am                   |    4 +
+ src/target/adi_v5_stlink.c               |  311 +++++++
+ src/target/arm_adi_v5.c                  |   28 +
+ src/target/arm_adi_v5.h                  |   10 +
+ src/target/arm_dap.c                     |    9 +
+ src/target/arm_dpm.h                     |   29 +-
+ src/target/armv7a.c                      |   19 +-
+ src/target/armv7a.h                      |    2 +
+ src/target/armv7m.c                      |   13 +
+ src/target/armv7m.h                      |    2 +-
+ src/target/cortex_a.c                    |  313 +++++--
+ src/target/cortex_m.c                    |  138 ++-
+ src/target/cortex_m.h                    |    1 +
+ src/target/startup.tcl                   |  250 +++++-
+ src/target/target.c                      |  189 +++-
+ src/target/target.h                      |   22 +-
+ src/target/target_type.h                 |   16 +
+ src/transport/transport.h                |    2 +
+ tcl/board/stm32mp15x_dk2.cfg             |    9 +
+ tcl/board/stm32mp15x_ev1_jlink_jtag.cfg  |    9 +
+ tcl/board/stm32mp15x_ev1_jlink_swd.cfg   |    9 +
+ tcl/board/stm32mp15x_ev1_stlink_jtag.cfg |    9 +
+ tcl/board/stm32mp15x_ev1_stlink_swd.cfg  |    9 +
+ tcl/board/stm32mp15x_ev1_ulink2_jtag.cfg |    9 +
+ tcl/board/stm32mp15x_ev1_ulink2_swd.cfg  |    9 +
+ tcl/board/stm32mp15x_ev2_jlink_jtag.cfg  |    9 +
+ tcl/board/stm32mp15x_ev2_jlink_swd.cfg   |    9 +
+ tcl/board/stm32mp15x_ev2_stlink_jtag.cfg |    9 +
+ tcl/board/stm32mp15x_ev2_stlink_swd.cfg  |    9 +
+ tcl/board/stm32mp15x_ev2_ulink2_jtag.cfg |    9 +
+ tcl/board/stm32mp15x_ev2_ulink2_swd.cfg  |    9 +
+ tcl/interface/stlink-dap.cfg             |   18 +
+ tcl/target/atsamv.cfg                    |    2 +-
+ tcl/target/imx6.cfg                      |   50 +-
+ tcl/target/kx.cfg                        |    7 +-
+ tcl/target/stm32f7x.cfg                  |    2 +-
+ tcl/target/stm32mp15x.cfg                |  165 ++++
+ tcl/target/stm32mp15x_stpmu1.cfg         |  113 +++
+ tcl/target/swj-dp.tcl                    |    2 +
+ 49 files changed, 3181 insertions(+), 433 deletions(-)
+ create mode 100644 src/helper/bits.h
+ create mode 100644 src/target/adi_v5_stlink.c
+ create mode 100644 tcl/board/stm32mp15x_dk2.cfg
+ create mode 100644 tcl/board/stm32mp15x_ev1_jlink_jtag.cfg
+ create mode 100644 tcl/board/stm32mp15x_ev1_jlink_swd.cfg
+ create mode 100644 tcl/board/stm32mp15x_ev1_stlink_jtag.cfg
+ create mode 100644 tcl/board/stm32mp15x_ev1_stlink_swd.cfg
+ create mode 100644 tcl/board/stm32mp15x_ev1_ulink2_jtag.cfg
+ create mode 100644 tcl/board/stm32mp15x_ev1_ulink2_swd.cfg
+ create mode 100644 tcl/board/stm32mp15x_ev2_jlink_jtag.cfg
+ create mode 100644 tcl/board/stm32mp15x_ev2_jlink_swd.cfg
+ create mode 100644 tcl/board/stm32mp15x_ev2_stlink_jtag.cfg
+ create mode 100644 tcl/board/stm32mp15x_ev2_stlink_swd.cfg
+ create mode 100644 tcl/board/stm32mp15x_ev2_ulink2_jtag.cfg
+ create mode 100644 tcl/board/stm32mp15x_ev2_ulink2_swd.cfg
+ create mode 100644 tcl/interface/stlink-dap.cfg
+ create mode 100644 tcl/target/stm32mp15x.cfg
+ create mode 100644 tcl/target/stm32mp15x_stpmu1.cfg
+
+diff --git a/contrib/60-openocd.rules b/contrib/60-openocd.rules
+index 692e1b1..de47541 100644
+--- a/contrib/60-openocd.rules
++++ b/contrib/60-openocd.rules
+@@ -63,6 +63,13 @@ ATTRS{idVendor}=="0483", ATTRS{idProduct}=="3748", MODE="660", GROUP="plugdev",
+ 
+ # STLink v2-1
+ ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374b", MODE="660", GROUP="plugdev", TAG+="uaccess"
++ATTRS{idVendor}=="0483", ATTRS{idProduct}=="3752", MODE="660", GROUP="plugdev", TAG+="uaccess"
++
++# STLink v3
++ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374d", MODE="660", GROUP="plugdev", TAG+="uaccess"
++ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374e", MODE="660", GROUP="plugdev", TAG+="uaccess"
++ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374f", MODE="660", GROUP="plugdev", TAG+="uaccess"
++ATTRS{idVendor}=="0483", ATTRS{idProduct}=="3753", MODE="660", GROUP="plugdev", TAG+="uaccess"
+ 
+ # Cypress KitProg in KitProg mode
+ ATTRS{idVendor}=="04b4", ATTRS{idProduct}=="f139", MODE="660", GROUP="plugdev", TAG+="uaccess"
+diff --git a/src/helper/bits.h b/src/helper/bits.h
+new file mode 100644
+index 0000000..988dde0
+--- /dev/null
++++ b/src/helper/bits.h
+@@ -0,0 +1,88 @@
++/*
++ * Copyright (C) 2018, STMicroelectronics - All Rights Reserved
++ * Author(s): Antonio Borneo <borneo.antonio@gmail.com> for STMicroelectronics
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++/*
++ * The content of this file is mainly copied/inspired from Linux kernel
++ * code in include/linux/types.h include/linux/bitmap.h include/linux/bitops.h
++ */
++
++#ifndef OPENOCD_HELPER_BITS_H
++#define OPENOCD_HELPER_BITS_H
++
++#include <helper/types.h>
++
++#define BIT(nr)                     (1UL << (nr))
++#define BITS_PER_BYTE               8
++#define BITS_PER_LONG               (BITS_PER_BYTE * sizeof(long))
++#define BITS_TO_LONGS(nr)           DIV_ROUND_UP(nr, BITS_PER_BYTE * sizeof(long))
++#define BIT_MASK(nr)                (1UL << ((nr) % BITS_PER_LONG))
++#define BIT_WORD(nr)                ((nr) / BITS_PER_LONG)
++#define DECLARE_BITMAP(name, bits)  unsigned long name[BITS_TO_LONGS(bits)]
++
++/**
++ * bitmap_zero - Clears all the bits in memory
++ * @dst: the address of the bitmap
++ * @nbits: the number of bits to clear
++ */
++static inline void bitmap_zero(unsigned long *dst, unsigned int nbits)
++{
++	if (nbits <= BITS_PER_LONG)
++		*dst = 0UL;
++	else {
++		unsigned int len = BITS_TO_LONGS(nbits) * sizeof(unsigned long);
++		memset(dst, 0, len);
++	}
++}
++
++/**
++ * clear_bit - Clear a bit in memory
++ * @nr: the bit to set
++ * @addr: the address to start counting from
++ */
++static inline void clear_bit(int nr, volatile unsigned long *addr)
++{
++	unsigned long mask = BIT_MASK(nr);
++	unsigned long *p = ((unsigned long *)addr) + BIT_WORD(nr);
++
++	*p &= ~mask;
++}
++
++/**
++ * set_bit - Set a bit in memory
++ * @nr: the bit to set
++ * @addr: the address to start counting from
++ */
++static inline void set_bit(int nr, volatile unsigned long *addr)
++{
++	unsigned long mask = BIT_MASK(nr);
++	unsigned long *p = ((unsigned long *)addr) + BIT_WORD(nr);
++
++	*p  |= mask;
++}
++
++/**
++ * test_bit - Determine whether a bit is set
++ * @nr: bit number to test
++ * @addr: Address to start counting from
++ */
++static inline int test_bit(int nr, const volatile unsigned long *addr)
++{
++	return 1UL & (addr[BIT_WORD(nr)] >> (nr & (BITS_PER_LONG-1)));
++}
++
++#endif /* OPENOCD_HELPER_BITS_H */
+diff --git a/src/helper/log.h b/src/helper/log.h
+index d60587f..751ea17 100644
+--- a/src/helper/log.h
++++ b/src/helper/log.h
+@@ -151,6 +151,7 @@ extern int debug_level;
+ #define ERROR_WAIT						(-5)
+ /* ERROR_TIMEOUT is already taken by winerror.h. */
+ #define ERROR_TIMEOUT_REACHED			(-6)
++#define ERROR_OP_NOT_SUPPORTED				(-7)
+ 
+ 
+ #endif /* OPENOCD_HELPER_LOG_H */
+diff --git a/src/jtag/adapter.c b/src/jtag/adapter.c
+index 2035788..d62c9a1 100644
+--- a/src/jtag/adapter.c
++++ b/src/jtag/adapter.c
+@@ -31,6 +31,7 @@
+ #endif
+ 
+ #include "jtag.h"
++#include "swd.h"
+ #include "minidriver.h"
+ #include "interface.h"
+ #include "interfaces.h"
+@@ -47,6 +48,26 @@
+ 
+ extern struct jtag_interface *jtag_interface;
+ const char * const jtag_only[] = { "jtag", NULL };
++static const Jim_Nvp nvp_assert[] = {
++	{ .name = "assert", NVP_ASSERT },
++	{ .name = "deassert", NVP_DEASSERT },
++	{ .name = "T", NVP_ASSERT },
++	{ .name = "F", NVP_DEASSERT },
++	{ .name = "t", NVP_ASSERT },
++	{ .name = "f", NVP_DEASSERT },
++	{ .name = NULL, .value = -1 }
++};
++
++#define RESET_TEST_INDEPENDENT_TRST -1
++static const Jim_Nvp nvp_reset_config_includes[] = {
++	{ .name = "srst", RESET_HAS_SRST },
++	{ .name = "trst", RESET_HAS_TRST },
++	{ .name = "srst_pulls_trst_or_combined", RESET_SRST_PULLS_TRST },
++	{ .name = "trst_pulls_srst_or_combined", RESET_TRST_PULLS_SRST },
++	{ .name = "srst_nogate", RESET_SRST_NO_GATING },
++	{ .name = "connect_assert_srst", RESET_CNCT_UNDER_SRST },
++	{ .name = "independent_trst", RESET_TEST_INDEPENDENT_TRST },
++};
+ 
+ static int jim_adapter_name(Jim_Interp *interp, int argc, Jim_Obj * const *argv)
+ {
+@@ -400,6 +421,42 @@ next:
+ 	return ERROR_OK;
+ }
+ 
++static int jim_reset_config_includes(Jim_Interp *interp, int argc, Jim_Obj * const *argv)
++{
++	Jim_GetOptInfo goi;
++	Jim_GetOpt_Setup(&goi, interp, argc - 1, argv + 1);
++
++	if (goi.argc < 1) {
++		Jim_WrongNumArgs(interp, 1, argv, "[srst_any][trst_any]...");
++		return JIM_ERR;
++	}
++
++	int cfg = jtag_get_reset_config();
++	bool result = true;
++
++	while (goi.argc) {
++		Jim_Nvp *n;
++		int e = Jim_GetOpt_Nvp(&goi, nvp_reset_config_includes, &n);
++		if (e != JIM_OK) {
++			Jim_GetOpt_NvpUnknown(&goi, nvp_reset_config_includes, 1);
++			return e;
++		}
++
++		if (n->value == RESET_TEST_INDEPENDENT_TRST) {
++			bool indep_trst = cfg & RESET_HAS_TRST;
++			if (cfg & RESET_HAS_SRST && cfg & RESET_SRST_PULLS_TRST)
++				indep_trst = false;
++
++			result = result && indep_trst;
++		} else {
++			result = result && cfg & n->value;
++		}
++	}
++
++	Jim_SetResultString(interp, result ? "1" : "0", -1);
++	return JIM_OK;
++}
++
+ COMMAND_HANDLER(handle_adapter_nsrst_delay_command)
+ {
+ 	if (CMD_ARGC > 1)
+@@ -456,6 +513,57 @@ COMMAND_HANDLER(handle_adapter_khz_command)
+ 	return retval;
+ }
+ 
++static int jim_arp_init_reset(Jim_Interp *interp, int argc, Jim_Obj*const *argv)
++{
++	int e = ERROR_OK;
++	Jim_GetOptInfo goi;
++	Jim_GetOpt_Setup(&goi, interp, argc-1, argv + 1);
++	if (goi.argc != 0) {
++		Jim_WrongNumArgs(goi.interp, 1, goi.argv-1, "(no params)");
++		return JIM_ERR;
++	}
++	struct command_context *context = current_command_context(interp);
++	if (transport_is_jtag() || transport_is_stlink_jtag())
++		e = jtag_init_reset(context);
++	else if (transport_is_swd() || transport_is_stlink_swd())
++		e = swd_init_reset(context);
++
++	if (e != ERROR_OK) {
++		Jim_Obj *eObj = Jim_NewIntObj(goi.interp, e);
++		Jim_SetResultFormatted(goi.interp, "error: %#s", eObj);
++		Jim_FreeNewObj(goi.interp, eObj);
++		return JIM_ERR;
++	}
++	return JIM_OK;
++}
++
++static int jim_arp_adapter_reset(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
++{
++	Jim_GetOptInfo goi;
++	Jim_GetOpt_Setup(&goi, interp, argc - 1, argv + 1);
++
++	if (goi.argc != 1) {
++		Jim_WrongNumArgs(interp, 0, argv, "([tT]|[fF]|assert|deassert)");
++		return JIM_ERR;
++	}
++
++	Jim_Nvp *n;
++	int e = Jim_GetOpt_Nvp(&goi, nvp_assert, &n);
++	if (e != JIM_OK) {
++		Jim_GetOpt_NvpUnknown(&goi, nvp_assert, 1);
++		return e;
++	}
++
++	if (jtag_get_reset_config() & RESET_HAS_SRST) {
++		if (n->value == NVP_ASSERT)
++			adapter_assert_reset();
++		else
++			adapter_deassert_reset();
++	}
++
++	return JIM_OK;
++}
++
+ static const struct command_registration interface_command_handlers[] = {
+ 	{
+ 		.name = "adapter_khz",
+@@ -509,6 +617,21 @@ static const struct command_registration interface_command_handlers[] = {
+ 		.help = "List all built-in debug adapter interfaces (drivers)",
+ 	},
+ 	{
++		.name = "arp_init_reset",
++		.mode = COMMAND_ANY,
++		.jim_handler = jim_arp_init_reset,
++		.help = "Uses TRST and SRST to try resetting everything on the JTAG scan chain."
++			" If SWD transport is selected command uses SRST only."
++			" SRST is left asserted if 'reset_config srst_no_gating'."
++	},
++	{
++		.name = "arp_adapter_reset",
++		.mode = COMMAND_ANY,
++		.jim_handler = jim_arp_adapter_reset,
++		.help = "Controls SRST line.",
++		.usage = "[assert|deassert]"
++	},
++	{
+ 		.name = "reset_config",
+ 		.handler = handle_reset_config_command,
+ 		.mode = COMMAND_ANY,
+@@ -520,6 +643,15 @@ static const struct command_registration interface_command_handlers[] = {
+ 			"[srst_push_pull|srst_open_drain] "
+ 			"[connect_deassert_srst|connect_assert_srst]",
+ 	},
++	{
++		.name = "reset_config_includes",
++		.jim_handler = jim_reset_config_includes,
++		.mode = COMMAND_ANY,
++		.help = "Test adapter reset configuration",
++		.usage = "[trst] [srst] [srst_nogate] [connect_assert_srst]"
++			" [srst_pulls_trst_or_combined] [trst_pulls_srst_or_combined]"
++			" [independent_trst]"
++	},
+ 	COMMAND_REGISTRATION_DONE
+ };
+ 
+diff --git a/src/jtag/core.c b/src/jtag/core.c
+index f90ae99..e11a633 100644
+--- a/src/jtag/core.c
++++ b/src/jtag/core.c
+@@ -160,7 +160,7 @@ bool is_jtag_poll_safe(void)
+ 	 * It is also implicitly disabled while TRST is active and
+ 	 * while SRST is gating the JTAG clock.
+ 	 */
+-	if (!transport_is_jtag())
++	if (!transport_is_jtag() && !transport_is_stlink_jtag())
+ 		return jtag_poll;
+ 
+ 	if (!jtag_poll || jtag_trst != 0)
+@@ -640,11 +640,11 @@ void swd_add_reset(int req_srst)
+ 		/* SRST resets everything hooked up to that signal */
+ 		jtag_srst = req_srst;
+ 		if (jtag_srst) {
+-			LOG_DEBUG("SRST line asserted");
++			LOG_INFO("SRST line asserted");
+ 			if (adapter_nsrst_assert_width)
+ 				jtag_add_sleep(adapter_nsrst_assert_width * 1000);
+ 		} else {
+-			LOG_DEBUG("SRST line released");
++			LOG_INFO("SRST line released");
+ 			if (adapter_nsrst_delay)
+ 				jtag_add_sleep(adapter_nsrst_delay * 1000);
+ 		}
+@@ -722,11 +722,11 @@ void jtag_add_reset(int req_tlr_or_trst, int req_srst)
+ 	if (jtag_srst != new_srst) {
+ 		jtag_srst = new_srst;
+ 		if (jtag_srst) {
+-			LOG_DEBUG("SRST line asserted");
++			LOG_INFO("SRST line asserted");
+ 			if (adapter_nsrst_assert_width)
+ 				jtag_add_sleep(adapter_nsrst_assert_width * 1000);
+ 		} else {
+-			LOG_DEBUG("SRST line released");
++			LOG_INFO("SRST line released");
+ 			if (adapter_nsrst_delay)
+ 				jtag_add_sleep(adapter_nsrst_delay * 1000);
+ 		}
+@@ -1404,7 +1404,7 @@ int jtag_init_inner(struct command_context *cmd_ctx)
+ 	int retval;
+ 	bool issue_setup = true;
+ 
+-	LOG_DEBUG("Init JTAG chain");
++	LOG_INFO("Init JTAG chain");
+ 
+ 	tap = jtag_tap_next_enabled(NULL);
+ 	if (tap == NULL) {
+@@ -1505,9 +1505,10 @@ int swd_init_reset(struct command_context *cmd_ctx)
+ 
+ 	LOG_DEBUG("Initializing with hard SRST reset");
+ 
+-	if (jtag_reset_config & RESET_HAS_SRST)
++	if ((jtag_reset_config & (RESET_HAS_SRST|RESET_SRST_NO_GATING)) == (RESET_HAS_SRST|RESET_SRST_NO_GATING))
+ 		swd_add_reset(1);
+-	swd_add_reset(0);
++	/* leave SRST asserted if SWD trasport is usable in reset state */
++
+ 	retval = jtag_execute_queue();
+ 	return retval;
+ }
+@@ -1544,28 +1545,30 @@ int jtag_init_reset(struct command_context *cmd_ctx)
+ 	 * REVISIT once Tcl code can read the reset_config modes, this won't
+ 	 * need to be a C routine at all...
+ 	 */
+-	if (jtag_reset_config & RESET_HAS_SRST) {
++	if ((jtag_reset_config & RESET_HAS_SRST)
++	     && (jtag_reset_config & RESET_SRST_NO_GATING)) {
+ 		jtag_add_reset(1, 1);
+-		if ((jtag_reset_config & RESET_SRST_PULLS_TRST) == 0)
+-			jtag_add_reset(0, 1);
+ 	} else {
+ 		jtag_add_reset(1, 0);	/* TAP_RESET, using TMS+TCK or TRST */
+ 	}
+ 
+ 	/* some targets enable us to connect with srst asserted */
+-	if (jtag_reset_config & RESET_CNCT_UNDER_SRST) {
+-		if (jtag_reset_config & RESET_SRST_NO_GATING)
+-			jtag_add_reset(0, 1);
+-		else {
++	if (jtag_reset_config & RESET_SRST_NO_GATING)
++		jtag_add_reset(0, 1);
++	else {
++		if (jtag_reset_config & RESET_CNCT_UNDER_SRST)
+ 			LOG_WARNING("\'srst_nogate\' reset_config option is required");
+-			jtag_add_reset(0, 0);
+-		}
+-	} else
+ 		jtag_add_reset(0, 0);
++	}
++
+ 	retval = jtag_execute_queue();
+ 	if (retval != ERROR_OK)
+ 		return retval;
+ 
++	/* ST-Link cannot scan the JTAG chain */
++	if (transport_is_stlink_jtag())
++		return ERROR_OK;
++
+ 	/* Check that we can communication on the JTAG chain + eventually we want to
+ 	 * be able to perform enumeration only after OpenOCD has started
+ 	 * telnet and GDB server
+@@ -1816,30 +1819,33 @@ bool transport_is_jtag(void)
+ 
+ void adapter_assert_reset(void)
+ {
+-	if (transport_is_jtag()) {
++	if (transport_is_jtag() || transport_is_stlink_jtag()) {
+ 		if (jtag_reset_config & RESET_SRST_PULLS_TRST)
+ 			jtag_add_reset(1, 1);
+ 		else
+ 			jtag_add_reset(0, 1);
+-	} else if (transport_is_swd())
++	} else if (transport_is_swd() || transport_is_stlink_swd()) {
+ 		swd_add_reset(1);
+-	else if (get_current_transport() != NULL)
+-		LOG_ERROR("reset is not supported on %s",
+-			get_current_transport()->name);
+-	else
++	} else if (get_current_transport() != NULL) {
++		const char *name = get_current_transport()->name;
++		/* hla transports control srst through target assert_reset
++		 * and deassert_reset calls so no action here
++		 * Show error for other transports */
++		if (strcmp(name, "hla_swd") && strcmp(name, "hla_jtag")
++				&& strcmp(name, "stlink_swim"))
++			LOG_ERROR("reset is not supported on %s", name);
++	} else {
+ 		LOG_ERROR("transport is not selected");
++	}
+ }
+ 
+ void adapter_deassert_reset(void)
+ {
+-	if (transport_is_jtag())
++	if (transport_is_jtag() || transport_is_stlink_jtag())
+ 		jtag_add_reset(0, 0);
+-	else if (transport_is_swd())
++	else if (transport_is_swd() || transport_is_stlink_swd())
+ 		swd_add_reset(0);
+-	else if (get_current_transport() != NULL)
+-		LOG_ERROR("reset is not supported on %s",
+-			get_current_transport()->name);
+-	else
++	else if (get_current_transport() == NULL)
+ 		LOG_ERROR("transport is not selected");
+ }
+ 
+diff --git a/src/jtag/drivers/stlink_usb.c b/src/jtag/drivers/stlink_usb.c
+index d9ca53e..f55a608 100644
+--- a/src/jtag/drivers/stlink_usb.c
++++ b/src/jtag/drivers/stlink_usb.c
+@@ -30,17 +30,21 @@
+ #endif
+ 
+ /* project specific includes */
++#include <helper/bits.h>
+ #include <helper/binarybuffer.h>
+ #include <jtag/interface.h>
+ #include <jtag/hla/hla_layout.h>
+ #include <jtag/hla/hla_transport.h>
+ #include <jtag/hla/hla_interface.h>
++#include <jtag/swd.h>
+ #include <target/target.h>
+ 
+ #include <target/cortex_m.h>
+ 
+ #include "libusb_common.h"
+ 
++#define HLA_DEFAULT_APNUN     (0)
++
+ #define ENDPOINT_IN  0x80
+ #define ENDPOINT_OUT 0x00
+ 
+@@ -60,13 +64,32 @@
+ #define STLINK_CMD_SIZE_V2    (16)
+ #define STLINK_CMD_SIZE_V1    (10)
+ 
++#define STLINK_VID            (0x0483)
+ #define STLINK_V1_PID         (0x3744)
+ #define STLINK_V2_PID         (0x3748)
+ #define STLINK_V2_1_PID       (0x374B)
++#define STLINK_V2_1_NO_MSD_PID  (0x3752)
++#define STLINK_V3_DFU_PID       (0x374D)
++#define STLINK_V3E_PID          (0x374E)
++#define STLINK_V3S_PID          (0x374F)
++#define STLINK_V3_2VCP_PID      (0x3753)
+ 
+ /* the current implementation of the stlink limits
+- * 8bit read/writes to max 64 bytes. */
+-#define STLINK_MAX_RW8		(64)
++ * 8bit read/writes to max 64 bytes.
++ * The limit is 512 bytes with stlink v3 on usb 2.0 high speed */
++/*
++ * ST-Link/V1, ST-Link/V2 and ST-Link/V2.1 are full-speed USB devices and
++ * this limits the bulk packet size and the 8bit read/writes to max 64 bytes.
++ * ST-Link/V3 is a high speed USB 2.0 and the limit is 512 bytes.
++ */
++#define STLINKV2_MAX_RW8        (64)
++#define STLINKV3_MAX_RW8        (512)
++
++/*
++ * ARM IHI 0031E: TAR Automatic address increment is only guaranteed to
++ * operate on the 10 least significant bits of the address
++ */
++#define TAR_AUTOINCR_BLOCK      (1 << 10)
+ 
+ /* "WAIT" responses will be retried (with exponential backoff) at
+  * most this many times before failing to caller.
+@@ -76,6 +99,7 @@
+ enum stlink_jtag_api_version {
+ 	STLINK_JTAG_API_V1 = 1,
+ 	STLINK_JTAG_API_V2,
++	STLINK_JTAG_API_V3,
+ };
+ 
+ /** */
+@@ -134,35 +158,57 @@ struct stlink_usb_handle_s {
+ 	bool reconnect_pending;
+ };
+ 
++/* status codes */
+ #define STLINK_SWIM_ERR_OK             0x00
+ #define STLINK_SWIM_BUSY               0x01
+ #define STLINK_DEBUG_ERR_OK            0x80
+ #define STLINK_DEBUG_ERR_FAULT         0x81
++
++#define STLINK_JTAG_SPI_ERROR                    0x02
++#define STLINK_JTAG_DMA_ERROR                    0x03
++#define STLINK_JTAG_UNKNOWN_JTAG_CHAIN           0x04
++#define STLINK_JTAG_NO_DEVICE_CONNECTED          0x05
++#define STLINK_JTAG_INTERNAL_ERROR               0x06
++#define STLINK_JTAG_CMD_WAIT                     0x07
++#define STLINK_JTAG_CMD_ERROR                    0x08
++#define STLINK_JTAG_GET_IDCODE_ERROR             0x09
++#define STLINK_JTAG_ALIGNMENT_ERROR              0x0A
++#define STLINK_JTAG_DBG_POWER_ERROR              0x0B
++#define STLINK_JTAG_WRITE_ERROR                  0x0C
++#define STLINK_JTAG_WRITE_VERIF_ERROR            0x0D
++#define STLINK_JTAG_ALREADY_OPENED_IN_OTHER_MODE 0x0E
++
+ #define STLINK_SWD_AP_WAIT             0x10
+ #define STLINK_SWD_AP_FAULT            0x11
+ #define STLINK_SWD_AP_ERROR            0x12
+ #define STLINK_SWD_AP_PARITY_ERROR     0x13
+-#define STLINK_JTAG_WRITE_ERROR        0x0c
+-#define STLINK_JTAG_WRITE_VERIF_ERROR  0x0d
+ #define STLINK_SWD_DP_WAIT             0x14
+ #define STLINK_SWD_DP_FAULT            0x15
+ #define STLINK_SWD_DP_ERROR            0x16
+ #define STLINK_SWD_DP_PARITY_ERROR     0x17
+-
+ #define STLINK_SWD_AP_WDATA_ERROR      0x18
+ #define STLINK_SWD_AP_STICKY_ERROR     0x19
+-#define STLINK_SWD_AP_STICKYORUN_ERROR 0x1a
++#define STLINK_SWD_AP_STICKYORUN_ERROR 0x1A
++#define STLINK_AP_ALREADY_USED         0x1B
++#define STLINK_TRACE_AP_TURNAROUND     0x1C
++#define STLINK_BAD_AP                  0x1D
++#define STLINK_SWV_NOT_AVAILABLE       0x20
++#define STLINK_NO_JUMP_TO_USB_LOADER   0x21
++#define STLINK_JTAG_TCPID_NOT_FOUND    0x30
++#define STLINK_JTAG_TCPID_MAX_REACHED  0x31
+ 
+ #define STLINK_CORE_RUNNING            0x80
+ #define STLINK_CORE_HALTED             0x81
+ #define STLINK_CORE_STAT_UNKNOWN       -1
+ 
++/* stlink commands */
+ #define STLINK_GET_VERSION             0xF1
+ #define STLINK_DEBUG_COMMAND           0xF2
+ #define STLINK_DFU_COMMAND             0xF3
+ #define STLINK_SWIM_COMMAND            0xF4
+ #define STLINK_GET_CURRENT_MODE        0xF5
+ #define STLINK_GET_TARGET_VOLTAGE      0xF7
++#define STLINK_APIV3_GET_VERSION_EX    0xFB
+ 
+ #define STLINK_DEV_DFU_MODE            0x00
+ #define STLINK_DEV_MASS_MODE           0x01
+@@ -204,7 +250,6 @@ struct stlink_usb_handle_s {
+ #define STLINK_SWIM_READMEM                0x0b
+ #define STLINK_SWIM_READBUF                0x0c
+ 
+-#define STLINK_DEBUG_ENTER_JTAG            0x00
+ #define STLINK_DEBUG_GETSTATUS             0x01
+ #define STLINK_DEBUG_FORCEDEBUG            0x02
+ #define STLINK_DEBUG_APIV1_RESETSYS        0x03
+@@ -224,6 +269,7 @@ struct stlink_usb_handle_s {
+ 
+ #define STLINK_DEBUG_ENTER_JTAG            0x00
+ #define STLINK_DEBUG_ENTER_SWD             0xa3
++#define STLINK_ENTER_JTAG_NO_CORE_RESET    0xA4
+ 
+ #define STLINK_DEBUG_APIV1_ENTER           0x20
+ #define STLINK_DEBUG_EXIT                  0x21
+@@ -236,24 +282,55 @@ struct stlink_usb_handle_s {
+ #define STLINK_DEBUG_APIV2_WRITEREG        0x34
+ #define STLINK_DEBUG_APIV2_WRITEDEBUGREG   0x35
+ #define STLINK_DEBUG_APIV2_READDEBUGREG    0x36
+-
++#define STLINK_DEBUG_APIV2_SETWATCHPOINT2  0x37
++#define STLINK_DEBUG_APIV2_SETFP2          0x38
++#define STLINK_DEBUG_APIV2_CLEARFP2        0x39
+ #define STLINK_DEBUG_APIV2_READALLREGS     0x3A
+ #define STLINK_DEBUG_APIV2_GETLASTRWSTATUS 0x3B
+ #define STLINK_DEBUG_APIV2_DRIVE_NRST      0x3C
++#define STLINK_DEBUG_APIV2_READFPUREGS     0x3D
++#define STLINK_DEBUG_APIV3_GETLASTRWSTATUS 0x3E
+ 
+ #define STLINK_DEBUG_APIV2_START_TRACE_RX  0x40
+ #define STLINK_DEBUG_APIV2_STOP_TRACE_RX   0x41
+ #define STLINK_DEBUG_APIV2_GET_TRACE_NB    0x42
+ #define STLINK_DEBUG_APIV2_SWD_SET_FREQ    0x43
++#define STLINK_DEBUG_APIV2_JTAG_SET_FREQ   0x44
++#define STLINK_JTAG_READ_DAP_REG           0x45
++#define STLINK_JTAG_WRITE_DAP_REG          0x46
++#define STLINK_DEBUG_APIV2_READMEM_16BIT   0x47
++#define STLINK_DEBUG_APIV2_WRITEMEM_16BIT  0x48
++#define STLINK_DEBUG_APIV2_BLINK_LED       0x49
++#define STLINK_DEBUG_APIV2_GET_DISK_NAME   0x4A
++#define STLINK_DEBUG_APIV2_INIT_AP         0x4B
++#define STLINK_DEBUG_APIV2_CLOSE_AP_DBG    0x4C
++
++#define STLINK_DEBUG_WRITEMEM_32BIT_NO_ADDR_INC         0x50
+ 
++#define STLINK_DEBUG_READMEM_32BIT_NO_ADDR_INC          0x54
++
++#define STLINK_APIV3_SET_COM_FREQ          0x61
++#define STLINK_APIV3_GET_COM_FREQ          0x62
++#define STLINK_APIV3_SWITCH_STLINK_FREQ    0x63
++
++/* parameters */
+ #define STLINK_DEBUG_APIV2_DRIVE_NRST_LOW   0x00
+ #define STLINK_DEBUG_APIV2_DRIVE_NRST_HIGH  0x01
+ #define STLINK_DEBUG_APIV2_DRIVE_NRST_PULSE 0x02
+ 
++#define STLINK_DEBUG_FLASHPATCH_LOWER       0
++#define STLINK_DEBUG_FLASHPATCH_UPPER       1
++#define STLINK_DEBUG_FLASHPATCH_ALL         2
++
++#define JTAG_AP_CORTEXM_CORE                1
++#define JTAG_AP_NO_CORE                     0
++
+ #define STLINK_TRACE_SIZE               4096
+ #define STLINK_TRACE_MAX_HZ             2000000
+ #define STLINK_TRACE_MIN_VERSION        13
+ 
++#define STLINK_V3_MAX_FREQ_NB               10
++
+ /** */
+ enum stlink_mode {
+ 	STLINK_MODE_UNKNOWN = 0,
+@@ -267,10 +344,13 @@ enum stlink_mode {
+ #define REQUEST_SENSE        0x03
+ #define REQUEST_SENSE_LENGTH 18
+ 
+-static const struct {
++struct speed_map {
+ 	int speed;
+ 	int speed_divisor;
+-} stlink_khz_to_speed_map[] = {
++};
++
++/* SWD clock speed */
++static const struct speed_map stlink_khz_to_speed_map[] = {
+ 	{4000, 0},
+ 	{1800, 1}, /* default */
+ 	{1200, 2},
+@@ -285,8 +365,37 @@ static const struct {
+ 	{5,  798}
+ };
+ 
++/* JTAG clock speed */
++static const struct speed_map stlink_khz_to_speed_map_jtag[] = {
++	{18000, 2},
++	{9000,  4},
++	{4500,  8},
++	{2250, 16},
++	{1125, 32}, /* default */
++	{562,  64},
++	{281, 128},
++	{140, 256}
++};
++
+ static void stlink_usb_init_buffer(void *handle, uint8_t direction, uint32_t size);
+ static int stlink_swim_status(void *handle);
++static int stlink_usb_reset(void *handle);
++
++
++/** */
++__attribute__((unused))
++static unsigned int stlink_usb_block(void *handle)
++{
++	struct stlink_usb_handle_s *h = handle;
++
++	assert(handle != NULL);
++
++	if (h->version.stlink == 3)
++		return STLINKV3_MAX_RW8;
++	else
++		return STLINKV2_MAX_RW8;
++}
++
+ 
+ /** */
+ static int stlink_usb_xfer_v1_get_status(void *handle)
+@@ -453,6 +562,36 @@ static int stlink_usb_error_check(void *handle)
+ 		case STLINK_SWD_DP_WAIT:
+ 			LOG_DEBUG("wait status SWD_DP_WAIT (0x%x)", STLINK_SWD_DP_WAIT);
+ 			return ERROR_WAIT;
++		case STLINK_JTAG_SPI_ERROR:
++			LOG_DEBUG("JTAG_INTERNAL_ERROR (SPI)");
++			return ERROR_FAIL;
++		case STLINK_JTAG_DMA_ERROR:
++			LOG_DEBUG("JTAG_INTERNAL_ERROR (DMA)");
++			return ERROR_FAIL;
++		case STLINK_JTAG_UNKNOWN_JTAG_CHAIN:
++			LOG_DEBUG("UNKNOWN_JTAG_CHAIN");
++			return ERROR_FAIL;
++		case STLINK_JTAG_NO_DEVICE_CONNECTED:
++			LOG_DEBUG("NO_DEVICE_CONNECTED");
++			return ERROR_FAIL;
++		case STLINK_JTAG_INTERNAL_ERROR:
++			LOG_DEBUG("JTAG_INTERNAL_ERROR");
++			return ERROR_FAIL;
++		case STLINK_JTAG_CMD_WAIT:
++			LOG_DEBUG("wait status STLINK_JTAG_CMD_WAIT");
++			return ERROR_WAIT;
++		case STLINK_JTAG_CMD_ERROR:
++			LOG_DEBUG("JTAG_CMD_ERROR");
++			return ERROR_FAIL;
++		case STLINK_JTAG_GET_IDCODE_ERROR:
++			LOG_DEBUG("JTAG_GET_IDCODE_ERROR");
++			return ERROR_FAIL;
++		case STLINK_JTAG_ALIGNMENT_ERROR:
++			LOG_DEBUG("JTAG_ALIGNMENT_ERROR");
++			return ERROR_FAIL;
++		case STLINK_JTAG_DBG_POWER_ERROR:
++			LOG_DEBUG("JTAG_DBG_POWER_ERROR");
++			return ERROR_FAIL;
+ 		case STLINK_JTAG_WRITE_ERROR:
+ 			LOG_DEBUG("Write error");
+ 			return ERROR_FAIL;
+@@ -466,7 +605,7 @@ static int stlink_usb_error_check(void *handle)
+ 			 * This fix allows CDT plugin to visualize memory.
+ 			 */
+ 			LOG_DEBUG("STLINK_SWD_AP_FAULT");
+-			return ERROR_FAIL;
++			return ERROR_OK;
+ 		case STLINK_SWD_AP_ERROR:
+ 			LOG_DEBUG("STLINK_SWD_AP_ERROR");
+ 			return ERROR_FAIL;
+@@ -487,10 +626,25 @@ static int stlink_usb_error_check(void *handle)
+ 			return ERROR_FAIL;
+ 		case STLINK_SWD_AP_STICKY_ERROR:
+ 			LOG_DEBUG("STLINK_SWD_AP_STICKY_ERROR");
++			/* Seen when reading address out of range (0xFFFFFFFF) */
++			/* Seems usb_reset helps the following r/w accesses */
++			stlink_usb_reset(h);
+ 			return ERROR_FAIL;
+ 		case STLINK_SWD_AP_STICKYORUN_ERROR:
+ 			LOG_DEBUG("STLINK_SWD_AP_STICKYORUN_ERROR");
+ 			return ERROR_FAIL;
++		case STLINK_JTAG_ALREADY_OPENED_IN_OTHER_MODE:
++			LOG_DEBUG("JTAG_ALREADY_OPENED_IN_OTHER_MODE");
++			return ERROR_FAIL;
++		case STLINK_AP_ALREADY_USED:
++			LOG_DEBUG("AP_ALREADY_USED");
++			return ERROR_FAIL;
++		case STLINK_TRACE_AP_TURNAROUND:
++			LOG_DEBUG("TRACE_AP_TURNAROUND");
++			return ERROR_FAIL;
++		case STLINK_BAD_AP:
++			LOG_DEBUG("BAD_AP");
++			return ERROR_FAIL;
+ 		default:
+ 			LOG_DEBUG("unknown/unexpected STLINK status code 0x%x", h->databuf[0]);
+ 			return ERROR_FAIL;
+@@ -603,40 +757,62 @@ static int stlink_usb_version(void *handle)
+ {
+ 	int res;
+ 	uint16_t v;
++	uint8_t m_version = 0;
+ 	struct stlink_usb_handle_s *h = handle;
+ 
+ 	assert(handle != NULL);
+ 
+-	stlink_usb_init_buffer(handle, h->rx_ep, 6);
++	/* FIXME: don't use PID, but first old command to get V3, then new command */
++	if (h->pid == STLINK_V3E_PID || h->pid == STLINK_V3S_PID || h->pid == STLINK_V3_2VCP_PID) {
++		stlink_usb_init_buffer(handle, h->rx_ep, 16);
++		h->cmdbuf[h->cmdidx++] = STLINK_APIV3_GET_VERSION_EX;
++		res = stlink_usb_xfer(handle, h->databuf, 12);
+ 
+-	h->cmdbuf[h->cmdidx++] = STLINK_GET_VERSION;
++		if (res != ERROR_OK)
++			return res;
+ 
+-	res = stlink_usb_xfer(handle, h->databuf, 6);
++		h->version.stlink = h->databuf[0];
++		h->version.swim = h->databuf[1];
++		h->version.jtag = h->databuf[2];
++		m_version = h->databuf[3];
+ 
+-	if (res != ERROR_OK)
+-		return res;
++		h->vid = (h->databuf[9] << 8) | h->databuf[8];
++		h->pid = (h->databuf[11] << 8) | h->databuf[10];
+ 
+-	v = (h->databuf[0] << 8) | h->databuf[1];
++		h->version.jtag_api_max = STLINK_JTAG_API_V3;
++	} else {
++		stlink_usb_init_buffer(handle, h->rx_ep, 6);
++		h->cmdbuf[h->cmdidx++] = STLINK_GET_VERSION;
+ 
+-	h->version.stlink = (v >> 12) & 0x0f;
+-	h->version.jtag = (v >> 6) & 0x3f;
+-	h->version.swim = v & 0x3f;
+-	h->vid = buf_get_u32(h->databuf, 16, 16);
+-	h->pid = buf_get_u32(h->databuf, 32, 16);
++		res = stlink_usb_xfer(handle, h->databuf, 6);
+ 
+-	/* set the supported jtag api version
+-	 * API V2 is supported since JTAG V11
+-	 */
+-	if (h->version.jtag >= 11)
+-		h->version.jtag_api_max = STLINK_JTAG_API_V2;
+-	else
+-		h->version.jtag_api_max = STLINK_JTAG_API_V1;
++		if (res != ERROR_OK)
++			return res;
++
++		v = (h->databuf[0] << 8) | h->databuf[1];
++
++		h->version.stlink = (v >> 12) & 0x0f;
++		h->version.jtag = (v >> 6) & 0x3f;
++		h->version.swim = v & 0x3f;
++		h->vid = buf_get_u32(h->databuf, 16, 16);
++		h->pid = buf_get_u32(h->databuf, 32, 16);
++
++		/* set the supported jtag api version
++		 * API V2 is supported since JTAG V11
++		 */
++		if (h->version.jtag >= 11)
++			h->version.jtag_api_max = STLINK_JTAG_API_V2;
++		else
++			h->version.jtag_api_max = STLINK_JTAG_API_V1;
++	}
+ 
+-	LOG_INFO("STLINK v%d JTAG v%d API v%d SWIM v%d VID 0x%04X PID 0x%04X",
++	LOG_INFO("STLINK v%d%s JTAG v%d API v%d %s%d VID 0x%04X PID 0x%04X",
+ 		h->version.stlink,
++		(h->pid == STLINK_V2_1_PID) ? ".1" : "",
+ 		h->version.jtag,
+-		(h->version.jtag_api_max == STLINK_JTAG_API_V1) ? 1 : 2,
+-		h->version.swim,
++		h->version.jtag_api_max,
++		(h->pid == STLINK_V2_1_PID || (h->version.stlink == 3 && h->version.swim == 0)) ? "M" : "SWIM v",
++		(h->version.stlink == 3 && h->version.swim == 0) ? m_version : h->version.swim,
+ 		h->vid,
+ 		h->pid);
+ 
+@@ -648,8 +824,8 @@ static int stlink_usb_check_voltage(void *handle, float *target_voltage)
+ 	struct stlink_usb_handle_s *h = handle;
+ 	uint32_t adc_results[2];
+ 
+-	/* only supported by stlink/v2 and for firmware >= 13 */
+-	if (h->version.stlink == 1 || h->version.jtag < 13)
++	/* only supported by stlink v2/v3 and for firmware >= 13 */
++	if (h->version.stlink == 1 || (h->version.stlink == 2 && h->version.jtag < 13))
+ 		return ERROR_COMMAND_NOTFOUND;
+ 
+ 	stlink_usb_init_buffer(handle, h->rx_ep, 8);
+@@ -682,7 +858,8 @@ static int stlink_usb_set_swdclk(void *handle, uint16_t clk_divisor)
+ 	assert(handle != NULL);
+ 
+ 	/* only supported by stlink/v2 and for firmware >= 22 */
+-	if (h->version.stlink == 1 || h->version.jtag < 22)
++	if (h->version.stlink == 1 || h->version.stlink == 3 || \
++		(h->version.stlink == 2 && h->version.jtag < 22))
+ 		return ERROR_COMMAND_NOTFOUND;
+ 
+ 	stlink_usb_init_buffer(handle, h->rx_ep, 2);
+@@ -700,6 +877,32 @@ static int stlink_usb_set_swdclk(void *handle, uint16_t clk_divisor)
+ 	return ERROR_OK;
+ }
+ 
++static int stlink_usb_set_jtagclk(void *handle, uint16_t clk_divisor)
++{
++	struct stlink_usb_handle_s *h = handle;
++
++	assert(handle != NULL);
++
++	/* only supported by stlink/v2 and for firmware >= 24 */
++	if (h->version.stlink == 1 || h->version.stlink == 3 || \
++		(h->version.stlink == 2 && h->version.jtag < 24))
++		return ERROR_COMMAND_NOTFOUND;
++
++	stlink_usb_init_buffer(handle, h->rx_ep, 2);
++
++	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_COMMAND;
++	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_APIV2_JTAG_SET_FREQ;
++	h_u16_to_le(h->cmdbuf+h->cmdidx, clk_divisor);
++	h->cmdidx += 2;
++
++	int result = stlink_cmd_allow_retry(handle, h->databuf, 2);
++
++	if (result != ERROR_OK)
++		return result;
++
++	return ERROR_OK;
++}
++
+ /** */
+ static int stlink_usb_current_mode(void *handle, uint8_t *mode)
+ {
+@@ -734,21 +937,23 @@ static int stlink_usb_mode_enter(void *handle, enum stlink_mode type)
+ 	 * status
+ 	 * TODO: we need the test on api V1 too
+ 	 */
+-	if (h->jtag_api == STLINK_JTAG_API_V2)
++	if (h->jtag_api == STLINK_JTAG_API_V2 || h->jtag_api == STLINK_JTAG_API_V3)
+ 		rx_size = 2;
+ 
+ 	stlink_usb_init_buffer(handle, h->rx_ep, rx_size);
+ 
+ 	switch (type) {
+ 		case STLINK_MODE_DEBUG_JTAG:
++			LOG_DEBUG("stlink_usb_mode_enter(JTAG)");
+ 			h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_COMMAND;
+ 			if (h->jtag_api == STLINK_JTAG_API_V1)
+ 				h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_APIV1_ENTER;
+ 			else
+ 				h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_APIV2_ENTER;
+-			h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_ENTER_JTAG;
++			h->cmdbuf[h->cmdidx++] = STLINK_ENTER_JTAG_NO_CORE_RESET;
+ 			break;
+ 		case STLINK_MODE_DEBUG_SWD:
++			LOG_DEBUG("stlink_usb_mode_enter(SWD)");
+ 			h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_COMMAND;
+ 			if (h->jtag_api == STLINK_JTAG_API_V1)
+ 				h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_APIV1_ENTER;
+@@ -757,6 +962,7 @@ static int stlink_usb_mode_enter(void *handle, enum stlink_mode type)
+ 			h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_ENTER_SWD;
+ 			break;
+ 		case STLINK_MODE_DEBUG_SWIM:
++			LOG_DEBUG("stlink_usb_mode_enter(SWIM)");
+ 			h->cmdbuf[h->cmdidx++] = STLINK_SWIM_COMMAND;
+ 			h->cmdbuf[h->cmdidx++] = STLINK_SWIM_ENTER;
+ 			/* no answer for this function... */
+@@ -825,12 +1031,11 @@ static enum stlink_mode stlink_get_mode(enum hl_transports t)
+ }
+ 
+ /** */
+-static int stlink_usb_init_mode(void *handle, bool connect_under_reset)
++static int stlink_exit_mode (void *handle)
+ {
+ 	int res;
+ 	uint8_t mode;
+ 	enum stlink_mode emode;
+-	struct stlink_usb_handle_s *h = handle;
+ 
+ 	assert(handle != NULL);
+ 
+@@ -860,17 +1065,35 @@ static int stlink_usb_init_mode(void *handle, bool connect_under_reset)
+ 	}
+ 
+ 	if (emode != STLINK_MODE_UNKNOWN) {
++		LOG_DEBUG("E-MODE: 0x%02X", emode);
+ 		res = stlink_usb_mode_leave(handle, emode);
+-
+ 		if (res != ERROR_OK)
+ 			return res;
+ 	}
+ 
+-	res = stlink_usb_current_mode(handle, &mode);
++	return ERROR_OK;
++}
++
++/** */
++static int stlink_usb_init_mode(void *handle, bool connect_under_reset)
++{
++	int res;
++	uint8_t mode;
++	enum stlink_mode emode;
++	struct stlink_usb_handle_s *h = handle;
++
++	assert(handle != NULL);
++
++	res = stlink_exit_mode(handle);
++	if (res != ERROR_OK)
++		return res;
+ 
++	res = stlink_usb_current_mode(handle, &mode);
+ 	if (res != ERROR_OK)
+ 		return res;
+ 
++	LOG_DEBUG("MODE: 0x%02X", mode);
++
+ 	/* we check the target voltage here as an aid to debugging connection problems.
+ 	 * the stlink requires the target Vdd to be connected for reliable debugging.
+ 	 * this cmd is supported in all modes except DFU
+@@ -921,7 +1144,7 @@ static int stlink_usb_init_mode(void *handle, bool connect_under_reset)
+ 		return res;
+ 
+ 	/* assert SRST again: a little bit late but now the adapter knows for sure what pin to use */
+-	if (connect_under_reset) {
++	if (h->transport == HL_TRANSPORT_SWIM && connect_under_reset) {
+ 		res = stlink_usb_assert_srst(handle, 0);
+ 		if (res != ERROR_OK)
+ 			return res;
+@@ -1174,6 +1397,7 @@ static int stlink_usb_v2_read_debug_reg(void *handle, uint32_t addr, uint32_t *v
+ 	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_APIV2_READDEBUGREG;
+ 	h_u32_to_le(h->cmdbuf+h->cmdidx, addr);
+ 	h->cmdidx += 4;
++	h->cmdbuf[h->cmdidx++] = HLA_DEFAULT_APNUN;
+ 
+ 	res = stlink_cmd_allow_retry(handle, h->databuf, 8);
+ 	if (res != ERROR_OK)
+@@ -1200,6 +1424,7 @@ static int stlink_usb_write_debug_reg(void *handle, uint32_t addr, uint32_t val)
+ 	h->cmdidx += 4;
+ 	h_u32_to_le(h->cmdbuf+h->cmdidx, val);
+ 	h->cmdidx += 4;
++	h->cmdbuf[h->cmdidx++] = HLA_DEFAULT_APNUN;
+ 
+ 	return stlink_cmd_allow_retry(handle, h->databuf, 2);
+ }
+@@ -1211,7 +1436,8 @@ static int stlink_usb_trace_read(void *handle, uint8_t *buf, size_t *size)
+ 
+ 	assert(handle != NULL);
+ 
+-	if (h->trace.enabled && h->version.jtag >= STLINK_TRACE_MIN_VERSION) {
++	if (h->trace.enabled &&
++		(h->version.jtag >= STLINK_TRACE_MIN_VERSION || h->jtag_api == STLINK_JTAG_API_V3)) {
+ 		int res;
+ 
+ 		stlink_usb_init_buffer(handle, h->rx_ep, 10);
+@@ -1284,7 +1510,7 @@ static enum target_state stlink_usb_state(void *handle)
+ 		h->reconnect_pending = false;
+ 	}
+ 
+-	if (h->jtag_api == STLINK_JTAG_API_V2) {
++	if (h->jtag_api == STLINK_JTAG_API_V2 || h->jtag_api == STLINK_JTAG_API_V3) {
+ 		res = stlink_usb_v2_get_status(handle);
+ 		if (res == TARGET_UNKNOWN)
+ 			h->reconnect_pending = true;
+@@ -1340,7 +1566,7 @@ static void stlink_usb_trace_disable(void *handle)
+ 
+ 	assert(handle != NULL);
+ 
+-	assert(h->version.jtag >= STLINK_TRACE_MIN_VERSION);
++	assert(h->version.jtag >= STLINK_TRACE_MIN_VERSION || h->jtag_api == STLINK_JTAG_API_V3);
+ 
+ 	LOG_DEBUG("Tracing: disable");
+ 
+@@ -1362,7 +1588,7 @@ static int stlink_usb_trace_enable(void *handle)
+ 
+ 	assert(handle != NULL);
+ 
+-	if (h->version.jtag >= STLINK_TRACE_MIN_VERSION) {
++	if (h->version.jtag >= STLINK_TRACE_MIN_VERSION || h->jtag_api == STLINK_JTAG_API_V3) {
+ 		stlink_usb_init_buffer(handle, h->rx_ep, 10);
+ 
+ 		h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_COMMAND;
+@@ -1426,7 +1652,7 @@ static int stlink_usb_run(void *handle)
+ 
+ 	assert(handle != NULL);
+ 
+-	if (h->jtag_api == STLINK_JTAG_API_V2) {
++	if (h->jtag_api == STLINK_JTAG_API_V2 || h->jtag_api == STLINK_JTAG_API_V3) {
+ 		res = stlink_usb_write_debug_reg(handle, DCB_DHCSR, DBGKEY|C_DEBUGEN);
+ 
+ 		return res;
+@@ -1448,7 +1674,7 @@ static int stlink_usb_halt(void *handle)
+ 
+ 	assert(handle != NULL);
+ 
+-	if (h->jtag_api == STLINK_JTAG_API_V2) {
++	if (h->jtag_api == STLINK_JTAG_API_V2 || h->jtag_api == STLINK_JTAG_API_V3) {
+ 		res = stlink_usb_write_debug_reg(handle, DCB_DHCSR, DBGKEY|C_HALT|C_DEBUGEN);
+ 
+ 		return res;
+@@ -1469,7 +1695,7 @@ static int stlink_usb_step(void *handle)
+ 
+ 	assert(handle != NULL);
+ 
+-	if (h->jtag_api == STLINK_JTAG_API_V2) {
++	if (h->jtag_api == STLINK_JTAG_API_V2 || h->jtag_api == STLINK_JTAG_API_V3) {
+ 		/* TODO: this emulates the v1 api, it should really use a similar auto mask isr
+ 		 * that the Cortex-M3 currently does. */
+ 		stlink_usb_write_debug_reg(handle, DCB_DHCSR, DBGKEY|C_HALT|C_MASKINTS|C_DEBUGEN);
+@@ -1501,6 +1727,9 @@ static int stlink_usb_read_regs(void *handle)
+ 	else
+ 		h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_APIV2_READALLREGS;
+ 
++	if (h->jtag_api >= STLINK_JTAG_API_V2 || h->jtag_api == STLINK_JTAG_API_V3)
++		h->cmdbuf[h->cmdidx++] = HLA_DEFAULT_APNUN;
++
+ 	res = stlink_usb_xfer(handle, h->databuf, 84);
+ 
+ 	if (res != ERROR_OK)
+@@ -1526,6 +1755,9 @@ static int stlink_usb_read_reg(void *handle, int num, uint32_t *val)
+ 		h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_APIV2_READREG;
+ 	h->cmdbuf[h->cmdidx++] = num;
+ 
++	if ((h->jtag_api == STLINK_JTAG_API_V2 && h->version.jtag >= 28) || h->jtag_api == STLINK_JTAG_API_V3)
++		h->cmdbuf[h->cmdidx++] = HLA_DEFAULT_APNUN;
++
+ 	if (h->jtag_api == STLINK_JTAG_API_V1) {
+ 		res = stlink_usb_xfer(handle, h->databuf, 4);
+ 		if (res != ERROR_OK)
+@@ -1559,6 +1791,9 @@ static int stlink_usb_write_reg(void *handle, int num, uint32_t val)
+ 	h_u32_to_le(h->cmdbuf+h->cmdidx, val);
+ 	h->cmdidx += 4;
+ 
++	if ((h->jtag_api == STLINK_JTAG_API_V2 && h->version.jtag >= 28) || h->jtag_api == STLINK_JTAG_API_V3)
++		h->cmdbuf[h->cmdidx++] = HLA_DEFAULT_APNUN;
++
+ 	return stlink_cmd_allow_retry(handle, h->databuf, 2);
+ }
+ 
+@@ -1572,12 +1807,20 @@ static int stlink_usb_get_rw_status(void *handle)
+ 	if (h->jtag_api == STLINK_JTAG_API_V1)
+ 		return ERROR_OK;
+ 
+-	stlink_usb_init_buffer(handle, h->rx_ep, 2);
++	stlink_usb_init_buffer(handle, h->rx_ep, 3);
+ 
+ 	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_COMMAND;
+-	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_APIV2_GETLASTRWSTATUS;
+-
+-	res = stlink_usb_xfer(handle, h->databuf, 2);
++	/* FIXME: this is incorrect */
++	if (h->jtag_api == STLINK_JTAG_API_V3) {
++		h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_APIV3_GETLASTRWSTATUS;
++		h->cmdbuf[h->cmdidx++] = HLA_DEFAULT_APNUN;
++		res = stlink_usb_xfer(handle, h->databuf, 12);
++	} else {
++		h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_APIV2_GETLASTRWSTATUS;
++		if (h->version.jtag >= 28)
++			h->cmdbuf[h->cmdidx++] = HLA_DEFAULT_APNUN;
++		res = stlink_usb_xfer(handle, h->databuf, 2);
++	}
+ 
+ 	if (res != ERROR_OK)
+ 		return res;
+@@ -1586,7 +1829,7 @@ static int stlink_usb_get_rw_status(void *handle)
+ }
+ 
+ /** */
+-static int stlink_usb_read_mem8(void *handle, uint32_t addr, uint16_t len,
++static int stlink_usb_read_mem8(void *handle, uint8_t ap_num, uint32_t addr, uint16_t len,
+ 			  uint8_t *buffer)
+ {
+ 	int res;
+@@ -1595,9 +1838,9 @@ static int stlink_usb_read_mem8(void *handle, uint32_t addr, uint16_t len,
+ 
+ 	assert(handle != NULL);
+ 
+-	/* max 8bit read/write is 64bytes */
+-	if (len > STLINK_MAX_RW8) {
+-		LOG_DEBUG("max buffer length exceeded");
++	/* max 8 bit read/write is 64 bytes or 512 bytes for v3 */
++	if (len > stlink_usb_block(h)) {
++		LOG_DEBUG("max buffer (%d) length exceeded", stlink_usb_block(h));
+ 		return ERROR_FAIL;
+ 	}
+ 
+@@ -1609,6 +1852,7 @@ static int stlink_usb_read_mem8(void *handle, uint32_t addr, uint16_t len,
+ 	h->cmdidx += 4;
+ 	h_u16_to_le(h->cmdbuf+h->cmdidx, len);
+ 	h->cmdidx += 2;
++	h->cmdbuf[h->cmdidx++] = ap_num;
+ 
+ 	/* we need to fix read length for single bytes */
+ 	if (read_len == 1)
+@@ -1625,7 +1869,7 @@ static int stlink_usb_read_mem8(void *handle, uint32_t addr, uint16_t len,
+ }
+ 
+ /** */
+-static int stlink_usb_write_mem8(void *handle, uint32_t addr, uint16_t len,
++static int stlink_usb_write_mem8(void *handle, uint8_t ap_num, uint32_t addr, uint16_t len,
+ 			   const uint8_t *buffer)
+ {
+ 	int res;
+@@ -1633,9 +1877,9 @@ static int stlink_usb_write_mem8(void *handle, uint32_t addr, uint16_t len,
+ 
+ 	assert(handle != NULL);
+ 
+-	/* max 8bit read/write is 64bytes */
+-	if (len > STLINK_MAX_RW8) {
+-		LOG_DEBUG("max buffer length exceeded");
++	/* max 8 bit read/write is 64 bytes or 512 bytes for v3 */
++	if (len > stlink_usb_block(h)) {
++		LOG_DEBUG("max buffer length (%d) exceeded", stlink_usb_block(h));
+ 		return ERROR_FAIL;
+ 	}
+ 
+@@ -1647,6 +1891,7 @@ static int stlink_usb_write_mem8(void *handle, uint32_t addr, uint16_t len,
+ 	h->cmdidx += 4;
+ 	h_u16_to_le(h->cmdbuf+h->cmdidx, len);
+ 	h->cmdidx += 2;
++	h->cmdbuf[h->cmdidx++] = ap_num;
+ 
+ 	res = stlink_usb_xfer(handle, buffer, len);
+ 
+@@ -1657,7 +1902,7 @@ static int stlink_usb_write_mem8(void *handle, uint32_t addr, uint16_t len,
+ }
+ 
+ /** */
+-static int stlink_usb_read_mem32(void *handle, uint32_t addr, uint16_t len,
++static int stlink_usb_read_mem32(void *handle, uint8_t ap_num, uint32_t addr, uint16_t len,
+ 			  uint8_t *buffer)
+ {
+ 	int res;
+@@ -1679,6 +1924,7 @@ static int stlink_usb_read_mem32(void *handle, uint32_t addr, uint16_t len,
+ 	h->cmdidx += 4;
+ 	h_u16_to_le(h->cmdbuf+h->cmdidx, len);
+ 	h->cmdidx += 2;
++	h->cmdbuf[h->cmdidx++] = ap_num;
+ 
+ 	res = stlink_usb_xfer(handle, h->databuf, len);
+ 
+@@ -1691,7 +1937,7 @@ static int stlink_usb_read_mem32(void *handle, uint32_t addr, uint16_t len,
+ }
+ 
+ /** */
+-static int stlink_usb_write_mem32(void *handle, uint32_t addr, uint16_t len,
++static int stlink_usb_write_mem32(void *handle, uint8_t ap_num, uint32_t addr, uint16_t len,
+ 			   const uint8_t *buffer)
+ {
+ 	int res;
+@@ -1713,6 +1959,75 @@ static int stlink_usb_write_mem32(void *handle, uint32_t addr, uint16_t len,
+ 	h->cmdidx += 4;
+ 	h_u16_to_le(h->cmdbuf+h->cmdidx, len);
+ 	h->cmdidx += 2;
++	h->cmdbuf[h->cmdidx++] = ap_num;
++
++	res = stlink_usb_xfer(handle, buffer, len);
++
++	if (res != ERROR_OK)
++		return res;
++
++	return stlink_usb_get_rw_status(handle);
++}
++
++/** */
++static int stlink_usb_read_mem32_noaddrinc(void *handle, uint8_t ap_num, uint32_t addr, uint16_t len,
++			  uint8_t *buffer)
++{
++	int res;
++	struct stlink_usb_handle_s *h = handle;
++
++	assert(handle != NULL);
++
++	/* data must be a multiple of 4 and word aligned */
++	if (len % 4 || addr % 4) {
++		LOG_DEBUG("Invalid data alignment");
++		return ERROR_TARGET_UNALIGNED_ACCESS;
++	}
++
++	stlink_usb_init_buffer(handle, h->rx_ep, len);
++
++	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_COMMAND;
++	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_READMEM_32BIT_NO_ADDR_INC;
++	h_u32_to_le(h->cmdbuf+h->cmdidx, addr);
++	h->cmdidx += 4;
++	h_u16_to_le(h->cmdbuf+h->cmdidx, len);
++	h->cmdidx += 2;
++	h->cmdbuf[h->cmdidx++] = ap_num;
++
++	res = stlink_usb_xfer(handle, h->databuf, len);
++
++	if (res != ERROR_OK)
++		return res;
++
++	memcpy(buffer, h->databuf, len);
++
++	return stlink_usb_get_rw_status(handle);
++}
++
++/** */
++static int stlink_usb_write_mem32_noaddrinc(void *handle, uint8_t ap_num, uint32_t addr, uint16_t len,
++			   const uint8_t *buffer)
++{
++	int res;
++	struct stlink_usb_handle_s *h = handle;
++
++	assert(handle != NULL);
++
++	/* data must be a multiple of 4 and word aligned */
++	if (len % 4 || addr % 4) {
++		LOG_DEBUG("Invalid data alignment");
++		return ERROR_TARGET_UNALIGNED_ACCESS;
++	}
++
++	stlink_usb_init_buffer(handle, h->tx_ep, len);
++
++	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_COMMAND;
++	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_WRITEMEM_32BIT_NO_ADDR_INC;
++	h_u32_to_le(h->cmdbuf+h->cmdidx, addr);
++	h->cmdidx += 4;
++	h_u16_to_le(h->cmdbuf+h->cmdidx, len);
++	h->cmdidx += 2;
++	h->cmdbuf[h->cmdidx++] = ap_num;
+ 
+ 	res = stlink_usb_xfer(handle, buffer, len);
+ 
+@@ -1730,7 +2045,7 @@ static uint32_t stlink_max_block_size(uint32_t tar_autoincr_block, uint32_t addr
+ 	return max_tar_block;
+ }
+ 
+-static int stlink_usb_read_mem(void *handle, uint32_t addr, uint32_t size,
++static int stlink_usb_read_ap_mem(void *handle, uint8_t ap_num, uint32_t addr, uint32_t size,
+ 		uint32_t count, uint8_t *buffer)
+ {
+ 	int retval = ERROR_OK;
+@@ -1744,7 +2059,7 @@ static int stlink_usb_read_mem(void *handle, uint32_t addr, uint32_t size,
+ 	while (count) {
+ 
+ 		bytes_remaining = (size == 4) ? \
+-				stlink_max_block_size(h->max_mem_packet, addr) : STLINK_MAX_RW8;
++				stlink_max_block_size(h->max_mem_packet, addr) : stlink_usb_block(h);
+ 
+ 		if (count < bytes_remaining)
+ 			bytes_remaining = count;
+@@ -1770,7 +2085,7 @@ static int stlink_usb_read_mem(void *handle, uint32_t addr, uint32_t size,
+ 			if (addr % 4) {
+ 
+ 				uint32_t head_bytes = 4 - (addr % 4);
+-				retval = stlink_usb_read_mem8(handle, addr, head_bytes, buffer);
++				retval = stlink_usb_read_mem8(handle, ap_num, addr, head_bytes, buffer);
+ 				if (retval == ERROR_WAIT && retries < MAX_WAIT_RETRIES) {
+ 					usleep((1<<retries++) * 1000);
+ 					continue;
+@@ -1784,11 +2099,11 @@ static int stlink_usb_read_mem(void *handle, uint32_t addr, uint32_t size,
+ 			}
+ 
+ 			if (bytes_remaining % 4)
+-				retval = stlink_usb_read_mem(handle, addr, 1, bytes_remaining, buffer);
++				retval = stlink_usb_read_ap_mem(handle, ap_num, addr, 1, bytes_remaining, buffer);
+ 			else
+-				retval = stlink_usb_read_mem32(handle, addr, bytes_remaining, buffer);
++				retval = stlink_usb_read_mem32(handle, ap_num, addr, bytes_remaining, buffer);
+ 		} else
+-			retval = stlink_usb_read_mem8(handle, addr, bytes_remaining, buffer);
++			retval = stlink_usb_read_mem8(handle, ap_num, addr, bytes_remaining, buffer);
+ 
+ 		if (retval == ERROR_WAIT && retries < MAX_WAIT_RETRIES) {
+ 			usleep((1<<retries++) * 1000);
+@@ -1805,7 +2120,13 @@ static int stlink_usb_read_mem(void *handle, uint32_t addr, uint32_t size,
+ 	return retval;
+ }
+ 
+-static int stlink_usb_write_mem(void *handle, uint32_t addr, uint32_t size,
++static int stlink_usb_read_mem(void *handle, uint32_t addr, uint32_t size,
++		uint32_t count, uint8_t *buffer)
++{
++	return stlink_usb_read_ap_mem(handle, HLA_DEFAULT_APNUN, addr, size, count, buffer);
++}
++
++static int stlink_usb_write_ap_mem(void *handle, uint8_t ap_num, uint32_t addr, uint32_t size,
+ 		uint32_t count, const uint8_t *buffer)
+ {
+ 	int retval = ERROR_OK;
+@@ -1819,7 +2140,7 @@ static int stlink_usb_write_mem(void *handle, uint32_t addr, uint32_t size,
+ 	while (count) {
+ 
+ 		bytes_remaining = (size == 4) ? \
+-				stlink_max_block_size(h->max_mem_packet, addr) : STLINK_MAX_RW8;
++				stlink_max_block_size(h->max_mem_packet, addr) : stlink_usb_block(h);
+ 
+ 		if (count < bytes_remaining)
+ 			bytes_remaining = count;
+@@ -1845,7 +2166,7 @@ static int stlink_usb_write_mem(void *handle, uint32_t addr, uint32_t size,
+ 			if (addr % 4) {
+ 
+ 				uint32_t head_bytes = 4 - (addr % 4);
+-				retval = stlink_usb_write_mem8(handle, addr, head_bytes, buffer);
++				retval = stlink_usb_write_mem8(handle, ap_num, addr, head_bytes, buffer);
+ 				if (retval == ERROR_WAIT && retries < MAX_WAIT_RETRIES) {
+ 					usleep((1<<retries++) * 1000);
+ 					continue;
+@@ -1859,12 +2180,12 @@ static int stlink_usb_write_mem(void *handle, uint32_t addr, uint32_t size,
+ 			}
+ 
+ 			if (bytes_remaining % 4)
+-				retval = stlink_usb_write_mem(handle, addr, 1, bytes_remaining, buffer);
++				retval = stlink_usb_write_ap_mem(handle, ap_num, addr, 1, bytes_remaining, buffer);
+ 			else
+-				retval = stlink_usb_write_mem32(handle, addr, bytes_remaining, buffer);
++				retval = stlink_usb_write_mem32(handle, ap_num, addr, bytes_remaining, buffer);
+ 
+ 		} else
+-			retval = stlink_usb_write_mem8(handle, addr, bytes_remaining, buffer);
++			retval = stlink_usb_write_mem8(handle, ap_num, addr, bytes_remaining, buffer);
+ 		if (retval == ERROR_WAIT && retries < MAX_WAIT_RETRIES) {
+ 			usleep((1<<retries++) * 1000);
+ 			continue;
+@@ -1880,60 +2201,65 @@ static int stlink_usb_write_mem(void *handle, uint32_t addr, uint32_t size,
+ 	return retval;
+ }
+ 
++static int stlink_usb_write_mem(void *handle, uint32_t addr, uint32_t size,
++        uint32_t count, const uint8_t *buffer)
++{
++	return stlink_usb_write_ap_mem(handle, HLA_DEFAULT_APNUN, addr, size, count, buffer);
++}
++
+ /** */
+ static int stlink_usb_override_target(const char *targetname)
+ {
+ 	return !strcmp(targetname, "cortex_m");
+ }
+ 
+-static int stlink_speed(void *handle, int khz, bool query)
++static int stlink_speed_swim(void *handle, int khz, bool query)
+ {
+-	unsigned i;
+-	int speed_index = -1;
+-	int speed_diff = INT_MAX;
+-	struct stlink_usb_handle_s *h = handle;
+-
+-	if (h && (h->transport == HL_TRANSPORT_SWIM)) {
+-		/*
++	/*
+ 			we dont care what the khz rate is
+ 			we only have low and high speed...
+ 			before changing speed the SWIM_CSR HS bit
+ 			must be updated
+-		 */
+-		if (khz == 0)
+-			stlink_swim_speed(handle, 0);
+-		else
+-			stlink_swim_speed(handle, 1);
+-		return khz;
+-	}
++	 */
++	if (khz == 0)
++		stlink_swim_speed(handle, 0);
++	else
++		stlink_swim_speed(handle, 1);
++	return khz;
++}
+ 
+-	/* only supported by stlink/v2 and for firmware >= 22 */
+-	if (h && (h->version.stlink == 1 || h->version.jtag < 22))
+-		return khz;
++static int stlink_match_speed_map(const struct speed_map *map, unsigned int map_size, int khz, bool query)
++{
++	unsigned int i;
++	int speed_index = -1;
++	int speed_diff = INT_MAX;
++	int last_valid_speed = -1;
++	bool match = true;
+ 
+-	for (i = 0; i < ARRAY_SIZE(stlink_khz_to_speed_map); i++) {
+-		if (khz == stlink_khz_to_speed_map[i].speed) {
++	for (i = 0; i < map_size; i++) {
++		if (!map[i].speed)
++			continue;
++		last_valid_speed = i;
++		if (khz == map[i].speed) {
+ 			speed_index = i;
+ 			break;
+ 		} else {
+-			int current_diff = khz - stlink_khz_to_speed_map[i].speed;
++			int current_diff = khz - map[i].speed;
+ 			/* get abs value for comparison */
+ 			current_diff = (current_diff > 0) ? current_diff : -current_diff;
+-			if ((current_diff < speed_diff) && khz >= stlink_khz_to_speed_map[i].speed) {
++			if ((current_diff < speed_diff) && khz >= map[i].speed) {
+ 				speed_diff = current_diff;
+ 				speed_index = i;
+ 			}
+ 		}
+ 	}
+ 
+-	bool match = true;
+-
+ 	if (speed_index == -1) {
+ 		/* this will only be here if we cannot match the slow speed.
+ 		 * use the slowest speed we support.*/
+-		speed_index = ARRAY_SIZE(stlink_khz_to_speed_map) - 1;
++		speed_index = last_valid_speed;
+ 		match = false;
+-	} else if (i == ARRAY_SIZE(stlink_khz_to_speed_map))
++	} else if (i == map_size)
+ 		match = false;
+ 
+ 	if (!match && query) {
+@@ -1941,7 +2267,22 @@ static int stlink_speed(void *handle, int khz, bool query)
+ 				khz, stlink_khz_to_speed_map[speed_index].speed);
+ 	}
+ 
+-	if (h && !query) {
++	return speed_index;
++}
++
++static int stlink_speed_swd(void *handle, int khz, bool query)
++{
++	int speed_index;
++	struct stlink_usb_handle_s *h = handle;
++
++	/* only supported by stlink/v2 and for firmware >= 22 */
++	if (h->version.stlink == 1 || h->version.jtag < 22)
++		return khz;
++
++	speed_index = stlink_match_speed_map(stlink_khz_to_speed_map,
++		ARRAY_SIZE(stlink_khz_to_speed_map), khz, query);
++
++	if (!query) {
+ 		int result = stlink_usb_set_swdclk(h, stlink_khz_to_speed_map[speed_index].speed_divisor);
+ 		if (result != ERROR_OK) {
+ 			LOG_ERROR("Unable to set adapter speed");
+@@ -1952,62 +2293,157 @@ static int stlink_speed(void *handle, int khz, bool query)
+ 	return stlink_khz_to_speed_map[speed_index].speed;
+ }
+ 
+-/** */
+-static int stlink_usb_close(void *handle)
++static int stlink_speed_jtag(void *handle, int khz, bool query)
+ {
+-	int res;
+-	uint8_t mode;
+-	enum stlink_mode emode;
++	int speed_index;
+ 	struct stlink_usb_handle_s *h = handle;
+ 
+-	if (h && h->fd)
+-		res = stlink_usb_current_mode(handle, &mode);
+-	else
+-		res = ERROR_FAIL;
+-	/* do not exit if return code != ERROR_OK,
+-	   it prevents us from closing jtag_libusb */
+-
+-	if (res == ERROR_OK) {
+-		/* try to exit current mode */
+-		switch (mode) {
+-			case STLINK_DEV_DFU_MODE:
+-				emode = STLINK_MODE_DFU;
+-				break;
+-			case STLINK_DEV_DEBUG_MODE:
+-				emode = STLINK_MODE_DEBUG_SWD;
+-				break;
+-			case STLINK_DEV_SWIM_MODE:
+-				emode = STLINK_MODE_DEBUG_SWIM;
+-				break;
+-			case STLINK_DEV_BOOTLOADER_MODE:
+-			case STLINK_DEV_MASS_MODE:
+-			default:
+-				emode = STLINK_MODE_UNKNOWN;
+-				break;
+-		}
++	/* only supported by stlink/v2 and for firmware >= 24 */
++	if (h->version.stlink == 1 || h->version.jtag < 24)
++		return khz;
+ 
+-		if (emode != STLINK_MODE_UNKNOWN)
+-			stlink_usb_mode_leave(handle, emode);
+-			/* do not check return code, it prevent
+-			us from closing jtag_libusb */
++	speed_index = stlink_match_speed_map(stlink_khz_to_speed_map_jtag,
++		ARRAY_SIZE(stlink_khz_to_speed_map_jtag), khz, query);
++
++	if (!query) {
++		int result = stlink_usb_set_jtagclk(h, stlink_khz_to_speed_map_jtag[speed_index].speed_divisor);
++		if (result != ERROR_OK) {
++			LOG_ERROR("Unable to set adapter speed");
++			return khz;
++		}
+ 	}
+ 
+-	if (h && h->fd)
+-		jtag_libusb_close(h->fd);
++	return stlink_khz_to_speed_map_jtag[speed_index].speed;
++}
+ 
+-	free(h);
++void stlink_dump_speed_map(const struct speed_map *map, unsigned int map_size)
++{
++	unsigned int i;
+ 
+-	return ERROR_OK;
++	LOG_DEBUG("Supported clock speeds are:");
++	for (i = 0; i < map_size; i++)
++		if (map[i].speed)
++			LOG_DEBUG("%d kHz", map[i].speed);
+ }
+ 
+-/** */
+-static int stlink_usb_open(struct hl_interface_param_s *param, void **fd)
++static int stlink_get_com_freq(void *handle, bool is_jtag, struct speed_map *map)
+ {
+-	int err, retry_count = 1;
+-	struct stlink_usb_handle_s *h;
+-	enum stlink_jtag_api_version api;
++	struct stlink_usb_handle_s *h = handle;
++	int i;
+ 
+-	LOG_DEBUG("stlink_usb_open");
++	if (h->version.stlink < 3) {
++		LOG_ERROR("Unknown command");
++		return 0;
++	}
++
++	stlink_usb_init_buffer(handle, h->rx_ep, 16);
++
++	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_COMMAND;
++	h->cmdbuf[h->cmdidx++] = STLINK_APIV3_GET_COM_FREQ;
++	h->cmdbuf[h->cmdidx++] = is_jtag ? 1 : 0;
++
++	int res = stlink_usb_xfer(handle, h->databuf, 52);
++
++	int size = h->databuf[8];
++
++	if (size > STLINK_V3_MAX_FREQ_NB)
++		size = STLINK_V3_MAX_FREQ_NB;
++
++	for (i = 0; i < size; i++) {
++		map[i].speed = le_to_h_u32(&h->databuf[12 + 4 * i]);
++		map[i].speed_divisor = i;
++	}
++
++	/* set to zero all the next entries */
++	for (i = size; i < STLINK_V3_MAX_FREQ_NB; i++)
++		map[i].speed = 0;
++
++	return res;
++}
++
++static int stlink_set_com_freq(void *handle, bool is_jtag, unsigned int frequency)
++{
++	struct stlink_usb_handle_s *h = handle;
++
++	if (h->version.stlink < 3) {
++		LOG_ERROR("Unknown command");
++		return 0;
++	}
++
++	stlink_usb_init_buffer(handle, h->rx_ep, 16);
++
++	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_COMMAND;
++	h->cmdbuf[h->cmdidx++] = STLINK_APIV3_SET_COM_FREQ;
++	h->cmdbuf[h->cmdidx++] = is_jtag ? 1 : 0;
++	h->cmdbuf[h->cmdidx++] = 0;
++
++	h_u32_to_le(&h->cmdbuf[4], frequency);
++
++	return stlink_usb_xfer(handle, h->databuf, 8);
++}
++
++static int stlink_speed_v3(void *handle, int khz, bool query)
++{
++	struct stlink_usb_handle_s *h = handle;
++	int speed_index;
++	struct speed_map map[STLINK_V3_MAX_FREQ_NB];
++
++	stlink_get_com_freq(h, (h->transport == HL_TRANSPORT_JTAG), map);
++
++	speed_index = stlink_match_speed_map(map, ARRAY_SIZE(map), khz, query);
++
++	if (!query) {
++		int result = stlink_set_com_freq(h, (h->transport == HL_TRANSPORT_JTAG), map[speed_index].speed);
++		if (result != ERROR_OK) {
++			LOG_ERROR("Unable to set adapter speed");
++			return khz;
++		}
++	}
++	return map[speed_index].speed;
++}
++
++static int stlink_speed(void *handle, int khz, bool query)
++{
++	struct stlink_usb_handle_s *h = handle;
++
++	if (!handle)
++		return khz;
++
++	if (h->transport == HL_TRANSPORT_SWIM)
++		return stlink_speed_swim(handle, khz, query);
++	else if (h->version.stlink == 3)
++		return stlink_speed_v3(handle, khz, query);
++	else if (h->transport == HL_TRANSPORT_SWD)
++		return stlink_speed_swd(handle, khz, query);
++	else if (h->transport == HL_TRANSPORT_JTAG)
++		return stlink_speed_jtag(handle, khz, query);
++
++	return khz;
++}
++
++/** */
++static int stlink_usb_close(void *handle)
++{
++	struct stlink_usb_handle_s *h = handle;
++
++	if (h && h->fd) {
++		stlink_exit_mode(h);
++		jtag_libusb_close(h->fd);
++	}
++
++	free(h);
++
++	return ERROR_OK;
++}
++
++/** */
++static int stlink_usb_open(struct hl_interface_param_s *param, void **fd)
++{
++	int err, retry_count = 1;
++	struct stlink_usb_handle_s *h;
++	enum stlink_jtag_api_version api;
++
++	LOG_DEBUG("stlink_usb_open");
+ 
+ 	h = calloc(1, sizeof(struct stlink_usb_handle_s));
+ 
+@@ -2062,7 +2498,16 @@ static int stlink_usb_open(struct hl_interface_param_s *param, void **fd)
+ 				h->tx_ep = STLINK_TX_EP;
+ 				h->trace_ep = STLINK_TRACE_EP;
+ 				break;
++			case STLINK_V3_DFU_PID:
++			case STLINK_V3E_PID:
++			case STLINK_V3S_PID:
++			case STLINK_V3_2VCP_PID:
++				h->version.stlink = 3;
++				h->tx_ep = STLINK_V2_1_TX_EP;
++				h->trace_ep = STLINK_V2_1_TRACE_EP;
++				break;
+ 			case STLINK_V2_1_PID:
++			case STLINK_V2_1_NO_MSD_PID:
+ 				h->version.stlink = 2;
+ 				h->tx_ep = STLINK_V2_1_TX_EP;
+ 				h->trace_ep = STLINK_V2_1_TRACE_EP;
+@@ -2075,6 +2520,7 @@ static int stlink_usb_open(struct hl_interface_param_s *param, void **fd)
+ 				h->trace_ep = STLINK_TRACE_EP;
+ 				break;
+ 		}
++		h->pid = pid;
+ 
+ 		/* get the device version */
+ 		err = stlink_usb_version(h);
+@@ -2157,13 +2603,25 @@ static int stlink_usb_open(struct hl_interface_param_s *param, void **fd)
+ 		return ERROR_OK;
+ 	}
+ 
+-	/* clock speed only supported by stlink/v2 and for firmware >= 22 */
+-	if (h->version.stlink >= 2 && h->version.jtag >= 22) {
+-		LOG_DEBUG("Supported clock speeds are:");
++	if (h->transport == HL_TRANSPORT_JTAG) {
++		/* jtag clock speed only supported by stlink/v2 and for firmware >= 24 */
++		if (h->version.stlink == 2 && h->version.jtag >= 24) {
++			stlink_dump_speed_map(stlink_khz_to_speed_map_jtag, ARRAY_SIZE(stlink_khz_to_speed_map_jtag));
++			stlink_speed(h, param->initial_interface_speed, false);
++		}
++	} else if (h->transport == HL_TRANSPORT_SWD) {
++		/* clock speed only supported by stlink/v2 and for firmware >= 22 */
++		if (h->version.stlink == 2 && h->version.jtag >= 22) {
++			stlink_dump_speed_map(stlink_khz_to_speed_map, ARRAY_SIZE(stlink_khz_to_speed_map));
++			stlink_speed(h, param->initial_interface_speed, false);
++		}
++	}
+ 
+-		for (unsigned i = 0; i < ARRAY_SIZE(stlink_khz_to_speed_map); i++)
+-			LOG_DEBUG("%d kHz", stlink_khz_to_speed_map[i].speed);
++	if (h->version.stlink == 3) {
++		struct speed_map map[STLINK_V3_MAX_FREQ_NB];
+ 
++		stlink_get_com_freq(h, (h->transport == HL_TRANSPORT_JTAG), map);
++		stlink_dump_speed_map(map, ARRAY_SIZE(map));
+ 		stlink_speed(h, param->initial_interface_speed, false);
+ 	}
+ 
+@@ -2171,8 +2629,9 @@ static int stlink_usb_open(struct hl_interface_param_s *param, void **fd)
+ 	 * start with a safe default */
+ 	h->max_mem_packet = (1 << 10);
+ 
++#if 0
+ 	uint8_t buffer[4];
+-	err = stlink_usb_read_mem32(h, CPUID, 4, buffer);
++	err = stlink_usb_read_mem32(h, 0, CPUID, 4, buffer);
+ 	if (err == ERROR_OK) {
+ 		uint32_t cpuid = le_to_h_u32(buffer);
+ 		int i = (cpuid >> 4) & 0xf;
+@@ -2181,6 +2640,7 @@ static int stlink_usb_open(struct hl_interface_param_s *param, void **fd)
+ 			h->max_mem_packet = (1 << 12);
+ 		}
+ 	}
++#endif
+ 
+ 	LOG_DEBUG("Using TAR autoincrement: %" PRIu32, h->max_mem_packet);
+ 
+@@ -2226,6 +2686,122 @@ int stlink_config_trace(void *handle, bool enabled, enum tpiu_pin_protocol pin_p
+ }
+ 
+ /** */
++static int stlink_usb_init_access_point(void *handle,
++		unsigned char access_point_id, unsigned char resource)
++{
++	struct stlink_usb_handle_s *h = handle;
++
++	assert(handle != NULL);
++
++	/* only required by stlink/v2 and for firmware >= 28 */
++	if (h->version.stlink == 1 || (h->version.stlink == 2 && h->version.jtag < 28))
++		return ERROR_OK;
++
++	LOG_DEBUG_IO("init apnum = %d, resource %d", access_point_id, resource);
++	stlink_usb_init_buffer(handle, h->rx_ep, 16);
++	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_COMMAND;
++	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_APIV2_INIT_AP;
++	h->cmdbuf[h->cmdidx++] = access_point_id;
++	h->cmdbuf[h->cmdidx++] = resource;
++	h_u32_to_le(&h->cmdbuf[12], 0);
++
++	return stlink_usb_xfer(handle, h->databuf, 2);
++}
++
++/** */
++static int stlink_usb_close_access_point(void *handle,
++		unsigned char access_point_id)
++{
++	struct stlink_usb_handle_s *h = handle;
++
++	assert(handle != NULL);
++
++	/* only required by stlink/v2 and for firmware >= 28 */
++	if (h->version.stlink == 1 || (h->version.stlink == 2 && h->version.jtag < 28))
++		return ERROR_OK;
++
++	LOG_DEBUG_IO("close apnum = %d", access_point_id);
++	stlink_usb_init_buffer(handle, h->rx_ep, 16);
++	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_COMMAND;
++	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_APIV2_CLOSE_AP_DBG;
++	h->cmdbuf[h->cmdidx++] = access_point_id;
++	h_u32_to_le(&h->cmdbuf[12], 0);
++
++	return stlink_usb_xfer(handle, h->databuf, 2);
++}
++
++/** */
++static int stlink_internal_read_dap_register(void *handle, unsigned short dap_port,
++			unsigned short addr, uint32_t *val)
++{
++	struct stlink_usb_handle_s *h = handle;
++	int retval;
++
++	stlink_usb_init_buffer(handle, h->rx_ep, 16);
++	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_COMMAND;
++	h->cmdbuf[h->cmdidx++] = STLINK_JTAG_READ_DAP_REG;
++	h_u16_to_le(&h->cmdbuf[2], dap_port);
++	h_u16_to_le(&h->cmdbuf[4], addr);
++	h_u32_to_le(&h->cmdbuf[12], 0);
++
++	retval = stlink_usb_xfer(handle, h->databuf, 8);
++	*val = le_to_h_u32(h->databuf + 4);
++	return retval;
++}
++
++#define STLINK_DEBUG_PORT 0xffff
++static int stlink_read_dap_register(void *handle, unsigned short dap_port,
++			unsigned short addr, uint32_t *val)
++{
++	struct stlink_usb_handle_s *h = handle;
++	int retval;
++	uint32_t dummy;
++
++	assert(handle != NULL);
++
++	/* only supported by stlink/v2 and for firmware >= 24 */
++	if (h->version.stlink == 1 || (h->version.stlink == 2 && h->version.jtag < 24))
++		return ERROR_COMMAND_NOTFOUND;
++
++	if (h->transport == HL_TRANSPORT_JTAG && dap_port == STLINK_DEBUG_PORT
++		&& h->version.stlink == 2 && h->version.jtag < 32) {
++		/* workaround for V2J24 ~ V2J31 */
++		retval = stlink_internal_read_dap_register(handle, STLINK_DEBUG_PORT, addr, &dummy);
++		if (retval != ERROR_OK)
++			return retval;
++		retval = stlink_internal_read_dap_register(handle, STLINK_DEBUG_PORT, DP_RDBUFF, val);
++	} else {
++		retval = stlink_internal_read_dap_register(handle, dap_port, addr, val);
++	}
++
++	LOG_DEBUG_IO("dap_port_read = %d, addr =  0x%x, value = 0x%x", dap_port, addr, *val);
++	return retval;
++}
++
++/** */
++static int stlink_write_dap_register(void *handle, unsigned short dap_port,
++			unsigned short addr, uint32_t val)
++{
++	struct stlink_usb_handle_s *h = handle;
++
++	assert(handle != NULL);
++
++	/* only supported by stlink/v2 and for firmware >= 24 */
++	if (h->version.stlink == 1 || (h->version.stlink == 2 && h->version.jtag < 24))
++		return ERROR_COMMAND_NOTFOUND;
++
++	LOG_DEBUG_IO("dap_port_write = %d, addr = 0x%x, value = 0x%x", dap_port, addr, val);
++	stlink_usb_init_buffer(handle, h->rx_ep, 16);
++	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_COMMAND;
++	h->cmdbuf[h->cmdidx++] = STLINK_JTAG_WRITE_DAP_REG;
++	h_u16_to_le(&h->cmdbuf[2], dap_port);
++	h_u16_to_le(&h->cmdbuf[4], addr);
++	h_u32_to_le(&h->cmdbuf[6], val);
++	h_u32_to_le(&h->cmdbuf[12], 0);
++	return stlink_usb_xfer(handle, h->databuf, 2);
++}
++
++/** */
+ struct hl_layout_api_s stlink_usb_layout_api = {
+ 	/** */
+ 	.open = stlink_usb_open,
+@@ -2266,3 +2842,536 @@ struct hl_layout_api_s stlink_usb_layout_api = {
+ 	/** */
+ 	.poll_trace = stlink_usb_trace_read,
+ };
++
++/* Low-level interface */
++
++static struct stlink_usb_handle_s *stlink_dap_handle;
++static struct hl_interface_param_s stlink_dap_param = {
++	.transport = HL_TRANSPORT_JTAG,
++	.vid = {STLINK_VID,    STLINK_VID,    STLINK_VID,      STLINK_VID,             STLINK_VID,        STLINK_VID,     STLINK_VID,     STLINK_VID,         0},
++	.pid = {STLINK_V1_PID, STLINK_V2_PID, STLINK_V2_1_PID, STLINK_V2_1_NO_MSD_PID, STLINK_V3_DFU_PID, STLINK_V3E_PID, STLINK_V3S_PID, STLINK_V3_2VCP_PID, 0},
++};
++static DECLARE_BITMAP(opened_ap, DP_APSEL_MAX + 1);
++static uint8_t ap_csw_size_cached[DP_APSEL_MAX + 1];
++
++static int stlink_dap_open_ap(unsigned short apsel)
++{
++	int retval;
++
++	if (apsel > DP_APSEL_MAX)
++		return ERROR_OK;
++
++	if (test_bit(apsel, opened_ap))
++		return ERROR_OK;
++
++	retval = stlink_usb_init_access_point(stlink_dap_handle, apsel, 0);
++	if (retval != ERROR_OK)
++		return retval;
++
++	LOG_DEBUG("AP %d enabled", apsel);
++	set_bit(apsel, opened_ap);
++	return ERROR_OK;
++}
++
++static int stlink_dap_closeall_ap(void)
++{
++	int retval, apsel;
++
++	for (apsel = 0; apsel <= DP_APSEL_MAX; apsel++) {
++		if (!test_bit(apsel, opened_ap))
++			continue;
++		retval = stlink_usb_close_access_point(stlink_dap_handle, apsel);
++		if (retval != ERROR_OK)
++			return retval;
++		clear_bit(apsel, opened_ap);
++	}
++	return ERROR_OK;
++}
++
++int stlink_dap_dap_read(unsigned short dap_port, unsigned short addr, uint32_t *val)
++{
++	uint32_t dummy;
++	int retval;
++
++	/* Skip opening DAP if we are only scanning to look for an AP */
++	if (dap_port <= DP_APSEL_MAX && addr != AP_REG_IDR) {
++		retval = stlink_dap_open_ap(dap_port);
++		if (retval != ERROR_OK)
++			return retval;
++	}
++
++	if (!val)
++		val = &dummy;
++	return stlink_read_dap_register(stlink_dap_handle, dap_port, addr, val);
++}
++
++int stlink_dap_dap_write(unsigned short dap_port, unsigned short addr, uint32_t val)
++{
++	int retval;
++
++	retval = stlink_dap_open_ap(dap_port);
++	if (retval != ERROR_OK)
++		return retval;
++
++	return stlink_write_dap_register(stlink_dap_handle, dap_port, addr, val);
++}
++
++/*
++ * Workaround for setting CSW with ST-Link pre-versions V2J32 and V3J2.
++ * Before ST-Link versions above, high level API does not provide a method to
++ * set CSW. Same issue on every version of ST-Link V1. This forced us using
++ * the un-efficient low-level AP register API for every memory read/write.
++ *
++ * This workaround leverage the CSW caching operated by ST-Link. At every
++ * memory R/W, ST-Link computes the new CSW value based on word size. If it
++ * match the previous CSW value than it has wrote in CSW register, ST-Link
++ * will not write in CSW register again.
++ *
++ * Here we track the word size used in the last memory R/W. If it does not
++ * match with current word size, we first force ST-Link to update CSW register
++ * and its internal cache accordingly to the new size. Then we overwrite CSW
++ * register with the value we need.
++ * The following memory R/W will operate base on the new CSW and ST-Link will
++ * not change it.
++ */
++static int stlink_dap_set_csw(struct adiv5_ap *ap, uint32_t size, bool addrinc)
++{
++	uint32_t csw;
++	uint8_t dummy[4], ap_num;
++	int retval;
++
++	ap_num = ap->ap_num;
++
++	struct stlink_usb_handle_s *h = stlink_dap_handle;
++	if ((h->version.stlink == 2 && h->version.jtag >= 32) || (h->version.stlink == 3 && h->version.jtag >= 2)) {
++		csw = ap->csw_default;
++		if (csw != (ap->csw_value & ~(CSW_SIZE_MASK | CSW_ADDRINC_MASK))) {
++			retval = dap_queue_ap_write(ap, MEM_AP_REG_CSW, csw);
++			if (retval != ERROR_OK) {
++				ap->csw_value = 0;
++				return retval;
++			}
++			ap->csw_value = csw;
++		}
++		return ERROR_OK;
++	}
++
++	switch (size) {
++	case 2:
++		/* current implementation only use 8 and 32 bits */
++		size = 1;
++		/* fallthrough */
++	case 1:
++		csw = CSW_8BIT;
++		break;
++	case 4:
++	default:
++		/* ST-Link sets autoinc only in 32 bits mode */
++		/*
++		 * ARM IHI 0031D: Note:
++		 * It is IMPLEMENTATION DEFINED whether a MEM-AP supports transfer sizes other than Word. If a
++		 * MEM-AP only supports word transfers and Increment single is selected, the TAR always
++		 * increments by four after a successful DRW transaction.
++		 */
++		csw = addrinc ? (CSW_32BIT | CSW_ADDRINC_SINGLE) : CSW_32BIT;
++		break;
++	}
++	csw |= ap->csw_default;
++
++	if (ap_csw_size_cached[ap_num] != size) {
++		ap_csw_size_cached[ap_num] = size;
++
++		/* The mem read below will change CSW */
++		ap->csw_value = 0;
++		stlink_usb_read_ap_mem(stlink_dap_handle, ap_num, 0x00000000, size, 1, dummy);
++	}
++
++	if (ap->csw_value != csw) {
++		retval = dap_queue_ap_write(ap, MEM_AP_REG_CSW, csw);
++		if (retval != ERROR_OK) {
++			ap->csw_value = 0;
++			return retval;
++		}
++		ap->csw_value = csw;
++	}
++	return ERROR_OK;
++}
++
++static int stlink_dap_reset_csw(struct adiv5_ap *ap)
++{
++	uint32_t csw;
++	int retval;
++
++	csw = ap->csw_value;
++	if (csw & CSW_ADDRINC_SINGLE)
++		return ERROR_OK;
++
++	csw &= ~CSW_ADDRINC_SINGLE;
++	retval = dap_queue_ap_write(ap, MEM_AP_REG_CSW, csw);
++	if (retval != ERROR_OK)
++		return retval;
++	ap->csw_value = csw;
++	return ERROR_OK;
++}
++
++int stlink_dap_ap_mem_read(struct adiv5_ap *ap, uint8_t *buffer,
++	uint32_t size, uint32_t count, uint32_t address, bool addrinc)
++{
++	int retval;
++	uint8_t ap_num;
++	uint32_t partial;
++	int retries = 0;
++	uint32_t bytes_remaining;
++
++	if (!addrinc && size != 4)
++		return ERROR_OP_NOT_SUPPORTED;
++
++	struct stlink_usb_handle_s *h = stlink_dap_handle;
++	if (!addrinc && (h->version.stlink == 1 || (h->version.stlink == 2 && h->version.jtag < 24)))
++		return ERROR_OP_NOT_SUPPORTED;
++
++	ap_num = ap->ap_num;
++	retval = stlink_dap_open_ap(ap_num);
++	if (retval != ERROR_OK)
++		return retval;
++
++	if (size == 4 && address & 3) {
++		/* unaligned 32-bits read could be split in mix 32 & 8-bits. Force 8-bis only */
++		count *= 4;
++		size = 1;
++	}
++
++	/* here we do not track TAR, and next calls will change it */
++	ap->tar_valid = false;
++
++	retval = stlink_dap_set_csw(ap, size, addrinc);
++	if (retval != ERROR_OK)
++		return retval;
++
++	if (addrinc)
++		return stlink_usb_read_ap_mem(stlink_dap_handle, ap_num, address, size,
++			count, buffer);
++
++	/* !addrinc && size == 4 */
++
++	if ((h->version.stlink == 2 && h->version.jtag >= 32) || (h->version.stlink == 3 && h->version.jtag >= 2)) {
++		count *= 4;
++		while (count) {
++			bytes_remaining = stlink_usb_block(h);
++
++			if (count < bytes_remaining)
++				bytes_remaining = count;
++
++			retval = stlink_usb_read_mem32_noaddrinc(stlink_dap_handle, ap_num, address, bytes_remaining, buffer);
++			if (retval == ERROR_WAIT && retries < MAX_WAIT_RETRIES) {
++				usleep((1<<retries++) * 1000);
++				continue;
++			}
++			if (retval != ERROR_OK)
++				return retval;
++
++			retries = 0;
++			buffer += bytes_remaining;
++			count -= bytes_remaining;
++		}
++		return ERROR_OK;
++	}
++
++	/* workaround for V2J24..V2J31 and V3J1 */
++	partial = (TAR_AUTOINCR_BLOCK - (address & (TAR_AUTOINCR_BLOCK - 1))) / 4;
++	if (partial > stlink_usb_block(stlink_dap_handle) / 4)
++		partial = stlink_usb_block(stlink_dap_handle) / 4;
++	while (count) {
++		if (partial > count)
++			partial = count;
++		retval = stlink_usb_read_mem32(stlink_dap_handle, ap_num, address, 4 * partial, buffer);
++		if (retval == ERROR_WAIT && retries < MAX_WAIT_RETRIES) {
++			usleep((1<<retries++) * 1000);
++			continue;
++		}
++		if (retval != ERROR_OK)
++			return retval;
++		retries = 0;
++		count -= partial;
++		buffer += 4 * partial;
++	}
++	return stlink_dap_reset_csw(ap);
++}
++
++int stlink_dap_ap_mem_write(struct adiv5_ap *ap, const uint8_t *buffer,
++	uint32_t size, uint32_t count, uint32_t address, bool addrinc)
++{
++	int retval;
++	uint8_t ap_num;
++	uint32_t partial;
++	int retries = 0;
++	uint32_t bytes_remaining;
++
++	if (!addrinc && size != 4)
++		return ERROR_OP_NOT_SUPPORTED;
++
++	struct stlink_usb_handle_s *h = stlink_dap_handle;
++	if (!addrinc && (h->version.stlink == 1 || (h->version.stlink == 2 && h->version.jtag < 24)))
++		return ERROR_OP_NOT_SUPPORTED;
++
++	ap_num = ap->ap_num;
++	retval = stlink_dap_open_ap(ap_num);
++	if (retval != ERROR_OK)
++		return retval;
++
++	if (size == 4 && address & 3) {
++		/* unaligned 32-bits write could be split in mix 32 & 8-bits. Force 8-bis only */
++		count *= 4;
++		size = 1;
++	}
++
++	/* here we do not track TAR, and next calls will change it */
++	ap->tar_valid = false;
++
++	retval = stlink_dap_set_csw(ap, size, addrinc);
++	if (retval != ERROR_OK)
++		return retval;
++
++	if (addrinc)
++		return stlink_usb_write_ap_mem(stlink_dap_handle, ap_num, address, size,
++			count, buffer);
++
++	/* !addrinc && size == 4 */
++
++	if ((h->version.stlink == 2 && h->version.jtag >= 32) || (h->version.stlink == 3 && h->version.jtag >= 2)) {
++		count *= 4;
++		while (count) {
++			bytes_remaining = stlink_usb_block(h);
++
++			if (count < bytes_remaining)
++				bytes_remaining = count;
++
++			retval = stlink_usb_write_mem32_noaddrinc(stlink_dap_handle, ap_num, address, bytes_remaining, buffer);
++			if (retval == ERROR_WAIT && retries < MAX_WAIT_RETRIES) {
++				usleep((1<<retries++) * 1000);
++				continue;
++			}
++			if (retval != ERROR_OK)
++				return retval;
++
++			retries = 0;
++			buffer += bytes_remaining;
++			count -= bytes_remaining;
++		}
++		return ERROR_OK;
++	}
++
++	/* workaround for V2J24..V2J31 and V3J1 */
++	partial = (TAR_AUTOINCR_BLOCK - (address & (TAR_AUTOINCR_BLOCK - 1))) / 4;
++	if (partial > stlink_usb_block(stlink_dap_handle) / 4)
++		partial = stlink_usb_block(stlink_dap_handle) / 4;
++	while (count) {
++		if (partial > count)
++			partial = count;
++		retval = stlink_usb_write_mem32(stlink_dap_handle, ap_num, address, 4 * partial, buffer);
++		if (retval == ERROR_WAIT && retries < MAX_WAIT_RETRIES) {
++			usleep((1<<retries++) * 1000);
++			continue;
++		}
++		if (retval != ERROR_OK)
++			return retval;
++		retries = 0;
++		count -= partial;
++		buffer += 4 * partial;
++	}
++	return stlink_dap_reset_csw(ap);
++}
++
++static int stlink_dap_swd_init(void)
++{
++	LOG_DEBUG("stlink_dap_swd_init()");
++	stlink_dap_param.transport = HL_TRANSPORT_SWD;
++	return ERROR_OK;
++}
++
++static int stlink_dap_speed(int speed)
++{
++	if (speed == 0) {
++		LOG_ERROR("RTCK not supported. Set nonzero adapter_khz.");
++		return ERROR_JTAG_NOT_IMPLEMENTED;
++	}
++
++	stlink_dap_param.initial_interface_speed = speed;
++	stlink_speed(stlink_dap_handle, speed, false);
++	return ERROR_OK;
++}
++
++static int stlink_dap_speed_div(int speed, int *khz)
++{
++	*khz = speed;
++	return ERROR_OK;
++}
++
++static int stlink_dap_khz(int khz, int *jtag_speed)
++{
++	*jtag_speed = khz;
++	return ERROR_OK;
++}
++
++static int_least32_t stlink_dap_swd_frequency(int_least32_t hz)
++{
++	if (hz > 0)
++		stlink_dap_speed(hz / 1000);
++
++	return hz;
++}
++
++static int stlink_dap_swd_switch_seq(enum swd_special_seq seq)
++{
++	LOG_ERROR("stlink_dap_swd_switch_seq()");
++	assert(0);
++	return ERROR_FAIL;
++}
++
++static void stlink_dap_swd_read_reg(uint8_t cmd, uint32_t *value, uint32_t ap_delay_clk)
++{
++	LOG_ERROR("stlink_dap_swd_read_reg()");
++	assert(0);
++}
++
++static void stlink_dap_swd_write_reg(uint8_t cmd, uint32_t value, uint32_t ap_delay_clk)
++{
++	LOG_ERROR("stlink_dap_swd_write_reg()");
++	assert(0);
++}
++
++static int stlink_dap_swd_run_queue(void)
++{
++	LOG_ERROR("stlink_dap_swd_run_queue()");
++	assert(0);
++	return ERROR_FAIL;
++}
++
++static void stlink_dap_execute_command(struct jtag_command *cmd)
++{
++	switch (cmd->type) {
++	case JTAG_RESET:
++		LOG_DEBUG("stlink_usb_assert trst(%d) srst(%d)", !cmd->cmd.reset->trst, !cmd->cmd.reset->srst);
++		if (cmd->cmd.reset->trst)
++			stlink_usb_reset(stlink_dap_handle);
++		stlink_usb_assert_srst(stlink_dap_handle, cmd->cmd.reset->srst ? STLINK_DEBUG_APIV2_DRIVE_NRST_LOW : STLINK_DEBUG_APIV2_DRIVE_NRST_HIGH);
++		break;
++	case JTAG_SLEEP:
++		jtag_sleep(cmd->cmd.sleep->us);
++		break;
++	default:
++		LOG_ERROR("stlink_dap_execute_queue(%d)", cmd->type);
++		assert(0);
++		break;
++	}
++}
++
++static int stlink_dap_execute_queue(void)
++{
++	struct jtag_command *cmd = jtag_command_queue;
++
++	LOG_DEBUG_IO("stlink_dap_execute_queue()");
++
++	while (cmd != NULL) {
++		stlink_dap_execute_command(cmd);
++		cmd = cmd->next;
++	}
++
++	return ERROR_OK;
++}
++
++static int stlink_dap_init(void)
++{
++	enum reset_types jtag_reset_config = jtag_get_reset_config();
++
++	LOG_DEBUG("stlink_dap_init()");
++
++	if (jtag_reset_config & RESET_CNCT_UNDER_SRST) {
++		if (jtag_reset_config & RESET_SRST_NO_GATING)
++			stlink_dap_param.connect_under_reset = true;
++		else
++			LOG_WARNING("\'srst_nogate\' reset_config option is required");
++	}
++	return stlink_usb_open(&stlink_dap_param, (void **)&stlink_dap_handle);
++}
++
++static int stlink_dap_quit(void)
++{
++	int retval;
++
++	LOG_DEBUG("stlink_dap_quit()");
++
++	retval = stlink_dap_closeall_ap();
++	if (retval != ERROR_OK)
++		return retval;
++
++	free((void *)stlink_dap_param.serial);
++	stlink_dap_param.serial = NULL;
++
++	return stlink_usb_close(stlink_dap_handle);
++}
++
++COMMAND_HANDLER(stlink_dap_serial_command)
++{
++	LOG_DEBUG("stlink_dap_serial_command");
++
++	if (CMD_ARGC != 1) {
++		LOG_ERROR("Expected exactly one argument for \"st-link serial <serial-number>\".");
++		return ERROR_COMMAND_SYNTAX_ERROR;
++	}
++
++	if (stlink_dap_param.serial) {
++		LOG_WARNING("Command \"stlink serial\" already used. Replace previous value");
++		free((void *)stlink_dap_param.serial);
++	}
++
++	stlink_dap_param.serial = strdup(CMD_ARGV[0]);
++	return ERROR_OK;
++}
++
++static const struct command_registration stlink_dap_subcommand_handlers[] = {
++	{
++		.name = "serial",
++		.handler = &stlink_dap_serial_command,
++		.mode = COMMAND_CONFIG,
++		.help = "set the serial number of the device that should be used",
++		.usage = "<serial number>",
++	},
++	COMMAND_REGISTRATION_DONE
++};
++
++static const struct command_registration stlink_dap_command_handlers[] = {
++	{
++		.name = "st-link",
++		.mode = COMMAND_ANY,
++		.help = "perform st-link management",
++		.chain = stlink_dap_subcommand_handlers,
++		.usage = "",
++	},
++	COMMAND_REGISTRATION_DONE
++};
++
++static const struct swd_driver stlink_dap_swd_driver = {
++	.init = stlink_dap_swd_init,
++	.frequency = stlink_dap_swd_frequency,
++	.switch_seq = stlink_dap_swd_switch_seq,
++	.read_reg = stlink_dap_swd_read_reg,
++	.write_reg = stlink_dap_swd_write_reg,
++	.run = stlink_dap_swd_run_queue,
++};
++
++static const char *const stlink_dap_transport[] = { "stlink_swd", "stlink_jtag", NULL };
++
++struct jtag_interface stlink_dap_interface = {
++	.name = "st-link",
++	.commands = stlink_dap_command_handlers,
++	.swd = &stlink_dap_swd_driver,
++	.transports = stlink_dap_transport,
++
++	.execute_queue = stlink_dap_execute_queue,
++	.speed = stlink_dap_speed,
++	.speed_div = stlink_dap_speed_div,
++	.khz = stlink_dap_khz,
++	.init = stlink_dap_init,
++	.quit = stlink_dap_quit,
++};
+diff --git a/src/jtag/interfaces.c b/src/jtag/interfaces.c
+index 286a73a..1ef422f 100644
+--- a/src/jtag/interfaces.c
++++ b/src/jtag/interfaces.c
+@@ -135,6 +135,9 @@ extern struct jtag_interface imx_gpio_interface;
+ #if BUILD_XDS110 == 1
+ extern struct jtag_interface xds110_interface;
+ #endif
++#if BUILD_HLADAPTER_STLINK == 1
++extern struct jtag_interface stlink_dap_interface;
++#endif
+ #endif /* standard drivers */
+ 
+ /**
+@@ -240,6 +243,9 @@ struct jtag_interface *jtag_interfaces[] = {
+ #if BUILD_XDS110 == 1
+ 		&xds110_interface,
+ #endif
++#if BUILD_HLADAPTER_STLINK == 1
++		&stlink_dap_interface,
++#endif
+ #endif /* standard drivers */
+ 		NULL,
+ 	};
+diff --git a/src/jtag/startup.tcl b/src/jtag/startup.tcl
+index d57cafb..765c417 100644
+--- a/src/jtag/startup.tcl
++++ b/src/jtag/startup.tcl
+@@ -21,11 +21,19 @@ proc jtag_init {} {
+ # startup (at OpenOCD server startup, when JTAG may not yet work); and
+ # potentially more (for reset types like cold, warm, etc)
+ proc init_reset { mode } {
+-	if {[using_jtag]} {
+-		jtag arp_init-reset
++	if {![using_hla]} {
++		arp_init_reset
+ 	}
+ }
+ 
++proc reset_assert_final { mode } {
++	arp_adapter_reset assert
++}
++
++proc reset_deassert_initial { mode } {
++	arp_adapter_reset deassert
++}
++
+ #########
+ 
+ # TODO: power_restore and power_dropout are currently neither
+diff --git a/src/jtag/tcl.c b/src/jtag/tcl.c
+index e32f0ca..734ef1e 100644
+--- a/src/jtag/tcl.c
++++ b/src/jtag/tcl.c
+@@ -549,7 +549,7 @@ static int jim_newtap_cmd(Jim_GetOptInfo *goi)
+ 	LOG_DEBUG("Creating New Tap, Chip: %s, Tap: %s, Dotted: %s, %d params",
+ 		pTap->chip, pTap->tapname, pTap->dotted_name, goi->argc);
+ 
+-	if (!transport_is_jtag()) {
++	if (!transport_is_jtag() && !transport_is_stlink_jtag()) {
+ 		/* SWD doesn't require any JTAG tap parameters */
+ 		pTap->enabled = true;
+ 		jtag_tap_init(pTap);
+@@ -684,9 +684,9 @@ static int jim_jtag_arp_init_reset(Jim_Interp *interp, int argc, Jim_Obj *const
+ 		return JIM_ERR;
+ 	}
+ 	struct command_context *context = current_command_context(interp);
+-	if (transport_is_jtag())
++	if (transport_is_jtag() || transport_is_stlink_jtag())
+ 		e = jtag_init_reset(context);
+-	else if (transport_is_swd())
++	else if (transport_is_swd() || transport_is_stlink_swd())
+ 		e = swd_init_reset(context);
+ 
+ 	if (e != ERROR_OK) {
+diff --git a/src/server/gdb_server.c b/src/server/gdb_server.c
+index a451273..fc5f967 100644
+--- a/src/server/gdb_server.c
++++ b/src/server/gdb_server.c
+@@ -1395,11 +1395,6 @@ static int gdb_error(struct connection *connection, int retval)
+ 	return ERROR_OK;
+ }
+ 
+-/* We don't have to worry about the default 2 second timeout for GDB packets,
+- * because GDB breaks up large memory reads into smaller reads.
+- *
+- * 8191 bytes by the looks of it. Why 8191 bytes instead of 8192?????
+- */
+ static int gdb_read_memory_packet(struct connection *connection,
+ 		char const *packet, int packet_size)
+ {
+@@ -3089,6 +3084,42 @@ static void gdb_log_callback(void *priv, const char *file, unsigned line,
+ 	gdb_output_con(connection, string);
+ }
+ 
++/*
++ * During long memory read/write, the default 2 seconds timeout of GDB can
++ * expire due to slow JTAG interface combined with high traffic on the USB bus.
++ * The usual O packets cannot be used during memory read/write.
++ * To restart the GDB timeout counter, send a custom notification packet. It
++ * would be silently dropped because is not recognized by GDB.
++ */
++static void gdb_keepalive_callback(void *priv, const char *file, unsigned line,
++		const char *function, const char *string)
++{
++	static unsigned int count = 0;
++	struct connection *connection = priv;
++	struct gdb_connection *gdb_con = connection->priv;
++	int i, len;
++	unsigned int my_checksum = 0;
++	char buf[17];
++
++	/* keep_alive() sends empty strings */
++	if (gdb_con->busy || string[0])
++		return;
++
++	len = sprintf(buf, "%%keepalive:%2.2x", count);
++	count = (count + 1) & 255;
++	for (i = 1; i < len; i++)
++		my_checksum += buf[i];
++	len += sprintf(buf + len, "#%2.2x", my_checksum & 255);
++
++#ifdef _DEBUG_GDB_IO_
++	LOG_DEBUG("sending packet '%s'", buf);
++#endif
++
++	gdb_con->busy = true;
++	gdb_write(connection, buf, len);
++	gdb_con->busy = false;
++}
++
+ static void gdb_sig_halted(struct connection *connection)
+ {
+ 	char sig_reply[4];
+@@ -3172,10 +3203,14 @@ static int gdb_input_inner(struct connection *connection)
+ 					retval = gdb_set_register_packet(connection, packet, packet_size);
+ 					break;
+ 				case 'm':
++					log_add_callback(gdb_keepalive_callback, connection);
+ 					retval = gdb_read_memory_packet(connection, packet, packet_size);
++					log_remove_callback(gdb_keepalive_callback, connection);
+ 					break;
+ 				case 'M':
++					log_add_callback(gdb_keepalive_callback, connection);
+ 					retval = gdb_write_memory_packet(connection, packet, packet_size);
++					log_remove_callback(gdb_keepalive_callback, connection);
+ 					break;
+ 				case 'z':
+ 				case 'Z':
+@@ -3261,9 +3296,9 @@ static int gdb_input_inner(struct connection *connection)
+ 					extended_protocol = 0;
+ 					break;
+ 				case 'X':
++					log_add_callback(gdb_keepalive_callback, connection);
+ 					retval = gdb_write_memory_binary_packet(connection, packet, packet_size);
+-					if (retval != ERROR_OK)
+-						return retval;
++					log_remove_callback(gdb_keepalive_callback, connection);
+ 					break;
+ 				case 'k':
+ 					if (extended_protocol != 0) {
+diff --git a/src/target/Makefile.am b/src/target/Makefile.am
+index 4b7c8c0..bb305b7 100644
+--- a/src/target/Makefile.am
++++ b/src/target/Makefile.am
+@@ -105,6 +105,10 @@ ARM_DEBUG_SRC = \
+ 	%D%/etm_dummy.c \
+ 	%D%/arm_cti.c
+ 
++if HLADAPTER
++ARM_DEBUG_SRC += %D%/adi_v5_stlink.c
++endif
++
+ AVR32_SRC = \
+ 	%D%/avr32_ap7k.c \
+ 	%D%/avr32_jtag.c \
+diff --git a/src/target/adi_v5_stlink.c b/src/target/adi_v5_stlink.c
+new file mode 100644
+index 0000000..9e7ab0f
+--- /dev/null
++++ b/src/target/adi_v5_stlink.c
+@@ -0,0 +1,311 @@
++/*
++ * Copyright (C) 2018, STMicroelectronics - All Rights Reserved
++ * Author(s): Antonio Borneo <borneo.antonio@gmail.com> for STMicroelectronics
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++/**
++ * @file
++ * Utilities to support STMicroelectronics in-circuit debugger and programmer
++ * "ST-Link" (only V2 and newer versions) to access ARM DAP through either
++ * JTAG or ARM "Serial Wire Debug" (SWD).
++ *
++ * This implementation is complementary to the existing "hla" transport, which
++ * is too much focused at Cortex-M, and supports also Cortex-A and SMP nodes.
++ *
++ * Single-DAP support only.
++ *
++ * for details, see "ARM IHI 0031A"
++ * ARM Debug Interface v5 Architecture Specification
++ */
++
++#ifdef HAVE_CONFIG_H
++#include "config.h"
++#endif
++
++#include "arm.h"
++#include "arm_adi_v5.h"
++#include <helper/time_support.h>
++
++#include <transport/transport.h>
++#include <jtag/interface.h>
++
++#include <jtag/swd.h>
++
++#define STLINK_DEBUG_PORT 0xffff
++
++int stlink_dap_dap_read(unsigned short dap_port, unsigned short addr, uint32_t *val);
++int stlink_dap_dap_write(unsigned short dap_port, unsigned short addr, uint32_t val);
++int stlink_dap_ap_mem_read(struct adiv5_ap *ap, uint8_t *buffer,
++	uint32_t size, uint32_t count, uint32_t address, bool addrinc);
++int stlink_dap_ap_mem_write(struct adiv5_ap *ap, const uint8_t *buffer,
++	uint32_t size, uint32_t count, uint32_t address, bool addrinc);
++
++static int stlink_check_reconnect(struct adiv5_dap *dap);
++
++static int stlink_swd_queue_dp_read(struct adiv5_dap *dap, unsigned reg,
++		uint32_t *data)
++{
++	int retval = stlink_check_reconnect(dap);
++	if (retval != ERROR_OK)
++		return retval;
++
++	retval = stlink_dap_dap_read(STLINK_DEBUG_PORT, reg, data);
++	if (retval != ERROR_OK)
++		dap->do_reconnect = true;
++	return retval;
++}
++
++static int stlink_swd_queue_dp_write(struct adiv5_dap *dap, unsigned reg,
++		uint32_t data)
++{
++	int retval = stlink_check_reconnect(dap);
++	if (retval != ERROR_OK)
++		return retval;
++
++	/* ST-Link does not like that we set CORUNDETECT */
++	if (reg == DP_CTRL_STAT)
++		data &= ~CORUNDETECT;
++
++	retval = stlink_dap_dap_write(STLINK_DEBUG_PORT, reg, data);
++	if (retval != ERROR_OK)
++		dap->do_reconnect = true;
++	return retval;
++}
++
++static int stlink_swd_queue_ap_read(struct adiv5_ap *ap, unsigned reg,
++		uint32_t *data)
++{
++	struct adiv5_dap *dap = ap->dap;
++	int retval = stlink_check_reconnect(dap);
++	if (retval != ERROR_OK)
++		return retval;
++
++	retval = stlink_dap_dap_read(ap->ap_num, reg, data);
++	if (retval != ERROR_OK)
++		dap->do_reconnect = true;
++	return retval;
++}
++
++static int stlink_swd_queue_ap_write(struct adiv5_ap *ap, unsigned reg,
++		uint32_t data)
++{
++	struct adiv5_dap *dap = ap->dap;
++	int retval = stlink_check_reconnect(dap);
++	if (retval != ERROR_OK)
++		return retval;
++
++	retval = stlink_dap_dap_write(ap->ap_num, reg, data);
++	if (retval != ERROR_OK)
++		dap->do_reconnect = true;
++	return retval;
++}
++
++static int stlink_connect(struct adiv5_dap *dap)
++{
++	uint32_t dpidr;
++	int retval;
++
++	LOG_INFO("stlink_connect(%sconnect)", dap->do_reconnect ? "re" : "");
++
++	/* Check if we should reset srst already when connecting, but not if reconnecting. */
++	if (!dap->do_reconnect) {
++		enum reset_types jtag_reset_config = jtag_get_reset_config();
++
++		if (jtag_reset_config & RESET_CNCT_UNDER_SRST) {
++			if (jtag_reset_config & RESET_SRST_NO_GATING)
++				adapter_assert_reset();
++			else
++				LOG_WARNING("\'srst_nogate\' reset_config option is required");
++		}
++	}
++
++	dap->do_reconnect = false;
++	dap_invalidate_cache(dap);
++
++	retval = dap->ops->queue_dp_read(dap, DP_DPIDR, &dpidr);
++	if (retval == ERROR_OK) {
++		LOG_INFO("SWD DPIDR %#8.8" PRIx32, dpidr);
++		retval = dap_dp_init(dap);
++	} else
++		dap->do_reconnect = true;
++
++	return retval;
++}
++
++static int stlink_check_reconnect(struct adiv5_dap *dap)
++{
++	if (dap->do_reconnect)
++		return stlink_connect(dap);
++
++	return ERROR_OK;
++}
++
++static int stlink_swd_queue_ap_abort(struct adiv5_dap *dap, uint8_t *ack)
++{
++	LOG_ERROR("stlink_swd_queue_ap_abort()");
++	return ERROR_OK;
++}
++
++static int stlink_swd_run(struct adiv5_dap *dap)
++{
++	/* Here no LOG_DEBUG. This is called continuously! */
++
++	/*
++	 * ST-Link returns immediately after a DAP write, without waiting for it
++	 * to complete.
++	 * FIXME: Here we should check if the last operation is a read or a
++	 * write, and issue the dummy read only to complete a write!
++	 *
++	 * Run a dummy read to DP_RDBUFF, as suggested in
++	 * http://infocenter.arm.com/help/topic/com.arm.doc.faqs/ka16363.html
++	 */
++	return stlink_swd_queue_dp_read(dap, DP_RDBUFF, NULL);
++}
++
++#define stlink_ap_mem_read  stlink_dap_ap_mem_read
++#define stlink_ap_mem_write stlink_dap_ap_mem_write
++
++const struct dap_ops stlink_dap_swd_ops = {
++	.connect = stlink_connect,
++	.queue_dp_read = stlink_swd_queue_dp_read,
++	.queue_dp_write = stlink_swd_queue_dp_write,
++	.queue_ap_read = stlink_swd_queue_ap_read,
++	.queue_ap_write = stlink_swd_queue_ap_write,
++	.queue_ap_abort = stlink_swd_queue_ap_abort,
++	.ap_mem_read = stlink_ap_mem_read,
++	.ap_mem_write = stlink_ap_mem_write,
++	.run = stlink_swd_run,
++};
++
++const struct dap_ops stlink_dap_jtag_ops = {
++	.connect = stlink_connect,
++	.queue_dp_read = stlink_swd_queue_dp_read,
++	.queue_dp_write = stlink_swd_queue_dp_write,
++	.queue_ap_read = stlink_swd_queue_ap_read,
++	.queue_ap_write = stlink_swd_queue_ap_write,
++	.queue_ap_abort = stlink_swd_queue_ap_abort,
++	.ap_mem_read = stlink_ap_mem_read,
++	.ap_mem_write = stlink_ap_mem_write,
++	.run = stlink_swd_run,
++};
++
++static const struct command_registration stlink_commands[] = {
++	{
++		/*
++		 * Set up SWD and JTAG targets identically, unless/until
++		 * infrastructure improves ...  meanwhile, ignore all
++		 * JTAG-specific stuff like IR length for SWD.
++		 *
++		 * REVISIT can we verify "just one SWD DAP" here/early?
++		 */
++		.name = "newdap",
++		.jim_handler = jim_jtag_newtap,
++		.mode = COMMAND_CONFIG,
++		.help = "declare a new DAP"
++	},
++	COMMAND_REGISTRATION_DONE
++};
++
++static const struct command_registration stlink_handlers[] = {
++	{
++		.name = "stlink_dap",
++		.mode = COMMAND_ANY,
++		.help = "ST-Link command group",
++		.chain = stlink_commands,
++		.usage = "",
++	},
++	COMMAND_REGISTRATION_DONE
++};
++
++static int stlink_jtag_select(struct command_context *ctx)
++{
++	LOG_DEBUG("stlink_jtag_select()");
++
++	return register_commands(ctx, NULL, stlink_handlers);
++}
++
++static int stlink_swd_select(struct command_context *ctx)
++{
++	/* FIXME: only place where global 'jtag_interface' is still needed */
++	extern struct jtag_interface *jtag_interface;
++	const struct swd_driver *swd = jtag_interface->swd;
++	int retval;
++
++	LOG_DEBUG("stlink_swd_select()");
++
++	retval = register_commands(ctx, NULL, stlink_handlers);
++	if (retval != ERROR_OK)
++		return retval;
++
++	 /* be sure driver is in SWD mode; start
++	  * with hardware default TRN (1), it can be changed later
++	  */
++	if (!swd || !swd->read_reg || !swd->write_reg || !swd->init) {
++		LOG_DEBUG("no SWD driver?");
++		return ERROR_FAIL;
++	}
++
++	retval = swd->init();
++	if (retval != ERROR_OK) {
++		LOG_DEBUG("can't init SWD driver");
++		return retval;
++	}
++
++	return retval;
++}
++
++static int stlink_init(struct command_context *ctx)
++{
++	LOG_DEBUG("stlink_init()");
++
++	adapter_deassert_reset();
++	return ERROR_OK;
++}
++
++static struct transport stlink_jtag_transport = {
++	.name = "stlink_jtag",
++	.select = stlink_jtag_select,
++	.init = stlink_init,
++};
++
++static struct transport stlink_swd_transport = {
++	.name = "stlink_swd",
++	.select = stlink_swd_select,
++	.init = stlink_init,
++};
++
++static void stlink_constructor(void) __attribute__((constructor));
++static void stlink_constructor(void)
++{
++	transport_register(&stlink_jtag_transport);
++	transport_register(&stlink_swd_transport);
++}
++
++/** Returns true if the current debug session
++ * is using SWD as its transport.
++ */
++bool transport_is_stlink_jtag(void)
++{
++	return get_current_transport() == &stlink_jtag_transport;
++}
++
++/** Returns true if the current debug session
++ * is using SWD as its transport.
++ */
++bool transport_is_stlink_swd(void)
++{
++	return get_current_transport() == &stlink_swd_transport;
++}
+diff --git a/src/target/arm_adi_v5.c b/src/target/arm_adi_v5.c
+index d9f3bd7..51d228b 100644
+--- a/src/target/arm_adi_v5.c
++++ b/src/target/arm_adi_v5.c
+@@ -331,6 +331,7 @@ static int mem_ap_write(struct adiv5_ap *ap, const uint8_t *buffer, uint32_t siz
+ 	const uint32_t csw_addrincr = addrinc ? CSW_ADDRINC_SINGLE : CSW_ADDRINC_OFF;
+ 	uint32_t csw_size;
+ 	uint32_t addr_xor;
++	uint32_t j = 0;
+ 	int retval = ERROR_OK;
+ 
+ 	/* TI BE-32 Quirks mode:
+@@ -424,6 +425,9 @@ static int mem_ap_write(struct adiv5_ap *ap, const uint8_t *buffer, uint32_t siz
+ 		mem_ap_update_tar_cache(ap);
+ 		if (addrinc)
+ 			address += this_size;
++
++		if ((j++ % 32) == 0)
++			keep_alive();
+ 	}
+ 
+ 	/* REVISIT: Might want to have a queued version of this function that does not run. */
+@@ -461,6 +465,7 @@ static int mem_ap_read(struct adiv5_ap *ap, uint8_t *buffer, uint32_t size, uint
+ 	const uint32_t csw_addrincr = addrinc ? CSW_ADDRINC_SINGLE : CSW_ADDRINC_OFF;
+ 	uint32_t csw_size;
+ 	uint32_t address = adr;
++	uint32_t j = 0;
+ 	int retval = ERROR_OK;
+ 
+ 	/* TI BE-32 Quirks mode:
+@@ -523,6 +528,9 @@ static int mem_ap_read(struct adiv5_ap *ap, uint8_t *buffer, uint32_t size, uint
+ 			address += this_size;
+ 
+ 		mem_ap_update_tar_cache(ap);
++
++		if ((j++ % 32) == 0)
++			keep_alive();
+ 	}
+ 
+ 	if (retval == ERROR_OK)
+@@ -594,24 +602,44 @@ static int mem_ap_read(struct adiv5_ap *ap, uint8_t *buffer, uint32_t size, uint
+ int mem_ap_read_buf(struct adiv5_ap *ap,
+ 		uint8_t *buffer, uint32_t size, uint32_t count, uint32_t address)
+ {
++	if (ap->dap->ops->ap_mem_read) {
++		int retval = ap->dap->ops->ap_mem_read(ap, buffer, size, count, address, true);
++		if (retval != ERROR_OP_NOT_SUPPORTED)
++			return retval;
++	}
+ 	return mem_ap_read(ap, buffer, size, count, address, true);
+ }
+ 
+ int mem_ap_write_buf(struct adiv5_ap *ap,
+ 		const uint8_t *buffer, uint32_t size, uint32_t count, uint32_t address)
+ {
++	if (ap->dap->ops->ap_mem_write) {
++		int retval = ap->dap->ops->ap_mem_write(ap, buffer, size, count, address, true);
++		if (retval != ERROR_OP_NOT_SUPPORTED)
++			return retval;
++	}
+ 	return mem_ap_write(ap, buffer, size, count, address, true);
+ }
+ 
+ int mem_ap_read_buf_noincr(struct adiv5_ap *ap,
+ 		uint8_t *buffer, uint32_t size, uint32_t count, uint32_t address)
+ {
++	if (ap->dap->ops->ap_mem_read) {
++		int retval = ap->dap->ops->ap_mem_read(ap, buffer, size, count, address, false);
++		if (retval != ERROR_OP_NOT_SUPPORTED)
++			return retval;
++	}
+ 	return mem_ap_read(ap, buffer, size, count, address, false);
+ }
+ 
+ int mem_ap_write_buf_noincr(struct adiv5_ap *ap,
+ 		const uint8_t *buffer, uint32_t size, uint32_t count, uint32_t address)
+ {
++	if (ap->dap->ops->ap_mem_write) {
++		int retval = ap->dap->ops->ap_mem_write(ap, buffer, size, count, address, false);
++		if (retval != ERROR_OP_NOT_SUPPORTED)
++			return retval;
++	}
+ 	return mem_ap_write(ap, buffer, size, count, address, false);
+ }
+ 
+diff --git a/src/target/arm_adi_v5.h b/src/target/arm_adi_v5.h
+index a340b76..3b04d0f 100644
+--- a/src/target/arm_adi_v5.h
++++ b/src/target/arm_adi_v5.h
+@@ -292,6 +292,16 @@ struct dap_ops {
+ 
+ 	/** Optional; called at OpenOCD exit */
+ 	void (*quit)(struct adiv5_dap *dap);
++
++	/** Optional interface-specific optimized AP memory read */
++	int (*ap_mem_read)(struct adiv5_ap *ap, uint8_t *buffer,
++			uint32_t size, uint32_t count, uint32_t address,
++			bool addrinc);
++
++	/** Optional interface-specific optimized AP memory write */
++	int (*ap_mem_write)(struct adiv5_ap *ap, const uint8_t *buffer,
++			uint32_t size, uint32_t count, uint32_t address,
++			bool addrinc);
+ };
+ 
+ /*
+diff --git a/src/target/arm_dap.c b/src/target/arm_dap.c
+index 3adb4ed..277a804 100644
+--- a/src/target/arm_dap.c
++++ b/src/target/arm_dap.c
+@@ -34,6 +34,8 @@ static LIST_HEAD(all_dap);
+ 
+ extern const struct dap_ops swd_dap_ops;
+ extern const struct dap_ops jtag_dp_ops;
++extern const struct dap_ops stlink_dap_swd_ops;
++extern const struct dap_ops stlink_dap_jtag_ops;
+ extern struct jtag_interface *jtag_interface;
+ 
+ /* DAP command support */
+@@ -118,6 +120,13 @@ static int dap_init_all(void)
+ 		if (transport_is_swd()) {
+ 			dap->ops = &swd_dap_ops;
+ 			obj->swd = jtag_interface->swd;
++#if BUILD_HLADAPTER_STLINK == 1
++		} else if (transport_is_stlink_swd()) {
++			dap->ops = &stlink_dap_swd_ops;
++			obj->swd = jtag_interface->swd;
++		} else if (transport_is_stlink_jtag()) {
++			dap->ops = &stlink_dap_jtag_ops;
++#endif
+ 		} else
+ 			dap->ops = &jtag_dp_ops;
+ 
+diff --git a/src/target/arm_dpm.h b/src/target/arm_dpm.h
+index f8d1248..ac70ce3 100644
+--- a/src/target/arm_dpm.h
++++ b/src/target/arm_dpm.h
+@@ -188,8 +188,6 @@ void arm_dpm_report_wfar(struct arm_dpm *, uint32_t wfar);
+ #define DSCR_DTR_RX_FULL            (0x1 << 30) /* bit 31 is reserved */
+ 
+ #define DSCR_ENTRY(dscr)            ((dscr) & 0x3f)
+-#define DSCR_RUN_MODE(dscr)         ((dscr) & 0x03)
+-
+ 
+ /* Methods of entry into debug mode */
+ #define DSCR_ENTRY_HALT_REQ           (0x03)
+@@ -240,4 +238,31 @@ void arm_dpm_report_dscr(struct arm_dpm *dpm, uint32_t dcsr);
+ #define OSLSR_OSLM1                      (1 << 3)
+ #define OSLSR_OSLM                       (OSLSR_OSLM0|OSLSR_OSLM1)
+ 
++/* VCR (Vector Catch Register) bits */
++#define VCR_RESET                        (1 << 0)
++#define VCR_UNDEFINED                    (1 << 1)
++#define VCR_SUPERVISOR_CALL              (1 << 2)
++#define VCR_PREFETCH_ABORT               (1 << 3)
++#define VCR_DATA_ABORT                   (1 << 4)
++#define VCR_IRQ                          (1 << 6)
++#define VCR_FIQ                          (1 << 7)
++#define VCR_MONITOR_SECURE_CALL          (1 << 10)
++#define VCR_MONITOR_PREFETCH_ABORT       (1 << 11)
++#define VCR_MONITOR_DATA_ABORT           (1 << 12)
++#define VCR_MONITOR_IRQ                  (1 << 14)
++#define VCR_MONITOR_FIQ                  (1 << 15)
++#define VCR_HYP_UNDEFINED                (1 << 17)
++#define VCR_HYPERVISOR_CALL              (1 << 18)
++#define VCR_HYPERVISOR_PREFETCH_ABORT    (1 << 19)
++#define VCR_HYPERVISOR_DATA_ABORT        (1 << 20)
++#define VCR_HYPERVISOR_TRAP_ENTRY        (1 << 21)
++#define VCR_HYPERVISOR_IRQ               (1 << 22)
++#define VCR_HYPERVISOR_FIQ               (1 << 23)
++#define VCR_NONSEC_UNDEFINED             (1 << 25)
++#define VCR_NONSEC_SUPERVISOR_CALL       (1 << 26)
++#define VCR_NONSEC_PREFETCH_ABORT        (1 << 27)
++#define VCR_NONSEC_DATA_ABORT            (1 << 28)
++#define VCR_NONSEC_IRQ                   (1 << 30)
++#define VCR_NONSEC_FIQ                   (1 << 31)
++
+ #endif /* OPENOCD_TARGET_ARM_DPM_H */
+diff --git a/src/target/armv7a.c b/src/target/armv7a.c
+index eecfa70..c4a3b05 100644
+--- a/src/target/armv7a.c
++++ b/src/target/armv7a.c
+@@ -226,7 +226,8 @@ int armv7a_mmu_translate_va(struct target *target,  uint32_t va, uint32_t *val)
+ 	LOG_DEBUG("1st lvl desc: %8.8" PRIx32 "", first_lvl_descriptor);
+ 
+ 	if ((first_lvl_descriptor & 0x3) == 0) {
+-		LOG_ERROR("Address translation failure");
++		/* Avoid LOG_ERROR, probably GDB is guessing the stack frame */
++		LOG_WARNING("Address translation failure [1]: va %8.8" PRIx32 "", va);
+ 		return ERROR_TARGET_TRANSLATION_FAULT;
+ 	}
+ 
+@@ -258,7 +259,8 @@ int armv7a_mmu_translate_va(struct target *target,  uint32_t va, uint32_t *val)
+ 	LOG_DEBUG("2nd lvl desc: %8.8" PRIx32 "", second_lvl_descriptor);
+ 
+ 	if ((second_lvl_descriptor & 0x3) == 0) {
+-		LOG_ERROR("Address translation failure");
++		/* Avoid LOG_ERROR, probably GDB is guessing the stack frame */
++		LOG_WARNING("Address translation failure [2]: va %8.8" PRIx32 "", va);
+ 		return ERROR_TARGET_TRANSLATION_FAULT;
+ 	}
+ 
+@@ -665,6 +667,19 @@ done:
+ 
+ }
+ 
++/**
++ * Clears register cache during reset process
++ */
++int armv7a_reset_clear_internal_state(struct target *target)
++{
++	struct armv7a_common *armv7a = target_to_armv7a(target);
++
++	if (target_was_examined(target))
++		register_cache_invalidate(armv7a->arm.core_cache);
++
++	return target_reset_clear_internal_state_default(target);
++}
++
+ static int armv7a_setup_semihosting(struct target *target, int enable)
+ {
+ 	struct armv7a_common *armv7a = target_to_armv7a(target);
+diff --git a/src/target/armv7a.h b/src/target/armv7a.h
+index 57779c6..1a83522 100644
+--- a/src/target/armv7a.h
++++ b/src/target/armv7a.h
+@@ -196,6 +196,8 @@ int armv7a_handle_cache_info_command(struct command_context *cmd_ctx,
+ 		struct armv7a_cache_common *armv7a_cache);
+ int armv7a_read_ttbcr(struct target *target);
+ 
++int armv7a_reset_clear_internal_state(struct target *target);
++
+ extern const struct command_registration armv7a_command_handlers[];
+ 
+ #endif /* OPENOCD_TARGET_ARMV7A_H */
+diff --git a/src/target/armv7m.c b/src/target/armv7m.c
+index 7d3bd73..af394f8 100644
+--- a/src/target/armv7m.c
++++ b/src/target/armv7m.c
+@@ -657,6 +657,19 @@ void armv7m_free_reg_cache(struct target *target)
+ 	arm->core_cache = NULL;
+ }
+ 
++/**
++ * Clears register cache during reset process
++ */
++int armv7m_reset_clear_internal_state(struct target *target)
++{
++	struct armv7m_common *armv7m = target_to_armv7m(target);
++
++	if (target_was_examined(target))
++		register_cache_invalidate(armv7m->arm.core_cache);
++
++	return target_reset_clear_internal_state_default(target);
++}
++
+ static int armv7m_setup_semihosting(struct target *target, int enable)
+ {
+ 	/* nothing todo for armv7m */
+diff --git a/src/target/armv7m.h b/src/target/armv7m.h
+index 01bf19e..f424c6c 100644
+--- a/src/target/armv7m.h
++++ b/src/target/armv7m.h
+@@ -218,7 +218,7 @@ int armv7m_wait_algorithm(struct target *target,
+ 		target_addr_t exit_point, int timeout_ms,
+ 		void *arch_info);
+ 
+-int armv7m_invalidate_core_regs(struct target *target);
++int armv7m_reset_clear_internal_state(struct target *target);
+ 
+ int armv7m_restore_context(struct target *target);
+ 
+diff --git a/src/target/cortex_a.c b/src/target/cortex_a.c
+index bc4aa33..f17eddd 100644
+--- a/src/target/cortex_a.c
++++ b/src/target/cortex_a.c
+@@ -878,7 +878,7 @@ static int cortex_a_poll(struct target *target)
+ 		return retval;
+ 	cortex_a->cpudbg_dscr = dscr;
+ 
+-	if (DSCR_RUN_MODE(dscr) == (DSCR_CORE_HALTED | DSCR_CORE_RESTARTED)) {
++	if (dscr & DSCR_CORE_HALTED) {
+ 		if (prev_target_state != TARGET_HALTED) {
+ 			/* We have a halting debug event */
+ 			LOG_DEBUG("Target halted");
+@@ -1420,6 +1420,7 @@ static int cortex_a_step(struct target *target, int current, target_addr_t addre
+ 
+ 	/* Setup single step breakpoint */
+ 	stepbreakpoint.address = address;
++	stepbreakpoint.asid = 0;
+ 	stepbreakpoint.length = (arm->core_state == ARM_STATE_THUMB)
+ 		? 2 : 4;
+ 	stepbreakpoint.type = BKPT_HARD;
+@@ -1901,76 +1902,165 @@ static int cortex_a_remove_breakpoint(struct target *target, struct breakpoint *
+ 	return ERROR_OK;
+ }
+ 
+-/*
+- * Cortex-A Reset functions
++/**
++ * Prepares debug state before reset or under active SRST if possible.
++ *
++ * @param halt sets vector catch to stop core at reset
++ * @param trigger triggers PRCR_WARM_RESET.
+  */
+-
+-static int cortex_a_assert_reset(struct target *target)
++static int cortex_a_reset_prepare_trigger(struct target *target, bool halt, bool trigger)
+ {
+ 	struct armv7a_common *armv7a = target_to_armv7a(target);
++	uint32_t reg;
++	int retval;
+ 
+-	LOG_DEBUG(" ");
++	/* cannot talk to target if it wasn't examined yet */
++	if (!target_was_examined(target))
++		return ERROR_OK;
+ 
+-	/* FIXME when halt is requested, make it work somehow... */
++	/*
++	 * Some cores support connecting while SRST is asserted.
++	 * If RESET_HAS_SRST and RESET_SRST_NO_GATING are configured, core is
++	 * under SRST now
++	 */
+ 
+-	/* This function can be called in "target not examined" state */
++	if (halt) {
++		/* Enable debug requests */
++		retval = mem_ap_read_atomic_u32(armv7a->debug_ap,
++				armv7a->debug_base + CPUDBG_DSCR, &reg);
++		if (retval != ERROR_OK)
++			return retval;
++		retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
++				armv7a->debug_base + CPUDBG_DSCR, reg | DSCR_HALT_DBG_MODE);
++		if (retval != ERROR_OK)
++			return retval;
+ 
+-	/* Issue some kind of warm reset. */
+-	if (target_has_event_action(target, TARGET_EVENT_RESET_ASSERT))
+-		target_handle_event(target, TARGET_EVENT_RESET_ASSERT);
+-	else if (jtag_get_reset_config() & RESET_HAS_SRST) {
+-		/* REVISIT handle "pulls" cases, if there's
+-		 * hardware that needs them to work.
+-		 */
++		/* set the reset vector catch */
++		retval = mem_ap_read_atomic_u32(armv7a->debug_ap,
++				armv7a->debug_base + CPUDBG_VCR, &reg);
++		if (retval != ERROR_OK)
++			return retval;
++		retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
++				armv7a->debug_base + CPUDBG_VCR, reg | VCR_RESET);
++		if (retval != ERROR_OK)
++			return retval;
+ 
+-		/*
+-		 * FIXME: fix reset when transport is SWD. This is a temporary
+-		 * work-around for release v0.10 that is not intended to stay!
+-		 */
+-		if (transport_is_swd() ||
+-				(target->reset_halt && (jtag_get_reset_config() & RESET_SRST_NO_GATING)))
+-			jtag_add_reset(0, 1);
++		/* halt the core */
++		retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
++				armv7a->debug_base + CPUDBG_DRCR, DRCR_HALT);
++		if (retval != ERROR_OK)
++			return retval;
+ 
++		/* hold core in reset */
++		retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
++				armv7a->debug_base + CPUDBG_PRCR, PRCR_HOLD_NON_DEBUG_RESET);
++		if (retval != ERROR_OK)
++			return retval;
+ 	} else {
+-		LOG_ERROR("%s: how to reset?", target_name(target));
+-		return ERROR_FAIL;
++		/* clear the reset vector catch */
++		retval = mem_ap_read_atomic_u32(armv7a->debug_ap,
++				 armv7a->debug_base + CPUDBG_VCR, &reg);
++		if (retval != ERROR_OK)
++			return retval;
++		retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
++				armv7a->debug_base + CPUDBG_VCR, reg & (~VCR_RESET));
++
++		/* resume the core if it was halted */
++		retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
++				armv7a->debug_base + CPUDBG_DRCR, DRCR_RESTART);
++		if (retval != ERROR_OK)
++			return retval;
++
++		/* resume the core if it was holding the reset */
++		retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
++				armv7a->debug_base + CPUDBG_PRCR, 0);
++		if (retval != ERROR_OK)
++			return retval;
+ 	}
+ 
+-	/* registers are now invalid */
+-	if (target_was_examined(target))
+-		register_cache_invalidate(armv7a->arm.core_cache);
++	if (trigger) {
++		/*
++		 * Use a standard Cortex-A software reset mechanism.
++		 * PRCR_WARM_RESET is 'recommended' but 'implementation defined'.
++		 * See DDI0406C ARMv7-A/R Architecture Reference Manual.
++		 * Usually this has the disadvantage of not resetting the peripherals,
++		 * so a reset-init event handler is needed to perform any peripheral
++		 * resets.
++		 */
++		reg = (halt ? PRCR_HOLD_NON_DEBUG_RESET : 0) | PRCR_WARM_RESET;
++		retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
++				armv7a->debug_base + CPUDBG_PRCR, reg);
++		if (retval != ERROR_OK)
++			return retval;
++	}
+ 
+-	target->state = TARGET_RESET;
++	armv7a_reset_clear_internal_state(target);
+ 
+ 	return ERROR_OK;
+ }
+ 
+-static int cortex_a_deassert_reset(struct target *target)
++static int cortex_a_post_deassert_reset(struct target *target)
+ {
++	struct armv7a_common *armv7a = target_to_armv7a(target);
++	uint32_t reg;
+ 	int retval;
+ 
+-	LOG_DEBUG(" ");
++	/* cannot talk to target if it wasn't examined yet */
++	if (!target_was_examined(target))
++		return ERROR_OK;
++
++	if (!target->reset_halt)
++		return ERROR_OK;
++
++	/* Enable debug requests */
++	retval = mem_ap_read_atomic_u32(armv7a->debug_ap,
++			armv7a->debug_base + CPUDBG_DSCR, &reg);
++	if (retval != ERROR_OK)
++		return retval;
++	retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
++			armv7a->debug_base + CPUDBG_DSCR, reg | DSCR_HALT_DBG_MODE);
++	if (retval != ERROR_OK)
++		return retval;
++
++	/* halt the core while reset is on hold */
++	retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
++			armv7a->debug_base + CPUDBG_DRCR, DRCR_HALT);
++	if (retval != ERROR_OK)
++		return retval;
++
++	/* resume the core from reset hold */
++	retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
++			 armv7a->debug_base + CPUDBG_PRCR, 0);
++	if (retval != ERROR_OK)
++		return retval;
++
++	/* clear the reset vector-catch */
++	retval = mem_ap_read_atomic_u32(armv7a->debug_ap,
++			armv7a->debug_base + CPUDBG_VCR, &reg);
++	if (retval != ERROR_OK)
++		return retval;
++	retval = mem_ap_write_atomic_u32(armv7a->debug_ap,
++			armv7a->debug_base + CPUDBG_VCR, reg & (~VCR_RESET));
++	if (retval != ERROR_OK)
++		return retval;
+ 
+-	/* be certain SRST is off */
+-	jtag_add_reset(0, 0);
++	retval = cortex_a_poll(target);
++	if (retval != ERROR_OK)
++		return retval;
+ 
+-	if (target_was_examined(target)) {
++	for (int i = 0; i < 50 && target->state != TARGET_HALTED; i++) {
++		alive_sleep(1);
+ 		retval = cortex_a_poll(target);
+ 		if (retval != ERROR_OK)
+ 			return retval;
+ 	}
+ 
+-	if (target->reset_halt) {
+-		if (target->state != TARGET_HALTED) {
+-			LOG_WARNING("%s: ran after reset and before halt ...",
+-				target_name(target));
+-			if (target_was_examined(target)) {
+-				retval = target_halt(target);
+-				if (retval != ERROR_OK)
+-					return retval;
+-			} else
+-				target->state = TARGET_UNKNOWN;
+-		}
++	if (target->state != TARGET_HALTED) {
++		LOG_WARNING("%s: ran after reset and before halt ...",
++			target_name(target));
++		retval = target_halt(target);
++		if (retval != ERROR_OK)
++			return retval;
+ 	}
+ 
+ 	return ERROR_OK;
+@@ -2749,6 +2839,10 @@ static int cortex_a_read_memory_ahb(struct target *target, target_addr_t address
+ 	LOG_DEBUG("Reading memory at address " TARGET_ADDR_FMT "; size %" PRId32 "; count %" PRId32,
+ 		address, size, count);
+ 
++	/* flush the data cache */
++	if (armv7a->armv7a_mmu.armv7a_cache.auto_cache_enabled)
++		armv7a_l1_d_cache_clean_virt(target, address, size * count);
++
+ 	/* determine if MMU was enabled on target stop */
+ 	if (!armv7a->is_armv7r) {
+ 		retval = cortex_a_mmu(target, &mmu_enabled);
+@@ -2756,24 +2850,42 @@ static int cortex_a_read_memory_ahb(struct target *target, target_addr_t address
+ 			return retval;
+ 	}
+ 
+-	if (mmu_enabled) {
++	if (!count || !buffer)
++		return ERROR_COMMAND_SYNTAX_ERROR;
++
++	if (!mmu_enabled)
++		return mem_ap_read_buf(armv7a->memory_ap, buffer, size, count, address);
++
++	/*
++	 * TODO: here we are pessimistic and we use the smaller page of 4kB, but
++	 * cortex_a_virt2phys() does a full table walk, so can return the actual
++	 * size of page (4kB or 64kB) or section (1MB or 16Mb).
++	 */
++	while (count) {
++		target_addr_t page_size = 0x1000;
++		uint32_t current_count;
++
+ 		virt = address;
+ 		retval = cortex_a_virt2phys(target, virt, &phys);
+ 		if (retval != ERROR_OK)
+ 			return retval;
+ 
+-		LOG_DEBUG("Reading at virtual address. "
+-			  "Translating v:" TARGET_ADDR_FMT " to r:" TARGET_ADDR_FMT,
+-			  virt, phys);
+-		address = phys;
+-	}
+-
+-	if (!count || !buffer)
+-		return ERROR_COMMAND_SYNTAX_ERROR;
++		current_count = (page_size - (address & (page_size - 1))) / size;
++		if (current_count > count)
++			current_count = count;
+ 
+-	retval = mem_ap_read_buf(armv7a->memory_ap, buffer, size, count, address);
++		LOG_DEBUG("Reading at virtual address 0x%" PRIx32 " bytes. "
++			  "Translating v:" TARGET_ADDR_FMT " to r:" TARGET_ADDR_FMT,
++			  size * current_count, virt, phys);
+ 
+-	return retval;
++		retval = mem_ap_read_buf(armv7a->memory_ap, buffer, size, current_count, phys);
++		if (retval != ERROR_OK)
++			return retval;
++		count -= current_count;
++		address += size * current_count;
++		buffer += size * current_count;
++	}
++	return ERROR_OK;
+ }
+ 
+ static int cortex_a_write_phys_memory(struct target *target,
+@@ -2837,6 +2949,12 @@ static int cortex_a_write_memory_ahb(struct target *target, target_addr_t addres
+ 	LOG_DEBUG("Writing memory at address " TARGET_ADDR_FMT "; size %" PRId32 "; count %" PRId32,
+ 		address, size, count);
+ 
++	/* flush and invalidate the data cache */
++	if (armv7a->armv7a_mmu.armv7a_cache.auto_cache_enabled)
++		armv7a_cache_flush_virt(target, address, size * count);
++	/* invalidate instruction cache */
++	armv7a_l1_i_cache_inval_virt(target, address, size * count);
++
+ 	/* determine if MMU was enabled on target stop */
+ 	if (!armv7a->is_armv7r) {
+ 		retval = cortex_a_mmu(target, &mmu_enabled);
+@@ -2844,25 +2962,42 @@ static int cortex_a_write_memory_ahb(struct target *target, target_addr_t addres
+ 			return retval;
+ 	}
+ 
+-	if (mmu_enabled) {
++	if (!count || !buffer)
++		return ERROR_COMMAND_SYNTAX_ERROR;
++
++	if (!mmu_enabled)
++		return mem_ap_write_buf(armv7a->memory_ap, buffer, size, count, address);
++
++	/*
++	 * TODO: here we are pessimistic and we use the smaller page of 4kB, but
++	 * cortex_a_virt2phys() does a full table walk, so can return the actual
++	 * size of page (4kB or 64kB) or section (1MB or 16Mb).
++	 */
++	while (count) {
++		target_addr_t page_size = 0x1000;
++		uint32_t current_count;
++
+ 		virt = address;
+ 		retval = cortex_a_virt2phys(target, virt, &phys);
+ 		if (retval != ERROR_OK)
+ 			return retval;
+ 
+-		LOG_DEBUG("Writing to virtual address. "
+-			  "Translating v:" TARGET_ADDR_FMT " to r:" TARGET_ADDR_FMT,
+-			  virt,
+-			  phys);
+-		address = phys;
+-	}
+-
+-	if (!count || !buffer)
+-		return ERROR_COMMAND_SYNTAX_ERROR;
++		current_count = (page_size - (address & (page_size - 1))) / size;
++		if (current_count > count)
++			current_count = count;
+ 
+-	retval = mem_ap_write_buf(armv7a->memory_ap, buffer, size, count, address);
++		LOG_DEBUG("Writing to virtual address 0x%" PRIx32 " bytes. "
++			  "Translating v:" TARGET_ADDR_FMT " to r:" TARGET_ADDR_FMT,
++			  size * current_count, virt, phys);
+ 
+-	return retval;
++		retval = mem_ap_write_buf(armv7a->memory_ap, buffer, size, current_count, phys);
++		if (retval != ERROR_OK)
++			return retval;
++		count -= current_count;
++		address += size * current_count;
++		buffer += size * current_count;
++	}
++	return ERROR_OK;
+ }
+ 
+ static int cortex_a_read_buffer(struct target *target, target_addr_t address,
+@@ -2982,7 +3117,21 @@ static int cortex_a_examine_first(struct target *target)
+ 
+ 	int i;
+ 	int retval = ERROR_OK;
+-	uint32_t didr, cpuid, dbg_osreg;
++	uint32_t didr, cpuid, dbg_osreg, dp_ctrl_stat;
++
++	/*
++	 * Some device turn off CSYSPWRUPACK or CDBGPWRUPACK at reset.
++	 * Check them and eventually re init the DP.
++	 */
++	retval = dap_queue_dp_read(swjdp, DP_CTRL_STAT, &dp_ctrl_stat);
++	if (retval != ERROR_OK
++		|| ((dp_ctrl_stat & CDBGPWRUPACK) == 0)
++		|| (!swjdp->ignore_syspwrupack && ((dp_ctrl_stat & CSYSPWRUPACK) == 0))) {
++		LOG_INFO("DP disabled after reset. Re-initialize it!");
++		retval = dap_dp_init(swjdp);
++		if (retval != ERROR_OK)
++			LOG_ERROR("DP initialization failed");
++	}
+ 
+ 	/* Search for the APB-AP - it is needed for access to debug registers */
+ 	retval = dap_find_ap(swjdp, AP_TYPE_APB_AP, &armv7a->debug_ap);
+@@ -2999,19 +3148,23 @@ static int cortex_a_examine_first(struct target *target)
+ 
+ 	armv7a->debug_ap->memaccess_tck = 80;
+ 
+-	/* Search for the AHB-AB.
+-	 * REVISIT: We should search for AXI-AP as well and make sure the AP's MEMTYPE says it
++	/* Search for the AXI-AP or the AHB-AP.
++	 * REVISIT: We should make sure the AP's MEMTYPE says it
+ 	 * can access system memory. */
+ 	armv7a->memory_ap_available = false;
+-	retval = dap_find_ap(swjdp, AP_TYPE_AHB_AP, &armv7a->memory_ap);
+-	if (retval == ERROR_OK) {
++	retval = dap_find_ap(swjdp, AP_TYPE_AXI_AP, &armv7a->memory_ap);
++	if (retval == ERROR_OK)
+ 		retval = mem_ap_init(armv7a->memory_ap);
++	if (retval != ERROR_OK) {
++		retval = dap_find_ap(swjdp, AP_TYPE_AHB_AP, &armv7a->memory_ap);
+ 		if (retval == ERROR_OK)
+-			armv7a->memory_ap_available = true;
++			retval = mem_ap_init(armv7a->memory_ap);
+ 	}
+ 	if (retval != ERROR_OK) {
+-		/* AHB-AP not found or unavailable - use the CPU */
+-		LOG_DEBUG("No AHB-AP available for memory access");
++		/* AHB-AP and AXI-AP not found or unavailable - use the CPU */
++		LOG_DEBUG("Nor AHB-AP nor AXI-AP available for memory access");
++	} else {
++		armv7a->memory_ap_available = true;
+ 	}
+ 
+ 	if (!target->dbgbase_set) {
+@@ -3508,8 +3661,9 @@ struct target_type cortexa_target = {
+ 	.resume = cortex_a_resume,
+ 	.step = cortex_a_step,
+ 
+-	.assert_reset = cortex_a_assert_reset,
+-	.deassert_reset = cortex_a_deassert_reset,
++	.reset_clear_internal_state = armv7a_reset_clear_internal_state,
++	.reset_prepare_trigger = cortex_a_reset_prepare_trigger,
++	.deassert_reset = cortex_a_post_deassert_reset,
+ 
+ 	/* REVISIT allow exporting VFP3 registers ... */
+ 	.get_gdb_reg_list = arm_get_gdb_reg_list,
+@@ -3587,8 +3741,9 @@ struct target_type cortexr4_target = {
+ 	.resume = cortex_a_resume,
+ 	.step = cortex_a_step,
+ 
+-	.assert_reset = cortex_a_assert_reset,
+-	.deassert_reset = cortex_a_deassert_reset,
++	.reset_clear_internal_state = armv7a_reset_clear_internal_state,
++	.reset_prepare_trigger = cortex_a_reset_prepare_trigger,
++	.deassert_reset = cortex_a_post_deassert_reset,
+ 
+ 	/* REVISIT allow exporting VFP3 registers ... */
+ 	.get_gdb_reg_list = arm_get_gdb_reg_list,
+diff --git a/src/target/cortex_m.c b/src/target/cortex_m.c
+index 07fea51..42eb4b2 100644
+--- a/src/target/cortex_m.c
++++ b/src/target/cortex_m.c
+@@ -948,49 +948,24 @@ static int cortex_m_step(struct target *target, int current,
+ 	return ERROR_OK;
+ }
+ 
+-static int cortex_m_assert_reset(struct target *target)
++/**
++ * Prepares debug state before reset or under active SRST if possible.
++ *
++ * @param halt sets vector catch to stop core at reset
++ * @param trigger triggers SYSRESETREQ or VECTRESET.
++ */
++int cortex_m_reset_prepare_trigger(struct target *target, bool halt, bool trigger)
+ {
+ 	struct cortex_m_common *cortex_m = target_to_cm(target);
+ 	struct armv7m_common *armv7m = &cortex_m->armv7m;
+ 	enum cortex_m_soft_reset_config reset_config = cortex_m->soft_reset_config;
+ 
+-	LOG_DEBUG("target->state: %s",
+-		target_state_name(target));
+-
+-	enum reset_types jtag_reset_config = jtag_get_reset_config();
+-
+-	if (target_has_event_action(target, TARGET_EVENT_RESET_ASSERT)) {
+-		/* allow scripts to override the reset event */
+-
+-		target_handle_event(target, TARGET_EVENT_RESET_ASSERT);
+-		register_cache_invalidate(cortex_m->armv7m.arm.core_cache);
+-		target->state = TARGET_RESET;
+-
++	/* cannot talk to target if it wasn't examined yet */
++	if (!target_was_examined(target))
+ 		return ERROR_OK;
+-	}
+-
+-	/* some cores support connecting while srst is asserted
+-	 * use that mode is it has been configured */
+-
+-	bool srst_asserted = false;
+-
+-	if (!target_was_examined(target)) {
+-		if (jtag_reset_config & RESET_HAS_SRST) {
+-			adapter_assert_reset();
+-			if (target->reset_halt)
+-				LOG_ERROR("Target not examined, will not halt after reset!");
+-			return ERROR_OK;
+-		} else {
+-			LOG_ERROR("Target not examined, reset NOT asserted!");
+-			return ERROR_FAIL;
+-		}
+-	}
+ 
+-	if ((jtag_reset_config & RESET_HAS_SRST) &&
+-	    (jtag_reset_config & RESET_SRST_NO_GATING)) {
+-		adapter_assert_reset();
+-		srst_asserted = true;
+-	}
++	/* Some cores support connecting while srst is asserted.
++	 * If RESET_HAS_SRST and RESET_SRST_NO_GATING are configured, core is under SRST now */
+ 
+ 	/* Enable debug requests */
+ 	int retval;
+@@ -1008,17 +983,7 @@ static int cortex_m_assert_reset(struct target *target)
+ 	mem_ap_write_u32(armv7m->debug_ap, DCB_DCRDR, 0);
+ 	/* Ignore less important errors */
+ 
+-	if (!target->reset_halt) {
+-		/* Set/Clear C_MASKINTS in a separate operation */
+-		if (cortex_m->dcb_dhcsr & C_MASKINTS)
+-			cortex_m_write_debug_halt_mask(target, 0, C_MASKINTS);
+-
+-		/* clear any debug flags before resuming */
+-		cortex_m_clear_halt(target);
+-
+-		/* clear C_HALT in dhcsr reg */
+-		cortex_m_write_debug_halt_mask(target, 0, C_HALT);
+-	} else {
++	if (halt) {
+ 		/* Halt in debug on reset; endreset_event() restores DEMCR.
+ 		 *
+ 		 * REVISIT catching BUSERR presumably helps to defend against
+@@ -1030,16 +995,19 @@ static int cortex_m_assert_reset(struct target *target)
+ 				TRCENA | VC_HARDERR | VC_BUSERR | VC_CORERESET);
+ 		if (retval != ERROR_OK || retval2 != ERROR_OK)
+ 			LOG_INFO("AP write error, reset will not halt");
+-	}
++	} else {
++		/* Set/Clear C_MASKINTS in a separate operation */
++		if (cortex_m->dcb_dhcsr & C_MASKINTS)
++			cortex_m_write_debug_halt_mask(target, 0, C_MASKINTS);
+ 
+-	if (jtag_reset_config & RESET_HAS_SRST) {
+-		/* default to asserting srst */
+-		if (!srst_asserted)
+-			adapter_assert_reset();
++		/* clear any debug flags before resuming */
++		cortex_m_clear_halt(target);
+ 
+-		/* srst is asserted, ignore AP access errors */
+-		retval = ERROR_OK;
+-	} else {
++		/* clear C_HALT in dhcsr reg */
++		cortex_m_write_debug_halt_mask(target, 0, C_HALT);
++	}
++
++	if (trigger) {
+ 		/* Use a standard Cortex-M3 software reset mechanism.
+ 		 * We default to using VECRESET as it is supported on all current cores.
+ 		 * This has the disadvantage of not resetting the peripherals, so a
+@@ -1059,7 +1027,7 @@ static int cortex_m_assert_reset(struct target *target)
+ 				? AIRCR_SYSRESETREQ : AIRCR_VECTRESET));
+ 		if (retval3 != ERROR_OK)
+ 			LOG_DEBUG("Ignoring AP write error right after reset");
+-
++#if 0
+ 		retval3 = dap_dp_init(armv7m->debug_ap->dap);
+ 		if (retval3 != ERROR_OK)
+ 			LOG_ERROR("DP initialisation failed");
+@@ -1072,41 +1040,66 @@ static int cortex_m_assert_reset(struct target *target)
+ 			uint32_t tmp;
+ 			mem_ap_read_atomic_u32(armv7m->debug_ap, NVIC_AIRCR, &tmp);
+ 		}
++#endif
++	} else {
++		/* srst is asserted, ignore AP access errors */
++		retval = ERROR_OK;
+ 	}
+ 
+-	target->state = TARGET_RESET;
+-	jtag_add_sleep(50000);
+-
+-	register_cache_invalidate(cortex_m->armv7m.arm.core_cache);
++	armv7m_reset_clear_internal_state(target);
+ 
+ 	/* now return stored error code if any */
+ 	if (retval != ERROR_OK)
+ 		return retval;
+-
+-	if (target->reset_halt) {
++#if 0
++	if (halt) {
+ 		retval = target_halt(target);
+ 		if (retval != ERROR_OK)
+ 			return retval;
+ 	}
+-
++#endif
+ 	return ERROR_OK;
+ }
+ 
+-static int cortex_m_deassert_reset(struct target *target)
++#if 0
++static int cortex_m_assert_reset(struct target *target)
++{
++	LOG_DEBUG("target->state: %s",
++		target_state_name(target));
++
++	if (target_has_event_action(target, TARGET_EVENT_RESET_ASSERT)) {
++		/* allow scripts to override the reset event */
++
++		target_handle_event(target, TARGET_EVENT_RESET_ASSERT);
++
++		struct cortex_m_common *cortex_m = target_to_cm(target);
++		register_cache_invalidate(cortex_m->armv7m.arm.core_cache);
++		target->state = TARGET_RESET;
++
++		return ERROR_OK;
++	}
++
++	enum reset_types jtag_reset_config = jtag_get_reset_config();
++
++	return cortex_m_prepare_reset(target, target->reset_halt,
++				(jtag_reset_config & RESET_HAS_SRST) == 0);
++}
++
++static int cortex_m_post_deassert_reset(struct target *target)
+ {
+ 	struct armv7m_common *armv7m = &target_to_cm(target)->armv7m;
+ 
+ 	LOG_DEBUG("target->state: %s",
+ 		target_state_name(target));
+ 
+-	/* deassert reset lines */
+-	adapter_deassert_reset();
++	/* SRST was deasserted in the previous Tcl call to reset_deassert_initial */
++	/* adapter_deassert_reset(); is no more needed here */
+ 
+ 	enum reset_types jtag_reset_config = jtag_get_reset_config();
+ 
+-	if ((jtag_reset_config & RESET_HAS_SRST) &&
+-	    !(jtag_reset_config & RESET_SRST_NO_GATING) &&
+-		target_was_examined(target)) {
++	if ((jtag_reset_config & RESET_HAS_SRST)
++			&& target->dbg_under_srst != DBG_UNDER_SRST_WORKING
++			&& target_was_examined(target)) {
+ 		int retval = dap_dp_init(armv7m->debug_ap->dap);
+ 		if (retval != ERROR_OK) {
+ 			LOG_ERROR("DP initialisation failed");
+@@ -1116,6 +1109,7 @@ static int cortex_m_deassert_reset(struct target *target)
+ 
+ 	return ERROR_OK;
+ }
++#endif
+ 
+ int cortex_m_set_breakpoint(struct target *target, struct breakpoint *breakpoint)
+ {
+@@ -2495,8 +2489,10 @@ struct target_type cortexm_target = {
+ 	.resume = cortex_m_resume,
+ 	.step = cortex_m_step,
+ 
+-	.assert_reset = cortex_m_assert_reset,
+-	.deassert_reset = cortex_m_deassert_reset,
++	.reset_clear_internal_state = armv7m_reset_clear_internal_state,
++	.reset_prepare_trigger = cortex_m_reset_prepare_trigger,
++/*	.assert_reset = cortex_m_assert_reset,*/
++/*	.deassert_reset = cortex_m_post_deassert_reset,*/
+ 	.soft_reset_halt = cortex_m_soft_reset_halt,
+ 
+ 	.get_gdb_reg_list = armv7m_get_gdb_reg_list,
+diff --git a/src/target/cortex_m.h b/src/target/cortex_m.h
+index 2daf4cb..e6a2ab3 100644
+--- a/src/target/cortex_m.h
++++ b/src/target/cortex_m.h
+@@ -200,6 +200,7 @@ target_to_cm(struct target *target)
+ }
+ 
+ int cortex_m_examine(struct target *target);
++int cortex_m_prepare_reset(struct target *target, bool halt, bool without_srst);
+ int cortex_m_set_breakpoint(struct target *target, struct breakpoint *breakpoint);
+ int cortex_m_unset_breakpoint(struct target *target, struct breakpoint *breakpoint);
+ int cortex_m_add_breakpoint(struct target *target, struct breakpoint *breakpoint);
+diff --git a/src/target/startup.tcl b/src/target/startup.tcl
+index cf844e1..10ee27c 100644
+--- a/src/target/startup.tcl
++++ b/src/target/startup.tcl
+@@ -10,12 +10,14 @@ set in_process_reset 0
+ # Catch reset recursion
+ proc ocd_process_reset { MODE } {
+ 	global in_process_reset
++	global arp_reset_mode
+ 	if {$in_process_reset} {
+ 		set in_process_reset 0
+ 		return -code error "'reset' can not be invoked recursively"
+ 	}
+ 
+ 	set in_process_reset 1
++	set arp_reset_mode $MODE
+ 	set success [expr [catch {ocd_process_reset_inner $MODE} result]==0]
+ 	set in_process_reset 0
+ 
+@@ -26,6 +28,158 @@ proc ocd_process_reset { MODE } {
+ 	}
+ }
+ 
++
++proc arp_is_tap_enabled { target } {
++	if (![using_jtag]) {
++		return 1
++	}
++	return [jtag tapisenabled [$target cget -chain-position]]
++}
++
++# duplicate of target_examine_one(), keep in sync
++proc arp_examine_one { target } {
++	if [arp_is_tap_enabled $target] {
++		$target invoke-event examine-start
++		set err [catch "$target arp_examine allow-defer"]
++		if { $err } {
++			$target invoke-event examine-fail
++		} else {
++			$target invoke-event examine-end
++		}
++	}
++}
++
++
++proc arp_reset_plan_no_srst { phase target } {
++	global arp_reset_mode
++	switch $phase {
++		pre {
++			arp_examine_one $target
++		}
++		middle {
++			$target arp_reset trigger $arp_reset_mode
++		}
++		post {
++			$target arp_reset post_deassert $arp_reset_mode
++		}
++	}
++}
++
++proc arp_reset_plan_srst_dbg_Working { phase target } {
++	global arp_reset_mode
++	switch $phase {
++		pre {
++			# srst_nogate: SRST is asserted now
++			# srst_gates_jtag: SRST has not been asserted yet
++		}
++		middle {
++			# SRST is asserted, target is responsive
++			arp_examine_one $target
++			$target arp_reset prepare $arp_reset_mode
++		}
++		post {
++			$target arp_reset post_deassert $arp_reset_mode
++		}
++	}
++}
++
++proc arp_reset_plan_srst_dbg_gated { phase target } {
++	global arp_reset_mode
++	switch $phase {
++		pre {
++			# SRST has not been asserted yet
++			# srst_nogate mode is not supported
++			$target arp_reset prepare $arp_reset_mode
++		}
++		middle {
++			# SRST is asserted, target debug gated
++		}
++		post {
++			arp_examine_one $target
++			$target arp_reset post_deassert $arp_reset_mode
++		}
++	}
++}
++
++proc arp_reset_plan_srst_dbg_cleared { phase target } {
++	global arp_reset_mode
++	switch $phase {
++		pre {
++			# target debug is going to be cleared
++			# no point to pre-configure is
++		}
++		middle {
++			# SRST is asserted, target debug not accessible
++			if { [using_hla] } {
++				# hla_target controls SRST on its own and even worse
++				# an hl adapter may not export SRST control in API (ST-Link 1)
++				# The only possible workaround is to let the target control SRST
++				$target arp_reset assert $arp_reset_mode
++			} else {
++				$target arp_reset clear_internal_state $arp_reset_mode
++			}
++		}
++		post {
++			arp_examine_one $target
++			$target arp_reset post_deassert $arp_reset_mode
++		}
++	}
++}
++
++proc arp_reset_default_handler { phase target } {
++	if [arp_is_tap_enabled $target] {
++	        set dbg_u_srst [$target cget -dbg-under-srst]
++		if [reset_config_includes srst] {
++			switch $dbg_u_srst {
++				working {
++					arp_reset_plan_srst_dbg_Working $phase $target
++				}
++				gated {
++					arp_reset_plan_srst_dbg_gated $phase $target
++				}
++				cleared {
++					arp_reset_plan_srst_dbg_cleared $phase $target
++				}
++				unknown {
++					if [reset_config_includes srst_nogate] {
++						arp_reset_plan_srst_dbg_Working $phase $target
++					} else {
++						arp_reset_plan_srst_dbg_gated $phase $target
++					}
++				}
++			}
++		} else {
++			arp_reset_plan_no_srst $phase $target
++		}
++	}
++}
++
++proc arp_reset_halt_default_handler { target } {
++	# Wait upto 1 second for target to halt.  Why 1sec? Cause
++	# the JTAG tap reset signal might be hooked to a slow
++	# resistor/capacitor circuit - and it might take a while
++	# to charge
++	catch { $target arp_waitstate halted 1000 }
++}
++
++# Utility to make 'reset halt' work as reset;halt on a target
++# It does not prevent running code after reset
++proc arp_reset_simple_halter { target } {
++	$target arp_poll
++	set st [$target curstate]
++	if { $st eq "reset" } {
++		# we assume running state follows
++		# if reset accidentaly halt, waiting is useless
++		catch { $target arp_waitstate running 1000 }
++		set st [$target curstate]
++	}
++	if { $st eq "running" } {
++		echo "$target: Ran after reset and before halt..."
++		$target arp_halt
++	}
++	arp_reset_halt_default_handler $target
++}
++
+ proc ocd_process_reset_inner { MODE } {
+ 	set targets [target names]
+ 
+@@ -53,51 +207,53 @@ proc ocd_process_reset_inner { MODE } {
+ 	# relative to a previous restrictive scheme
+ 
+ 	foreach t $targets {
+-		# New event script.
+ 		$t invoke-event reset-start
+ 	}
+ 
+-	# Use TRST or TMS/TCK operations to reset all the tap controllers.
+-	# TAP reset events get reported; they might enable some taps.
+-	init_reset $MODE
+-
+-	# Examine all targets on enabled taps.
+-	foreach t $targets {
+-		if {![using_jtag] || [jtag tapisenabled [$t cget -chain-position]]} {
+-			$t invoke-event examine-start
+-			set err [catch "$t arp_examine allow-defer"]
+-			if { $err == 0 } {
+-				$t invoke-event examine-end
++	# If srst_nogate is set, check all targets whether they support it
++	if {[reset_config_includes srst srst_nogate]} {
++		foreach t $targets {
++			set dbg_u_srst [$t cget -dbg-under-srst]
++			if {$dbg_u_srst eq "gated"} {
++				reset_config srst_gates_jtag
++				echo "'srst_nogate' is not supported by at least target $t"
++				echo "Reset config changed to 'srst_gates_jtag'"
++				break;
+ 			}
+ 		}
+ 	}
++        set early_reset_init [expr {[reset_config_includes independent_trst]
++				    || [reset_config_includes srst srst_nogate]}]
+ 
+-	# Assert SRST, and report the pre/post events.
+-	# Note:  no target sees SRST before "pre" or after "post".
+-	foreach t $targets {
+-		$t invoke-event reset-assert-pre
++	if $early_reset_init {
++		# We have an independent trst or no-gating srst
++
++		# Use TRST or TMS/TCK operations to reset all the tap controllers.
++		# TAP reset events get reported; they might enable some taps.
++		init_reset $MODE
+ 	}
++
+ 	foreach t $targets {
+-		# C code needs to know if we expect to 'halt'
+-		if {![using_jtag] || [jtag tapisenabled [$t cget -chain-position]]} {
+-			$t arp_reset assert $halt
+-		}
++		$t invoke-event reset-assert-pre
+ 	}
++
++	# Assert SRST
++	reset_assert_final $MODE
++
+ 	foreach t $targets {
+ 		$t invoke-event reset-assert-post
+ 	}
+ 
+-	# Now de-assert SRST, and report the pre/post events.
+-	# Note:  no target sees !SRST before "pre" or after "post".
+ 	foreach t $targets {
+ 		$t invoke-event reset-deassert-pre
+ 	}
+-	foreach t $targets {
+-		# Again, de-assert code needs to know if we 'halt'
+-		if {![using_jtag] || [jtag tapisenabled [$t cget -chain-position]]} {
+-			$t arp_reset deassert $halt
+-		}
++
++	# Deassert SRST
++	reset_deassert_initial $MODE
++	if { !$early_reset_init } {
++		if [using_jtag] { jtag arp_init }
+ 	}
++
+ 	foreach t $targets {
+ 		$t invoke-event reset-deassert-post
+ 	}
+@@ -107,7 +263,7 @@ proc ocd_process_reset_inner { MODE } {
+ 	# first executing any instructions.
+ 	if { $halt } {
+ 		foreach t $targets {
+-			if {[using_jtag] && ![jtag tapisenabled [$t cget -chain-position]]} {
++			if {![arp_is_tap_enabled $t]} {
+ 				continue
+ 			}
+ 
+@@ -117,18 +273,10 @@ proc ocd_process_reset_inner { MODE } {
+ 				continue
+ 			}
+ 
+-			# Wait upto 1 second for target to halt.  Why 1sec? Cause
+-			# the JTAG tap reset signal might be hooked to a slow
+-			# resistor/capacitor circuit - and it might take a while
+-			# to charge
+-
+-			# Catch, but ignore any errors.
+-			catch { $t arp_waitstate halted 1000 }
++			$t invoke-event reset-halt
+ 
+ 			# Did we succeed?
+-			set s [$t curstate]
+-
+-			if { 0 != [string compare $s "halted" ] } {
++			if { [$t curstate] ne "halted" } {
+ 				return -code error [format "TARGET: %s - Not halted" $t]
+ 			}
+ 		}
+@@ -137,7 +285,7 @@ proc ocd_process_reset_inner { MODE } {
+ 	#Pass 2 - if needed "init"
+ 	if { 0 == [string compare init $MODE] } {
+ 		foreach t $targets {
+-			if {[using_jtag] && ![jtag tapisenabled [$t cget -chain-position]]} {
++			if {![arp_is_tap_enabled $t]} {
+ 				continue
+ 			}
+ 
+@@ -147,11 +295,7 @@ proc ocd_process_reset_inner { MODE } {
+ 				continue
+ 			}
+ 
+-			set err [catch "$t arp_waitstate halted 5000"]
+-			# Did it halt?
+-			if { $err == 0 } {
+-				$t invoke-event reset-init
+-			}
++			$t invoke-event reset-init
+ 		}
+ 	}
+ 
+@@ -162,12 +306,12 @@ proc ocd_process_reset_inner { MODE } {
+ 
+ proc using_jtag {} {
+ 	set _TRANSPORT [ transport select ]
+-	expr { [ string first "jtag" $_TRANSPORT ] != -1 }
++	expr { [ string equal "jtag" $_TRANSPORT ] != 0 || [ string equal "hla_jtag" $_TRANSPORT ] != 0 }
+ }
+ 
+ proc using_swd {} {
+ 	set _TRANSPORT [ transport select ]
+-	expr { [ string first "swd" $_TRANSPORT ] != -1 }
++	expr { [ string equal "swd" $_TRANSPORT ] != 0 || [ string equal "hla_swd" $_TRANSPORT ] != 0}
+ }
+ 
+ proc using_hla {} {
+@@ -175,6 +319,16 @@ proc using_hla {} {
+ 	expr { [ string first "hla" $_TRANSPORT ] != -1 }
+ }
+ 
++proc using_stlink_jtag {} {
++	set _TRANSPORT [ transport select ]
++	expr { [ string equal "stlink_jtag" $_TRANSPORT ] != 0 }
++}
++
++proc using_stlink_swd {} {
++	set _TRANSPORT [ transport select ]
++	expr { [ string equal "stlink_swd" $_TRANSPORT ] != 0 }
++}
++
+ #########
+ 
+ # Temporary migration aid.  May be removed starting in January 2011.
+@@ -204,6 +358,10 @@ proc init_target_events {} {
+ 		set_default_target_event $t gdb-flash-erase-start "reset init"
+ 		set_default_target_event $t gdb-flash-write-end "reset halt"
+ 		set_default_target_event $t gdb-attach "halt"
++		set_default_target_event $t reset-assert-pre "arp_reset_default_handler pre $t"
++		set_default_target_event $t reset-assert-post "arp_reset_default_handler middle $t"
++		set_default_target_event $t reset-deassert-post "arp_reset_default_handler post $t"
++		set_default_target_event $t reset-halt "arp_reset_halt_default_handler $t"
+ 	}
+ }
+ 
+diff --git a/src/target/target.c b/src/target/target.c
+index 478c39d..906f1be 100644
+--- a/src/target/target.c
++++ b/src/target/target.c
+@@ -74,6 +74,8 @@ static int target_gdb_fileio_end_default(struct target *target, int retcode,
+ 		int fileio_errno, bool ctrl_c);
+ static int target_profiling_default(struct target *target, uint32_t *samples,
+ 		uint32_t max_num_samples, uint32_t *num_samples, uint32_t seconds);
++static void target_free_all_working_areas_restore(struct target *target, int restore);
++static void target_reset_examined(struct target *target);
+ 
+ /* targets */
+ extern struct target_type arm7tdmi_target;
+@@ -163,6 +165,10 @@ static const Jim_Nvp nvp_assert[] = {
+ 	{ .name = "F", NVP_DEASSERT },
+ 	{ .name = "t", NVP_ASSERT },
+ 	{ .name = "f", NVP_DEASSERT },
++	{ .name = "prepare", NVP_PREPARE },
++	{ .name = "trigger", NVP_TRIGGER },
++	{ .name = "post_deassert", NVP_POST_DEASSERT },
++	{ .name = "clear_internal_state", NVP_CLEAR_INTERNAL_STATE },
+ 	{ .name = NULL, .value = -1 }
+ };
+ 
+@@ -209,10 +215,12 @@ static const Jim_Nvp nvp_target_event[] = {
+ 	{ .value = TARGET_EVENT_RESET_ASSERT_POST,   .name = "reset-assert-post" },
+ 	{ .value = TARGET_EVENT_RESET_DEASSERT_PRE,  .name = "reset-deassert-pre" },
+ 	{ .value = TARGET_EVENT_RESET_DEASSERT_POST, .name = "reset-deassert-post" },
++	{ .value = TARGET_EVENT_RESET_HALT,          .name = "reset-halt" },
+ 	{ .value = TARGET_EVENT_RESET_INIT,          .name = "reset-init" },
+ 	{ .value = TARGET_EVENT_RESET_END,           .name = "reset-end" },
+ 
+ 	{ .value = TARGET_EVENT_EXAMINE_START, .name = "examine-start" },
++	{ .value = TARGET_EVENT_EXAMINE_FAIL, .name = "examine-fail" },
+ 	{ .value = TARGET_EVENT_EXAMINE_END, .name = "examine-end" },
+ 
+ 	{ .value = TARGET_EVENT_DEBUG_HALTED, .name = "debug-halted" },
+@@ -269,6 +277,14 @@ static const Jim_Nvp nvp_reset_modes[] = {
+ 	{ .name = NULL     , .value = -1 },
+ };
+ 
++static const Jim_Nvp nvp_dbg_under_srst[] = {
++	{ .name = "unknown", .value = DBG_UNDER_SRST_UNKNOWN },
++	{ .name = "working", .value = DBG_UNDER_SRST_WORKING },
++	{ .name = "gated", .value = DBG_UNDER_SRST_GATED },
++	{ .name = "cleared", .value = DBG_UNDER_SRST_CLEARED },
++	{ .name = NULL     , .value = -1 },
++};
++
+ const char *debug_reason_name(struct target *t)
+ {
+ 	const char *cp;
+@@ -697,18 +713,23 @@ static int default_examine(struct target *target)
+ }
+ 
+ /* no check by default */
++/*TODO: remove and use reset_deassert_post or reset_end event */
+ static int default_check_reset(struct target *target)
+ {
+ 	return ERROR_OK;
+ }
+ 
++/* Equvivalent Tcl code arp_examine_one is in src/target/startup.tcl
++ * Keep in sync */
+ int target_examine_one(struct target *target)
+ {
+ 	target_call_event_callbacks(target, TARGET_EVENT_EXAMINE_START);
+ 
+ 	int retval = target->type->examine(target);
+-	if (retval != ERROR_OK)
++	if (retval != ERROR_OK) {
++		target_call_event_callbacks(target, TARGET_EVENT_EXAMINE_FAIL);
+ 		return retval;
++	}
+ 
+ 	target_call_event_callbacks(target, TARGET_EVENT_EXAMINE_END);
+ 
+@@ -760,6 +781,41 @@ const char *target_type_name(struct target *target)
+ 	return target->type->name;
+ }
+ 
++int target_reset_prepare_trigger(struct target *target, bool halt, bool trigger)
++{
++	if (!target->type->reset_prepare_trigger) {
++		if (halt || trigger) {
++			LOG_ERROR("Target %s does not support reset_prepare_trigger",
++					target_name(target));
++			return ERROR_FAIL;
++		}
++		LOG_DEBUG("Target %s does not support reset_prepare",
++				target_name(target));
++		return ERROR_OK;
++	}
++	return target->type->reset_prepare_trigger(target, halt, trigger);
++}
++
++int target_reset_clear_internal_state_default(struct target *target)
++{
++	if (target->defer_examine)
++		target_reset_examined(target);
++
++	target_free_all_working_areas_restore(target, 0);
++	target->state = TARGET_RESET;
++	return ERROR_OK;
++}
++
++int target_reset_clear_internal_state(struct target *target)
++{
++	if (!target->type->reset_clear_internal_state) {
++		LOG_DEBUG("Target %s does not support reset_clear_internal_state",
++				target_name(target));
++		return ERROR_OK;
++	}
++	return target->type->reset_clear_internal_state(target);
++}
++
+ static int target_soft_reset_halt(struct target *target)
+ {
+ 	if (!target_was_examined(target)) {
+@@ -1252,7 +1308,6 @@ int target_profiling(struct target *target, uint32_t *samples,
+ 
+ /**
+  * Reset the @c examined flag for the given target.
+- * Pure paranoia -- targets are zeroed on allocation.
+  */
+ static void target_reset_examined(struct target *target)
+ {
+@@ -4551,6 +4606,7 @@ enum target_cfg_param {
+ 	TCFG_RTOS,
+ 	TCFG_DEFER_EXAMINE,
+ 	TCFG_GDB_PORT,
++	TCFG_DBG_UNDER_SRST,
+ };
+ 
+ static Jim_Nvp nvp_config_opts[] = {
+@@ -4567,6 +4623,7 @@ static Jim_Nvp nvp_config_opts[] = {
+ 	{ .name = "-rtos",             .value = TCFG_RTOS },
+ 	{ .name = "-defer-examine",    .value = TCFG_DEFER_EXAMINE },
+ 	{ .name = "-gdb-port",         .value = TCFG_GDB_PORT },
++	{ .name = "-dbg-under-srst",   .value = TCFG_DBG_UNDER_SRST },
+ 	{ .name = NULL, .value = -1 }
+ };
+ 
+@@ -4868,6 +4925,27 @@ no_params:
+ 			Jim_SetResultString(goi->interp, target->gdb_port_override ? : "undefined", -1);
+ 			/* loop for more */
+ 			break;
++
++		case TCFG_DBG_UNDER_SRST:
++			if (goi->isconfigure) {
++				e = Jim_GetOpt_Nvp(goi, nvp_dbg_under_srst, &n);
++				if (e != JIM_OK) {
++					Jim_GetOpt_NvpUnknown(goi, nvp_dbg_under_srst, 1);
++					return e;
++				}
++				target->dbg_under_srst = n->value;
++			} else {
++				if (goi->argc != 0)
++					goto no_params;
++			}
++			n = Jim_Nvp_value2name_simple(nvp_dbg_under_srst, target->dbg_under_srst);
++			if (n->name == NULL) {
++				target->dbg_under_srst = DBG_UNDER_SRST_UNKNOWN;
++				n = Jim_Nvp_value2name_simple(nvp_dbg_under_srst, target->dbg_under_srst);
++			}
++			Jim_SetResultString(goi->interp, n->name, -1);
++			/* loop for more */
++			break;
+ 		}
+ 	} /* while (goi->argc) */
+ 
+@@ -5228,7 +5306,7 @@ static int jim_target_reset(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+ 
+ 	if (goi.argc != 2) {
+ 		Jim_WrongNumArgs(interp, 0, argv,
+-				"([tT]|[fF]|assert|deassert) BOOL");
++				"[prepare|trigger|post_deassert|clear_internal_state|assert|deassert] [run|halt|BOOL]");
+ 		return JIM_ERR;
+ 	}
+ 
+@@ -5239,35 +5317,106 @@ static int jim_target_reset(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
+ 		return e;
+ 	}
+ 	/* the halt or not param */
+-	jim_wide a;
+-	e = Jim_GetOpt_Wide(&goi, &a);
++	Jim_Obj *o;
++	e = Jim_GetOpt_Obj(&goi, &o);
+ 	if (e != JIM_OK)
+ 		return e;
+ 
+ 	struct target *target = Jim_CmdPrivData(goi.interp);
++	Jim_Nvp *n2;
++	e = Jim_Nvp_name2value_obj(interp, nvp_reset_modes, o, &n2);
++	if (e == JIM_OK) {
++		target->reset_halt = n2->value == RESET_HALT || n2->value == RESET_INIT;
++	} else {
++		jim_wide a;
++		e = Jim_GetWide(interp, o, &a);
++		if (e == JIM_OK)
++			target->reset_halt = a != 0;
++	}
++	if (e != JIM_OK) {
++		Jim_GetOpt_NvpUnknown(&goi, nvp_reset_modes, 1);
++		return e;
++	}
++
+ 	if (!target->tap->enabled)
+ 		return jim_target_tap_disabled(interp);
+ 
+-	if (!target->type->assert_reset || !target->type->deassert_reset) {
+-		Jim_SetResultFormatted(interp,
+-				"No target-specific reset for %s",
++	enum reset_types jtag_reset_config = jtag_get_reset_config();
++
++	e = ERROR_FAIL;
++	switch (n->value) {
++	case NVP_ASSERT:
++		if (!target->type->assert_reset) {
++			Jim_SetResultFormatted(interp,
++				"No target-specific reset assert for %s",
+ 				target_name(target));
+-		return JIM_ERR;
+-	}
++			return JIM_ERR;
++		}
++		e = target->type->assert_reset(target);
++		break;
+ 
+-	if (target->defer_examine)
+-		target_reset_examined(target);
++	case NVP_PREPARE:
++		if (target->type->reset_prepare_trigger) {
++			e = target->type->reset_prepare_trigger(target, target->reset_halt, false);
++		} else if (target->type->assert_reset
++			&& jtag_reset_config & RESET_HAS_SRST) {
++			/* old target compatibility */
++			LOG_DEBUG("No target-specific reset prepare for %s, using assert_reset",
++				target_name(target));
++			e = target->type->assert_reset(target);
++		} else {
++			LOG_DEBUG("No target-specific reset prepare for %s",
++				target_name(target));
++			e = ERROR_OK;
++		}
++		break;
+ 
+-	/* determine if we should halt or not. */
+-	target->reset_halt = !!a;
+-	/* When this happens - all workareas are invalid. */
+-	target_free_all_working_areas_restore(target, 0);
++	case NVP_TRIGGER:
++		if (target->type->reset_prepare_trigger) {
++			e = target->type->reset_prepare_trigger(target, target->reset_halt, true);
++		} else if (target->type->assert_reset
++			&& (jtag_reset_config & RESET_HAS_SRST) == 0) {
++			/* old target compatibility */
++			LOG_DEBUG("No target-specific reset trigger for %s, using assert_reset",
++				target_name(target));
++			e = target->type->assert_reset(target);
++		} else {
++			Jim_SetResultFormatted(interp,
++				"No target-specific reset trigger for %s",
++				target_name(target));
++			return JIM_ERR;
++		}
++		break;
+ 
+-	/* do the assert */
+-	if (n->value == NVP_ASSERT)
+-		e = target->type->assert_reset(target);
+-	else
++	case NVP_DEASSERT:
++		if (!target->type->deassert_reset) {
++			Jim_SetResultFormatted(interp,
++				"No target-specific reset deassert for %s",
++				target_name(target));
++			return JIM_ERR;
++		}
+ 		e = target->type->deassert_reset(target);
++		break;
++
++	case NVP_POST_DEASSERT:
++		if (target->type->deassert_reset) {
++			e = target->type->deassert_reset(target);
++		} else {
++			LOG_DEBUG("No target-specific reset post_deassert for %s",
++				target_name(target));
++			e = ERROR_OK;
++		}
++		break;
++
++	case NVP_CLEAR_INTERNAL_STATE:
++		if (target->type->reset_clear_internal_state) {
++			e = target->type->reset_clear_internal_state(target);
++		} else {
++			LOG_DEBUG("No target-specific reset clear internal state for %s",
++				target_name(target));
++			e = target_reset_clear_internal_state_default(target);
++		}
++	}
+ 	return (e == ERROR_OK) ? JIM_OK : JIM_ERR;
+ }
+ 
+diff --git a/src/target/target.h b/src/target/target.h
+index fe7e1a7..b24abc0 100644
+--- a/src/target/target.h
++++ b/src/target/target.h
+@@ -67,6 +67,20 @@ enum target_state {
+ enum nvp_assert {
+ 	NVP_DEASSERT,
+ 	NVP_ASSERT,
++	NVP_PREPARE,
++	NVP_TRIGGER,
++	NVP_POST_DEASSERT,
++	NVP_CLEAR_INTERNAL_STATE,
++};
++
++enum target_dbg_under_srst {
++	DBG_UNDER_SRST_UNKNOWN = 0,
++	DBG_UNDER_SRST_WORKING = 1,
++		/* Debug circuitry is working with SRST asserted */
++	DBG_UNDER_SRST_GATED = 2,
++		/* Debug circuitry holds the setting but access to it is blocked under SRST */
++	DBG_UNDER_SRST_CLEARED = 3,
++		/* SRST clears debug circuitry */
+ };
+ 
+ enum target_reset_mode {
+@@ -152,7 +166,8 @@ struct target {
+ 
+ 	struct target_event_action *event_action;
+ 
+-	int reset_halt;						/* attempt resetting the CPU into the halted mode? */
++	enum target_dbg_under_srst dbg_under_srst;	/* how SRST signal influences the debug circuitry */
++	int reset_halt;						/* attempt resetting the CPU into the halted mode */
+ 	target_addr_t working_area;				/* working area (initialised RAM). Evaluated
+ 										 * upon first allocation from virtual/physical address. */
+ 	bool working_area_virt_spec;		/* virtual address specified? */
+@@ -259,6 +274,7 @@ enum target_event {
+ 	TARGET_EVENT_RESET_ASSERT_POST,
+ 	TARGET_EVENT_RESET_DEASSERT_PRE,
+ 	TARGET_EVENT_RESET_DEASSERT_POST,
++	TARGET_EVENT_RESET_HALT,
+ 	TARGET_EVENT_RESET_INIT,
+ 	TARGET_EVENT_RESET_END,
+ 
+@@ -266,6 +282,7 @@ enum target_event {
+ 	TARGET_EVENT_DEBUG_RESUMED, /* target resumed to execute on behalf of the debugger */
+ 
+ 	TARGET_EVENT_EXAMINE_START,
++	TARGET_EVENT_EXAMINE_FAIL,
+ 	TARGET_EVENT_EXAMINE_END,
+ 
+ 	TARGET_EVENT_GDB_ATTACH,
+@@ -369,6 +386,9 @@ int target_poll(struct target *target);
+ int target_resume(struct target *target, int current, target_addr_t address,
+ 		int handle_breakpoints, int debug_execution);
+ int target_halt(struct target *target);
++int target_reset_prepare_trigger(struct target *target, bool halt, bool trigger);
++int target_reset_clear_internal_state_default(struct target *target);
++int target_reset_clear_internal_state(struct target *target);
+ int target_call_event_callbacks(struct target *target, enum target_event event);
+ int target_call_reset_callbacks(struct target *target, enum target_reset_mode reset_mode);
+ int target_call_trace_callbacks(struct target *target, size_t len, uint8_t *data);
+diff --git a/src/target/target_type.h b/src/target/target_type.h
+index fbbd57d..24b29ea 100644
+--- a/src/target/target_type.h
++++ b/src/target/target_type.h
+@@ -86,7 +86,23 @@ struct target_type {
+ 	 * reset run; halt
+ 	 */
+ 	int (*deassert_reset)(struct target *target);
++	/**
++	 * Substitutes assert_reset
++	 * Prepares debug circuitry before or during SRST
++	 * Optionally triggers reset using a debug register
++	 * DOES NOT CONTROL SRST LINE!!!
++	 *
++	 * @param target The target to work on
++	 * @param halt Prepare halt after reset
++	 * @param trigger Trigger reset by setting a debug register
++	 */
++	int (*reset_prepare_trigger)(struct target *target, bool halt, bool trigger);
+ 	int (*soft_reset_halt)(struct target *target);
++	/**
++	 * Internal target adjustment after reset
++	 * Typically sets target state and clears register cache
++	 */
++	int (*reset_clear_internal_state)(struct target *target);
+ 
+ 	/**
+ 	 * Target register access for GDB.  Do @b not call this function
+diff --git a/src/transport/transport.h b/src/transport/transport.h
+index 140ef50..8fb2585 100644
+--- a/src/transport/transport.h
++++ b/src/transport/transport.h
+@@ -96,6 +96,8 @@ bool transports_are_declared(void);
+ 
+ bool transport_is_jtag(void);
+ bool transport_is_swd(void);
++bool transport_is_stlink_jtag(void);
++bool transport_is_stlink_swd(void);
+ 
+ #if BUILD_HLADAPTER
+ bool transport_is_hla(void);
+diff --git a/tcl/board/stm32mp15x_dk2.cfg b/tcl/board/stm32mp15x_dk2.cfg
+new file mode 100644
+index 0000000..82617c5
+--- /dev/null
++++ b/tcl/board/stm32mp15x_dk2.cfg
+@@ -0,0 +1,9 @@
++# This is a STM32MP15x board MB1272B.
++
++source [find interface/stlink-dap.cfg]
++
++transport select stlink_swd
++
++source [find target/stm32mp15x_stpmu1.cfg]
++
++reset_config srst_only
+diff --git a/tcl/board/stm32mp15x_ev1_jlink_jtag.cfg b/tcl/board/stm32mp15x_ev1_jlink_jtag.cfg
+new file mode 100644
+index 0000000..7d74fa6
+--- /dev/null
++++ b/tcl/board/stm32mp15x_ev1_jlink_jtag.cfg
+@@ -0,0 +1,9 @@
++# This is a STM32MP15x board set MB1262C + MB1263B with PMIC STPMU1.
++
++source [find interface/jlink.cfg]
++
++transport select jtag
++
++source [find target/stm32mp15x_stpmu1.cfg]
++
++reset_config trst_and_srst separate
+diff --git a/tcl/board/stm32mp15x_ev1_jlink_swd.cfg b/tcl/board/stm32mp15x_ev1_jlink_swd.cfg
+new file mode 100644
+index 0000000..33e6ef5
+--- /dev/null
++++ b/tcl/board/stm32mp15x_ev1_jlink_swd.cfg
+@@ -0,0 +1,9 @@
++# This is a STM32MP15x board set MB1262C + MB1263B with PMIC STPMU1.
++
++source [find interface/jlink.cfg]
++
++transport select swd
++
++source [find target/stm32mp15x_stpmu1.cfg]
++
++reset_config srst_only
+diff --git a/tcl/board/stm32mp15x_ev1_stlink_jtag.cfg b/tcl/board/stm32mp15x_ev1_stlink_jtag.cfg
+new file mode 100644
+index 0000000..6fb1e31
+--- /dev/null
++++ b/tcl/board/stm32mp15x_ev1_stlink_jtag.cfg
+@@ -0,0 +1,9 @@
++# This is a STM32MP15x board set MB1262C + MB1263B with PMIC STPMU1.
++
++source [find interface/stlink-dap.cfg]
++
++transport select stlink_jtag
++
++source [find target/stm32mp15x_stpmu1.cfg]
++
++reset_config trst_and_srst separate
+diff --git a/tcl/board/stm32mp15x_ev1_stlink_swd.cfg b/tcl/board/stm32mp15x_ev1_stlink_swd.cfg
+new file mode 100644
+index 0000000..3c561c9
+--- /dev/null
++++ b/tcl/board/stm32mp15x_ev1_stlink_swd.cfg
+@@ -0,0 +1,9 @@
++# This is a STM32MP15x board set MB1262C + MB1263B with PMIC STPMU1.
++
++source [find interface/stlink-dap.cfg]
++
++transport select stlink_swd
++
++source [find target/stm32mp15x_stpmu1.cfg]
++
++reset_config srst_only
+diff --git a/tcl/board/stm32mp15x_ev1_ulink2_jtag.cfg b/tcl/board/stm32mp15x_ev1_ulink2_jtag.cfg
+new file mode 100644
+index 0000000..6b10351
+--- /dev/null
++++ b/tcl/board/stm32mp15x_ev1_ulink2_jtag.cfg
+@@ -0,0 +1,9 @@
++# This is a STM32MP15x board set MB1262C + MB1263B with PMIC STPMU1.
++
++source [find interface/cmsis-dap.cfg]
++
++transport select jtag
++
++source [find target/stm32mp15x_stpmu1.cfg]
++
++reset_config trst_and_srst separate
+diff --git a/tcl/board/stm32mp15x_ev1_ulink2_swd.cfg b/tcl/board/stm32mp15x_ev1_ulink2_swd.cfg
+new file mode 100644
+index 0000000..5495bc3
+--- /dev/null
++++ b/tcl/board/stm32mp15x_ev1_ulink2_swd.cfg
+@@ -0,0 +1,9 @@
++# This is a STM32MP15x board set MB1262C + MB1263B with PMIC STPMU1.
++
++source [find interface/cmsis-dap.cfg]
++
++transport select swd
++
++source [find target/stm32mp15x_stpmu1.cfg]
++
++reset_config srst_only
+diff --git a/tcl/board/stm32mp15x_ev2_jlink_jtag.cfg b/tcl/board/stm32mp15x_ev2_jlink_jtag.cfg
+new file mode 100644
+index 0000000..fcb0064
+--- /dev/null
++++ b/tcl/board/stm32mp15x_ev2_jlink_jtag.cfg
+@@ -0,0 +1,9 @@
++# This is a STM32MP15x board set MB1262C + MB1264A.
++
++source [find interface/jlink.cfg]
++
++transport select jtag
++
++source [find target/stm32mp15x.cfg]
++
++reset_config trst_and_srst separate
+diff --git a/tcl/board/stm32mp15x_ev2_jlink_swd.cfg b/tcl/board/stm32mp15x_ev2_jlink_swd.cfg
+new file mode 100644
+index 0000000..bbf981c
+--- /dev/null
++++ b/tcl/board/stm32mp15x_ev2_jlink_swd.cfg
+@@ -0,0 +1,9 @@
++# This is a STM32MP15x board set MB1262C + MB1264A.
++
++source [find interface/jlink.cfg]
++
++transport select swd
++
++source [find target/stm32mp15x.cfg]
++
++reset_config srst_only
+diff --git a/tcl/board/stm32mp15x_ev2_stlink_jtag.cfg b/tcl/board/stm32mp15x_ev2_stlink_jtag.cfg
+new file mode 100644
+index 0000000..4f2e0df
+--- /dev/null
++++ b/tcl/board/stm32mp15x_ev2_stlink_jtag.cfg
+@@ -0,0 +1,9 @@
++# This is a STM32MP15x board set MB1262C + MB1264A.
++
++source [find interface/stlink-dap.cfg]
++
++transport select stlink_jtag
++
++source [find target/stm32mp15x.cfg]
++
++reset_config trst_and_srst separate
+diff --git a/tcl/board/stm32mp15x_ev2_stlink_swd.cfg b/tcl/board/stm32mp15x_ev2_stlink_swd.cfg
+new file mode 100644
+index 0000000..182ed4b
+--- /dev/null
++++ b/tcl/board/stm32mp15x_ev2_stlink_swd.cfg
+@@ -0,0 +1,9 @@
++# This is a STM32MP15x board set MB1262C + MB1264A.
++
++source [find interface/stlink-dap.cfg]
++
++transport select stlink_swd
++
++source [find target/stm32mp15x.cfg]
++
++reset_config srst_only
+diff --git a/tcl/board/stm32mp15x_ev2_ulink2_jtag.cfg b/tcl/board/stm32mp15x_ev2_ulink2_jtag.cfg
+new file mode 100644
+index 0000000..8c320a4
+--- /dev/null
++++ b/tcl/board/stm32mp15x_ev2_ulink2_jtag.cfg
+@@ -0,0 +1,9 @@
++# This is a STM32MP15x board set MB1262C + MB1264A.
++
++source [find interface/cmsis-dap.cfg]
++
++transport select jtag
++
++source [find target/stm32mp15x.cfg]
++
++reset_config trst_and_srst separate
+diff --git a/tcl/board/stm32mp15x_ev2_ulink2_swd.cfg b/tcl/board/stm32mp15x_ev2_ulink2_swd.cfg
+new file mode 100644
+index 0000000..25b87cc
+--- /dev/null
++++ b/tcl/board/stm32mp15x_ev2_ulink2_swd.cfg
+@@ -0,0 +1,9 @@
++# This is a STM32MP15x board set MB1262C + MB1264A.
++
++source [find interface/cmsis-dap.cfg]
++
++transport select swd
++
++source [find target/stm32mp15x.cfg]
++
++reset_config srst_only
+diff --git a/tcl/interface/stlink-dap.cfg b/tcl/interface/stlink-dap.cfg
+new file mode 100644
+index 0000000..78a1b24
+--- /dev/null
++++ b/tcl/interface/stlink-dap.cfg
+@@ -0,0 +1,18 @@
++#
++# STMicroelectronics ST-LINK/V1, ST-LINK/V2, ST-LINK/V2-1 in-circuit
++# debugger/programmer
++#
++# This new interface drive creates a ST-Link wrapper for ARM-DAP
++#
++
++interface st-link
++
++# transport select stlink_swd
++# transport select stlink_jtag
++
++# Optionally specify the serial number of ST-LINK/V2 usb device.  ST-LINK/V2
++# devices seem to have serial numbers with unreadable characters.  ST-LINK/V2
++# firmware version >= V2.J21.S4 recommended to avoid issues with adapter serial
++# number reset issues.
++# e.g.
++# st-link serial "\xaa\xbc\x6e\x06\x50\x75\xff\x55\x17\x42\x19\x3f"
+diff --git a/tcl/target/atsamv.cfg b/tcl/target/atsamv.cfg
+index 1d026aa..6626a3d 100644
+--- a/tcl/target/atsamv.cfg
++++ b/tcl/target/atsamv.cfg
+@@ -35,7 +35,7 @@ swj_newdap $_CHIPNAME cpu -irlen 4 -ircapture 0x1 -irmask 0xf -expected-id $_CPU
+ dap create $_CHIPNAME.dap -chain-position $_CHIPNAME.cpu
+ 
+ set _TARGETNAME $_CHIPNAME.cpu
+-target create $_TARGETNAME cortex_m -endian $_ENDIAN -dap $_CHIPNAME.dap
++target create $_TARGETNAME cortex_m -endian $_ENDIAN -dap $_CHIPNAME.dap -dbg-under-srst gated
+ 
+ $_TARGETNAME configure -work-area-phys 0x20400000 -work-area-size $_WORKAREASIZE -work-area-backup 0
+ 
+diff --git a/tcl/target/imx6.cfg b/tcl/target/imx6.cfg
+index 5b59ecf..0b0e87d 100644
+--- a/tcl/target/imx6.cfg
++++ b/tcl/target/imx6.cfg
+@@ -6,6 +6,12 @@ if { [info exists CHIPNAME] } {
+    set  _CHIPNAME imx6
+ }
+ 
++if { [info exists SMP] } {
++   set  _SMP $SMP
++} else {
++   set  _SMP 4
++}
++
+ # CoreSight Debug Access Port
+ if { [info exists DAP_TAPID] } {
+         set _DAP_TAPID $DAP_TAPID
+@@ -39,22 +45,40 @@ jtag newtap $_CHIPNAME sjc -irlen 5 -ircapture 0x01 -irmask 0x1f \
+ # core 1  -  0x82152000
+ # core 2  -  0x82154000
+ # core 3  -  0x82156000
+-set _TARGETNAME $_CHIPNAME.cpu.0
++set _TARGETNAME $_CHIPNAME.cpu
+ dap create $_CHIPNAME.dap -chain-position $_CHIPNAME.cpu
+-target create $_TARGETNAME cortex_a -dap $_CHIPNAME.dap \
+-        -coreid 0 -dbgbase 0x82150000
++target create $_TARGETNAME.0 cortex_a -dap $_CHIPNAME.dap \
++        -coreid 0 -dbgbase 0x82150000 -dbg-under-srst cleared
+ 
+-# some TCK cycles are required to activate the DEBUG power domain
+-jtag configure $_CHIPNAME.sjc -event post-reset "runtest 100"
++set _CORES $_TARGETNAME.0
+ 
+-proc imx6_dbginit {target} {
+-        # General Cortex-A8/A9 debug initialisation
+-        cortex_a dbginit
++if { $_SMP >= 2 } {
++	target create $_TARGETNAME.1 cortex_a -chain-position $_CHIPNAME.dap \
++		-coreid 1 -dbgbase 0x82152000 -defer-examine \
++		-dbg-under-srst cleared
++}
++if { $_SMP == 2 } {
++	set _CORES [list $_TARGETNAME.1 $_TARGETNAME.0]
++	target smp {*}$_CORES
+ }
++if { $_SMP == 4 } {
++	target create $_TARGETNAME.2 cortex_a -chain-position $_CHIPNAME.dap \
++		-coreid 2 -dbgbase 0x82154000 -defer-examine \
++		-dbg-under-srst cleared
++	target create $_TARGETNAME.3 cortex_a -chain-position $_CHIPNAME.dap \
++		-coreid 3 -dbgbase 0x82156000 -defer-examine \
++		-dbg-under-srst cleared
+ 
+-# Slow speed to be sure it will work
+-adapter_khz 1000
+-$_TARGETNAME configure -event reset-start { adapter_khz 1000 }
++	set _CORES [list $_TARGETNAME.3 $_TARGETNAME.2 \
++		$_TARGETNAME.1 $_TARGETNAME.0 ]
++	target smp {*}$_CORES
++}
+ 
+-$_TARGETNAME configure -event reset-assert-post "imx6_dbginit $_TARGETNAME"
+-$_TARGETNAME configure -event gdb-attach { halt }
++# some TCK cycles are required to activate the DEBUG power domain
++jtag configure $_CHIPNAME.sjc -event post-reset "runtest 100"
++
++foreach t $_CORES {
++        $t configure -event reset-halt \
++		"arp_reset_simple_halter $t"
++	$t configure -event gdb-attach { halt }
++}
+diff --git a/tcl/target/kx.cfg b/tcl/target/kx.cfg
+index 73ee62a..f16e772 100644
+--- a/tcl/target/kx.cfg
++++ b/tcl/target/kx.cfg
+@@ -33,7 +33,7 @@ swj_newdap $_CHIPNAME cpu -irlen 4 -ircapture 0x1 -irmask 0xf -expected-id $_CPU
+ dap create $_CHIPNAME.dap -chain-position $_CHIPNAME.cpu
+ 
+ set _TARGETNAME $_CHIPNAME.cpu
+-target create $_TARGETNAME cortex_m -dap $_CHIPNAME.dap
++target create $_TARGETNAME cortex_m -dap $_CHIPNAME.dap -dbg-under-srst working
+ 
+ $_TARGETNAME configure -work-area-phys 0x20000000 -work-area-size $_WORKAREASIZE -work-area-backup 0
+ 
+@@ -60,7 +60,10 @@ if {[using_hla]} {
+    echo ""
+ } {
+    # Detect secured MCU or boot lock-up in RESET/WDOG loop
+-   $_CHIPNAME.cpu configure -event examine-start {
++   $_CHIPNAME.cpu configure -event examine-fail {
++      kinetis mdm check_security
++   }
++   $_CHIPNAME.cpu configure -event examine-end {
+       kinetis mdm check_security
+    }
+ 
+diff --git a/tcl/target/stm32f7x.cfg b/tcl/target/stm32f7x.cfg
+index e06a345..486d137 100755
+--- a/tcl/target/stm32f7x.cfg
++++ b/tcl/target/stm32f7x.cfg
+@@ -43,7 +43,7 @@ if {[using_jtag]} {
+ }
+ 
+ set _TARGETNAME $_CHIPNAME.cpu
+-target create $_TARGETNAME cortex_m -endian $_ENDIAN -dap $_CHIPNAME.dap
++target create $_TARGETNAME cortex_m -endian $_ENDIAN -dap $_CHIPNAME.dap -dbg-under-srst working
+ 
+ $_TARGETNAME configure -work-area-phys 0x20000000 -work-area-size $_WORKAREASIZE -work-area-backup 0
+ 
+diff --git a/tcl/target/stm32mp15x.cfg b/tcl/target/stm32mp15x.cfg
+new file mode 100644
+index 0000000..0def780
+--- /dev/null
++++ b/tcl/target/stm32mp15x.cfg
+@@ -0,0 +1,165 @@
++# script for stm32mp15x family
++
++#
++# stm32 devices support both JTAG and SWD transports.
++#
++source [find target/swj-dp.tcl]
++source [find mem_helper.tcl]
++
++if { [info exists CHIPNAME] } {
++   set _CHIPNAME $CHIPNAME
++} else {
++   set _CHIPNAME stm32mp15x
++}
++
++set _ENDIAN little
++
++# Work-area is a space in RAM used for flash programming
++# By default use 32kB
++if { [info exists WORKAREASIZE] } {
++   set _WORKAREASIZE $WORKAREASIZE
++} else {
++   set _WORKAREASIZE 0x8000
++}
++
++# jtag scan chain
++if { [info exists CPUTAPID] } {
++   set _CPUTAPID $CPUTAPID
++} else {
++   if { [using_jtag] } {
++      # See STM Document RM0436
++      # Section 66.8.3
++      set _CPUTAPID 0x6ba00477
++   } {
++      set _CPUTAPID 0x6ba02477
++   }
++}
++
++swj_newdap $_CHIPNAME tap -expected-id $_CPUTAPID -irlen 4 -ircapture 0x01 -irmask 0x0f
++dap create $_CHIPNAME.dap -chain-position $_CHIPNAME.tap
++target create $_CHIPNAME.cpu0 cortex_a -dap $_CHIPNAME.dap -coreid 0 -dbgbase 0xE00D0000
++target create $_CHIPNAME.cpu1 cortex_a -dap $_CHIPNAME.dap -coreid 1 -dbgbase 0xE00D2000
++
++target smp $_CHIPNAME.cpu0 $_CHIPNAME.cpu1
++$_CHIPNAME.cpu0 cortex_a maskisr on
++$_CHIPNAME.cpu1 cortex_a maskisr on
++$_CHIPNAME.cpu0 cortex_a dacrfixup on
++$_CHIPNAME.cpu1 cortex_a dacrfixup on
++
++# Only in ENG_MODE the CM4 is available at reset
++if { [info exists ENG_MODE] } {
++	target create $_CHIPNAME.cpu2 cortex_m -dap $_CHIPNAME.dap
++} else {
++	target create $_CHIPNAME.cpu2 cortex_m -dap $_CHIPNAME.dap -defer-examine
++}
++
++$_CHIPNAME.cpu0 configure -work-area-phys 0x2ffc0000 -work-area-size $_WORKAREASIZE -work-area-backup 0
++$_CHIPNAME.cpu1 configure -work-area-phys 0x2ffc0000 -work-area-size $_WORKAREASIZE -work-area-backup 0
++$_CHIPNAME.cpu2 configure -work-area-phys 0x2ffc0000 -work-area-size $_WORKAREASIZE -work-area-backup 0
++
++if { [info exists GDB_PORT] } {
++	set _GDB_PORT $GDB_PORT
++} else {
++	set _GDB_PORT [ocd_gdb_port]
++}
++
++# The two CA7 will require one or two gdb ports, depending on smp enabled or not
++# Set a fixed gdb port of CM4
++$_CHIPNAME.cpu0 configure -gdb-port [expr $_GDB_PORT + 1]
++$_CHIPNAME.cpu1 configure -gdb-port [expr $_GDB_PORT + 2]
++$_CHIPNAME.cpu2 configure -gdb-port [expr $_GDB_PORT + 0]
++
++$_CHIPNAME.cpu0 configure -event reset-deassert-post { delayed_reset_halt_cpu0 }
++
++# Reset-halt stops in bootrom when only cpu0 can be attached.
++# Set a breakpoint to stop cpu0 when cpu1 can be attached too.
++proc delayed_reset_halt_cpu0 { } {
++	global _CHIPNAME
++	global arp_reset_mode
++
++	set rom_halt_pc 0x0000688c
++
++	# only "reset halt" or "reset init"
++	if { 0 != [ string compare "$arp_reset_mode" "run" ] } {
++		cortex_a smp_off
++		targets $_CHIPNAME.cpu0
++		arp_reset_default_handler post $_CHIPNAME.cpu0
++
++		poll on
++		catch { $_CHIPNAME.cpu0 arp_waitstate halted 1000 }
++		bp $rom_halt_pc 2 hw
++		resume
++		catch { $_CHIPNAME.cpu0 arp_waitstate halted 1000 }
++		rbp $rom_halt_pc
++
++		cortex_a smp_on
++	}
++}
++
++targets $_CHIPNAME.cpu0
++
++# interface does not work while srst is asserted
++# this is target specific, valid for every board
++reset_config srst_gates_jtag
++
++if { [info exists CLOCK_FREQ] } {
++	set _CLOCK_FREQ $CLOCK_FREQ
++} else {
++	set _CLOCK_FREQ 5000
++}
++adapter_khz $_CLOCK_FREQ
++adapter_nsrst_assert_width 200
++adapter_nsrst_delay 200
++
++
++set clients_num 0
++proc clients_inc {} {
++	global clients_num
++
++	incr clients_num
++}
++
++proc clients_dec_and_shutdown {} {
++	global clients_num
++
++	incr clients_num -1
++	if { $clients_num <= 0 } { shutdown }
++}
++
++$_CHIPNAME.cpu0 configure -event gdb-attach { clients_inc; halt }
++$_CHIPNAME.cpu1 configure -event gdb-attach { clients_inc; halt }
++
++$_CHIPNAME.cpu2 configure -event gdb-attach {
++	global _CHIPNAME
++	global ENG_MODE
++
++	clients_inc
++
++	# Only in ENG_MODE the CM4 is available at reset
++	if { ! [info exists ENG_MODE] } {
++		$_CHIPNAME.cpu2 arp_examine
++		$_CHIPNAME.cpu2 arp_poll
++	}
++	halt
++}
++
++$_CHIPNAME.cpu0 configure -event gdb-detach { catch { resume }; clients_dec_and_shutdown }
++$_CHIPNAME.cpu1 configure -event gdb-detach { catch { resume }; clients_dec_and_shutdown }
++$_CHIPNAME.cpu2 configure -event gdb-detach { catch { resume }; clients_dec_and_shutdown }
++
++proc ap0_secure_access {} {
++	global _CHIPNAME
++
++	$_CHIPNAME.dap apsel 0
++	$_CHIPNAME.dap apcsw 0x10006000
++}
++
++proc ap0_non_secure_access {} {
++	global _CHIPNAME
++
++	$_CHIPNAME.dap apsel 0
++	$_CHIPNAME.dap apcsw 0x30006000
++}
++
++$_CHIPNAME.cpu0 configure -event examine-end { ap0_secure_access }
++$_CHIPNAME.cpu1 configure -event examine-end { ap0_secure_access }
+diff --git a/tcl/target/stm32mp15x_stpmu1.cfg b/tcl/target/stm32mp15x_stpmu1.cfg
+new file mode 100644
+index 0000000..413abf2
+--- /dev/null
++++ b/tcl/target/stm32mp15x_stpmu1.cfg
+@@ -0,0 +1,113 @@
++# script for stm32mp15x family with companion PMIC STPMU1
++
++source [find target/stm32mp15x.cfg]
++
++$_CHIPNAME.cpu0 configure -event reset-halt { catch { pmic_init }}
++
++# Wait for expression to be true with a timeout of 200ms
++proc wait_state {condition} {
++	for {set t 0} {$t < 200} {incr t} {
++		if {[uplevel 1 $condition] == 0} {
++			return
++		}
++		sleep 1
++	}
++	return -code 1 "Timed out"
++}
++
++proc mrw_phys {reg} {
++	set value ""
++	mem2array value 32 $reg 1 phys
++	return $value(0)
++}
++
++proc mmw_phys {reg setbits clearbits} {
++	set old [mrw_phys $reg]
++	set new [expr ($old & ~$clearbits) | $setbits]
++	mww phys $reg $new
++}
++
++# Set mask_reset bits in PMIC to keep all powers on at next reset event
++# Only the mask_reset of SD-card power is not enabled to guarantee boot from SD
++# This procedure requires Secure memory access
++proc pmic_init {} {
++	global _CHIPNAME
++
++	targets $_CHIPNAME.cpu0
++	$_CHIPNAME.dap apsel 0
++
++	set RCC_BASE   0x50000000
++	set GPIO_BASE  0x54004000
++	set I2C_BASE   0x5c002000
++
++	# i2c @ 100kHz, rise 100ns, fall 100ns
++	# timing depending from HSIDIV[1:0] = {0 1 2 3} means hsi_ker_ck = {64 32 16 8} MHz
++	set I2C_TIMING {0x10b17db5 0x00b07cb4 0x00503d58 0x00201d2b}
++
++	mww phys [expr $RCC_BASE + 0x00c] 1; # set HSION = 1 (enable HSI)
++	mww phys [expr $RCC_BASE + 0x0c0] 2; # set I2C46SRC[2:0] = 2 (hsi_ker_ck)
++
++	mww phys [expr $RCC_BASE + 0x208] 4; # set I2C4EN = 1
++	mww phys [expr $RCC_BASE + 0x188] 4; # assert I2C4RST
++	mww phys [expr $RCC_BASE + 0x18c] 4; # deassert I2C4RST
++
++	mww phys [expr $RCC_BASE + 0x210] 1; # set GPIOZEN = 1 (enable GPIOZ)
++	mmw_phys [expr $GPIO_BASE + 0x00] 0x00000a00 0x00000f00; # GPIOZ4/5 AF
++	mmw_phys [expr $GPIO_BASE + 0x04] 0x00000030 0x00000000; # GPIOZ4/5 open drain
++	mmw_phys [expr $GPIO_BASE + 0x08] 0x00000000 0x00000f00; # GPIOZ4/5 low speed
++	mmw_phys [expr $GPIO_BASE + 0x0c] 0x00000000 0x00000f00; # GPIOZ4/5 no pull-up/down
++	mmw_phys [expr $GPIO_BASE + 0x20] 0x00660000 0x00ff0000; # GPIOZ4/5 AF6
++
++	set hsidiv [expr [mrw_phys [expr $RCC_BASE + 0x018]] & 0x3]
++	mww phys [expr $I2C_BASE + 0x010] [lindex $I2C_TIMING $hsidiv]
++	mww phys [expr $I2C_BASE + 0x000] 1; # set PE = 1
++	mww phys [expr $I2C_BASE + 0x004] 0x02043066
++	wait_state {expr {([mrw_phys [expr $I2C_BASE + 0x018]] & 0x00000002) == 0}}; # wait TXIS
++	mww phys [expr $I2C_BASE + 0x028] 0x18
++	wait_state {expr {([mrw_phys [expr $I2C_BASE + 0x018]] & 0x00000002) == 0}}; # wait TXIS
++	mww phys [expr $I2C_BASE + 0x028] 0x0f
++	wait_state {expr {([mrw_phys [expr $I2C_BASE + 0x018]] & 0x00000002) == 0}}; # wait TXIS
++	mww phys [expr $I2C_BASE + 0x028] 0x00
++	wait_state {expr {([mrw_phys [expr $I2C_BASE + 0x018]] & 0x00000002) == 0}}; # wait TXIS
++	mww phys [expr $I2C_BASE + 0x028] 0x6f
++	wait_state {expr {([mrw_phys [expr $I2C_BASE + 0x018]] & 0x00000020) == 0}}; # wait STOPF
++	mww phys [expr $I2C_BASE + 0x01c] 0x00000020
++	mww phys [expr $I2C_BASE + 0x004] 0x01ff14fe
++
++#	mww phys [expr $RCC_BASE + 0x20c] 4; # set I2C4EN = 0 (disable I2C4)
++#	mww phys [expr $RCC_BASE + 0x214] 1; # set GPIOZEN = 0 (disable GPIOZ)
++}
++
++# Set bit 16 in TAMP_BACKUP_REGISTER(20) to signal to SPL and TF-A that we
++# are in a debug session. This will force them (at next reboot) to program
++# the PMIC for keeping powered-on the debug unit during reset.
++proc set_pmic_in_backup_reg {} {
++	global _CHIPNAME
++
++	targets $_CHIPNAME.cpu0
++	$_CHIPNAME.dap apsel 0
++
++	mmw_phys 0x5c00a150 0x00010000 0x00000000
++}
++
++proc clear_pmic_in_backup_reg {} {
++	global _CHIPNAME
++
++	targets $_CHIPNAME.cpu0
++	$_CHIPNAME.dap apsel 0
++
++	mmw_phys 0x5c00a150 0x00000000 0x00010000
++}
++
++# Wrap around init/shutdown. Attention: CTRL-C will not invoke shutdown
++rename init _init
++proc init {} {
++	_init
++	set_pmic_in_backup_reg
++}
++
++rename shutdown _shutdown
++proc shutdown {} {
++	clear_pmic_in_backup_reg
++	_shutdown
++}
+diff --git a/tcl/target/swj-dp.tcl b/tcl/target/swj-dp.tcl
+index 1d274cb..e42a168 100644
+--- a/tcl/target/swj-dp.tcl
++++ b/tcl/target/swj-dp.tcl
+@@ -30,5 +30,7 @@ proc swj_newdap {chip tag args} {
+      eval jtag newtap $chip $tag $args
+  } elseif [using_swd] {
+      eval swd newdap $chip $tag $args
++ } elseif { [using_stlink_jtag] || [using_stlink_swd] } {
++     eval stlink_dap newdap $chip $tag $args
+  }
+ }
+-- 
+2.7.4
+
