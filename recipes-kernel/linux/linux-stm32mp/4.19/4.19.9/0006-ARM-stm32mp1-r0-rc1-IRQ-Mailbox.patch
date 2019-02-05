@@ -1,0 +1,154 @@
+From 358a1325502b2362a6fb74af3027f3f165684375 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Tue, 13 Nov 2018 12:19:47 +0100
+Subject: [PATCH 06/52] ARM: stm32mp1-r0-rc1: IRQ Mailbox
+
+---
+ drivers/irqchip/irq-stm32-exti.c | 23 ++++++++++++++++++-----
+ drivers/mailbox/mailbox-test.c   | 26 ++++++++++++++------------
+ drivers/mailbox/stm32-ipcc.c     |  4 ++--
+ 3 files changed, 34 insertions(+), 19 deletions(-)
+
+diff --git a/drivers/irqchip/irq-stm32-exti.c b/drivers/irqchip/irq-stm32-exti.c
+index 0a2088e..e185ed8 100644
+--- a/drivers/irqchip/irq-stm32-exti.c
++++ b/drivers/irqchip/irq-stm32-exti.c
+@@ -650,11 +650,6 @@ stm32_exti_chip_data *stm32_exti_chip_init(struct stm32_exti_host_data *h_data,
+ 	 */
+ 	writel_relaxed(0, base + stm32_bank->imr_ofst);
+ 	writel_relaxed(0, base + stm32_bank->emr_ofst);
+-	writel_relaxed(0, base + stm32_bank->rtsr_ofst);
+-	writel_relaxed(0, base + stm32_bank->ftsr_ofst);
+-	writel_relaxed(~0UL, base + stm32_bank->rpr_ofst);
+-	if (stm32_bank->fpr_ofst != UNDEF_REG)
+-		writel_relaxed(~0UL, base + stm32_bank->fpr_ofst);
+ 
+ 	pr_info("%s: bank%d, External IRQs available:%#x\n",
+ 		node->full_name, bank_idx, irqs_mask);
+@@ -735,9 +730,27 @@ static int __init stm32_exti_init(const struct stm32_exti_drv_data *drv_data,
+ 	return ret;
+ }
+ 
++static int stm32_exti_h_translate(struct irq_domain *d,
++				  struct irq_fwspec *fwspec,
++				  unsigned long *out_hwirq,
++				  unsigned int *out_type)
++{
++	if (is_of_node(fwspec->fwnode)) {
++		if (fwspec->param_count != 2)
++			return -EINVAL;
++
++		*out_hwirq = fwspec->param[0];
++		*out_type = fwspec->param[1] & IRQ_TYPE_SENSE_MASK;
++		return 0;
++	}
++
++	return -EINVAL;
++}
++
+ static const struct irq_domain_ops stm32_exti_h_domain_ops = {
+ 	.alloc	= stm32_exti_h_domain_alloc,
+ 	.free	= irq_domain_free_irqs_common,
++	.translate = stm32_exti_h_translate,
+ };
+ 
+ static int
+diff --git a/drivers/mailbox/mailbox-test.c b/drivers/mailbox/mailbox-test.c
+index 58bfafc..4e4ac4b 100644
+--- a/drivers/mailbox/mailbox-test.c
++++ b/drivers/mailbox/mailbox-test.c
+@@ -31,7 +31,6 @@
+ 				 (MBOX_MAX_MSG_LEN / MBOX_BYTES_PER_LINE))
+ 
+ static bool mbox_data_ready;
+-static struct dentry *root_debugfs_dir;
+ 
+ struct mbox_test_device {
+ 	struct device		*dev;
+@@ -45,6 +44,7 @@ struct mbox_test_device {
+ 	spinlock_t		lock;
+ 	wait_queue_head_t	waitq;
+ 	struct fasync_struct	*async_queue;
++	struct dentry		*root_debugfs_dir;
+ };
+ 
+ static ssize_t mbox_test_signal_write(struct file *filp,
+@@ -262,16 +262,16 @@ static int mbox_test_add_debugfs(struct platform_device *pdev,
+ 	if (!debugfs_initialized())
+ 		return 0;
+ 
+-	root_debugfs_dir = debugfs_create_dir("mailbox", NULL);
+-	if (!root_debugfs_dir) {
++	tdev->root_debugfs_dir = debugfs_create_dir(dev_name(&pdev->dev), NULL);
++	if (!tdev->root_debugfs_dir) {
+ 		dev_err(&pdev->dev, "Failed to create Mailbox debugfs\n");
+ 		return -EINVAL;
+ 	}
+ 
+-	debugfs_create_file("message", 0600, root_debugfs_dir,
++	debugfs_create_file("message", 0600, tdev->root_debugfs_dir,
+ 			    tdev, &mbox_test_message_ops);
+ 
+-	debugfs_create_file("signal", 0200, root_debugfs_dir,
++	debugfs_create_file("signal", 0200, tdev->root_debugfs_dir,
+ 			    tdev, &mbox_test_signal_ops);
+ 
+ 	return 0;
+@@ -363,22 +363,24 @@ static int mbox_test_probe(struct platform_device *pdev)
+ 
+ 	/* It's okay for MMIO to be NULL */
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+-	size = resource_size(res);
+ 	tdev->tx_mmio = devm_ioremap_resource(&pdev->dev, res);
+-	if (PTR_ERR(tdev->tx_mmio) == -EBUSY)
++	if (PTR_ERR(tdev->tx_mmio) == -EBUSY) {
+ 		/* if reserved area in SRAM, try just ioremap */
++		size = resource_size(res);
+ 		tdev->tx_mmio = devm_ioremap(&pdev->dev, res->start, size);
+-	else if (IS_ERR(tdev->tx_mmio))
++	} else if (IS_ERR(tdev->tx_mmio)) {
+ 		tdev->tx_mmio = NULL;
++	}
+ 
+ 	/* If specified, second reg entry is Rx MMIO */
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+-	size = resource_size(res);
+ 	tdev->rx_mmio = devm_ioremap_resource(&pdev->dev, res);
+-	if (PTR_ERR(tdev->rx_mmio) == -EBUSY)
++	if (PTR_ERR(tdev->rx_mmio) == -EBUSY) {
++		size = resource_size(res);
+ 		tdev->rx_mmio = devm_ioremap(&pdev->dev, res->start, size);
+-	else if (IS_ERR(tdev->rx_mmio))
++	} else if (IS_ERR(tdev->rx_mmio)) {
+ 		tdev->rx_mmio = tdev->tx_mmio;
++	}
+ 
+ 	tdev->tx_channel = mbox_test_request_channel(pdev, "tx");
+ 	tdev->rx_channel = mbox_test_request_channel(pdev, "rx");
+@@ -416,7 +418,7 @@ static int mbox_test_remove(struct platform_device *pdev)
+ {
+ 	struct mbox_test_device *tdev = platform_get_drvdata(pdev);
+ 
+-	debugfs_remove_recursive(root_debugfs_dir);
++	debugfs_remove_recursive(tdev->root_debugfs_dir);
+ 
+ 	if (tdev->tx_channel)
+ 		mbox_free_channel(tdev->tx_channel);
+diff --git a/drivers/mailbox/stm32-ipcc.c b/drivers/mailbox/stm32-ipcc.c
+index 533b0da..cd5ceca 100644
+--- a/drivers/mailbox/stm32-ipcc.c
++++ b/drivers/mailbox/stm32-ipcc.c
+@@ -276,8 +276,8 @@ static int stm32_ipcc_probe(struct platform_device *pdev)
+ 			dev_err(dev, "Failed to set wake up irq\n");
+ 			goto err_init_wkp;
+ 		}
+-	} else {
+-		device_init_wakeup(dev, false);
++		/* disable the wakeup source, let the user enable it or not */
++		device_set_wakeup_enable(dev, false);
+ 	}
+ 
+ 	/* mailbox controller */
+-- 
+2.7.4
+

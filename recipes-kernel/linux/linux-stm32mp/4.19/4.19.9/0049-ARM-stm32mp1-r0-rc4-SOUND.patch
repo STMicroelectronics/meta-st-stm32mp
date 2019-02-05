@@ -1,0 +1,112 @@
+From 06f5ef8ca4c11074b595a4318dba9766092886d5 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Fri, 21 Dec 2018 16:58:47 +0100
+Subject: [PATCH 49/52] ARM: stm32mp1-r0-rc4: SOUND
+
+---
+ sound/soc/codecs/wm8994.c     |  3 +--
+ sound/soc/stm/stm32_sai_sub.c | 21 ++++++++++++++++++++-
+ 2 files changed, 21 insertions(+), 3 deletions(-)
+
+diff --git a/sound/soc/codecs/wm8994.c b/sound/soc/codecs/wm8994.c
+index eb222da..c83ae39 100644
+--- a/sound/soc/codecs/wm8994.c
++++ b/sound/soc/codecs/wm8994.c
+@@ -868,7 +868,7 @@ static int mclk_event(struct snd_soc_dapm_widget *w,
+ 		break;
+ 	case SND_SOC_DAPM_POST_PMD:
+ 		dev_dbg(comp->dev, "Disable master clock %s\n",
+-			mclk_id ? "MCLK1" : "MCLK2");
++			mclk_id ? "MCLK2" : "MCLK1");
+ 		clk_disable_unprepare(mclk);
+ 		break;
+ 	}
+@@ -1193,7 +1193,6 @@ static int aif2clk_ev(struct snd_soc_dapm_widget *w,
+ 		else
+ 			adc = WM8994_AIF2ADCL_ENA | WM8994_AIF2ADCR_ENA;
+ 
+-
+ 		val = snd_soc_component_read32(component, WM8994_AIF2_CONTROL_2);
+ 		if ((val & WM8994_AIF2DACL_SRC) &&
+ 		    (val & WM8994_AIF2DACR_SRC))
+diff --git a/sound/soc/stm/stm32_sai_sub.c b/sound/soc/stm/stm32_sai_sub.c
+index 3f0540a..a9b37f9 100644
+--- a/sound/soc/stm/stm32_sai_sub.c
++++ b/sound/soc/stm/stm32_sai_sub.c
+@@ -102,6 +102,7 @@
+  * @spdif_frm_cnt: S/PDIF playback frame counter
+  * @snd_aes_iec958: iec958 data
+  * @ctrl_lock: control lock
++ * @spinlock_t: prevent race condition with IRQ
+  */
+ struct stm32_sai_sub_data {
+ 	struct platform_device *pdev;
+@@ -133,6 +134,7 @@ struct stm32_sai_sub_data {
+ 	unsigned int spdif_frm_cnt;
+ 	struct snd_aes_iec958 iec958;
+ 	struct mutex ctrl_lock; /* protect resources accessed by controls */
++	spinlock_t irq_lock; /* used to prevent race condition with IRQ */
+ };
+ 
+ enum stm32_sai_fifo_th {
+@@ -497,8 +499,10 @@ static irqreturn_t stm32_sai_isr(int irq, void *devid)
+ 		status = SNDRV_PCM_STATE_XRUN;
+ 	}
+ 
+-	if (status != SNDRV_PCM_STATE_RUNNING)
++	spin_lock(&sai->irq_lock);
++	if (status != SNDRV_PCM_STATE_RUNNING && sai->substream)
+ 		snd_pcm_stop_xrun(sai->substream);
++	spin_unlock(&sai->irq_lock);
+ 
+ 	return IRQ_HANDLED;
+ }
+@@ -703,8 +707,19 @@ static int stm32_sai_startup(struct snd_pcm_substream *substream,
+ {
+ 	struct stm32_sai_sub_data *sai = snd_soc_dai_get_drvdata(cpu_dai);
+ 	int imr, cr2, ret;
++	unsigned long flags;
+ 
++	spin_lock_irqsave(&sai->irq_lock, flags);
+ 	sai->substream = substream;
++	spin_unlock_irqrestore(&sai->irq_lock, flags);
++
++	if (STM_SAI_PROTOCOL_IS_SPDIF(sai)) {
++		snd_pcm_hw_constraint_mask64(substream->runtime,
++					     SNDRV_PCM_HW_PARAM_FORMAT,
++					     SNDRV_PCM_FMTBIT_S32_LE);
++		snd_pcm_hw_constraint_single(substream->runtime,
++					     SNDRV_PCM_HW_PARAM_CHANNELS, 2);
++	}
+ 
+ 	ret = clk_prepare_enable(sai->sai_ck);
+ 	if (ret < 0) {
+@@ -1078,6 +1093,7 @@ static void stm32_sai_shutdown(struct snd_pcm_substream *substream,
+ 			       struct snd_soc_dai *cpu_dai)
+ {
+ 	struct stm32_sai_sub_data *sai = snd_soc_dai_get_drvdata(cpu_dai);
++	unsigned long flags;
+ 
+ 	regmap_update_bits(sai->regmap, STM_SAI_IMR_REGX, SAI_XIMR_MASK, 0);
+ 
+@@ -1092,7 +1108,9 @@ static void stm32_sai_shutdown(struct snd_pcm_substream *substream,
+ 
+ 	clk_disable_unprepare(sai->sai_ck);
+ 
++	spin_lock_irqsave(&sai->irq_lock, flags);
+ 	sai->substream = NULL;
++	spin_unlock_irqrestore(&sai->irq_lock, flags);
+ }
+ 
+ static int stm32_sai_pcm_new(struct snd_soc_pcm_runtime *rtd,
+@@ -1459,6 +1477,7 @@ static int stm32_sai_sub_probe(struct platform_device *pdev)
+ 
+ 	sai->pdev = pdev;
+ 	mutex_init(&sai->ctrl_lock);
++	spin_lock_init(&sai->irq_lock);
+ 	platform_set_drvdata(pdev, sai);
+ 
+ 	sai->pdata = dev_get_drvdata(pdev->dev.parent);
+-- 
+2.7.4
+

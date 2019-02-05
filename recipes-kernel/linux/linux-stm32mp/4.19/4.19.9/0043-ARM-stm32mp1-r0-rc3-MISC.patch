@@ -1,0 +1,1067 @@
+From 64b878ba46af224fa2c1d0bf7c784927e1890f3a Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Mon, 10 Dec 2018 15:53:08 +0100
+Subject: [PATCH 43/52] ARM: stm32mp1-r0-rc3: MISC
+
+---
+ .../devicetree/bindings/soc/stm32/stm32_hdp.txt    |  39 ++++
+ arch/arm/Kconfig.debug                             |  30 ++-
+ arch/arm/boot/dts/Makefile                         |   2 +
+ arch/arm/include/debug/stm32.S                     |  19 +-
+ drivers/hwspinlock/hwspinlock_core.c               |  15 +-
+ drivers/hwspinlock/stm32_hwspinlock.c              |   7 +
+ drivers/hwtracing/coresight/coresight-stm.c        |  58 ++++-
+ drivers/soc/st/Kconfig                             |   8 +
+ drivers/soc/st/Makefile                            |   1 +
+ drivers/soc/st/stm32_hdp.c                         | 242 +++++++++++++++++++++
+ drivers/spi/spi-stm32-qspi.c                       | 192 +++++++++++++++-
+ include/dt-bindings/soc/stm32-hdp.h                | 108 +++++++++
+ 12 files changed, 694 insertions(+), 27 deletions(-)
+ create mode 100644 Documentation/devicetree/bindings/soc/stm32/stm32_hdp.txt
+ create mode 100644 drivers/soc/st/stm32_hdp.c
+ create mode 100644 include/dt-bindings/soc/stm32-hdp.h
+
+diff --git a/Documentation/devicetree/bindings/soc/stm32/stm32_hdp.txt b/Documentation/devicetree/bindings/soc/stm32/stm32_hdp.txt
+new file mode 100644
+index 0000000..e2bd82f
+--- /dev/null
++++ b/Documentation/devicetree/bindings/soc/stm32/stm32_hdp.txt
+@@ -0,0 +1,39 @@
++STM32 - STM32MP1- HDP Pin configuration for STM32MP1
++=======================================================
++
++The Hardware Debug Port (HDP) allows the observation of internal signals. By using multiplexers,
++up to 16 signals for each of 8-bit output can be observed.
++
++Required Properties:
++
++  - compatible: Must be "st,stm32mp1-hdp"
++  - muxing-hdp: Indicates for each HDP pins selected which HDP output among the 16 available signals you want
++
++For each HDP pins you can select one of 16 signals which will be described in file : include/dt-bindings/soc/stm32-hdp.h
++
++Example
++-------
++
++In common dtsi file:
++
++hdp: hdp@5002a000 {
++	compatible = "st,stm32mp1-hdp";
++	reg = <0x5002a000 0x400>;
++	clocks = <&rcc HDP>;
++	clock-names = "hdp";
++};
++
++In board-specific file:
++
++In this example I've selected HDP0, HDP6 and HDP7, and for HDP0 the output signal is HDP0_GPOVAL_0,
++for HDP6 is HDP6_GPOVAL_6, and for HDP7 is HDP7_GPOVAL_7.
++
++&hdp {
++	pinctrl-names = "default", "sleep";
++	pinctrl-0 = <&hdp0_pins_a &hdp6_pins_a &hdp7_pins_a>;
++	pinctrl-1 = <&hdp0_pins_sleep_a &hdp6_pins_sleep_a &hdp7_pins_sleep_a>;
++
++	muxing-hdp = <(STM32_HDP(0, HDP0_GPOVAL_0) |
++		       STM32_HDP(6, HDP6_GPOVAL_6) |
++		       STM32_HDP(7, HDP7_GPOVAL_7))>;
++};
+diff --git a/arch/arm/Kconfig.debug b/arch/arm/Kconfig.debug
+index d5ec6c3..88849c1 100644
+--- a/arch/arm/Kconfig.debug
++++ b/arch/arm/Kconfig.debug
+@@ -1186,23 +1186,37 @@ choice
+ 
+ 	config STM32F4_DEBUG_UART
+ 		bool "Use STM32F4 UART for low-level debug"
+-		depends on ARCH_STM32
++		depends on ARCH_STM32 && ARM_SINGLE_ARMV7M
+ 		select DEBUG_STM32_UART
+ 		help
+ 		  Say Y here if you want kernel low-level debugging support
+ 		  on STM32F4 based platforms, which default UART is wired on
+-		  USART1.
++		  USART1, but another UART instance can be selected by modifying
++		  CONFIG_DEBUG_UART_PHYS.
+ 
+ 		  If unsure, say N.
+ 
+ 	config STM32F7_DEBUG_UART
+ 		bool "Use STM32F7 UART for low-level debug"
+-		depends on ARCH_STM32
++		depends on ARCH_STM32 && ARM_SINGLE_ARMV7M
+ 		select DEBUG_STM32_UART
+ 		help
+ 		  Say Y here if you want kernel low-level debugging support
+ 		  on STM32F7 based platforms, which default UART is wired on
+-		  USART1.
++		  USART1, but another UART instance can be selected by modifying
++		  CONFIG_DEBUG_UART_PHYS.
++
++		  If unsure, say N.
++
++	config STM32MP1_DEBUG_UART
++		bool "Use STM32MP1 UART for low-level debug"
++		depends on ARCH_STM32 && ARCH_MULTI_V7
++		select DEBUG_STM32_UART
++		help
++		  Say Y here if you want kernel low-level debugging support
++		  on STM32MP1 based platforms, wich default UART is wired on
++		  UART4, but another UART instance can be selected by modifying
++		  CONFIG_DEBUG_UART_PHYS and CONFIG_DEBUG_UART_VIRT.
+ 
+ 		  If unsure, say N.
+ 
+@@ -1607,6 +1621,8 @@ config DEBUG_UART_PHYS
+ 	default 0x3e000000 if DEBUG_BCM_KONA_UART
+ 	default 0x3f201000 if DEBUG_BCM2836
+ 	default 0x4000e400 if DEBUG_LL_UART_EFM32
++	default 0x40010000 if STM32MP1_DEBUG_UART
++	default 0x40011000 if STM32F4_DEBUG_UART || STM32F7_DEBUG_UART
+ 	default 0x40028000 if DEBUG_AT91_SAMV7_USART1
+ 	default 0x40081000 if DEBUG_LPC18XX_UART0
+ 	default 0x40090000 if DEBUG_LPC32XX
+@@ -1700,10 +1716,12 @@ config DEBUG_UART_PHYS
+ 		DEBUG_S3C64XX_UART || \
+ 		DEBUG_BCM63XX_UART || DEBUG_ASM9260_UART || \
+ 		DEBUG_SIRFSOC_UART || DEBUG_DIGICOLOR_UA0 || \
+-		DEBUG_AT91_UART
++		DEBUG_AT91_UART || STM32F4_DEBUG_UART || \
++		STM32F7_DEBUG_UART || STM32MP1_DEBUG_UART
+ 
+ config DEBUG_UART_VIRT
+ 	hex "Virtual base address of debug UART"
++	default 0xfe010000 if STM32MP1_DEBUG_UART
+ 	default 0xc881f000 if DEBUG_RV1108_UART2
+ 	default 0xc8821000 if DEBUG_RV1108_UART1
+ 	default 0xc8912000 if DEBUG_RV1108_UART0
+@@ -1815,7 +1833,7 @@ config DEBUG_UART_VIRT
+ 		DEBUG_S3C64XX_UART || \
+ 		DEBUG_BCM63XX_UART || DEBUG_ASM9260_UART || \
+ 		DEBUG_SIRFSOC_UART || DEBUG_DIGICOLOR_UA0 || \
+-		DEBUG_AT91_UART
++		DEBUG_AT91_UART || STM32MP1_DEBUG_UART
+ 
+ config DEBUG_UART_8250_SHIFT
+ 	int "Register offset shift for the 8250 debug UART"
+diff --git a/arch/arm/boot/dts/Makefile b/arch/arm/boot/dts/Makefile
+index fdf53f5..5665290 100644
+--- a/arch/arm/boot/dts/Makefile
++++ b/arch/arm/boot/dts/Makefile
+@@ -924,9 +924,11 @@ dtb-$(CONFIG_ARCH_STM32) += \
+ 	stm32h743i-disco.dtb \
+ 	stm32mp157a-dk1.dtb \
+ 	stm32mp157c-dk2.dtb \
++	stm32mp157c-dk2-a7-examples.dtb \
+ 	stm32mp157c-dk2-m4-examples.dtb \
+ 	stm32mp157c-ed1.dtb \
+ 	stm32mp157c-ev1.dtb \
++	stm32mp157c-ev1-a7-examples.dtb \
+ 	stm32mp157c-ev1-m4-examples.dtb
+ dtb-$(CONFIG_MACH_SUN4I) += \
+ 	sun4i-a10-a1000.dtb \
+diff --git a/arch/arm/include/debug/stm32.S b/arch/arm/include/debug/stm32.S
+index 427561e..3353a81 100644
+--- a/arch/arm/include/debug/stm32.S
++++ b/arch/arm/include/debug/stm32.S
+@@ -4,21 +4,12 @@
+  * Author:   Gerald Baeza <gerald.baeza@st.com> for STMicroelectronics.
+  */
+ 
+-#ifdef CONFIG_ARM_SINGLE_ARMV7M
+-#define STM32_UART_BASE_PHYS		0x40011000	/* USART1 */
+-#define STM32_UART_BASE_VIRT		STM32_UART_BASE_PHYS /* no MMU */
+-#else
+-#define STM32_UART_BASE_PHYS		0x40010000	/* UART4 */
+-#define STM32_UART_BASE_VIRT		0xfe010000	/* UART4 */
+-#endif
+-
+-
+ #ifdef CONFIG_STM32F4_DEBUG_UART
+ #define STM32_USART_SR_OFF		0x00
+ #define STM32_USART_TDR_OFF		0x04
+ #endif
+ 
+-#ifdef CONFIG_STM32F7_DEBUG_UART
++#if defined(CONFIG_STM32F7_DEBUG_UART) || defined(CONFIG_STM32MP1_DEBUG_UART)
+ #define STM32_USART_SR_OFF		0x1C
+ #define STM32_USART_TDR_OFF		0x28
+ #endif
+@@ -27,8 +18,12 @@
+ #define STM32_USART_TXE			(1 << 7)	/* Tx data reg empty */
+ 
+ .macro	addruart, rp, rv, tmp
+-	ldr	\rp,      =STM32_UART_BASE_PHYS	@ physical base
+-	ldr	\rv,      =STM32_UART_BASE_VIRT @ virt base
++	ldr	\rp, =CONFIG_DEBUG_UART_PHYS @ physical base
++#if defined(CONFIG_MMU)
++	ldr	\rv, =CONFIG_DEBUG_UART_VIRT @ virt base
++#else
++	ldr	\rv, =CONFIG_DEBUG_UART_PHYS @ same as physical base
++#endif
+ .endm
+ 
+ .macro  senduart,rd,rx
+diff --git a/drivers/hwspinlock/hwspinlock_core.c b/drivers/hwspinlock/hwspinlock_core.c
+index 2bad40d..287e1b3 100644
+--- a/drivers/hwspinlock/hwspinlock_core.c
++++ b/drivers/hwspinlock/hwspinlock_core.c
+@@ -333,6 +333,9 @@ int of_hwspin_lock_get_id(struct device_node *np, int index)
+ 	if (ret)
+ 		return ret;
+ 
++	if (!of_device_is_available(args.np))
++		return -ENOENT;
++
+ 	/* Find the hwspinlock device: we need its base_id */
+ 	ret = -EPROBE_DEFER;
+ 	rcu_read_lock();
+@@ -742,13 +745,11 @@ struct hwspinlock *hwspin_lock_request_specific(unsigned int id)
+ 	/* sanity check (this shouldn't happen) */
+ 	WARN_ON(hwlock_to_id(hwlock) != id);
+ 
+-	/* make sure this hwspinlock is unused */
+-	ret = radix_tree_tag_get(&hwspinlock_tree, id, HWSPINLOCK_UNUSED);
+-	if (ret == 0) {
+-		pr_warn("hwspinlock %u is already in use\n", id);
+-		hwlock = NULL;
+-		goto out;
+-	}
++	/*
++	 * We intentionally do not check for the HWSPINLOCK_UNUSED tag as
++	 * we want to share HWSPINLOCK between several devices. This is safe
++	 * since the lock/unlock requests are called under &hwlock->lock control
++	 */
+ 
+ 	/* mark as used and power up */
+ 	ret = __hwspin_lock_request(hwlock);
+diff --git a/drivers/hwspinlock/stm32_hwspinlock.c b/drivers/hwspinlock/stm32_hwspinlock.c
+index 3242b72..b9b9b99 100644
+--- a/drivers/hwspinlock/stm32_hwspinlock.c
++++ b/drivers/hwspinlock/stm32_hwspinlock.c
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include <linux/clk.h>
++#include <linux/delay.h>
+ #include <linux/hwspinlock.h>
+ #include <linux/io.h>
+ #include <linux/kernel.h>
+@@ -42,9 +43,15 @@ static void stm32_hwspinlock_unlock(struct hwspinlock *lock)
+ 	writel(STM32_MUTEX_COREID, lock_addr);
+ }
+ 
++static void stm32_hwspinlock_relax(struct hwspinlock *lock)
++{
++	ndelay(50);
++}
++
+ static const struct hwspinlock_ops stm32_hwspinlock_ops = {
+ 	.trylock	= stm32_hwspinlock_trylock,
+ 	.unlock		= stm32_hwspinlock_unlock,
++	.relax		= stm32_hwspinlock_relax,
+ };
+ 
+ static int stm32_hwspinlock_probe(struct platform_device *pdev)
+diff --git a/drivers/hwtracing/coresight/coresight-stm.c b/drivers/hwtracing/coresight/coresight-stm.c
+index c46c70a..65687c0 100644
+--- a/drivers/hwtracing/coresight/coresight-stm.c
++++ b/drivers/hwtracing/coresight/coresight-stm.c
+@@ -40,6 +40,7 @@
+ #define STMHETER			0xd20
+ #define STMHEBSR			0xd60
+ #define STMHEMCR			0xd64
++#define STMHEEXTMUXR			0xd68
+ #define STMHEMASTR			0xdf4
+ #define STMHEFEAT1R			0xdf8
+ #define STMHEIDR			0xdfc
+@@ -125,9 +126,11 @@ struct channel_space {
+  * @stmheer:		settings for register STMHEER.
+  * @stmheter:		settings for register STMHETER.
+  * @stmhebsr:		settings for register STMHEBSR.
++ * @stmheextmuxr:	settings for register STMHEEXTMUXR.
+  */
+ struct stm_drvdata {
+ 	void __iomem		*base;
++	void __iomem		*base_cti;
+ 	struct device		*dev;
+ 	struct clk		*atclk;
+ 	struct coresight_device	*csdev;
+@@ -143,6 +146,7 @@ struct stm_drvdata {
+ 	u32			stmheer;
+ 	u32			stmheter;
+ 	u32			stmhebsr;
++	u32			stmheextmuxr;
+ };
+ 
+ static void stm_hwevent_enable_hw(struct stm_drvdata *drvdata)
+@@ -152,6 +156,7 @@ static void stm_hwevent_enable_hw(struct stm_drvdata *drvdata)
+ 	writel_relaxed(drvdata->stmhebsr, drvdata->base + STMHEBSR);
+ 	writel_relaxed(drvdata->stmheter, drvdata->base + STMHETER);
+ 	writel_relaxed(drvdata->stmheer, drvdata->base + STMHEER);
++	writel_relaxed(drvdata->stmheextmuxr, drvdata->base + STMHEEXTMUXR);
+ 	writel_relaxed(0x01 |	/* Enable HW event tracing */
+ 		       0x04,	/* Error detection on event tracing */
+ 		       drvdata->base + STMHEMCR);
+@@ -222,6 +227,7 @@ static void stm_hwevent_disable_hw(struct stm_drvdata *drvdata)
+ 	writel_relaxed(0x0, drvdata->base + STMHEMCR);
+ 	writel_relaxed(0x0, drvdata->base + STMHEER);
+ 	writel_relaxed(0x0, drvdata->base + STMHETER);
++	writel_relaxed(0x0, drvdata->base + STMHEEXTMUXR);
+ 
+ 	CS_LOCK(drvdata->base);
+ }
+@@ -455,6 +461,34 @@ static ssize_t notrace stm_generic_packet(struct stm_data *stm_data,
+ 	return size;
+ }
+ 
++static ssize_t hwevent_extmux_select_show(struct device *dev,
++					  struct device_attribute *attr,
++					  char *buf)
++{
++	struct stm_drvdata *drvdata = dev_get_drvdata(dev->parent);
++	unsigned long val = drvdata->stmheextmuxr;
++
++	return scnprintf(buf, PAGE_SIZE, "%#lx\n", val);
++}
++
++static ssize_t hwevent_extmux_select_store(struct device *dev,
++					   struct device_attribute *attr,
++					   const char *buf, size_t size)
++{
++	struct stm_drvdata *drvdata = dev_get_drvdata(dev->parent);
++	unsigned long val;
++	int ret = 0;
++
++	ret = kstrtoul(buf, 16, &val);
++	if (ret)
++		return -EINVAL;
++
++	drvdata->stmheextmuxr = val;
++
++	return size;
++}
++static DEVICE_ATTR_RW(hwevent_extmux_select);
++
+ static ssize_t hwevent_enable_show(struct device *dev,
+ 				   struct device_attribute *attr, char *buf)
+ {
+@@ -644,10 +678,16 @@ coresight_stm_reg(spfeat1r, STMSPFEAT1R);
+ coresight_stm_reg(spfeat2r, STMSPFEAT2R);
+ coresight_stm_reg(spfeat3r, STMSPFEAT3R);
+ coresight_stm_reg(devid, CORESIGHT_DEVID);
++coresight_stm_reg(stmheer, STMHEER);
++coresight_stm_reg(stmheter, STMHETER);
++coresight_stm_reg(stmhebsr, STMHEBSR);
++coresight_stm_reg(stmheextmux, STMHEEXTMUXR);
++coresight_stm_reg(stmhemcr, STMHEMCR);
+ 
+ static struct attribute *coresight_stm_attrs[] = {
+ 	&dev_attr_hwevent_enable.attr,
+ 	&dev_attr_hwevent_select.attr,
++	&dev_attr_hwevent_extmux_select.attr,
+ 	&dev_attr_port_enable.attr,
+ 	&dev_attr_port_select.attr,
+ 	&dev_attr_traceid.attr,
+@@ -667,6 +707,11 @@ static struct attribute *coresight_stm_mgmt_attrs[] = {
+ 	&dev_attr_spfeat2r.attr,
+ 	&dev_attr_spfeat3r.attr,
+ 	&dev_attr_devid.attr,
++	&dev_attr_stmheer.attr,
++	&dev_attr_stmheter.attr,
++	&dev_attr_stmhebsr.attr,
++	&dev_attr_stmheextmux.attr,
++	&dev_attr_stmhemcr.attr,
+ 	NULL,
+ };
+ 
+@@ -792,7 +837,7 @@ static int stm_probe(struct amba_device *adev, const struct amba_id *id)
+ 	struct coresight_platform_data *pdata = NULL;
+ 	struct stm_drvdata *drvdata;
+ 	struct resource *res = &adev->res;
+-	struct resource ch_res;
++	struct resource ch_res, cti_res;
+ 	size_t res_size, bitmap_size;
+ 	struct coresight_desc desc = { 0 };
+ 	struct device_node *np = adev->dev.of_node;
+@@ -821,6 +866,17 @@ static int stm_probe(struct amba_device *adev, const struct amba_id *id)
+ 		return PTR_ERR(base);
+ 	drvdata->base = base;
+ 
++	ret = stm_get_resource_byname(np, "cti-base", &cti_res);
++	if (ret)
++		return ret;
++
++	base = devm_ioremap_resource(dev, &cti_res);
++
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++
++	drvdata->base_cti = base;
++
+ 	ret = stm_get_resource_byname(np, "stm-stimulus-base", &ch_res);
+ 	if (ret)
+ 		return ret;
+diff --git a/drivers/soc/st/Kconfig b/drivers/soc/st/Kconfig
+index 82ee423..8ab6049 100644
+--- a/drivers/soc/st/Kconfig
++++ b/drivers/soc/st/Kconfig
+@@ -6,4 +6,12 @@ config STM32_PM_DOMAINS
+ 	select PM_GENERIC_DOMAINS
+ 	default y if MACH_STM32MP157
+ 
++config STM32_HDP
++	bool "STMicroelectronics STM32MP157 Hardware Debug Port (HDP) pin control"
++	depends on MACH_STM32MP157
++	default n if MACH_STM32MP157
++	help
++	  The Hardware Debug Port allows the observation of internal signals. By using multiplexers,
++	  up to 16 signals for each of 8-bit output can be observed.
++
+ endif # ARCH_STM32
+diff --git a/drivers/soc/st/Makefile b/drivers/soc/st/Makefile
+index 8d7f291..85905b7 100644
+--- a/drivers/soc/st/Makefile
++++ b/drivers/soc/st/Makefile
+@@ -1 +1,2 @@
+ obj-$(CONFIG_STM32_PM_DOMAINS) += stm32_pm_domain.o
++obj-$(CONFIG_STM32_HDP) += stm32_hdp.o
+diff --git a/drivers/soc/st/stm32_hdp.c b/drivers/soc/st/stm32_hdp.c
+new file mode 100644
+index 0000000..6408ac6
+--- /dev/null
++++ b/drivers/soc/st/stm32_hdp.c
+@@ -0,0 +1,242 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
++ * Author: Christophe Roullier <christophe.roullier@st.com>
++ * for STMicroelectronics.
++ */
++
++#include <linux/clk.h>
++#include <linux/debugfs.h>
++#include <linux/init.h>
++#include <linux/of.h>
++#include <linux/module.h>
++#include <linux/pinctrl/pinconf.h>
++#include <linux/pinctrl/pinconf-generic.h>
++#include <linux/pinctrl/pinctrl.h>
++#include <linux/platform_device.h>
++#include <linux/io.h>
++#include <linux/suspend.h>
++
++#define HDP_CTRL_ENABLE 1
++#define HDP_CTRL_DISABLE 0
++
++enum {
++	HDP_CTRL = 0,
++	HDP_MUX = 0x4,
++	HDP_VAL = 0x10,
++	HDP_GPOSET = 0x14,
++	HDP_GPOCLR = 0x18,
++	HDP_GPOVAL = 0x1c,
++	HDP_VERR = 0x3f4,
++	HDP_IPIDR = 0x3f8,
++	HDP_SIDR = 0x3fc
++} HDP_register_offsets;
++
++struct data_priv {
++	struct clk *clk;
++	int clk_is_enabled;
++	struct dentry *pwr_dentry;
++	unsigned char __iomem *hdp_membase;
++	unsigned int hdp_ctrl;
++	unsigned int hdp_mux;
++};
++
++/* enable/disable */
++static int stm32_hdp_enable_set(void *data, int val)
++{
++	struct data_priv *e = (struct data_priv *)data;
++
++	if (!e->clk)
++		return -EPERM;
++
++	if (val == 1) {
++		if (clk_prepare_enable(e->clk) < 0) {
++			pr_err("Failed to enable HDP clock\n");
++			return -EPERM;
++		}
++		e->clk_is_enabled = 1;
++	} else {
++		clk_disable_unprepare(e->clk);
++		e->clk_is_enabled = 0;
++	}
++	return 0;
++}
++
++static int stm32_hdp_fops_set(void *data, u64 val)
++{
++	unsigned char __iomem *addr = (unsigned char __iomem *)data;
++
++	writel_relaxed(val, addr);
++
++	return 0;
++}
++
++static int stm32_hdp_fops_get(void *data, u64 *val)
++{
++	unsigned char __iomem *addr = (unsigned char __iomem *)data;
++
++	*val = readl_relaxed(addr);
++
++	return 0;
++}
++
++DEFINE_SIMPLE_ATTRIBUTE(stm32_hdp_fops, stm32_hdp_fops_get,
++			stm32_hdp_fops_set, "0x%llx\n");
++
++int stm32_hdp_probe(struct platform_device *pdev)
++{
++	struct device_node *np = pdev->dev.of_node;
++	struct device *dev = &pdev->dev;
++	struct resource *res;
++
++	struct data_priv *data;
++	struct dentry *r;
++
++	int ret;
++	const __be32 *getmuxing;
++	u32 muxing, version;
++
++	if (!np)
++		return -ENODEV;
++
++	data = devm_kzalloc(&pdev->dev, sizeof(struct data_priv), GFP_KERNEL);
++	if (!data)
++		return -ENOMEM;
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	data->hdp_membase = devm_ioremap_resource(&pdev->dev, res);
++	if (IS_ERR(data->hdp_membase))
++		return PTR_ERR(data->hdp_membase);
++
++	/*  Get HDP clocks */
++	data->clk = devm_clk_get(dev, "hdp");
++	if (IS_ERR(data->clk)) {
++		dev_err(dev, "No HDP CK clock provided...\n");
++		return PTR_ERR(data->clk);
++	}
++
++	/* Enable clock */
++	ret = stm32_hdp_enable_set(data, 1);
++	if (ret != 0)
++		return ret;
++
++	getmuxing = of_get_property(np, "muxing-hdp", NULL);
++	if (!getmuxing) {
++		dev_err(dev,
++			"no muxing-hdp property in node\n");
++		/* Disable clock */
++		ret = stm32_hdp_enable_set(data, 0);
++		if (ret != 0)
++			return ret;
++
++		return -EINVAL;
++	}
++
++	/* add hdp directory */
++	r = debugfs_create_dir("hdp", NULL);
++	if (!r) {
++		dev_err(dev, "Unable to create HDP debugFS\n");
++		/* Disable clock */
++		ret = stm32_hdp_enable_set(data, 0);
++		if (ret != 0)
++			return ret;
++
++		return -ENODEV;
++	}
++
++	debugfs_create_file("ctrl", 0644, r,
++			    data->hdp_membase + HDP_CTRL, &stm32_hdp_fops);
++	debugfs_create_file("mux", 0644, r,
++			    data->hdp_membase + HDP_MUX, &stm32_hdp_fops);
++	debugfs_create_file("val", 0644, r,
++			    data->hdp_membase + HDP_VAL, &stm32_hdp_fops);
++	debugfs_create_file("gposet", 0644, r,
++			    data->hdp_membase + HDP_GPOSET, &stm32_hdp_fops);
++	debugfs_create_file("gpoclr", 0644, r,
++			    data->hdp_membase + HDP_GPOCLR, &stm32_hdp_fops);
++	debugfs_create_file("gpoval", 0644, r,
++			    data->hdp_membase + HDP_GPOVAL, &stm32_hdp_fops);
++
++	/* Enable HDP */
++	writel(HDP_CTRL_ENABLE, data->hdp_membase + HDP_CTRL);
++
++	/* HDP Multiplexing */
++	muxing = of_read_number(getmuxing,
++				of_n_addr_cells(np));
++
++	writel(muxing, data->hdp_membase + HDP_MUX);
++
++	platform_set_drvdata(pdev, data);
++
++	/* Get Majeur, Minor version */
++	version = readl(data->hdp_membase + HDP_VERR);
++
++	dev_info(dev, "STM32 HDP version %d.%d initialized\n",
++		 version >> 4, version & 0x0F);
++
++	return 0;
++}
++
++static int stm32_hdp_remove(struct platform_device *pdev)
++{
++	struct data_priv *data = platform_get_drvdata(pdev);
++
++	/* Disable HDP */
++	writel(HDP_CTRL_DISABLE, data->hdp_membase + HDP_CTRL);
++
++	if (data->clk) {
++		if (data->clk_is_enabled)
++			clk_disable_unprepare(data->clk);
++	}
++
++	pr_info("driver STM32 HDP removed\n");
++	return 0;
++}
++
++#ifdef CONFIG_PM_SLEEP
++static int stm32_hdp_suspend(struct device *dev)
++{
++	struct data_priv *data = dev_get_drvdata(dev);
++
++	data->hdp_ctrl = readl_relaxed(data->hdp_membase + HDP_CTRL);
++	data->hdp_mux = readl_relaxed(data->hdp_membase + HDP_MUX);
++
++	pinctrl_pm_select_sleep_state(dev);
++
++	return 0;
++}
++
++static int stm32_hdp_resume(struct device *dev)
++{
++	struct data_priv *data = dev_get_drvdata(dev);
++
++	writel_relaxed(data->hdp_ctrl, data->hdp_membase + HDP_CTRL);
++	writel_relaxed(data->hdp_mux, data->hdp_membase + HDP_MUX);
++
++	pinctrl_pm_select_default_state(dev);
++
++	return 0;
++}
++#endif /* CONFIG_PM_SLEEP */
++
++static SIMPLE_DEV_PM_OPS(stm32_hdp_pm_ops,
++			 stm32_hdp_suspend,
++			 stm32_hdp_resume);
++
++static const struct of_device_id hdp_match[] = {
++	{	.compatible = "st,stm32mp1-hdp",},
++	{ }
++};
++MODULE_DEVICE_TABLE(of, hdp_match);
++
++static struct platform_driver hdp_driver = {
++	.probe = stm32_hdp_probe,
++	.remove = stm32_hdp_remove,
++	.driver = {
++		.name = "hdp",
++		.of_match_table = hdp_match,
++		.pm = &stm32_hdp_pm_ops,
++	},
++};
++
++module_platform_driver(hdp_driver);
+diff --git a/drivers/spi/spi-stm32-qspi.c b/drivers/spi/spi-stm32-qspi.c
+index 3e8ca10..9c67718 100644
+--- a/drivers/spi/spi-stm32-qspi.c
++++ b/drivers/spi/spi-stm32-qspi.c
+@@ -5,7 +5,10 @@
+  */
+ #include <linux/bitfield.h>
+ #include <linux/clk.h>
++#include <linux/dmaengine.h>
++#include <linux/dma-mapping.h>
+ #include <linux/errno.h>
++#include <linux/highmem.h>
+ #include <linux/io.h>
+ #include <linux/iopoll.h>
+ #include <linux/interrupt.h>
+@@ -84,6 +87,7 @@
+ #define STM32_FIFO_TIMEOUT_US 30000
+ #define STM32_BUSY_TIMEOUT_US 100000
+ #define STM32_ABT_TIMEOUT_US 100000
++#define STM32_COMP_TIMEOUT_MS 1000
+ 
+ struct stm32_qspi_flash {
+ 	struct stm32_qspi *qspi;
+@@ -93,6 +97,7 @@ struct stm32_qspi_flash {
+ 
+ struct stm32_qspi {
+ 	struct device *dev;
++	phys_addr_t phys_base;
+ 	void __iomem *io_base;
+ 	void __iomem *mm_base;
+ 	resource_size_t mm_size;
+@@ -102,6 +107,11 @@ struct stm32_qspi {
+ 	struct completion data_completion;
+ 	u32 fmode;
+ 
++	struct dma_chan *dma_chtx;
++	struct dma_chan *dma_chrx;
++	struct completion dma_completion;
++	struct sg_table dma_sgt;
++
+ 	u32 cr_reg;
+ 	u32 dcr_reg;
+ 
+@@ -180,6 +190,131 @@ static int stm32_qspi_tx_mm(struct stm32_qspi *qspi,
+ 	return 0;
+ }
+ 
++static void stm32_qspi_dma_callback(void *arg)
++{
++	struct completion *dma_completion = arg;
++
++	complete(dma_completion);
++}
++
++static int stm32_qspi_tx_dma(struct stm32_qspi *qspi,
++			     const struct spi_mem_op *op)
++{
++	struct dma_async_tx_descriptor *desc;
++	enum dma_transfer_direction dma_dir;
++	enum dma_data_direction map_dir;
++	bool addr_valid, vmalloced_buf;
++	unsigned int dma_max_seg_size;
++	struct scatterlist *sg;
++	struct dma_chan *dma_ch;
++	struct page *vm_page;
++	dma_cookie_t cookie;
++	u32 cr, len, t_out;
++	int i, err, nents, desc_len;
++	u8 *buf;
++
++	cr = readl_relaxed(qspi->io_base + QSPI_CR);
++
++	if (op->data.dir == SPI_MEM_DATA_IN) {
++		map_dir = DMA_FROM_DEVICE;
++		dma_dir = DMA_DEV_TO_MEM;
++		dma_ch = qspi->dma_chrx;
++		buf = op->data.buf.in;
++	} else {
++		map_dir = DMA_TO_DEVICE;
++		dma_dir = DMA_MEM_TO_DEV;
++		dma_ch = qspi->dma_chtx;
++		buf = (u8 *)op->data.buf.out;
++	}
++
++	/* the stm32 dma could tx MAX_DMA_BLOCK_LEN */
++	dma_max_seg_size = dma_get_max_seg_size(dma_ch->device->dev);
++	len = op->data.nbytes;
++
++	vmalloced_buf = is_vmalloc_addr(buf);
++	addr_valid = virt_addr_valid(buf);
++	if (addr_valid) {
++		desc_len = dma_max_seg_size;
++		nents = DIV_ROUND_UP(len, desc_len);
++	} else {
++		desc_len = min_t(int, dma_max_seg_size, PAGE_SIZE);
++		nents = DIV_ROUND_UP(len + offset_in_page(buf), desc_len);
++	}
++
++	if (nents != qspi->dma_sgt.nents) {
++		sg_free_table(&qspi->dma_sgt);
++
++		err = sg_alloc_table(&qspi->dma_sgt, nents, GFP_KERNEL);
++		if (err)
++			return err;
++	}
++
++	for_each_sg(qspi->dma_sgt.sgl, sg, nents, i) {
++		size_t bytes;
++
++		if (addr_valid) {
++			bytes = min_t(size_t, len, desc_len);
++			sg_set_buf(sg, buf, bytes);
++		} else {
++			bytes = min_t(size_t, len,
++				      desc_len - offset_in_page(buf));
++			if (vmalloced_buf)
++				vm_page = vmalloc_to_page(buf);
++			else
++				vm_page = kmap_to_page(buf);
++			if (!vm_page) {
++				sg_free_table(&qspi->dma_sgt);
++				return -ENOMEM;
++			}
++			sg_set_page(sg, vm_page, bytes,
++				    offset_in_page(buf));
++		}
++
++		buf += bytes;
++		len -= bytes;
++	}
++
++	if (dma_map_sg(qspi->dev, qspi->dma_sgt.sgl, nents, map_dir) != nents)
++		return -ENOMEM;
++
++	desc = dmaengine_prep_slave_sg(dma_ch, qspi->dma_sgt.sgl, nents,
++				       dma_dir, DMA_PREP_INTERRUPT);
++	if (!desc) {
++		err = -ENOMEM;
++		goto out_unmap;
++	}
++
++	reinit_completion(&qspi->dma_completion);
++	desc->callback = stm32_qspi_dma_callback;
++	desc->callback_param = &qspi->dma_completion;
++	cookie = dmaengine_submit(desc);
++	err = dma_submit_error(cookie);
++	if (err)
++		goto out_unmap;
++
++	dma_async_issue_pending(dma_ch);
++
++	writel_relaxed(cr | CR_DMAEN, qspi->io_base + QSPI_CR);
++
++	t_out = nents * STM32_COMP_TIMEOUT_MS;
++	if (!wait_for_completion_interruptible_timeout(&qspi->dma_completion,
++						       msecs_to_jiffies(t_out)))
++		err = -ETIMEDOUT;
++
++	if (dma_async_is_tx_complete(dma_ch, cookie,
++				     NULL, NULL) != DMA_COMPLETE)
++		err = -ETIMEDOUT;
++
++	if (err)
++		dmaengine_terminate_all(dma_ch);
++
++out_unmap:
++	writel_relaxed(cr & ~CR_DMAEN, qspi->io_base + QSPI_CR);
++	dma_unmap_sg(qspi->dev, qspi->dma_sgt.sgl, nents, map_dir);
++
++	return err;
++}
++
+ static int stm32_qspi_tx(struct stm32_qspi *qspi, const struct spi_mem_op *op)
+ {
+ 	if (!op->data.nbytes)
+@@ -187,6 +322,10 @@ static int stm32_qspi_tx(struct stm32_qspi *qspi, const struct spi_mem_op *op)
+ 
+ 	if (qspi->fmode == CCR_FMODE_MM)
+ 		return stm32_qspi_tx_mm(qspi, op);
++	else if (op->data.dir == SPI_MEM_DATA_IN && qspi->dma_chrx)
++		return stm32_qspi_tx_dma(qspi, op);
++	else if (op->data.dir == SPI_MEM_DATA_OUT && qspi->dma_chtx)
++		return stm32_qspi_tx_dma(qspi, op);
+ 
+ 	return stm32_qspi_tx_poll(qspi, op);
+ }
+@@ -217,7 +356,7 @@ static int stm32_qspi_wait_cmd(struct stm32_qspi *qspi,
+ 	writel_relaxed(cr | CR_TCIE | CR_TEIE, qspi->io_base + QSPI_CR);
+ 
+ 	if (!wait_for_completion_interruptible_timeout(&qspi->data_completion,
+-						msecs_to_jiffies(1000))) {
++				msecs_to_jiffies(STM32_COMP_TIMEOUT_MS))) {
+ 		err = -ETIMEDOUT;
+ 	} else {
+ 		sr = readl_relaxed(qspi->io_base + QSPI_SR);
+@@ -386,6 +525,52 @@ static int stm32_qspi_setup(struct spi_device *spi)
+ 	return 0;
+ }
+ 
++static void stm32_qspi_dma_setup(struct stm32_qspi *qspi)
++{
++	struct dma_slave_config dma_cfg;
++	struct device *dev = qspi->dev;
++	int ret;
++
++	memset(&dma_cfg, 0, sizeof(dma_cfg));
++
++	dma_cfg.src_addr_width = DMA_SLAVE_BUSWIDTH_1_BYTE;
++	dma_cfg.dst_addr_width = DMA_SLAVE_BUSWIDTH_1_BYTE;
++	dma_cfg.src_addr = qspi->phys_base + QSPI_DR;
++	dma_cfg.dst_addr = qspi->phys_base + QSPI_DR;
++	dma_cfg.src_maxburst = 4;
++	dma_cfg.dst_maxburst = 4;
++
++	qspi->dma_chrx = dma_request_slave_channel(dev, "rx");
++	if (qspi->dma_chrx) {
++		ret = dmaengine_slave_config(qspi->dma_chrx, &dma_cfg);
++		if (ret) {
++			dev_err(dev, "dma rx config failed\n");
++			dma_release_channel(qspi->dma_chrx);
++			qspi->dma_chrx = NULL;
++		}
++	}
++
++	qspi->dma_chtx = dma_request_slave_channel(dev, "tx");
++	if (qspi->dma_chtx) {
++		ret = dmaengine_slave_config(qspi->dma_chtx, &dma_cfg);
++		if (ret) {
++			dev_err(dev, "dma tx config failed\n");
++			dma_release_channel(qspi->dma_chtx);
++			qspi->dma_chtx = NULL;
++		}
++	}
++
++	init_completion(&qspi->dma_completion);
++}
++
++static void stm32_qspi_dma_free(struct stm32_qspi *qspi)
++{
++	if (qspi->dma_chtx)
++		dma_release_channel(qspi->dma_chtx);
++	if (qspi->dma_chrx)
++		dma_release_channel(qspi->dma_chrx);
++}
++
+ /*
+  * no special host constraint, so use default spi_mem_default_supports_op
+  * to check supported mode.
+@@ -398,6 +583,8 @@ static void stm32_qspi_release(struct stm32_qspi *qspi)
+ {
+ 	/* disable qspi */
+ 	writel_relaxed(0, qspi->io_base + QSPI_CR);
++	stm32_qspi_dma_free(qspi);
++	sg_free_table(&qspi->dma_sgt);
+ 	mutex_destroy(&qspi->lock);
+ 	clk_disable_unprepare(qspi->clk);
+ }
+@@ -422,6 +609,8 @@ static int stm32_qspi_probe(struct platform_device *pdev)
+ 	if (IS_ERR(qspi->io_base))
+ 		return PTR_ERR(qspi->io_base);
+ 
++	qspi->phys_base = res->start;
++
+ 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "qspi_mm");
+ 	qspi->mm_base = devm_ioremap_resource(dev, res);
+ 	if (IS_ERR(qspi->mm_base))
+@@ -464,6 +653,7 @@ static int stm32_qspi_probe(struct platform_device *pdev)
+ 
+ 	qspi->dev = dev;
+ 	platform_set_drvdata(pdev, qspi);
++	stm32_qspi_dma_setup(qspi);
+ 	mutex_init(&qspi->lock);
+ 
+ 	ctrl->mode_bits = SPI_RX_DUAL | SPI_RX_QUAD
+diff --git a/include/dt-bindings/soc/stm32-hdp.h b/include/dt-bindings/soc/stm32-hdp.h
+new file mode 100644
+index 0000000..d986653
+--- /dev/null
++++ b/include/dt-bindings/soc/stm32-hdp.h
+@@ -0,0 +1,108 @@
++/* SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause) */
++/*
++ * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
++ * Author: Roullier Christophe <christophe.roullier@st.com>
++ * for STMicroelectronics.
++ */
++
++#ifndef _DT_BINDINGS_STM32_HDP_H
++#define _DT_BINDINGS_STM32_HDP_H
++
++#define STM32_HDP(port, value) ((value) << ((port) * 4))
++
++/* define HDP Pins number*/
++#define HDP0_PWR_PWRWAKE_SYS			0
++#define HDP0_CM4_SLEEPDEEP			1
++#define HDP0_PWR_STDBY_WKUP			2
++#define HDP0_PWR_ENCOMP_VDDCORE			3
++#define HDP0_BSEC_OUT_SEC_NIDEN			4
++#define HDP0_RCC_CM4_SLEEPDEEP			6
++#define HDP0_GPU_DBG7				7
++#define HDP0_DDRCTRL_LP_REQ			8
++#define HDP0_PWR_DDR_RET_ENABLE_N		9
++#define HDP0_GPOVAL_0				15
++
++#define HDP1_PWR_PWRWAKE_MCU			0
++#define HDP1_CM4_HALTED				1
++#define HDP1_CA7_NAXIERRIRQ			2
++#define HDP1_PWR_OKIN_MR			3
++#define HDP1_BSEC_OUT_SEC_DBGEN			4
++#define HDP1_EXTI_SYS_WAKEUP			5
++#define HDP1_RCC_PWRDS_MPU			6
++#define HDP1_GPU_DBG6				7
++#define HDP1_DDRCTRL_DFI_CTRLUPD_REQ		8
++#define HDP1_DDRCTRL_CACTIVE_DDRC_ASR		9
++#define HDP1_GPOVAL_1				15
++
++#define HDP2_PWR_PWRWAKE_MPU			0
++#define HDP2_CM4_RXEV				1
++#define HDP2_CA7_NPMUIRQ1			2
++#define HDP2_CA7_NFIQOUT1			3
++#define HDP2_BSEC_IN_RSTCORE_N			4
++#define HDP2_EXTI_C2_WAKEUP			5
++#define HDP2_RCC_PWRDS_MCU			6
++#define HDP2_GPU_DBG5				7
++#define HDP2_DDRCTRL_DFI_INIT_COMPLETE		8
++#define HDP2_DDRCTRL_PERF_OP_IS_REFRESH		9
++#define HDP2_DDRCTRL_GSKP_DFI_LP_REQ		10
++#define HDP2_GPOVAL_2				15
++
++#define HDP3_PWR_SEL_VTH_VDD_CORE		0
++#define HDP3_CM4_TXEV				1
++#define HDP3_CA7_NPMUIRQ0			2
++#define HDP3_CA7_NFIQOUT0			3
++#define HDP3_BSEC_OUT_SEC_DFTLOCK		4
++#define HDP3_EXTI_C1_WAKEUP			5
++#define HDP3_RCC_PWRDS_SYS			6
++#define HDP3_GPU_DBG4				7
++#define HDP3_DDRCTRL_STAT_DDRC_REG_SELREF_TYPE0	8
++#define HDP3_DDRCTRL_CACTIVE_1			9
++#define HDP3_GPOVAL_3				15
++
++#define HDP4_PWR_PDDS				0
++#define HDP4_CM4_SLEEPING			1
++#define HDP4_CA7_NRESET1			2
++#define HDP4_CA7_NIRQOUT1			3
++#define HDP4_BSEC_OUT_SEC_DFTEN			4
++#define HDP4_BSEC_OUT_SEC_DBGSWENABLE		5
++#define HDP4_ETH_OUT_PMT_INTR_O			6
++#define HDP4_GPU_DBG3				7
++#define HDP4_DDRCTRL_STAT_DDRC_REG_SELREF_TYPE1	8
++#define HDP4_DDRCTRL_CACTIVE_0			9
++#define HDP4_GPOVAL_4				15
++
++#define HDP5_CA7_STANDBYWFIL2			0
++#define HDP5_PWR_VTH_VDDCORE_ACK		1
++#define HDP5_CA7_NRESET0			2
++#define HDP5_CA7_NIRQOUT0			3
++#define HDP5_BSEC_IN_PWROK			4
++#define HDP5_BSEC_OUT_SEC_DEVICEEN		5
++#define HDP5_ETH_OUT_LPI_INTR_O			6
++#define HDP5_GPU_DBG2				7
++#define HDP5_DDRCTRL_CACTIVE_DDRC		8
++#define HDP5_DDRCTRL_WR_CREDIT_CNT		9
++#define HDP5_GPOVAL_5				15
++
++#define HDP6_CA7_STANDBYWFI1			0
++#define HDP6_CA7_STANDBYWFE1			1
++#define HDP6_CA7_EVENT0				2
++#define HDP6_CA7_DBGACK1			3
++#define HDP6_BSEC_OUT_SEC_SPNIDEN		5
++#define HDP6_ETH_OUT_MAC_SPEED_O1		6
++#define HDP6_GPU_DBG1				7
++#define HDP6_DDRCTRL_CSYSACK_DDRC		8
++#define HDP6_DDRCTRL_LPR_CREDIT_CNT		9
++#define HDP6_GPOVAL_6				15
++
++#define HDP7_CA7_STANDBYWFI0			0
++#define HDP7_CA7_STANDBYWFE0			1
++#define HDP7_CA7_DBGACK0			3
++#define HDP7_BSEC_OUT_FUSE_OK			4
++#define HDP7_BSEC_OUT_SEC_SPIDEN		5
++#define HDP7_ETH_OUT_MAC_SPEED_O0		6
++#define HDP7_GPU_DBG0				7
++#define HDP7_DDRCTRL_CSYSREQ_DDRC		8
++#define HDP7_DDRCTRL_HPR_CREDIT_CNT		9
++#define HDP7_GPOVAL_7				15
++
++#endif /* _DT_BINDINGS_STM32_HDP_H */
+-- 
+2.7.4
+

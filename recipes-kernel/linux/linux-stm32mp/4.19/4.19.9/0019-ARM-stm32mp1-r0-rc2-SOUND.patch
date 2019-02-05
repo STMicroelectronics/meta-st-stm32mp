@@ -1,0 +1,1964 @@
+From f0e754855e06c3b8eb04ee09e6b1ea8a1bd9af7c Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@st.com>
+Date: Mon, 26 Nov 2018 14:39:24 +0100
+Subject: [PATCH 19/52] ARM-stm32mp1-r0-rc2-SOUND
+
+---
+ include/linux/mfd/wm8994/pdata.h |   6 +
+ sound/soc/codecs/Kconfig         |   4 +-
+ sound/soc/codecs/cs42l51-i2c.c   |   6 +
+ sound/soc/codecs/cs42l51.c       | 155 +++++++++++++++---
+ sound/soc/codecs/cs42l51.h       |   1 +
+ sound/soc/codecs/wm8994.c        |  79 ++++++++-
+ sound/soc/stm/Kconfig            |   1 +
+ sound/soc/stm/stm32_adfsdm.c     |  17 +-
+ sound/soc/stm/stm32_i2s.c        | 172 +++++++++++++-------
+ sound/soc/stm/stm32_sai.c        |  67 +++++++-
+ sound/soc/stm/stm32_sai.h        |  57 +++++--
+ sound/soc/stm/stm32_sai_sub.c    | 335 +++++++++++++++++++++++++++++++++------
+ sound/soc/stm/stm32_spdifrx.c    |  81 +++++++++-
+ 13 files changed, 819 insertions(+), 162 deletions(-)
+
+diff --git a/include/linux/mfd/wm8994/pdata.h b/include/linux/mfd/wm8994/pdata.h
+index b19c370..cdaf3f6 100644
+--- a/include/linux/mfd/wm8994/pdata.h
++++ b/include/linux/mfd/wm8994/pdata.h
+@@ -239,6 +239,12 @@ struct wm8994_pdata {
+ 	 * GPIO for the IRQ pin if host only supports edge triggering
+ 	 */
+ 	int irq_gpio;
++
++	/* MCLK1 clock provider */
++	struct clk *mclk1;
++
++	/* MCLK2 clock provider */
++	struct clk *mclk2;
+ };
+ 
+ #endif
+diff --git a/sound/soc/codecs/Kconfig b/sound/soc/codecs/Kconfig
+index efb095d..58161d1 100644
+--- a/sound/soc/codecs/Kconfig
++++ b/sound/soc/codecs/Kconfig
+@@ -575,7 +575,7 @@ config SND_SOC_DA9055
+ 	tristate
+ 
+ config SND_SOC_DMIC
+-	tristate
++	tristate "Generic DMIC codec"
+ 
+ config SND_SOC_HDMI_CODEC
+ 	tristate
+@@ -1227,7 +1227,7 @@ config SND_SOC_WM8993
+ 	tristate
+ 
+ config SND_SOC_WM8994
+-	tristate
++	tristate "Wolfson Microelectronics WM8994 codec"
+ 
+ config SND_SOC_WM8995
+ 	tristate
+diff --git a/sound/soc/codecs/cs42l51-i2c.c b/sound/soc/codecs/cs42l51-i2c.c
+index 4b5731a..8333dbf 100644
+--- a/sound/soc/codecs/cs42l51-i2c.c
++++ b/sound/soc/codecs/cs42l51-i2c.c
+@@ -35,12 +35,18 @@ static int cs42l51_i2c_probe(struct i2c_client *i2c,
+ 	return cs42l51_probe(&i2c->dev, devm_regmap_init_i2c(i2c, &config));
+ }
+ 
++static int cs42l51_i2c_remove(struct i2c_client *i2c)
++{
++	return cs42l51_remove(&i2c->dev);
++}
++
+ static struct i2c_driver cs42l51_i2c_driver = {
+ 	.driver = {
+ 		.name = "cs42l51",
+ 		.of_match_table = cs42l51_of_match,
+ 	},
+ 	.probe = cs42l51_i2c_probe,
++	.remove = cs42l51_i2c_remove,
+ 	.id_table = cs42l51_i2c_id,
+ };
+ 
+diff --git a/sound/soc/codecs/cs42l51.c b/sound/soc/codecs/cs42l51.c
+index 5080d7a3..fceee59 100644
+--- a/sound/soc/codecs/cs42l51.c
++++ b/sound/soc/codecs/cs42l51.c
+@@ -21,6 +21,7 @@
+  *  - master mode *NOT* supported
+  */
+ 
++#include <linux/clk.h>
+ #include <linux/module.h>
+ #include <linux/slab.h>
+ #include <sound/core.h>
+@@ -29,7 +30,9 @@
+ #include <sound/initval.h>
+ #include <sound/pcm_params.h>
+ #include <sound/pcm.h>
++#include <linux/gpio/consumer.h>
+ #include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
+ 
+ #include "cs42l51.h"
+ 
+@@ -39,10 +42,21 @@ enum master_slave_mode {
+ 	MODE_MASTER,
+ };
+ 
++#define CS42L51_NUM_SUPPLIES 4
++static const char *cs42l51_supply_names[CS42L51_NUM_SUPPLIES] = {
++	"VL",
++	"VD",
++	"VA",
++	"VAHP",
++};
++
+ struct cs42l51_private {
+ 	unsigned int mclk;
++	struct clk *mclk_handle;
+ 	unsigned int audio_mode;	/* The mode (I2S or left-justified) */
+ 	enum master_slave_mode func;
++	struct regulator_bulk_data supplies[CS42L51_NUM_SUPPLIES];
++	struct gpio_desc *reset_gpio;
+ };
+ 
+ #define CS42L51_FORMATS ( \
+@@ -165,6 +179,7 @@ static int cs42l51_pdn_event(struct snd_soc_dapm_widget *w,
+ 	case SND_SOC_DAPM_POST_PMD:
+ 		snd_soc_component_update_bits(component, CS42L51_POWER_CTL1,
+ 				    CS42L51_POWER_CTL1_PDN, 0);
++		msleep(20);
+ 		break;
+ 	}
+ 
+@@ -193,7 +208,8 @@ static const struct snd_kcontrol_new cs42l51_adcr_mux_controls =
+ 	SOC_DAPM_ENUM("Route", cs42l51_adcr_mux_enum);
+ 
+ static const struct snd_soc_dapm_widget cs42l51_dapm_widgets[] = {
+-	SND_SOC_DAPM_MICBIAS("Mic Bias", CS42L51_MIC_POWER_CTL, 1, 1),
++	SND_SOC_DAPM_SUPPLY("Mic Bias", CS42L51_MIC_POWER_CTL, 1, 1, NULL,
++			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+ 	SND_SOC_DAPM_PGA_E("Left PGA", CS42L51_POWER_CTL1, 3, 1, NULL, 0,
+ 		cs42l51_pdn_event, SND_SOC_DAPM_PRE_POST_PMD),
+ 	SND_SOC_DAPM_PGA_E("Right PGA", CS42L51_POWER_CTL1, 4, 1, NULL, 0,
+@@ -237,6 +253,10 @@ static const struct snd_soc_dapm_widget cs42l51_dapm_widgets[] = {
+ 		&cs42l51_adcr_mux_controls),
+ };
+ 
++static const struct snd_soc_dapm_widget cs42l51_dapm_mclk_widgets[] = {
++	SND_SOC_DAPM_CLOCK_SUPPLY("MCLK")
++};
++
+ static const struct snd_soc_dapm_route cs42l51_routes[] = {
+ 	{"HPL", NULL, "Left DAC"},
+ 	{"HPR", NULL, "Right DAC"},
+@@ -323,6 +343,19 @@ static struct cs42l51_ratios slave_auto_ratios[] = {
+ 	{  256, CS42L51_DSM_MODE, 1 }, {  384, CS42L51_DSM_MODE, 1 },
+ };
+ 
++/*
++ * Master mode mclk/fs ratios.
++ * Recommended configurations are SSM for 4-50khz and DSM for 50-100kHz ranges
++ * The table below provides support of following ratios:
++ * 128: SSM (%128) with div2 disabled
++ * 256: SSM (%128) with div2 enabled
++ * In both cases, if sampling rate is above 50kHz, SSM is overridden
++ * with DSM (%128) configuration
++ */
++static struct cs42l51_ratios master_ratios[] = {
++	{ 128, CS42L51_SSM_MODE, 0 }, { 256, CS42L51_SSM_MODE, 1 },
++};
++
+ static int cs42l51_set_dai_sysclk(struct snd_soc_dai *codec_dai,
+ 		int clk_id, unsigned int freq, int dir)
+ {
+@@ -345,11 +378,13 @@ static int cs42l51_hw_params(struct snd_pcm_substream *substream,
+ 	unsigned int ratio;
+ 	struct cs42l51_ratios *ratios = NULL;
+ 	int nr_ratios = 0;
+-	int intf_ctl, power_ctl, fmt;
++	int intf_ctl, power_ctl, fmt, mode;
+ 
+ 	switch (cs42l51->func) {
+ 	case MODE_MASTER:
+-		return -EINVAL;
++		ratios = master_ratios;
++		nr_ratios = ARRAY_SIZE(master_ratios);
++		break;
+ 	case MODE_SLAVE:
+ 		ratios = slave_ratios;
+ 		nr_ratios = ARRAY_SIZE(slave_ratios);
+@@ -385,7 +420,16 @@ static int cs42l51_hw_params(struct snd_pcm_substream *substream,
+ 	switch (cs42l51->func) {
+ 	case MODE_MASTER:
+ 		intf_ctl |= CS42L51_INTF_CTL_MASTER;
+-		power_ctl |= CS42L51_MIC_POWER_CTL_SPEED(ratios[i].speed_mode);
++		mode = ratios[i].speed_mode;
++		/* Force DSM mode if sampling rate is above 50kHz */
++		if (rate > 50000)
++			mode = CS42L51_DSM_MODE;
++		power_ctl |= CS42L51_MIC_POWER_CTL_SPEED(mode);
++		/*
++		 * Auto detect mode is not applicable for master mode and has to
++		 * be disabled. Otherwise SPEED[1:0] bits will be ignored.
++		 */
++		power_ctl &= ~CS42L51_MIC_POWER_CTL_AUTO;
+ 		break;
+ 	case MODE_SLAVE:
+ 		power_ctl |= CS42L51_MIC_POWER_CTL_SPEED(ratios[i].speed_mode);
+@@ -465,28 +509,42 @@ static const struct snd_soc_dai_ops cs42l51_dai_ops = {
+ 	.digital_mute   = cs42l51_dai_mute,
+ };
+ 
+-static struct snd_soc_dai_driver cs42l51_dai = {
+-	.name = "cs42l51-hifi",
+-	.playback = {
+-		.stream_name = "Playback",
+-		.channels_min = 1,
+-		.channels_max = 2,
+-		.rates = SNDRV_PCM_RATE_8000_96000,
+-		.formats = CS42L51_FORMATS,
+-	},
+-	.capture = {
+-		.stream_name = "Capture",
+-		.channels_min = 1,
+-		.channels_max = 2,
+-		.rates = SNDRV_PCM_RATE_8000_96000,
+-		.formats = CS42L51_FORMATS,
++static struct snd_soc_dai_driver cs42l51_dai[] = {
++	{
++		.name = "cs42l51-hifi0",
++		.playback = {
++			.stream_name = "Playback",
++			.channels_min = 1,
++			.channels_max = 2,
++			.rates = SNDRV_PCM_RATE_8000_96000,
++			.formats = CS42L51_FORMATS,
++		},
++		.ops = &cs42l51_dai_ops,
+ 	},
+-	.ops = &cs42l51_dai_ops,
++	{
++		.name = "cs42l51-hifi1",
++		.capture = {
++			.stream_name = "Capture",
++			.channels_min = 1,
++			.channels_max = 2,
++			.rates = SNDRV_PCM_RATE_8000_96000,
++			.formats = CS42L51_FORMATS,
++		},
++		.ops = &cs42l51_dai_ops,
++	}
+ };
+ 
+ static int cs42l51_component_probe(struct snd_soc_component *component)
+ {
+ 	int ret, reg;
++	struct snd_soc_dapm_context *dapm;
++	struct cs42l51_private *cs42l51;
++
++	cs42l51 = snd_soc_component_get_drvdata(component);
++	dapm = snd_soc_component_get_dapm(component);
++
++	if (cs42l51->mclk_handle)
++		snd_soc_dapm_new_controls(dapm, cs42l51_dapm_mclk_widgets, 1);
+ 
+ 	/*
+ 	 * DAC configuration
+@@ -528,7 +586,7 @@ int cs42l51_probe(struct device *dev, struct regmap *regmap)
+ {
+ 	struct cs42l51_private *cs42l51;
+ 	unsigned int val;
+-	int ret;
++	int ret, i;
+ 
+ 	if (IS_ERR(regmap))
+ 		return PTR_ERR(regmap);
+@@ -540,6 +598,41 @@ int cs42l51_probe(struct device *dev, struct regmap *regmap)
+ 
+ 	dev_set_drvdata(dev, cs42l51);
+ 
++	cs42l51->mclk_handle = devm_clk_get(dev, "MCLK");
++	if (IS_ERR(cs42l51->mclk_handle)) {
++		if (PTR_ERR(cs42l51->mclk_handle) != -ENOENT)
++			return PTR_ERR(cs42l51->mclk_handle);
++		cs42l51->mclk_handle = NULL;
++	}
++
++	for (i = 0; i < ARRAY_SIZE(cs42l51->supplies); i++)
++		cs42l51->supplies[i].supply = cs42l51_supply_names[i];
++
++	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(cs42l51->supplies),
++				      cs42l51->supplies);
++	if (ret != 0) {
++		dev_err(dev, "Failed to request supplies: %d\n", ret);
++		return ret;
++	}
++
++	ret = regulator_bulk_enable(ARRAY_SIZE(cs42l51->supplies),
++				    cs42l51->supplies);
++	if (ret != 0) {
++		dev_err(dev, "Failed to enable supplies: %d\n", ret);
++		return ret;
++	}
++
++	cs42l51->reset_gpio = devm_gpiod_get_optional(dev, "reset",
++						      GPIOD_OUT_LOW);
++	if (IS_ERR(cs42l51->reset_gpio))
++		return PTR_ERR(cs42l51->reset_gpio);
++
++	if (cs42l51->reset_gpio) {
++		dev_dbg(dev, "Release reset gpio\n");
++		gpiod_set_value_cansleep(cs42l51->reset_gpio, 0);
++		mdelay(2);
++	}
++
+ 	/* Verify that we have a CS42L51 */
+ 	ret = regmap_read(regmap, CS42L51_CHIP_REV_ID, &val);
+ 	if (ret < 0) {
+@@ -557,12 +650,30 @@ int cs42l51_probe(struct device *dev, struct regmap *regmap)
+ 		 val & CS42L51_CHIP_REV_MASK);
+ 
+ 	ret = devm_snd_soc_register_component(dev,
+-			&soc_component_device_cs42l51, &cs42l51_dai, 1);
++			&soc_component_device_cs42l51, cs42l51_dai, 2);
++	if (ret < 0)
++		goto error;
++
++	return 0;
++
+ error:
++	regulator_bulk_disable(ARRAY_SIZE(cs42l51->supplies),
++			       cs42l51->supplies);
+ 	return ret;
+ }
+ EXPORT_SYMBOL_GPL(cs42l51_probe);
+ 
++int cs42l51_remove(struct device *dev)
++{
++	struct cs42l51_private *cs42l51 = dev_get_drvdata(dev);
++
++	gpiod_set_value_cansleep(cs42l51->reset_gpio, 1);
++
++	return regulator_bulk_disable(ARRAY_SIZE(cs42l51->supplies),
++				      cs42l51->supplies);
++}
++EXPORT_SYMBOL_GPL(cs42l51_remove);
++
+ const struct of_device_id cs42l51_of_match[] = {
+ 	{ .compatible = "cirrus,cs42l51", },
+ 	{ }
+diff --git a/sound/soc/codecs/cs42l51.h b/sound/soc/codecs/cs42l51.h
+index 0ca8054..aef0ede 100644
+--- a/sound/soc/codecs/cs42l51.h
++++ b/sound/soc/codecs/cs42l51.h
+@@ -22,6 +22,7 @@ struct device;
+ 
+ extern const struct regmap_config cs42l51_regmap;
+ int cs42l51_probe(struct device *dev, struct regmap *regmap);
++int cs42l51_remove(struct device *dev);
+ extern const struct of_device_id cs42l51_of_match[];
+ 
+ #define CS42L51_CHIP_ID			0x1B
+diff --git a/sound/soc/codecs/wm8994.c b/sound/soc/codecs/wm8994.c
+index 14f1b0c..eb222da 100644
+--- a/sound/soc/codecs/wm8994.c
++++ b/sound/soc/codecs/wm8994.c
+@@ -11,6 +11,7 @@
+  * published by the Free Software Foundation.
+  */
+ 
++#include <linux/clk.h>
+ #include <linux/module.h>
+ #include <linux/moduleparam.h>
+ #include <linux/init.h>
+@@ -839,6 +840,42 @@ static int clk_sys_event(struct snd_soc_dapm_widget *w,
+ 	return 0;
+ }
+ 
++static int mclk_event(struct snd_soc_dapm_widget *w,
++		      struct snd_kcontrol *kcontrol, int event)
++{
++	struct snd_soc_component *comp = snd_soc_dapm_to_component(w->dapm);
++	struct wm8994_priv *wm8994 = snd_soc_component_get_drvdata(comp);
++	struct wm8994 *control = wm8994->wm8994;
++	struct wm8994_pdata *pdata = &control->pdata;
++	struct clk *mclk = pdata->mclk1;
++	int ret, mclk_id = 0;
++
++	if (!strncmp(w->name, "MCLK2", 5)) {
++		mclk_id = 1;
++		mclk = pdata->mclk2;
++	}
++
++	switch (event) {
++	case SND_SOC_DAPM_PRE_PMU:
++		dev_dbg(comp->dev, "Enable master clock %s\n",
++			mclk_id ? "MCLK2" : "MCLK1");
++
++		ret = clk_prepare_enable(mclk);
++		if (ret < 0) {
++			dev_err(comp->dev, "Failed to enable clock: %d\n", ret);
++			return ret;
++		}
++		break;
++	case SND_SOC_DAPM_POST_PMD:
++		dev_dbg(comp->dev, "Disable master clock %s\n",
++			mclk_id ? "MCLK1" : "MCLK2");
++		clk_disable_unprepare(mclk);
++		break;
++	}
++
++	return 0;
++}
++
+ static void vmid_reference(struct snd_soc_component *component)
+ {
+ 	struct wm8994_priv *wm8994 = snd_soc_component_get_drvdata(component);
+@@ -1775,6 +1812,16 @@ static const struct snd_soc_dapm_widget wm8994_specific_dapm_widgets[] = {
+ SND_SOC_DAPM_MUX("AIF3ADC Mux", SND_SOC_NOPM, 0, 0, &wm8994_aif3adc_mux),
+ };
+ 
++static const struct snd_soc_dapm_widget wm8994_mclk1_dapm_widgets[] = {
++SND_SOC_DAPM_SUPPLY("MCLK1", SND_SOC_NOPM, 0, 0, mclk_event,
++		    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++};
++
++static const struct snd_soc_dapm_widget wm8994_mclk2_dapm_widgets[] = {
++SND_SOC_DAPM_SUPPLY("MCLK2", SND_SOC_NOPM, 0, 0, mclk_event,
++		    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++};
++
+ static const struct snd_soc_dapm_widget wm8958_dapm_widgets[] = {
+ SND_SOC_DAPM_SUPPLY("AIF3", WM8994_POWER_MANAGEMENT_6, 5, 1, NULL, 0),
+ SND_SOC_DAPM_MUX("Mono PCM Out Mux", SND_SOC_NOPM, 0, 0, &mono_pcm_out_mux),
+@@ -1999,10 +2046,10 @@ static const struct snd_soc_dapm_route wm8994_lateclk_intercon[] = {
+ };
+ 
+ static const struct snd_soc_dapm_route wm8994_revd_intercon[] = {
+-	{ "AIF1DACDAT", NULL, "AIF2DACDAT" },
+-	{ "AIF2DACDAT", NULL, "AIF1DACDAT" },
+-	{ "AIF1ADCDAT", NULL, "AIF2ADCDAT" },
+-	{ "AIF2ADCDAT", NULL, "AIF1ADCDAT" },
++//	{ "AIF1DACDAT", NULL, "AIF2DACDAT" },
++//	{ "AIF2DACDAT", NULL, "AIF1DACDAT" },
++//	{ "AIF1ADCDAT", NULL, "AIF2ADCDAT" },
++//	{ "AIF2ADCDAT", NULL, "AIF1ADCDAT" },
+ 	{ "MICBIAS1", NULL, "CLK_SYS" },
+ 	{ "MICBIAS1", NULL, "MICBIAS Supply" },
+ 	{ "MICBIAS2", NULL, "CLK_SYS" },
+@@ -2376,11 +2423,26 @@ static int wm8994_set_dai_sysclk(struct snd_soc_dai *dai,
+ {
+ 	struct snd_soc_component *component = dai->component;
+ 	struct wm8994_priv *wm8994 = snd_soc_component_get_drvdata(component);
++	struct wm8994 *control = wm8994->wm8994;
++	struct wm8994_pdata *pdata = &control->pdata;
+ 	int i;
+ 
++	/*
++	 * Simple card provides unconditionnaly clock_id = 0.
++	 * Workaround to select master clock for aif1/2
++	 */
+ 	switch (dai->id) {
+ 	case 1:
++		if (pdata->mclk1)
++			clk_id = WM8994_SYSCLK_MCLK1;
++		else if (pdata->mclk2)
++			clk_id = WM8994_SYSCLK_MCLK2;
++		break;
+ 	case 2:
++		if (pdata->mclk2)
++			clk_id = WM8994_SYSCLK_MCLK2;
++		else if (pdata->mclk1)
++			clk_id = WM8994_SYSCLK_MCLK1;
+ 		break;
+ 
+ 	default:
+@@ -3990,6 +4052,7 @@ static int wm8994_component_probe(struct snd_soc_component *component)
+ {
+ 	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+ 	struct wm8994 *control = dev_get_drvdata(component->dev->parent);
++	struct wm8994_pdata *pdata = &control->pdata;
+ 	struct wm8994_priv *wm8994 = snd_soc_component_get_drvdata(component);
+ 	unsigned int reg;
+ 	int ret, i;
+@@ -4271,6 +4334,14 @@ static int wm8994_component_probe(struct snd_soc_component *component)
+ 	case WM8994:
+ 		snd_soc_dapm_new_controls(dapm, wm8994_specific_dapm_widgets,
+ 					  ARRAY_SIZE(wm8994_specific_dapm_widgets));
++		if (pdata->mclk1)
++			snd_soc_dapm_new_controls(dapm, wm8994_mclk1_dapm_widgets,
++						  ARRAY_SIZE(wm8994_mclk1_dapm_widgets));
++
++		if (pdata->mclk2)
++			snd_soc_dapm_new_controls(dapm, wm8994_mclk2_dapm_widgets,
++						  ARRAY_SIZE(wm8994_mclk2_dapm_widgets));
++
+ 		if (control->revision < 4) {
+ 			snd_soc_dapm_new_controls(dapm, wm8994_lateclk_revd_widgets,
+ 						  ARRAY_SIZE(wm8994_lateclk_revd_widgets));
+diff --git a/sound/soc/stm/Kconfig b/sound/soc/stm/Kconfig
+index 9b26813..c66ffa7 100644
+--- a/sound/soc/stm/Kconfig
++++ b/sound/soc/stm/Kconfig
+@@ -3,6 +3,7 @@ menu "STMicroelectronics STM32 SOC audio support"
+ config SND_SOC_STM32_SAI
+ 	tristate "STM32 SAI interface (Serial Audio Interface) support"
+ 	depends on (ARCH_STM32 && OF) || COMPILE_TEST
++	depends on COMMON_CLK
+ 	depends on SND_SOC
+ 	select SND_SOC_GENERIC_DMAENGINE_PCM
+ 	select REGMAP_MMIO
+diff --git a/sound/soc/stm/stm32_adfsdm.c b/sound/soc/stm/stm32_adfsdm.c
+index 706ff00..71d341b 100644
+--- a/sound/soc/stm/stm32_adfsdm.c
++++ b/sound/soc/stm/stm32_adfsdm.c
+@@ -9,6 +9,7 @@
+ 
+ #include <linux/clk.h>
+ #include <linux/module.h>
++#include <linux/mutex.h>
+ #include <linux/platform_device.h>
+ #include <linux/slab.h>
+ 
+@@ -37,6 +38,8 @@ struct stm32_adfsdm_priv {
+ 	/* PCM buffer */
+ 	unsigned char *pcm_buff;
+ 	unsigned int pos;
++
++	struct mutex lock; /* protect against race condition on iio state */
+ };
+ 
+ static const struct snd_pcm_hardware stm32_adfsdm_pcm_hw = {
+@@ -62,10 +65,12 @@ static void stm32_adfsdm_shutdown(struct snd_pcm_substream *substream,
+ {
+ 	struct stm32_adfsdm_priv *priv = snd_soc_dai_get_drvdata(dai);
+ 
++	mutex_lock(&priv->lock);
+ 	if (priv->iio_active) {
+ 		iio_channel_stop_all_cb(priv->iio_cb);
+ 		priv->iio_active = false;
+ 	}
++	mutex_unlock(&priv->lock);
+ }
+ 
+ static int stm32_adfsdm_dai_prepare(struct snd_pcm_substream *substream,
+@@ -74,13 +79,19 @@ static int stm32_adfsdm_dai_prepare(struct snd_pcm_substream *substream,
+ 	struct stm32_adfsdm_priv *priv = snd_soc_dai_get_drvdata(dai);
+ 	int ret;
+ 
++	mutex_lock(&priv->lock);
++	if (priv->iio_active) {
++		iio_channel_stop_all_cb(priv->iio_cb);
++		priv->iio_active = false;
++	}
++
+ 	ret = iio_write_channel_attribute(priv->iio_ch,
+ 					  substream->runtime->rate, 0,
+ 					  IIO_CHAN_INFO_SAMP_FREQ);
+ 	if (ret < 0) {
+ 		dev_err(dai->dev, "%s: Failed to set %d sampling rate\n",
+ 			__func__, substream->runtime->rate);
+-		return ret;
++		goto out;
+ 	}
+ 
+ 	if (!priv->iio_active) {
+@@ -92,6 +103,9 @@ static int stm32_adfsdm_dai_prepare(struct snd_pcm_substream *substream,
+ 				__func__, ret);
+ 	}
+ 
++out:
++	mutex_unlock(&priv->lock);
++
+ 	return ret;
+ }
+ 
+@@ -298,6 +312,7 @@ static int stm32_adfsdm_probe(struct platform_device *pdev)
+ 
+ 	priv->dev = &pdev->dev;
+ 	priv->dai_drv = stm32_adfsdm_dai;
++	mutex_init(&priv->lock);
+ 
+ 	dev_set_drvdata(&pdev->dev, priv);
+ 
+diff --git a/sound/soc/stm/stm32_i2s.c b/sound/soc/stm/stm32_i2s.c
+index 6d0bf78..9dcf946 100644
+--- a/sound/soc/stm/stm32_i2s.c
++++ b/sound/soc/stm/stm32_i2s.c
+@@ -16,6 +16,7 @@
+  * details.
+  */
+ 
++#include <linux/bitfield.h>
+ #include <linux/clk.h>
+ #include <linux/delay.h>
+ #include <linux/module.h>
+@@ -37,6 +38,10 @@
+ #define STM32_I2S_TXDR_REG	0X20
+ #define STM32_I2S_RXDR_REG	0x30
+ #define STM32_I2S_CGFR_REG	0X50
++#define STM32_I2S_HWCFGR_REG	0x3F0
++#define STM32_I2S_VERR_REG	0x3F4
++#define STM32_I2S_IPIDR_REG	0x3F8
++#define STM32_I2S_SIDR_REG	0x3FC
+ 
+ /* Bit definition for SPI2S_CR1 register */
+ #define I2S_CR1_SPE		BIT(0)
+@@ -143,6 +148,23 @@
+ #define I2S_CGFR_ODD		BIT(I2S_CGFR_ODD_SHIFT)
+ #define I2S_CGFR_MCKOE		BIT(25)
+ 
++/* Registers below apply to I2S version 1.1 and more */
++
++/* Bit definition for SPI_HWCFGR register */
++#define I2S_HWCFGR_I2S_SUPPORT_MASK	GENMASK(15, 12)
++
++/* Bit definition for SPI_VERR register */
++#define I2S_VERR_MIN_MASK	GENMASK(3, 0)
++#define I2S_VERR_MAJ_MASK	GENMASK(7, 4)
++
++/* Bit definition for SPI_IPIDR register */
++#define I2S_IPIDR_ID_MASK	GENMASK(31, 0)
++
++/* Bit definition for SPI_SIDR register */
++#define I2S_SIDR_ID_MASK	GENMASK(31, 0)
++
++#define I2S_IPIDR_NUMBER	0x00130022
++
+ enum i2s_master_mode {
+ 	I2S_MS_NOT_SET,
+ 	I2S_MS_MASTER,
+@@ -179,7 +201,6 @@ enum i2s_datlen {
+ 	I2S_I2SMOD_DATLEN_32,
+ };
+ 
+-#define STM32_I2S_DAI_NAME_SIZE		20
+ #define STM32_I2S_FIFO_SIZE		16
+ 
+ #define STM32_I2S_IS_MASTER(x)		((x)->ms_flg == I2S_MS_MASTER)
+@@ -200,7 +221,6 @@ enum i2s_datlen {
+  * @base:  mmio register base virtual address
+  * @phys_addr: I2S registers physical base address
+  * @lock_fd: lock to manage race conditions in full duplex mode
+- * @dais_name: DAI name
+  * @mclk_rate: master clock frequency (Hz)
+  * @fmt: DAI protocol
+  * @refcount: keep count of opened streams on I2S
+@@ -221,7 +241,6 @@ struct stm32_i2s_data {
+ 	void __iomem *base;
+ 	dma_addr_t phys_addr;
+ 	spinlock_t lock_fd; /* Manage race conditions for full duplex */
+-	char dais_name[STM32_I2S_DAI_NAME_SIZE];
+ 	unsigned int mclk_rate;
+ 	unsigned int fmt;
+ 	int refcount;
+@@ -246,8 +265,8 @@ static irqreturn_t stm32_i2s_isr(int irq, void *devid)
+ 		return IRQ_NONE;
+ 	}
+ 
+-	regmap_update_bits(i2s->regmap, STM32_I2S_IFCR_REG,
+-			   I2S_IFCR_MASK, flags);
++	regmap_write_bits(i2s->regmap, STM32_I2S_IFCR_REG,
++			  I2S_IFCR_MASK, flags);
+ 
+ 	if (flags & I2S_SR_OVR) {
+ 		dev_dbg(&pdev->dev, "Overrun\n");
+@@ -276,10 +295,13 @@ static bool stm32_i2s_readable_reg(struct device *dev, unsigned int reg)
+ 	case STM32_I2S_CFG2_REG:
+ 	case STM32_I2S_IER_REG:
+ 	case STM32_I2S_SR_REG:
+-	case STM32_I2S_IFCR_REG:
+ 	case STM32_I2S_TXDR_REG:
+ 	case STM32_I2S_RXDR_REG:
+ 	case STM32_I2S_CGFR_REG:
++	case STM32_I2S_HWCFGR_REG:
++	case STM32_I2S_VERR_REG:
++	case STM32_I2S_IPIDR_REG:
++	case STM32_I2S_SIDR_REG:
+ 		return true;
+ 	default:
+ 		return false;
+@@ -488,7 +510,7 @@ static int stm32_i2s_configure(struct snd_soc_dai *cpu_dai,
+ {
+ 	struct stm32_i2s_data *i2s = snd_soc_dai_get_drvdata(cpu_dai);
+ 	int format = params_width(params);
+-	u32 cfgr, cfgr_mask, cfg1, cfg1_mask;
++	u32 cfgr, cfgr_mask, cfg1;
+ 	unsigned int fthlv;
+ 	int ret;
+ 
+@@ -501,7 +523,7 @@ static int stm32_i2s_configure(struct snd_soc_dai *cpu_dai,
+ 	switch (format) {
+ 	case 16:
+ 		cfgr = I2S_CGFR_DATLEN_SET(I2S_I2SMOD_DATLEN_16);
+-		cfgr_mask = I2S_CGFR_DATLEN_MASK;
++		cfgr_mask = I2S_CGFR_DATLEN_MASK | I2S_CGFR_CHLEN;
+ 		break;
+ 	case 32:
+ 		cfgr = I2S_CGFR_DATLEN_SET(I2S_I2SMOD_DATLEN_32) |
+@@ -529,30 +551,29 @@ static int stm32_i2s_configure(struct snd_soc_dai *cpu_dai,
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	cfg1 = I2S_CFG1_RXDMAEN | I2S_CFG1_TXDMAEN;
+-	cfg1_mask = cfg1;
+-
+ 	fthlv = STM32_I2S_FIFO_SIZE * I2S_FIFO_TH_ONE_QUARTER / 4;
+-	cfg1 |= I2S_CFG1_FTHVL_SET(fthlv - 1);
+-	cfg1_mask |= I2S_CFG1_FTHVL_MASK;
++	cfg1 = I2S_CFG1_FTHVL_SET(fthlv - 1);
+ 
+ 	return regmap_update_bits(i2s->regmap, STM32_I2S_CFG1_REG,
+-				  cfg1_mask, cfg1);
++				  I2S_CFG1_FTHVL_MASK, cfg1);
+ }
+ 
+ static int stm32_i2s_startup(struct snd_pcm_substream *substream,
+ 			     struct snd_soc_dai *cpu_dai)
+ {
+ 	struct stm32_i2s_data *i2s = snd_soc_dai_get_drvdata(cpu_dai);
++	int ret;
+ 
+ 	i2s->substream = substream;
+ 
+-	spin_lock(&i2s->lock_fd);
+-	i2s->refcount++;
+-	spin_unlock(&i2s->lock_fd);
++	ret = clk_prepare_enable(i2s->i2sclk);
++	if (ret < 0) {
++		dev_err(cpu_dai->dev, "Failed to enable clock: %d\n", ret);
++		return ret;
++	}
+ 
+-	return regmap_update_bits(i2s->regmap, STM32_I2S_IFCR_REG,
+-				  I2S_IFCR_MASK, I2S_IFCR_MASK);
++	return regmap_write_bits(i2s->regmap, STM32_I2S_IFCR_REG,
++				 I2S_IFCR_MASK, I2S_IFCR_MASK);
+ }
+ 
+ static int stm32_i2s_hw_params(struct snd_pcm_substream *substream,
+@@ -587,7 +608,12 @@ static int stm32_i2s_trigger(struct snd_pcm_substream *substream, int cmd,
+ 	case SNDRV_PCM_TRIGGER_RESUME:
+ 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+ 		/* Enable i2s */
+-		dev_dbg(cpu_dai->dev, "start I2S\n");
++		dev_dbg(cpu_dai->dev, "start I2S %s\n",
++			playback_flg ? "playback" : "capture");
++
++		cfg1_mask = I2S_CFG1_RXDMAEN | I2S_CFG1_TXDMAEN;
++		regmap_update_bits(i2s->regmap, STM32_I2S_CFG1_REG,
++				   cfg1_mask, cfg1_mask);
+ 
+ 		ret = regmap_update_bits(i2s->regmap, STM32_I2S_CR1_REG,
+ 					 I2S_CR1_SPE, I2S_CR1_SPE);
+@@ -596,28 +622,29 @@ static int stm32_i2s_trigger(struct snd_pcm_substream *substream, int cmd,
+ 			return ret;
+ 		}
+ 
+-		ret = regmap_update_bits(i2s->regmap, STM32_I2S_CR1_REG,
+-					 I2S_CR1_CSTART, I2S_CR1_CSTART);
++		ret = regmap_write_bits(i2s->regmap, STM32_I2S_CR1_REG,
++					I2S_CR1_CSTART, I2S_CR1_CSTART);
+ 		if (ret < 0) {
+ 			dev_err(cpu_dai->dev, "Error %d starting I2S\n", ret);
+ 			return ret;
+ 		}
+ 
+-		regmap_update_bits(i2s->regmap, STM32_I2S_IFCR_REG,
+-				   I2S_IFCR_MASK, I2S_IFCR_MASK);
++		regmap_write_bits(i2s->regmap, STM32_I2S_IFCR_REG,
++				  I2S_IFCR_MASK, I2S_IFCR_MASK);
+ 
++		spin_lock(&i2s->lock_fd);
++		i2s->refcount++;
+ 		if (playback_flg) {
+ 			ier = I2S_IER_UDRIE;
+ 		} else {
+ 			ier = I2S_IER_OVRIE;
+ 
+-			spin_lock(&i2s->lock_fd);
+ 			if (i2s->refcount == 1)
+ 				/* dummy write to trigger capture */
+ 				regmap_write(i2s->regmap,
+ 					     STM32_I2S_TXDR_REG, 0);
+-			spin_unlock(&i2s->lock_fd);
+ 		}
++		spin_unlock(&i2s->lock_fd);
+ 
+ 		if (STM32_I2S_IS_SLAVE(i2s))
+ 			ier |= I2S_IER_TIFREIE;
+@@ -627,6 +654,9 @@ static int stm32_i2s_trigger(struct snd_pcm_substream *substream, int cmd,
+ 	case SNDRV_PCM_TRIGGER_STOP:
+ 	case SNDRV_PCM_TRIGGER_SUSPEND:
+ 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
++		dev_dbg(cpu_dai->dev, "stop I2S %s\n",
++			playback_flg ? "playback" : "capture");
++
+ 		if (playback_flg)
+ 			regmap_update_bits(i2s->regmap, STM32_I2S_IER_REG,
+ 					   I2S_IER_UDRIE,
+@@ -642,16 +672,15 @@ static int stm32_i2s_trigger(struct snd_pcm_substream *substream, int cmd,
+ 			spin_unlock(&i2s->lock_fd);
+ 			break;
+ 		}
+-		spin_unlock(&i2s->lock_fd);
+-
+-		dev_dbg(cpu_dai->dev, "stop I2S\n");
+ 
+ 		ret = regmap_update_bits(i2s->regmap, STM32_I2S_CR1_REG,
+ 					 I2S_CR1_SPE, 0);
+ 		if (ret < 0) {
+ 			dev_err(cpu_dai->dev, "Error %d disabling I2S\n", ret);
++			spin_unlock(&i2s->lock_fd);
+ 			return ret;
+ 		}
++		spin_unlock(&i2s->lock_fd);
+ 
+ 		cfg1_mask = I2S_CFG1_RXDMAEN | I2S_CFG1_TXDMAEN;
+ 		regmap_update_bits(i2s->regmap, STM32_I2S_CFG1_REG,
+@@ -673,6 +702,8 @@ static void stm32_i2s_shutdown(struct snd_pcm_substream *substream,
+ 
+ 	regmap_update_bits(i2s->regmap, STM32_I2S_CGFR_REG,
+ 			   I2S_CGFR_MCKOE, (unsigned int)~I2S_CGFR_MCKOE);
++
++	clk_disable_unprepare(i2s->i2sclk);
+ }
+ 
+ static int stm32_i2s_dai_probe(struct snd_soc_dai *cpu_dai)
+@@ -698,11 +729,12 @@ static const struct regmap_config stm32_h7_i2s_regmap_conf = {
+ 	.reg_bits = 32,
+ 	.reg_stride = 4,
+ 	.val_bits = 32,
+-	.max_register = STM32_I2S_CGFR_REG,
++	.max_register = STM32_I2S_SIDR_REG,
+ 	.readable_reg = stm32_i2s_readable_reg,
+ 	.volatile_reg = stm32_i2s_volatile_reg,
+ 	.writeable_reg = stm32_i2s_writeable_reg,
+ 	.fast_io = true,
++	.cache_type = REGCACHE_FLAT,
+ };
+ 
+ static const struct snd_soc_dai_ops stm32_i2s_pcm_dai_ops = {
+@@ -717,7 +749,8 @@ static const struct snd_soc_dai_ops stm32_i2s_pcm_dai_ops = {
+ static const struct snd_pcm_hardware stm32_i2s_pcm_hw = {
+ 	.info = SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_MMAP,
+ 	.buffer_bytes_max = 8 * PAGE_SIZE,
+-	.period_bytes_max = 2048,
++	.period_bytes_min = 1024, /* 5ms at 48kHz */
++	.period_bytes_max = PAGE_SIZE,
+ 	.periods_min = 2,
+ 	.periods_max = 8,
+ };
+@@ -753,12 +786,8 @@ static int stm32_i2s_dais_init(struct platform_device *pdev,
+ 	if (!dai_ptr)
+ 		return -ENOMEM;
+ 
+-	snprintf(i2s->dais_name, STM32_I2S_DAI_NAME_SIZE,
+-		 "%s", dev_name(&pdev->dev));
+-
+ 	dai_ptr->probe = stm32_i2s_dai_probe;
+ 	dai_ptr->ops = &stm32_i2s_pcm_dai_ops;
+-	dai_ptr->name = i2s->dais_name;
+ 	dai_ptr->id = 1;
+ 	stm32_i2s_dai_init(&dai_ptr->playback, "playback");
+ 	stm32_i2s_dai_init(&dai_ptr->capture, "capture");
+@@ -853,6 +882,7 @@ static int stm32_i2s_parse_dt(struct platform_device *pdev,
+ static int stm32_i2s_probe(struct platform_device *pdev)
+ {
+ 	struct stm32_i2s_data *i2s;
++	u32 val;
+ 	int ret;
+ 
+ 	i2s = devm_kzalloc(&pdev->dev, sizeof(*i2s), GFP_KERNEL);
+@@ -872,47 +902,50 @@ static int stm32_i2s_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return ret;
+ 
+-	i2s->regmap = devm_regmap_init_mmio(&pdev->dev, i2s->base,
+-					    i2s->regmap_conf);
++	i2s->regmap = devm_regmap_init_mmio_clk(&pdev->dev, "pclk",
++						i2s->base, i2s->regmap_conf);
+ 	if (IS_ERR(i2s->regmap)) {
+ 		dev_err(&pdev->dev, "regmap init failed\n");
+ 		return PTR_ERR(i2s->regmap);
+ 	}
+ 
+-	ret = clk_prepare_enable(i2s->pclk);
+-	if (ret) {
+-		dev_err(&pdev->dev, "Enable pclk failed: %d\n", ret);
+-		return ret;
+-	}
+-
+-	ret = clk_prepare_enable(i2s->i2sclk);
+-	if (ret) {
+-		dev_err(&pdev->dev, "Enable i2sclk failed: %d\n", ret);
+-		goto err_pclk_disable;
+-	}
+-
+ 	ret = devm_snd_soc_register_component(&pdev->dev, &stm32_i2s_component,
+ 					      i2s->dai_drv, 1);
+ 	if (ret)
+-		goto err_clocks_disable;
++		return ret;
+ 
+ 	ret = devm_snd_dmaengine_pcm_register(&pdev->dev,
+ 					      &stm32_i2s_pcm_config, 0);
+ 	if (ret)
+-		goto err_clocks_disable;
++		return ret;
+ 
+ 	/* Set SPI/I2S in i2s mode */
+ 	ret = regmap_update_bits(i2s->regmap, STM32_I2S_CGFR_REG,
+ 				 I2S_CGFR_I2SMOD, I2S_CGFR_I2SMOD);
+ 	if (ret)
+-		goto err_clocks_disable;
++		return ret;
+ 
+-	return ret;
++	ret = regmap_read(i2s->regmap, STM32_I2S_IPIDR_REG, &val);
++	if (ret)
++		return ret;
+ 
+-err_clocks_disable:
+-	clk_disable_unprepare(i2s->i2sclk);
+-err_pclk_disable:
+-	clk_disable_unprepare(i2s->pclk);
++	if (val == I2S_IPIDR_NUMBER) {
++		ret = regmap_read(i2s->regmap, STM32_I2S_HWCFGR_REG, &val);
++		if (ret)
++			return ret;
++
++		if (!FIELD_GET(I2S_HWCFGR_I2S_SUPPORT_MASK, val)) {
++			dev_err(&pdev->dev,
++				"Device does not support i2s mode\n");
++			return ret;
++		}
++
++		ret = regmap_read(i2s->regmap, STM32_I2S_VERR_REG, &val);
++
++		dev_dbg(&pdev->dev, "I2S version: %lu.%lu registered\n",
++			FIELD_GET(I2S_VERR_MAJ_MASK, val),
++			FIELD_GET(I2S_VERR_MIN_MASK, val));
++	}
+ 
+ 	return ret;
+ }
+@@ -929,10 +962,35 @@ static int stm32_i2s_remove(struct platform_device *pdev)
+ 
+ MODULE_DEVICE_TABLE(of, stm32_i2s_ids);
+ 
++#ifdef CONFIG_PM_SLEEP
++static int stm32_i2s_suspend(struct device *dev)
++{
++	struct stm32_i2s_data *i2s = dev_get_drvdata(dev);
++
++	regcache_cache_only(i2s->regmap, true);
++	regcache_mark_dirty(i2s->regmap);
++
++	return 0;
++}
++
++static int stm32_i2s_resume(struct device *dev)
++{
++	struct stm32_i2s_data *i2s = dev_get_drvdata(dev);
++
++	regcache_cache_only(i2s->regmap, false);
++	return regcache_sync(i2s->regmap);
++}
++#endif /* CONFIG_PM_SLEEP */
++
++static const struct dev_pm_ops stm32_i2s_pm_ops = {
++	SET_SYSTEM_SLEEP_PM_OPS(stm32_i2s_suspend, stm32_i2s_resume)
++};
++
+ static struct platform_driver stm32_i2s_driver = {
+ 	.driver = {
+ 		.name = "st,stm32-i2s",
+ 		.of_match_table = stm32_i2s_ids,
++		.pm = &stm32_i2s_pm_ops,
+ 	},
+ 	.probe = stm32_i2s_probe,
+ 	.remove = stm32_i2s_remove,
+diff --git a/sound/soc/stm/stm32_sai.c b/sound/soc/stm/stm32_sai.c
+index f226542..1426d90 100644
+--- a/sound/soc/stm/stm32_sai.c
++++ b/sound/soc/stm/stm32_sai.c
+@@ -21,6 +21,7 @@
+ #include <linux/delay.h>
+ #include <linux/module.h>
+ #include <linux/of_platform.h>
++#include <linux/pinctrl/consumer.h>
+ #include <linux/reset.h>
+ 
+ #include <sound/dmaengine_pcm.h>
+@@ -29,13 +30,20 @@
+ #include "stm32_sai.h"
+ 
+ static const struct stm32_sai_conf stm32_sai_conf_f4 = {
+-	.version = SAI_STM32F4,
+-	.has_spdif = false,
++	.version = STM_SAI_STM32F4,
++	.fifo_size = 8,
++	.has_spdif_pdm = false,
+ };
+ 
++/*
++ * Default settings for stm32 H7 socs and next.
++ * These default settings will be overridden if the soc provides
++ * support of hardware configuration registers.
++ */
+ static const struct stm32_sai_conf stm32_sai_conf_h7 = {
+-	.version = SAI_STM32H7,
+-	.has_spdif = true,
++	.version = STM_SAI_STM32H7,
++	.fifo_size = 8,
++	.has_spdif_pdm = true,
+ };
+ 
+ static const struct of_device_id stm32_sai_ids[] = {
+@@ -130,6 +138,8 @@ static int stm32_sai_probe(struct platform_device *pdev)
+ 	struct reset_control *rst;
+ 	struct resource *res;
+ 	const struct of_device_id *of_id;
++	u32 val;
++	int ret;
+ 
+ 	sai = devm_kzalloc(&pdev->dev, sizeof(*sai), GFP_KERNEL);
+ 	if (!sai)
+@@ -142,7 +152,8 @@ static int stm32_sai_probe(struct platform_device *pdev)
+ 
+ 	of_id = of_match_device(stm32_sai_ids, &pdev->dev);
+ 	if (of_id)
+-		sai->conf = (struct stm32_sai_conf *)of_id->data;
++		memcpy(&sai->conf, (const struct stm32_sai_conf *)of_id->data,
++		       sizeof(struct stm32_sai_conf));
+ 	else
+ 		return -EINVAL;
+ 
+@@ -181,6 +192,30 @@ static int stm32_sai_probe(struct platform_device *pdev)
+ 		reset_control_deassert(rst);
+ 	}
+ 
++	/* Enable peripheral clock to allow register access */
++	ret = clk_prepare_enable(sai->pclk);
++	if (ret) {
++		dev_err(&pdev->dev, "failed to enable clock: %d\n", ret);
++		return ret;
++	}
++
++	val = FIELD_GET(SAI_IDR_ID_MASK,
++			readl_relaxed(sai->base + STM_SAI_IDR));
++	if (val == SAI_IPIDR_NUMBER) {
++		val = readl_relaxed(sai->base + STM_SAI_HWCFGR);
++		sai->conf.fifo_size = FIELD_GET(SAI_HWCFGR_FIFO_SIZE, val);
++		sai->conf.has_spdif_pdm = !!FIELD_GET(SAI_HWCFGR_SPDIF_PDM,
++						      val);
++
++		val = readl_relaxed(sai->base + STM_SAI_VERR);
++		sai->conf.version = val;
++
++		dev_dbg(&pdev->dev, "SAI version: %lu.%lu registered\n",
++			FIELD_GET(SAI_VERR_MAJ_MASK, val),
++			FIELD_GET(SAI_VERR_MIN_MASK, val));
++	}
++	clk_disable_unprepare(sai->pclk);
++
+ 	sai->pdev = pdev;
+ 	sai->set_sync = &stm32_sai_set_sync;
+ 	platform_set_drvdata(pdev, sai);
+@@ -188,12 +223,34 @@ static int stm32_sai_probe(struct platform_device *pdev)
+ 	return devm_of_platform_populate(&pdev->dev);
+ }
+ 
++#ifdef CONFIG_PM_SLEEP
++/*
++ * When pins are shared by two sai sub instances, pins have to be defined
++ * in sai parent node. In this case, pins state is not managed by alsa fw.
++ * These pins are managed in suspend/resume callbacks.
++ */
++static int stm32_sai_suspend(struct device *dev)
++{
++	return pinctrl_pm_select_sleep_state(dev);
++}
++
++static int stm32_sai_resume(struct device *dev)
++{
++	return pinctrl_pm_select_default_state(dev);
++}
++#endif /* CONFIG_PM_SLEEP */
++
++static const struct dev_pm_ops stm32_sai_pm_ops = {
++	SET_SYSTEM_SLEEP_PM_OPS(stm32_sai_suspend, stm32_sai_resume)
++};
++
+ MODULE_DEVICE_TABLE(of, stm32_sai_ids);
+ 
+ static struct platform_driver stm32_sai_driver = {
+ 	.driver = {
+ 		.name = "st,stm32-sai",
+ 		.of_match_table = stm32_sai_ids,
++		.pm = &stm32_sai_pm_ops,
+ 	},
+ 	.probe = stm32_sai_probe,
+ };
+diff --git a/sound/soc/stm/stm32_sai.h b/sound/soc/stm/stm32_sai.h
+index f254221..042f94f 100644
+--- a/sound/soc/stm/stm32_sai.h
++++ b/sound/soc/stm/stm32_sai.h
+@@ -37,6 +37,12 @@
+ #define STM_SAI_PDMCR_REGX	0x40
+ #define STM_SAI_PDMLY_REGX	0x44
+ 
++/* Hardware configuration registers */
++#define STM_SAI_HWCFGR		0x3F0
++#define STM_SAI_VERR		0x3F4
++#define STM_SAI_IDR		0x3F8
++#define STM_SAI_SIDR		0x3FC
++
+ /******************** Bit definition for SAI_GCR register *******************/
+ #define SAI_GCR_SYNCIN_SHIFT	0
+ #define SAI_GCR_SYNCIN_WDTH	2
+@@ -82,7 +88,7 @@
+ #define SAI_XCR1_NODIV		BIT(SAI_XCR1_NODIV_SHIFT)
+ 
+ #define SAI_XCR1_MCKDIV_SHIFT	20
+-#define SAI_XCR1_MCKDIV_WIDTH(x)	(((x) == SAI_STM32F4) ? 4 : 6)
++#define SAI_XCR1_MCKDIV_WIDTH(x)	(((x) == STM_SAI_STM32F4) ? 4 : 6)
+ #define SAI_XCR1_MCKDIV_MASK(x) GENMASK((SAI_XCR1_MCKDIV_SHIFT + (x) - 1),\
+ 				SAI_XCR1_MCKDIV_SHIFT)
+ #define SAI_XCR1_MCKDIV_SET(x)	((x) << SAI_XCR1_MCKDIV_SHIFT)
+@@ -91,6 +97,9 @@
+ #define SAI_XCR1_OSR_SHIFT	26
+ #define SAI_XCR1_OSR		BIT(SAI_XCR1_OSR_SHIFT)
+ 
++#define SAI_XCR1_MCKEN_SHIFT	27
++#define SAI_XCR1_MCKEN		BIT(SAI_XCR1_MCKEN_SHIFT)
++
+ /******************* Bit definition for SAI_XCR2 register *******************/
+ #define SAI_XCR2_FTH_SHIFT	0
+ #define SAI_XCR2_FTH_MASK	GENMASK(2, SAI_XCR2_FTH_SHIFT)
+@@ -231,8 +240,33 @@
+ #define SAI_PDMDLY_4R_MASK	GENMASK(30, SAI_PDMDLY_4R_SHIFT)
+ #define SAI_PDMDLY_4R_WIDTH	3
+ 
+-#define STM_SAI_IS_F4(ip)	((ip)->conf->version == SAI_STM32F4)
+-#define STM_SAI_IS_H7(ip)	((ip)->conf->version == SAI_STM32H7)
++/* Registers below apply to SAI version 2.1 and more */
++
++/* Bit definition for SAI_HWCFGR register */
++#define SAI_HWCFGR_FIFO_SIZE	GENMASK(7, 0)
++#define SAI_HWCFGR_SPDIF_PDM	GENMASK(11, 8)
++#define SAI_HWCFGR_REGOUT	GENMASK(19, 12)
++
++/* Bit definition for SAI_VERR register */
++#define SAI_VERR_MIN_MASK	GENMASK(3, 0)
++#define SAI_VERR_MAJ_MASK	GENMASK(7, 4)
++
++/* Bit definition for SAI_IDR register */
++#define SAI_IDR_ID_MASK		GENMASK(31, 0)
++
++/* Bit definition for SAI_SIDR register */
++#define SAI_SIDR_ID_MASK	GENMASK(31, 0)
++
++#define SAI_IPIDR_NUMBER	0x00130031
++
++/* SAI version numbers are 1.x for F4. Major version number set to 1 for F4 */
++#define STM_SAI_STM32F4		BIT(4)
++/* Dummy version number for H7 socs and next */
++#define STM_SAI_STM32H7		0x0
++
++#define STM_SAI_IS_F4(ip)	((ip)->conf.version == STM_SAI_STM32F4)
++#define STM_SAI_HAS_SPDIF_PDM(ip)\
++				((ip)->pdata->conf.has_spdif_pdm)
+ 
+ enum stm32_sai_syncout {
+ 	STM_SAI_SYNC_OUT_NONE,
+@@ -240,19 +274,16 @@ enum stm32_sai_syncout {
+ 	STM_SAI_SYNC_OUT_B,
+ };
+ 
+-enum stm32_sai_version {
+-	SAI_STM32F4,
+-	SAI_STM32H7
+-};
+-
+ /**
+  * struct stm32_sai_conf - SAI configuration
+  * @version: SAI version
+- * @has_spdif: SAI S/PDIF support flag
++ * @fifo_size: SAI fifo size as words number
++ * @has_spdif_pdm: SAI S/PDIF and PDM features support flag
+  */
+ struct stm32_sai_conf {
+-	int version;
+-	bool has_spdif;
++	u32 version;
++	u32 fifo_size;
++	bool has_spdif_pdm;
+ };
+ 
+ /**
+@@ -262,7 +293,7 @@ struct stm32_sai_conf {
+  * @pclk: SAI bus clock
+  * @clk_x8k: SAI parent clock for sampling frequencies multiple of 8kHz
+  * @clk_x11k: SAI parent clock for sampling frequencies multiple of 11kHz
+- * @version: SOC version
++ * @conf: SAI hardware capabitilites
+  * @irq: SAI interrupt line
+  * @set_sync: pointer to synchro mode configuration callback
+  */
+@@ -272,7 +303,7 @@ struct stm32_sai_data {
+ 	struct clk *pclk;
+ 	struct clk *clk_x8k;
+ 	struct clk *clk_x11k;
+-	struct stm32_sai_conf *conf;
++	struct stm32_sai_conf conf;
+ 	int irq;
+ 	int (*set_sync)(struct stm32_sai_data *sai,
+ 			struct device_node *np_provider, int synco, int synci);
+diff --git a/sound/soc/stm/stm32_sai_sub.c b/sound/soc/stm/stm32_sai_sub.c
+index 06fba96..1f23ca4 100644
+--- a/sound/soc/stm/stm32_sai_sub.c
++++ b/sound/soc/stm/stm32_sai_sub.c
+@@ -17,6 +17,7 @@
+  */
+ 
+ #include <linux/clk.h>
++#include <linux/clk-provider.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/of_irq.h>
+@@ -44,7 +45,6 @@
+ #define SAI_DATASIZE_24		0x6
+ #define SAI_DATASIZE_32		0x7
+ 
+-#define STM_SAI_FIFO_SIZE	8
+ #define STM_SAI_DAI_NAME_SIZE	15
+ 
+ #define STM_SAI_IS_PLAYBACK(ip)	((ip)->dir == SNDRV_PCM_STREAM_PLAYBACK)
+@@ -62,12 +62,15 @@
+ #define SAI_SYNC_EXTERNAL	0x2
+ 
+ #define STM_SAI_PROTOCOL_IS_SPDIF(ip)	((ip)->spdif)
+-#define STM_SAI_HAS_SPDIF(x)	((x)->pdata->conf->has_spdif)
++#define STM_SAI_HAS_SPDIF(x)	((x)->pdata->conf.has_spdif_pdm)
++#define STM_SAI_HAS_PDM(x)	((x)->pdata->conf.has_spdif_pdm)
+ #define STM_SAI_HAS_EXT_SYNC(x) (!STM_SAI_IS_F4(sai->pdata))
+ 
+ #define SAI_IEC60958_BLOCK_FRAMES	192
+ #define SAI_IEC60958_STATUS_BYTES	24
+ 
++#define SAI_MCLK_NAME_LEN		32
++
+ /**
+  * struct stm32_sai_sub_data - private data of SAI sub block (block A or B)
+  * @pdev: device data pointer
+@@ -80,6 +83,7 @@
+  * @pdata: SAI block parent data pointer
+  * @np_sync_provider: synchronization provider node
+  * @sai_ck: kernel clock feeding the SAI clock generator
++ * @sai_mclk: master clock from SAI mclk provider
+  * @phys_addr: SAI registers physical base address
+  * @mclk_rate: SAI block master clock frequency (Hz). set at init
+  * @id: SAI sub block id corresponding to sub-block A or B
+@@ -110,6 +114,7 @@ struct stm32_sai_sub_data {
+ 	struct stm32_sai_data *pdata;
+ 	struct device_node *np_sync_provider;
+ 	struct clk *sai_ck;
++	struct clk *sai_mclk;
+ 	dma_addr_t phys_addr;
+ 	unsigned int mclk_rate;
+ 	unsigned int id;
+@@ -151,6 +156,10 @@ static bool stm32_sai_sub_readable_reg(struct device *dev, unsigned int reg)
+ 	case STM_SAI_DR_REGX:
+ 	case STM_SAI_PDMCR_REGX:
+ 	case STM_SAI_PDMLY_REGX:
++	case STM_SAI_HWCFGR:
++	case STM_SAI_VERR:
++	case STM_SAI_IDR:
++	case STM_SAI_SIDR:
+ 		return true;
+ 	default:
+ 		return false;
+@@ -161,6 +170,7 @@ static bool stm32_sai_sub_volatile_reg(struct device *dev, unsigned int reg)
+ {
+ 	switch (reg) {
+ 	case STM_SAI_DR_REGX:
++	case STM_SAI_SR_REGX:
+ 		return true;
+ 	default:
+ 		return false;
+@@ -175,7 +185,6 @@ static bool stm32_sai_sub_writeable_reg(struct device *dev, unsigned int reg)
+ 	case STM_SAI_FRCR_REGX:
+ 	case STM_SAI_SLOTR_REGX:
+ 	case STM_SAI_IMR_REGX:
+-	case STM_SAI_SR_REGX:
+ 	case STM_SAI_CLRFR_REGX:
+ 	case STM_SAI_DR_REGX:
+ 	case STM_SAI_PDMCR_REGX:
+@@ -195,6 +204,7 @@ static const struct regmap_config stm32_sai_sub_regmap_config_f4 = {
+ 	.volatile_reg = stm32_sai_sub_volatile_reg,
+ 	.writeable_reg = stm32_sai_sub_writeable_reg,
+ 	.fast_io = true,
++	.cache_type = REGCACHE_FLAT,
+ };
+ 
+ static const struct regmap_config stm32_sai_sub_regmap_config_h7 = {
+@@ -206,6 +216,7 @@ static const struct regmap_config stm32_sai_sub_regmap_config_h7 = {
+ 	.volatile_reg = stm32_sai_sub_volatile_reg,
+ 	.writeable_reg = stm32_sai_sub_writeable_reg,
+ 	.fast_io = true,
++	.cache_type = REGCACHE_FLAT,
+ };
+ 
+ static int snd_pcm_iec958_info(struct snd_kcontrol *kcontrol,
+@@ -251,6 +262,175 @@ static const struct snd_kcontrol_new iec958_ctls = {
+ 	.put = snd_pcm_iec958_put,
+ };
+ 
++struct stm32_sai_mclk_data {
++	struct clk_hw hw;
++	unsigned long freq;
++	struct stm32_sai_sub_data *sai_data;
++};
++
++#define to_mclk_data(_hw) container_of(_hw, struct stm32_sai_mclk_data, hw)
++#define STM32_SAI_MAX_CLKS 1
++
++static int stm32_sai_get_clk_div(struct stm32_sai_sub_data *sai,
++				 unsigned long input_rate,
++				 unsigned long output_rate)
++{
++	int version = sai->pdata->conf.version;
++	int div;
++
++	div = DIV_ROUND_CLOSEST(input_rate, output_rate);
++	if (div > SAI_XCR1_MCKDIV_MAX(version)) {
++		dev_err(&sai->pdev->dev, "Divider %d out of range\n", div);
++		return -EINVAL;
++	}
++	dev_dbg(&sai->pdev->dev, "SAI divider %d\n", div);
++
++	if (input_rate % div)
++		dev_dbg(&sai->pdev->dev,
++			"Rate not accurate. requested (%ld), actual (%ld)\n",
++			output_rate, input_rate / div);
++
++	return div;
++}
++
++static int stm32_sai_set_clk_div(struct stm32_sai_sub_data *sai,
++				 unsigned int div)
++{
++	int version = sai->pdata->conf.version;
++	int ret, cr1, mask;
++
++	if (div > SAI_XCR1_MCKDIV_MAX(version)) {
++		dev_err(&sai->pdev->dev, "Divider %d out of range\n", div);
++		return -EINVAL;
++	}
++
++	mask = SAI_XCR1_MCKDIV_MASK(SAI_XCR1_MCKDIV_WIDTH(version));
++	cr1 = SAI_XCR1_MCKDIV_SET(div);
++	ret = regmap_update_bits(sai->regmap, STM_SAI_CR1_REGX, mask, cr1);
++	if (ret < 0)
++		dev_err(&sai->pdev->dev, "Failed to update CR1 register\n");
++
++	return ret;
++}
++
++static long stm32_sai_mclk_round_rate(struct clk_hw *hw, unsigned long rate,
++				      unsigned long *prate)
++{
++	struct stm32_sai_mclk_data *mclk = to_mclk_data(hw);
++	struct stm32_sai_sub_data *sai = mclk->sai_data;
++	int div;
++
++	div = stm32_sai_get_clk_div(sai, *prate, rate);
++	if (div < 0)
++		return div;
++
++	mclk->freq = *prate / div;
++
++	return mclk->freq;
++}
++
++static unsigned long stm32_sai_mclk_recalc_rate(struct clk_hw *hw,
++						unsigned long parent_rate)
++{
++	struct stm32_sai_mclk_data *mclk = to_mclk_data(hw);
++
++	return mclk->freq;
++}
++
++static int stm32_sai_mclk_set_rate(struct clk_hw *hw, unsigned long rate,
++				   unsigned long parent_rate)
++{
++	struct stm32_sai_mclk_data *mclk = to_mclk_data(hw);
++	struct stm32_sai_sub_data *sai = mclk->sai_data;
++	int div, ret;
++
++	div = stm32_sai_get_clk_div(sai, parent_rate, rate);
++	if (div < 0)
++		return div;
++
++	ret = stm32_sai_set_clk_div(sai, div);
++	if (ret)
++		return ret;
++
++	mclk->freq = rate;
++
++	return 0;
++}
++
++static int stm32_sai_mclk_enable(struct clk_hw *hw)
++{
++	struct stm32_sai_mclk_data *mclk = to_mclk_data(hw);
++	struct stm32_sai_sub_data *sai = mclk->sai_data;
++
++	dev_dbg(&sai->pdev->dev, "Enable master clock\n");
++
++	return regmap_update_bits(sai->regmap, STM_SAI_CR1_REGX,
++				  SAI_XCR1_MCKEN, SAI_XCR1_MCKEN);
++}
++
++static void stm32_sai_mclk_disable(struct clk_hw *hw)
++{
++	struct stm32_sai_mclk_data *mclk = to_mclk_data(hw);
++	struct stm32_sai_sub_data *sai = mclk->sai_data;
++
++	dev_dbg(&sai->pdev->dev, "Disable master clock\n");
++
++	regmap_update_bits(sai->regmap, STM_SAI_CR1_REGX, SAI_XCR1_MCKEN, 0);
++}
++
++static const struct clk_ops mclk_ops = {
++	.enable = stm32_sai_mclk_enable,
++	.disable = stm32_sai_mclk_disable,
++	.recalc_rate = stm32_sai_mclk_recalc_rate,
++	.round_rate = stm32_sai_mclk_round_rate,
++	.set_rate = stm32_sai_mclk_set_rate,
++};
++
++static int stm32_sai_add_mclk_provider(struct stm32_sai_sub_data *sai)
++{
++	struct clk_hw *hw;
++	struct stm32_sai_mclk_data *mclk;
++	struct device *dev = &sai->pdev->dev;
++	const char *pname = __clk_get_name(sai->sai_ck);
++	char *mclk_name, *p, *s = (char *)pname;
++	int ret, i = 0;
++
++	mclk = devm_kzalloc(dev, sizeof(*mclk), GFP_KERNEL);
++	if (!mclk)
++		return -ENOMEM;
++
++	mclk_name = devm_kcalloc(dev, sizeof(char),
++				 SAI_MCLK_NAME_LEN, GFP_KERNEL);
++	if (!mclk_name)
++		return -ENOMEM;
++
++	/*
++	 * Forge mclk clock name from parent clock name and suffix.
++	 * String after "_" char is stripped in parent name.
++	 */
++	p = mclk_name;
++	while (*s && *s != '_' && (i < (SAI_MCLK_NAME_LEN - 7))) {
++		*p++ = *s++;
++		i++;
++	}
++	STM_SAI_IS_SUB_A(sai) ? strcat(p, "a_mclk") : strcat(p, "b_mclk");
++
++	mclk->hw.init = CLK_HW_INIT(mclk_name, pname, &mclk_ops, 0);
++	mclk->sai_data = sai;
++	hw = &mclk->hw;
++
++	dev_dbg(dev, "Register master clock %s\n", mclk_name);
++	ret = devm_clk_hw_register(&sai->pdev->dev, hw);
++	if (ret) {
++		dev_err(dev, "mclk register returned %d\n", ret);
++		return ret;
++	}
++	sai->sai_mclk = hw->clk;
++
++	/* register mclk provider */
++	return devm_of_clk_add_hw_provider(dev, of_clk_hw_simple_get, hw);
++}
++
+ static irqreturn_t stm32_sai_isr(int irq, void *devid)
+ {
+ 	struct stm32_sai_sub_data *sai = (struct stm32_sai_sub_data *)devid;
+@@ -265,8 +445,8 @@ static irqreturn_t stm32_sai_isr(int irq, void *devid)
+ 	if (!flags)
+ 		return IRQ_NONE;
+ 
+-	regmap_update_bits(sai->regmap, STM_SAI_CLRFR_REGX, SAI_XCLRFR_MASK,
+-			   SAI_XCLRFR_MASK);
++	regmap_write_bits(sai->regmap, STM_SAI_CLRFR_REGX, SAI_XCLRFR_MASK,
++			  SAI_XCLRFR_MASK);
+ 
+ 	if (!sai->substream) {
+ 		dev_err(&pdev->dev, "Device stopped. Spurious IRQ 0x%x\n", sr);
+@@ -312,15 +492,25 @@ static int stm32_sai_set_sysclk(struct snd_soc_dai *cpu_dai,
+ 	struct stm32_sai_sub_data *sai = snd_soc_dai_get_drvdata(cpu_dai);
+ 	int ret;
+ 
+-	if ((dir == SND_SOC_CLOCK_OUT) && sai->master) {
++	if (dir == SND_SOC_CLOCK_OUT) {
+ 		ret = regmap_update_bits(sai->regmap, STM_SAI_CR1_REGX,
+ 					 SAI_XCR1_NODIV,
+ 					 (unsigned int)~SAI_XCR1_NODIV);
+ 		if (ret < 0)
+ 			return ret;
+ 
+-		sai->mclk_rate = freq;
+ 		dev_dbg(cpu_dai->dev, "SAI MCLK frequency is %uHz\n", freq);
++		sai->mclk_rate = freq;
++
++		if (sai->sai_mclk) {
++			ret = clk_set_rate_exclusive(sai->sai_mclk,
++						     sai->mclk_rate);
++			if (ret) {
++				dev_err(cpu_dai->dev,
++					"Could not set mclk rate\n");
++				return ret;
++			}
++		}
+ 	}
+ 
+ 	return 0;
+@@ -505,9 +695,8 @@ static int stm32_sai_startup(struct snd_pcm_substream *substream,
+ 	}
+ 
+ 	/* Enable ITs */
+-
+-	regmap_update_bits(sai->regmap, STM_SAI_CLRFR_REGX,
+-			   SAI_XCLRFR_MASK, SAI_XCLRFR_MASK);
++	regmap_write_bits(sai->regmap, STM_SAI_CLRFR_REGX,
++			  SAI_XCLRFR_MASK, SAI_XCLRFR_MASK);
+ 
+ 	imr = SAI_XIMR_OVRUDRIE;
+ 	if (STM_SAI_IS_CAPTURE(sai)) {
+@@ -539,10 +728,10 @@ static int stm32_sai_set_config(struct snd_soc_dai *cpu_dai,
+ 	 * SAI fifo threshold is set to half fifo, to keep enough space
+ 	 * for DMA incoming bursts.
+ 	 */
+-	regmap_update_bits(sai->regmap, STM_SAI_CR2_REGX,
+-			   SAI_XCR2_FFLUSH | SAI_XCR2_FTH_MASK,
+-			   SAI_XCR2_FFLUSH |
+-			   SAI_XCR2_FTH_SET(STM_SAI_FIFO_TH_HALF));
++	regmap_write_bits(sai->regmap, STM_SAI_CR2_REGX,
++			  SAI_XCR2_FFLUSH | SAI_XCR2_FTH_MASK,
++			  SAI_XCR2_FFLUSH |
++			  SAI_XCR2_FTH_SET(STM_SAI_FIFO_TH_HALF));
+ 
+ 	/* DS bits in CR1 not set for SPDIF (size forced to 24 bits).*/
+ 	if (STM_SAI_PROTOCOL_IS_SPDIF(sai)) {
+@@ -715,15 +904,9 @@ static int stm32_sai_configure_clock(struct snd_soc_dai *cpu_dai,
+ {
+ 	struct stm32_sai_sub_data *sai = snd_soc_dai_get_drvdata(cpu_dai);
+ 	int cr1, mask, div = 0;
+-	int sai_clk_rate, mclk_ratio, den, ret;
+-	int version = sai->pdata->conf->version;
++	int sai_clk_rate, mclk_ratio, den;
+ 	unsigned int rate = params_rate(params);
+ 
+-	if (!sai->mclk_rate) {
+-		dev_err(cpu_dai->dev, "Mclk rate is null\n");
+-		return -EINVAL;
+-	}
+-
+ 	if (!(rate % 11025))
+ 		clk_set_parent(sai->sai_ck, sai->pdata->clk_x11k);
+ 	else
+@@ -731,14 +914,22 @@ static int stm32_sai_configure_clock(struct snd_soc_dai *cpu_dai,
+ 	sai_clk_rate = clk_get_rate(sai->sai_ck);
+ 
+ 	if (STM_SAI_IS_F4(sai->pdata)) {
+-		/*
+-		 * mclk_rate = 256 * fs
+-		 * MCKDIV = 0 if sai_ck < 3/2 * mclk_rate
+-		 * MCKDIV = sai_ck / (2 * mclk_rate) otherwise
++		/* mclk on (NODIV=0)
++		 *   mclk_rate = 256 * fs
++		 *   MCKDIV = 0 if sai_ck < 3/2 * mclk_rate
++		 *   MCKDIV = sai_ck / (2 * mclk_rate) otherwise
++		 * mclk off (NODIV=1)
++		 *   MCKDIV ignored. sck = sai_ck
+ 		 */
+-		if (2 * sai_clk_rate >= 3 * sai->mclk_rate)
+-			div = DIV_ROUND_CLOSEST(sai_clk_rate,
+-						2 * sai->mclk_rate);
++		if (!sai->mclk_rate)
++			return 0;
++
++		if (2 * sai_clk_rate >= 3 * sai->mclk_rate) {
++			div = stm32_sai_get_clk_div(sai, sai_clk_rate,
++						    2 * sai->mclk_rate);
++			if (div < 0)
++				return div;
++		}
+ 	} else {
+ 		/*
+ 		 * TDM mode :
+@@ -750,8 +941,10 @@ static int stm32_sai_configure_clock(struct snd_soc_dai *cpu_dai,
+ 		 * Note: NOMCK/NODIV correspond to same bit.
+ 		 */
+ 		if (STM_SAI_PROTOCOL_IS_SPDIF(sai)) {
+-			div = DIV_ROUND_CLOSEST(sai_clk_rate,
+-						(params_rate(params) * 128));
++			div = stm32_sai_get_clk_div(sai, sai_clk_rate,
++						    rate * 128);
++			if (div < 0)
++				return div;
+ 		} else {
+ 			if (sai->mclk_rate) {
+ 				mclk_ratio = sai->mclk_rate / rate;
+@@ -764,31 +957,22 @@ static int stm32_sai_configure_clock(struct snd_soc_dai *cpu_dai,
+ 						mclk_ratio);
+ 					return -EINVAL;
+ 				}
+-				div = DIV_ROUND_CLOSEST(sai_clk_rate,
+-							sai->mclk_rate);
++				div = stm32_sai_get_clk_div(sai, sai_clk_rate,
++							    sai->mclk_rate);
++				if (div < 0)
++					return div;
+ 			} else {
+ 				/* mclk-fs not set, master clock not active */
+ 				den = sai->fs_length * params_rate(params);
+-				div = DIV_ROUND_CLOSEST(sai_clk_rate, den);
++				div = stm32_sai_get_clk_div(sai, sai_clk_rate,
++							    den);
++				if (div < 0)
++					return div;
+ 			}
+ 		}
+ 	}
+ 
+-	if (div > SAI_XCR1_MCKDIV_MAX(version)) {
+-		dev_err(cpu_dai->dev, "Divider %d out of range\n", div);
+-		return -EINVAL;
+-	}
+-	dev_dbg(cpu_dai->dev, "SAI clock %d, divider %d\n", sai_clk_rate, div);
+-
+-	mask = SAI_XCR1_MCKDIV_MASK(SAI_XCR1_MCKDIV_WIDTH(version));
+-	cr1 = SAI_XCR1_MCKDIV_SET(div);
+-	ret = regmap_update_bits(sai->regmap, STM_SAI_CR1_REGX, mask, cr1);
+-	if (ret < 0) {
+-		dev_err(cpu_dai->dev, "Failed to update CR1 register\n");
+-		return ret;
+-	}
+-
+-	return 0;
++	return stm32_sai_set_clk_div(sai, div);
+ }
+ 
+ static int stm32_sai_hw_params(struct snd_pcm_substream *substream,
+@@ -881,6 +1065,9 @@ static void stm32_sai_shutdown(struct snd_pcm_substream *substream,
+ 			   SAI_XCR1_NODIV);
+ 
+ 	clk_disable_unprepare(sai->sai_ck);
++
++	clk_rate_exclusive_put(sai->sai_mclk);
++
+ 	sai->substream = NULL;
+ }
+ 
+@@ -888,11 +1075,12 @@ static int stm32_sai_pcm_new(struct snd_soc_pcm_runtime *rtd,
+ 			     struct snd_soc_dai *cpu_dai)
+ {
+ 	struct stm32_sai_sub_data *sai = dev_get_drvdata(cpu_dai->dev);
++	struct snd_kcontrol_new knew = iec958_ctls;
+ 
+ 	if (STM_SAI_PROTOCOL_IS_SPDIF(sai)) {
+ 		dev_dbg(&sai->pdev->dev, "%s: register iec controls", __func__);
+-		return snd_ctl_add(rtd->pcm->card,
+-				   snd_ctl_new1(&iec958_ctls, sai));
++		knew.device = rtd->pcm->device;
++		return snd_ctl_add(rtd->pcm->card, snd_ctl_new1(&knew, sai));
+ 	}
+ 
+ 	return 0;
+@@ -903,6 +1091,8 @@ static int stm32_sai_dai_probe(struct snd_soc_dai *cpu_dai)
+ 	struct stm32_sai_sub_data *sai = dev_get_drvdata(cpu_dai->dev);
+ 	int cr1 = 0, cr1_mask;
+ 
++	sai->cpu_dai = cpu_dai;
++
+ 	sai->dma_params.addr = (dma_addr_t)(sai->phys_addr + STM_SAI_DR_REGX);
+ 	/*
+ 	 * DMA supports 4, 8 or 16 burst sizes. Burst size 4 is the best choice,
+@@ -910,6 +1100,8 @@ static int stm32_sai_dai_probe(struct snd_soc_dai *cpu_dai)
+ 	 * constraints).
+ 	 */
+ 	sai->dma_params.maxburst = 4;
++	if (sai->pdata->conf.fifo_size < 8)
++		sai->dma_params.maxburst = 1;
+ 	/* Buswidth will be set by framework at runtime */
+ 	sai->dma_params.addr_width = DMA_SLAVE_BUSWIDTH_UNDEFINED;
+ 
+@@ -1080,7 +1272,7 @@ static int stm32_sai_sub_parse_of(struct platform_device *pdev,
+ 
+ 	sai->regmap_config = &stm32_sai_sub_regmap_config_f4;
+ 	/* Note: PDM registers not available for H7 sub-block B */
+-	if (STM_SAI_IS_H7(sai->pdata) && STM_SAI_IS_SUB_A(sai))
++	if (STM_SAI_HAS_PDM(sai) && STM_SAI_IS_SUB_A(sai))
+ 		sai->regmap_config = &stm32_sai_sub_regmap_config_h7;
+ 
+ 	sai->regmap = devm_regmap_init_mmio_clk(&pdev->dev, "sai_ck",
+@@ -1182,6 +1374,23 @@ static int stm32_sai_sub_parse_of(struct platform_device *pdev,
+ 		return PTR_ERR(sai->sai_ck);
+ 	}
+ 
++	if (STM_SAI_IS_F4(sai->pdata))
++		return 0;
++
++	/* Register mclk provider if requested */
++	if (of_find_property(np, "#clock-cells", NULL)) {
++		ret = stm32_sai_add_mclk_provider(sai);
++		if (ret < 0)
++			return ret;
++	} else {
++		sai->sai_mclk = devm_clk_get(&pdev->dev, "MCLK");
++		if (IS_ERR(sai->sai_mclk)) {
++			if (PTR_ERR(sai->sai_mclk) != -ENOENT)
++				return PTR_ERR(sai->sai_mclk);
++			sai->sai_mclk = NULL;
++		}
++	}
++
+ 	return 0;
+ }
+ 
+@@ -1266,10 +1475,34 @@ static int stm32_sai_sub_probe(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
++#ifdef CONFIG_PM_SLEEP
++static int stm32_sai_sub_suspend(struct device *dev)
++{
++	struct stm32_sai_sub_data *sai = dev_get_drvdata(dev);
++
++	regcache_cache_only(sai->regmap, true);
++	regcache_mark_dirty(sai->regmap);
++	return 0;
++}
++
++static int stm32_sai_sub_resume(struct device *dev)
++{
++	struct stm32_sai_sub_data *sai = dev_get_drvdata(dev);
++
++	regcache_cache_only(sai->regmap, false);
++	return regcache_sync(sai->regmap);
++}
++#endif /* CONFIG_PM_SLEEP */
++
++static const struct dev_pm_ops stm32_sai_sub_pm_ops = {
++	SET_SYSTEM_SLEEP_PM_OPS(stm32_sai_sub_suspend, stm32_sai_sub_resume)
++};
++
+ static struct platform_driver stm32_sai_sub_driver = {
+ 	.driver = {
+ 		.name = "st,stm32-sai-sub",
+ 		.of_match_table = stm32_sai_sub_ids,
++		.pm = &stm32_sai_sub_pm_ops,
+ 	},
+ 	.probe = stm32_sai_sub_probe,
+ };
+diff --git a/sound/soc/stm/stm32_spdifrx.c b/sound/soc/stm/stm32_spdifrx.c
+index 373df4f..693e30d 100644
+--- a/sound/soc/stm/stm32_spdifrx.c
++++ b/sound/soc/stm/stm32_spdifrx.c
+@@ -16,11 +16,13 @@
+  * details.
+  */
+ 
++#include <linux/bitfield.h>
+ #include <linux/clk.h>
+ #include <linux/completion.h>
+ #include <linux/delay.h>
+ #include <linux/module.h>
+ #include <linux/of_platform.h>
++#include <linux/pinctrl/consumer.h>
+ #include <linux/regmap.h>
+ #include <linux/reset.h>
+ 
+@@ -35,6 +37,9 @@
+ #define STM32_SPDIFRX_DR	0x10
+ #define STM32_SPDIFRX_CSR	0x14
+ #define STM32_SPDIFRX_DIR	0x18
++#define STM32_SPDIFRX_VERR	0x3F4
++#define STM32_SPDIFRX_IDR	0x3F8
++#define STM32_SPDIFRX_SIDR	0x3FC
+ 
+ /* Bit definition for SPDIF_CR register */
+ #define SPDIFRX_CR_SPDIFEN_SHIFT	0
+@@ -168,6 +173,18 @@
+ #define SPDIFRX_SPDIFEN_SYNC	0x1
+ #define SPDIFRX_SPDIFEN_ENABLE	0x3
+ 
++/* Bit definition for SPDIFRX_VERR register */
++#define SPDIFRX_VERR_MIN_MASK	GENMASK(3, 0)
++#define SPDIFRX_VERR_MAJ_MASK	GENMASK(7, 4)
++
++/* Bit definition for SPDIFRX_IDR register */
++#define SPDIFRX_IDR_ID_MASK	GENMASK(31, 0)
++
++/* Bit definition for SPDIFRX_SIDR register */
++#define SPDIFRX_SIDR_SID_MASK	GENMASK(31, 0)
++
++#define SPDIFRX_IPIDR_NUMBER	0x00130041
++
+ #define SPDIFRX_IN1		0x1
+ #define SPDIFRX_IN2		0x2
+ #define SPDIFRX_IN3		0x3
+@@ -471,6 +488,8 @@ static int stm32_spdifrx_get_ctrl_data(struct stm32_spdifrx_data *spdifrx)
+ 	memset(spdifrx->cs, 0, SPDIFRX_CS_BYTES_NB);
+ 	memset(spdifrx->ub, 0, SPDIFRX_UB_BYTES_NB);
+ 
++	pinctrl_pm_select_default_state(&spdifrx->pdev->dev);
++
+ 	ret = stm32_spdifrx_dma_ctrl_start(spdifrx);
+ 	if (ret < 0)
+ 		return ret;
+@@ -493,7 +512,7 @@ static int stm32_spdifrx_get_ctrl_data(struct stm32_spdifrx_data *spdifrx)
+ 	if (wait_for_completion_interruptible_timeout(&spdifrx->cs_completion,
+ 						      msecs_to_jiffies(100))
+ 						      <= 0) {
+-		dev_err(&spdifrx->pdev->dev, "Failed to get control data\n");
++		dev_dbg(&spdifrx->pdev->dev, "Failed to get control data\n");
+ 		ret = -EAGAIN;
+ 	}
+ 
+@@ -502,6 +521,7 @@ static int stm32_spdifrx_get_ctrl_data(struct stm32_spdifrx_data *spdifrx)
+ 
+ end:
+ 	clk_disable_unprepare(spdifrx->kclk);
++	pinctrl_pm_select_sleep_state(&spdifrx->pdev->dev);
+ 
+ 	return ret;
+ }
+@@ -603,6 +623,9 @@ static bool stm32_spdifrx_readable_reg(struct device *dev, unsigned int reg)
+ 	case STM32_SPDIFRX_DR:
+ 	case STM32_SPDIFRX_CSR:
+ 	case STM32_SPDIFRX_DIR:
++	case STM32_SPDIFRX_VERR:
++	case STM32_SPDIFRX_IDR:
++	case STM32_SPDIFRX_SIDR:
+ 		return true;
+ 	default:
+ 		return false;
+@@ -611,10 +634,15 @@ static bool stm32_spdifrx_readable_reg(struct device *dev, unsigned int reg)
+ 
+ static bool stm32_spdifrx_volatile_reg(struct device *dev, unsigned int reg)
+ {
+-	if (reg == STM32_SPDIFRX_DR)
++	switch (reg) {
++	case STM32_SPDIFRX_DR:
++	case STM32_SPDIFRX_CSR:
++	case STM32_SPDIFRX_SR:
++	case STM32_SPDIFRX_DIR:
+ 		return true;
+-
+-	return false;
++	default:
++		return false;
++	}
+ }
+ 
+ static bool stm32_spdifrx_writeable_reg(struct device *dev, unsigned int reg)
+@@ -633,11 +661,12 @@ static const struct regmap_config stm32_h7_spdifrx_regmap_conf = {
+ 	.reg_bits = 32,
+ 	.reg_stride = 4,
+ 	.val_bits = 32,
+-	.max_register = STM32_SPDIFRX_DIR,
++	.max_register = STM32_SPDIFRX_SIDR,
+ 	.readable_reg = stm32_spdifrx_readable_reg,
+ 	.volatile_reg = stm32_spdifrx_volatile_reg,
+ 	.writeable_reg = stm32_spdifrx_writeable_reg,
+ 	.fast_io = true,
++	.cache_type = REGCACHE_FLAT,
+ };
+ 
+ static irqreturn_t stm32_spdifrx_isr(int irq, void *devid)
+@@ -835,7 +864,8 @@ static struct snd_soc_dai_driver stm32_spdifrx_dai[] = {
+ static const struct snd_pcm_hardware stm32_spdifrx_pcm_hw = {
+ 	.info = SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_MMAP,
+ 	.buffer_bytes_max = 8 * PAGE_SIZE,
+-	.period_bytes_max = 2048, /* MDMA constraint */
++	.period_bytes_min = 1024, /* 5ms at 48kHz */
++	.period_bytes_max = PAGE_SIZE,
+ 	.periods_min = 2,
+ 	.periods_max = 8,
+ };
+@@ -901,6 +931,7 @@ static int stm32_spdifrx_probe(struct platform_device *pdev)
+ 	struct stm32_spdifrx_data *spdifrx;
+ 	struct reset_control *rst;
+ 	const struct snd_dmaengine_pcm_config *pcm_config = NULL;
++	u32 ver, idr;
+ 	int ret;
+ 
+ 	spdifrx = devm_kzalloc(&pdev->dev, sizeof(*spdifrx), GFP_KERNEL);
+@@ -957,7 +988,19 @@ static int stm32_spdifrx_probe(struct platform_device *pdev)
+ 		goto error;
+ 	}
+ 
+-	return 0;
++	ret = regmap_read(spdifrx->regmap, STM32_SPDIFRX_IDR, &idr);
++	if (ret)
++		goto error;
++
++	if (idr == SPDIFRX_IPIDR_NUMBER) {
++		ret = regmap_read(spdifrx->regmap, STM32_SPDIFRX_VERR, &ver);
++
++		dev_dbg(&pdev->dev, "SPDIFRX version: %lu.%lu registered\n",
++			FIELD_GET(SPDIFRX_VERR_MAJ_MASK, ver),
++			FIELD_GET(SPDIFRX_VERR_MIN_MASK, ver));
++	}
++
++	return ret;
+ 
+ error:
+ 	if (!IS_ERR(spdifrx->ctrl_chan))
+@@ -983,10 +1026,34 @@ static int stm32_spdifrx_remove(struct platform_device *pdev)
+ 
+ MODULE_DEVICE_TABLE(of, stm32_spdifrx_ids);
+ 
++#ifdef CONFIG_PM_SLEEP
++static int stm32_spdifrx_suspend(struct device *dev)
++{
++	struct stm32_spdifrx_data *spdifrx = dev_get_drvdata(dev);
++
++	regcache_cache_only(spdifrx->regmap, true);
++	regcache_mark_dirty(spdifrx->regmap);
++	return 0;
++}
++
++static int stm32_spdifrx_resume(struct device *dev)
++{
++	struct stm32_spdifrx_data *spdifrx = dev_get_drvdata(dev);
++
++	regcache_cache_only(spdifrx->regmap, false);
++	return regcache_sync(spdifrx->regmap);
++}
++#endif /* CONFIG_PM_SLEEP */
++
++static const struct dev_pm_ops stm32_spdifrx_pm_ops = {
++	SET_SYSTEM_SLEEP_PM_OPS(stm32_spdifrx_suspend, stm32_spdifrx_resume)
++};
++
+ static struct platform_driver stm32_spdifrx_driver = {
+ 	.driver = {
+ 		.name = "st,stm32-spdifrx",
+ 		.of_match_table = stm32_spdifrx_ids,
++		.pm = &stm32_spdifrx_pm_ops,
+ 	},
+ 	.probe = stm32_spdifrx_probe,
+ 	.remove = stm32_spdifrx_remove,
+-- 
+2.7.4
+

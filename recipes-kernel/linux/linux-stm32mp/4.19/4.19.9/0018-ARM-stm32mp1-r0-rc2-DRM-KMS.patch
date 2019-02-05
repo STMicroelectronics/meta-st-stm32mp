@@ -1,0 +1,1795 @@
+From fd965c7b7da4a0a21bd7750be8c3851be80a576f Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@st.com>
+Date: Tue, 27 Nov 2018 09:39:21 +0100
+Subject: [PATCH 18/52] ARM-stm32mp1-r0-rc2-DRM-KMS
+
+---
+ .../devicetree/bindings/display/bridge/sii902x.txt |   9 +
+ drivers/gpu/drm/bridge/Kconfig                     |   1 +
+ drivers/gpu/drm/bridge/sii902x.c                   | 844 +++++++++++++++++++--
+ drivers/gpu/drm/drm_modes.c                        |  19 +-
+ drivers/gpu/drm/panel/panel-orisetech-otm8009a.c   |  12 +-
+ drivers/gpu/drm/panel/panel-raydium-rm68200.c      |  12 +-
+ drivers/gpu/drm/stm/drv.c                          |  46 +-
+ drivers/gpu/drm/stm/dw_mipi_dsi-stm.c              |  53 ++
+ drivers/gpu/drm/stm/ltdc.c                         | 191 +++--
+ drivers/gpu/drm/stm/ltdc.h                         |   6 +
+ include/uapi/drm/drm_mode.h                        |   6 +
+ 11 files changed, 1060 insertions(+), 139 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/display/bridge/sii902x.txt b/Documentation/devicetree/bindings/display/bridge/sii902x.txt
+index 72d2dc6..00e9e88 100644
+--- a/Documentation/devicetree/bindings/display/bridge/sii902x.txt
++++ b/Documentation/devicetree/bindings/display/bridge/sii902x.txt
+@@ -13,6 +13,8 @@ Optional subnodes:
+ 	- video input: this subnode can contain a video input port node
+ 	  to connect the bridge to a display controller output (See this
+ 	  documentation [1]).
++	- audio input: this subnode can contain an audio input port node
++	  to connect the bridge to an audio controller output.
+ 
+ [1]: Documentation/devicetree/bindings/media/video-interfaces.txt
+ 
+@@ -31,5 +33,12 @@ Example:
+ 					remote-endpoint = <&dc_out>;
+ 				};
+ 			};
++
++			port@1 {
++				reg = <1>;
++				codec_endpoint: endpoint {
++					remote-endpoint = <&i2s0_cpu_endpoint>;
++				};
++			};
+ 		};
+ 	};
+diff --git a/drivers/gpu/drm/bridge/Kconfig b/drivers/gpu/drm/bridge/Kconfig
+index bf6cad6..fe91c20 100644
+--- a/drivers/gpu/drm/bridge/Kconfig
++++ b/drivers/gpu/drm/bridge/Kconfig
+@@ -95,6 +95,7 @@ config DRM_SII902X
+ 	depends on OF
+ 	select DRM_KMS_HELPER
+ 	select REGMAP_I2C
++	select SND_SOC_HDMI_CODEC if SND_SOC
+ 	---help---
+ 	  Silicon Image sii902x bridge chip driver.
+ 
+diff --git a/drivers/gpu/drm/bridge/sii902x.c b/drivers/gpu/drm/bridge/sii902x.c
+index e59a135..512eb03 100644
+--- a/drivers/gpu/drm/bridge/sii902x.c
++++ b/drivers/gpu/drm/bridge/sii902x.c
+@@ -1,4 +1,6 @@
+ /*
++ * Copyright (C) 2018 Renesas Electronics
++ *
+  * Copyright (C) 2016 Atmel
+  *		      Bo Shen <voice.shen@atmel.com>
+  *
+@@ -20,16 +22,23 @@
+  * GNU General Public License for more details.
+  */
+ 
++#include <linux/bitfield.h>
+ #include <linux/gpio/consumer.h>
++#include <linux/i2c-mux.h>
+ #include <linux/i2c.h>
+ #include <linux/module.h>
++#include <linux/pinctrl/consumer.h>
++#include <linux/pm_runtime.h>
+ #include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
+ 
+ #include <drm/drmP.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_crtc_helper.h>
+ #include <drm/drm_edid.h>
+ 
++#include <sound/hdmi-codec.h>
++
+ #define SII902X_TPI_VIDEO_DATA			0x0
+ 
+ #define SII902X_TPI_PIXEL_REPETITION		0x8
+@@ -71,23 +80,229 @@
+ #define SII902X_AVI_POWER_STATE_MSK		GENMASK(1, 0)
+ #define SII902X_AVI_POWER_STATE_D(l)		((l) & SII902X_AVI_POWER_STATE_MSK)
+ 
++#define SII902X_I2S_MAP				0x1f
++#define SII902X_I2S_MAP_SWITCH			BIT(7)
++#define SII902X_I2S_MAP_SD_MSK			GENMASK(5, 4)
++#define SII902X_I2S_MAP_SD(v)			\
++	FIELD_PREP(SII902X_I2S_MAP_SD_MSK, v)
++#define SII902X_I2S_MAP_DS			BIT(3)
++#define SII902X_I2S_MAP_SWAP			BIT(2)
++#define SII902X_I2S_MAP_FIFO_MSK		GENMASK(1, 0)
++#define SII902X_I2S_MAP_FIFO(v)			\
++	FIELD_PREP(SII902X_I2S_MAP_FIFO_MSK, v)
++
++#define SII902X_I2S_CONF			0x20
++#define SII902X_I2S_CONF_SCK_STROBING		BIT(7)
++#define SII902X_I2S_CONF_MCLK_RATIO_MSK		GENMASK(6, 4)
++#define SII902X_I2S_CONF_WS_STROBING		BIT(3)
++#define SII902X_I2S_CONF_JUSTIFY		BIT(2)
++#define SII902X_I2S_CONF_LSB_DIR		BIT(1)
++#define SII902X_I2S_CONF_NO_OFFSET		BIT(0)
++
++#define SII902X_I2S_CS0				0x21
++
++#define SII902X_I2S_CS1				0x22
++
++#define SII902X_I2S_CS2				0x23
++#define SII902X_I2S_CS2_SRC_MSK			GENMASK(3, 0)
++#define SII902X_I2S_CS2_CHAN_MSK		GENMASK(7, 4)
++
++#define SII902X_I2S_CS3				0x24
++#define SII902X_I2S_CS3_FS_MSK			GENMASK(3, 0)
++#define SII902X_I2S_CS3_FS(v)			\
++	FIELD_PREP(SII902X_I2S_CS3_FS_MSK, v)
++#define SII902X_I2S_CS3_ACC_MSK			GENMASK(7, 4)
++
++#define SII902X_I2S_CS4				0x25
++#define SII902X_I2S_CS4_WL_MSK			GENMASK(3, 0)
++#define SII902X_I2S_CS4_WL(v)			\
++	FIELD_PREP(SII902X_I2S_CS4_WL_MSK, v)
++
++#define SII902X_AIF				0x26
++#define SII902X_AIF_FMT_MSK			GENMASK(7, 6)
++#define SII902X_AIF_FMT(v)			\
++	FIELD_PREP(SII902X_AIF_FMT_MSK, v)
++#define SII902X_AIF_LAYOUT			BIT(5)
++#define SII902X_AIF_MUTE			BIT(4)
++#define SII902X_AIF_CODING_MSK			GENMASK(3, 0)
++#define SII902X_AIF_CODING(v)			\
++	FIELD_PREP(SII902X_AIF_CODING_MSK, v)
++
++#define SII902X_I2S_AUD_FMT			0x27
++#define SII902X_I2S_AUD_FMT_SZ_MSK		GENMASK(7, 6)
++#define SII902X_I2S_AUD_FMT_SZ(v)		\
++	FIELD_PREP(SII902X_I2S_AUD_FMT_SZ_MSK, v)
++#define SII902X_I2S_AUD_FMT_FS_MSK		GENMASK(5, 3)
++#define SII902X_I2S_AUD_FMT_FS(v)		\
++	FIELD_PREP(SII902X_I2S_AUD_FMT_FS_MSK, v)
++#define SII902X_I2S_AUD_FMT_FS_HBR		BIT(2)
++
+ #define SII902X_INT_ENABLE			0x3c
+ #define SII902X_INT_STATUS			0x3d
+ #define SII902X_HOTPLUG_EVENT			BIT(0)
+ #define SII902X_PLUGGED_STATUS			BIT(2)
+ 
++#define SII902X_PLL_R1				0x82
++#define SII902X_PLL_R1_TCLKSEL_MSK		GENMASK(6, 5)
++#define SII902X_PLL_R1_TCLKSEL(v)		\
++	FIELD_PREP(SII902X_PLL_R1_TCLKSEL_MSK, v)
++#define SII902X_PLL_R2				0x83
++#define SII902X_PLL_R2_CLKMUTLCTL_MSK		GENMASK(5, 4)
++#define SII902X_PLL_R2_CLKMUTLCTL(v)		\
++	FIELD_PREP(SII902X_PLL_R2_CLKMUTLCTL_MSK, v)
++#define SII902X_PLL_R3				0x84
++#define SII902X_PLL_R3_ACLKCNT_MSK		GENMASK(5, 4)
++#define SII902X_PLL_R3_ACLKCNT(v)		\
++	FIELD_PREP(SII902X_PLL_R3_ACLKCNT_MSK, v)
++#define SII902X_PLL_R3_HLFCLKEN			BIT(1)
++
++#define SII902X_INDEXED_REG_PAGE		0xbc
++#define SII902X_INDEXED_REG_IDX			0xbd
++#define SII902X_INDEXED_REG_ACCESS		0xbe
++
++#define SII902X_OTHER_IF			0xbf
++#define SII902X_OTHER_IF_SEL_MSK		GENMASK(2, 0)
++#define SII902X_OTHER_IF_SEL(v)			\
++	FIELD_PREP(SII902X_OTHER_IF_SEL_MSK, v)
++#define SII902X_OTHER_IF_REPEAT			BIT(6)
++#define SII902X_OTHER_IF_ENABLE			BIT(7)
++
+ #define SII902X_REG_TPI_RQB			0xc7
+ 
+ #define SII902X_I2C_BUS_ACQUISITION_TIMEOUT_MS	500
+ 
++#define SII902X_IF_AUDIO			2
++
++/* CEC device */
++#define SII902X_CEC_I2C_ADDR			0x30
++
++#define SII902X_CEC_SETUP			0x8e
++
++enum sii902x_i2s_map_sd {
++	SII902X_I2S_MAP_SD0,
++	SII902X_I2S_MAP_SD1,
++	SII902X_I2S_MAP_SD2,
++	SII902X_I2S_MAP_SD3,
++};
++
++enum sii902x_i2s_map_fifo {
++	SII902X_I2S_MAP_FIFO0,
++	SII902X_I2S_MAP_FIFO1,
++	SII902X_I2S_MAP_FIFO2,
++	SII902X_I2S_MAP_FIFO3,
++};
++
++enum sii902x_aif_format {
++	SII902X_AIF_FORMAT_SPDIF = 1,
++	SII902X_AIF_FORMAT_I2S,
++	SII902X_AIF_FORMAT_DSD,
++};
++
++enum sii902x_aif_coding {
++	SII902X_AIF_CODING_STREAM_HEADER,
++	SII902X_AIF_CODING_PCM,
++	SII902X_AIF_CODING_AC3,
++	SII902X_AIF_CODING_MPEG1,
++	SII902X_AIF_CODING_MP3,
++	SII902X_AIF_CODING_MPEG2,
++	SII902X_AIF_CODING_AAC,
++	SII902X_AIF_CODING_DTS,
++	SII902X_AIF_CODING_ATRAC,
++};
++
++enum sii902x_sample_rate {
++	SII902X_SAMPLE_RATE_32000 = 1,
++	SII902X_SAMPLE_RATE_44100,
++	SII902X_SAMPLE_RATE_48000,
++	SII902X_SAMPLE_RATE_88200,
++	SII902X_SAMPLE_RATE_96000,
++	SII902X_SAMPLE_RATE_176400,
++	SII902X_SAMPLE_RATE_192000,
++};
++
++enum sii902x_sample_width {
++	SII902X_SAMPLE_RATE_SIZE_16 = 1,
++	SII902X_SAMPLE_RATE_SIZE_20,
++	SII902X_SAMPLE_RATE_SIZE_24,
++};
++
++struct sii902x_audio_params {
++	unsigned int aes_size;
++	unsigned int aes_rate;
++};
++
+ struct sii902x {
+ 	struct i2c_client *i2c;
+ 	struct regmap *regmap;
+ 	struct drm_bridge bridge;
+ 	struct drm_connector connector;
+ 	struct gpio_desc *reset_gpio;
++	struct i2c_mux_core *i2cmux;
++	struct regulator_bulk_data supplies[2];
++	struct platform_device *audio_pdev;
++	struct sii902x_audio_params audio;
++	struct edid *edid;
+ };
+ 
++static int sii902x_read_unlocked(struct i2c_client *i2c, u8 reg, u8 *val)
++{
++	struct i2c_msg xfer[] = {
++		{
++			.addr = i2c->addr,
++			.flags = 0,
++			.len = 1,
++			.buf = &reg,
++		}, {
++			.addr = i2c->addr,
++			.flags = I2C_M_RD,
++			.len = 1,
++			.buf = val,
++		}
++	};
++	unsigned char xfers = ARRAY_SIZE(xfer);
++	int ret, retries = 5;
++
++	do {
++		ret = __i2c_transfer(i2c->adapter, xfer, xfers);
++		if (ret < 0)
++			return ret;
++	} while (ret != xfers && --retries);
++	return ret == xfers ? 0 : -1;
++}
++
++static int sii902x_write_unlocked(struct i2c_client *i2c, u8 reg, u8 val)
++{
++	u8 data[2] = {reg, val};
++	struct i2c_msg xfer = {
++		.addr = i2c->addr,
++		.flags = 0,
++		.len = sizeof(data),
++		.buf = data,
++	};
++	int ret, retries = 5;
++
++	do {
++		ret = __i2c_transfer(i2c->adapter, &xfer, 1);
++		if (ret < 0)
++			return ret;
++	} while (!ret && --retries);
++	return !ret ? -1 : 0;
++}
++
++static int sii902x_update_bits_unlocked(struct i2c_client *i2c, u8 reg, u8 mask,
++					u8 val)
++{
++	int ret;
++	u8 status;
++
++	ret = sii902x_read_unlocked(i2c, reg, &status);
++	if (ret)
++		return ret;
++	status &= ~mask;
++	status |= val & mask;
++	return sii902x_write_unlocked(i2c, reg, status);
++}
++
+ static inline struct sii902x *bridge_to_sii902x(struct drm_bridge *bridge)
+ {
+ 	return container_of(bridge, struct sii902x, bridge);
+@@ -135,45 +350,18 @@ static const struct drm_connector_funcs sii902x_connector_funcs = {
+ static int sii902x_get_modes(struct drm_connector *connector)
+ {
+ 	struct sii902x *sii902x = connector_to_sii902x(connector);
+-	struct regmap *regmap = sii902x->regmap;
+ 	u32 bus_format = MEDIA_BUS_FMT_RGB888_1X24;
+-	struct device *dev = &sii902x->i2c->dev;
+-	unsigned long timeout;
+-	unsigned int retries;
+-	unsigned int status;
+ 	struct edid *edid;
+-	int num = 0;
+-	int ret;
+-
+-	ret = regmap_update_bits(regmap, SII902X_SYS_CTRL_DATA,
+-				 SII902X_SYS_CTRL_DDC_BUS_REQ,
+-				 SII902X_SYS_CTRL_DDC_BUS_REQ);
+-	if (ret)
+-		return ret;
+-
+-	timeout = jiffies +
+-		  msecs_to_jiffies(SII902X_I2C_BUS_ACQUISITION_TIMEOUT_MS);
+-	do {
+-		ret = regmap_read(regmap, SII902X_SYS_CTRL_DATA, &status);
+-		if (ret)
+-			return ret;
+-	} while (!(status & SII902X_SYS_CTRL_DDC_BUS_GRTD) &&
+-		 time_before(jiffies, timeout));
++	bool hdmi_mode = false;
++	int num = 0, ret;
+ 
+-	if (!(status & SII902X_SYS_CTRL_DDC_BUS_GRTD)) {
+-		dev_err(dev, "failed to acquire the i2c bus\n");
+-		return -ETIMEDOUT;
+-	}
+-
+-	ret = regmap_write(regmap, SII902X_SYS_CTRL_DATA, status);
+-	if (ret)
+-		return ret;
+-
+-	edid = drm_get_edid(connector, sii902x->i2c->adapter);
++	edid = drm_get_edid(connector, sii902x->i2cmux->adapter[0]);
+ 	drm_connector_update_edid_property(connector, edid);
+ 	if (edid) {
+ 		num = drm_add_edid_modes(connector, edid);
+-		kfree(edid);
++		hdmi_mode = drm_detect_hdmi_monitor(edid);
++		kfree(sii902x->edid);
++		sii902x->edid = edid;
+ 	}
+ 
+ 	ret = drm_display_info_set_bus_formats(&connector->display_info,
+@@ -181,41 +369,10 @@ static int sii902x_get_modes(struct drm_connector *connector)
+ 	if (ret)
+ 		return ret;
+ 
+-	/*
+-	 * Sometimes the I2C bus can stall after failure to use the
+-	 * EDID channel. Retry a few times to see if things clear
+-	 * up, else continue anyway.
+-	 */
+-	retries = 5;
+-	do {
+-		ret = regmap_read(regmap, SII902X_SYS_CTRL_DATA,
+-				  &status);
+-		retries--;
+-	} while (ret && retries);
+-	if (ret)
+-		dev_err(dev, "failed to read status (%d)\n", ret);
+-
+-	ret = regmap_update_bits(regmap, SII902X_SYS_CTRL_DATA,
+-				 SII902X_SYS_CTRL_DDC_BUS_REQ |
+-				 SII902X_SYS_CTRL_DDC_BUS_GRTD, 0);
+-	if (ret)
+-		return ret;
+-
+-	timeout = jiffies +
+-		  msecs_to_jiffies(SII902X_I2C_BUS_ACQUISITION_TIMEOUT_MS);
+-	do {
+-		ret = regmap_read(regmap, SII902X_SYS_CTRL_DATA, &status);
+-		if (ret)
+-			return ret;
+-	} while (status & (SII902X_SYS_CTRL_DDC_BUS_REQ |
+-			   SII902X_SYS_CTRL_DDC_BUS_GRTD) &&
+-		 time_before(jiffies, timeout));
+-
+-	if (status & (SII902X_SYS_CTRL_DDC_BUS_REQ |
+-		      SII902X_SYS_CTRL_DDC_BUS_GRTD)) {
+-		dev_err(dev, "failed to release the i2c bus\n");
+-		return -ETIMEDOUT;
+-	}
++	if (hdmi_mode)
++		regmap_update_bits(sii902x->regmap, SII902X_SYS_CTRL_DATA,
++				   SII902X_SYS_CTRL_OUTPUT_MODE,
++				   SII902X_SYS_CTRL_OUTPUT_HDMI);
+ 
+ 	return num;
+ }
+@@ -240,17 +397,29 @@ static void sii902x_bridge_disable(struct drm_bridge *bridge)
+ 	regmap_update_bits(sii902x->regmap, SII902X_SYS_CTRL_DATA,
+ 			   SII902X_SYS_CTRL_PWR_DWN,
+ 			   SII902X_SYS_CTRL_PWR_DWN);
++	pinctrl_pm_select_sleep_state(&sii902x->i2c->dev);
+ }
+ 
+ static void sii902x_bridge_enable(struct drm_bridge *bridge)
+ {
+ 	struct sii902x *sii902x = bridge_to_sii902x(bridge);
++	bool hdmi_mode;
+ 
++	pinctrl_pm_select_default_state(&sii902x->i2c->dev);
+ 	regmap_update_bits(sii902x->regmap, SII902X_PWR_STATE_CTRL,
+ 			   SII902X_AVI_POWER_STATE_MSK,
+ 			   SII902X_AVI_POWER_STATE_D(0));
+ 	regmap_update_bits(sii902x->regmap, SII902X_SYS_CTRL_DATA,
+ 			   SII902X_SYS_CTRL_PWR_DWN, 0);
++
++	if(sii902x->edid) {
++		hdmi_mode = drm_detect_hdmi_monitor(sii902x->edid);
++		if (hdmi_mode)
++			regmap_update_bits(sii902x->regmap,
++					   SII902X_SYS_CTRL_DATA,
++					   SII902X_SYS_CTRL_OUTPUT_MODE,
++					   SII902X_SYS_CTRL_OUTPUT_HDMI);
++	}
+ }
+ 
+ static void sii902x_bridge_mode_set(struct drm_bridge *bridge,
+@@ -329,6 +498,267 @@ static int sii902x_bridge_attach(struct drm_bridge *bridge)
+ 	return 0;
+ }
+ 
++static int sii902x_audio_infoframe_config(struct sii902x *sii902x,
++					  struct hdmi_codec_params *params)
++{
++	u8 buf[HDMI_INFOFRAME_SIZE(AUDIO)];
++	int ret;
++
++	ret = hdmi_audio_infoframe_init(&params->cea);
++	if (ret) {
++		DRM_ERROR("Failed to init audio infoframe\n");
++		return ret;
++	}
++
++	ret = hdmi_audio_infoframe_pack(&params->cea, buf, sizeof(buf));
++	if (ret < 0) {
++		DRM_ERROR("failed to pack audio infoframe: %d\n", ret);
++		return ret;
++	}
++
++	regmap_update_bits(sii902x->regmap,
++			   SII902X_OTHER_IF,
++			   SII902X_OTHER_IF_SEL_MSK |
++			   SII902X_OTHER_IF_REPEAT |
++			   SII902X_OTHER_IF_ENABLE,
++			   SII902X_OTHER_IF_SEL(SII902X_IF_AUDIO) |
++			   SII902X_OTHER_IF_REPEAT |
++			   SII902X_OTHER_IF_ENABLE);
++
++	return regmap_bulk_write(sii902x->regmap, SII902X_OTHER_IF + 1, buf,
++				 HDMI_INFOFRAME_SIZE(AUDIO) +
++				 HDMI_INFOFRAME_HEADER_SIZE - 1);
++}
++
++static int sii902x_audio_iec60958_config(struct sii902x *sii902x)
++{
++	/* Bytes 0,1,2 are let to default setting. Configure bytes 3&4 */
++	regmap_update_bits(sii902x->regmap,
++			   SII902X_I2S_CS3,
++			   SII902X_I2S_CS3_FS_MSK,
++			   SII902X_I2S_CS3_FS(sii902x->audio.aes_rate));
++
++	return regmap_update_bits(sii902x->regmap,
++				  SII902X_I2S_CS4,
++				  SII902X_I2S_CS4_WL_MSK,
++				  SII902X_I2S_CS4_WL(sii902x->audio.aes_size));
++}
++
++static int sii902x_i2s_configure(struct sii902x *sii902x,
++				 struct hdmi_codec_params *params,
++				 struct hdmi_codec_daifmt *fmt)
++{
++	unsigned int rate, size, val, mask;
++
++	/* Configure audio interface */
++	regmap_update_bits(sii902x->regmap, SII902X_AIF,
++			   SII902X_AIF_FMT_MSK |
++			   SII902X_AIF_LAYOUT |
++			   SII902X_AIF_MUTE |
++			   SII902X_AIF_CODING_MSK,
++			   SII902X_AIF_FMT(SII902X_AIF_FORMAT_I2S) |
++			   SII902X_AIF_MUTE |
++			   SII902X_AIF_CODING(SII902X_AIF_CODING_PCM));
++
++	switch (fmt->fmt) {
++	case HDMI_I2S:
++		val = SII902X_I2S_CONF_SCK_STROBING;
++		break;
++	case HDMI_LEFT_J:
++		val = SII902X_I2S_CONF_SCK_STROBING |
++		      SII902X_I2S_CONF_WS_STROBING |
++		      SII902X_I2S_CONF_NO_OFFSET;
++		break;
++	case HDMI_RIGHT_J:
++		val = SII902X_I2S_CONF_SCK_STROBING |
++		      SII902X_I2S_CONF_WS_STROBING |
++		      SII902X_I2S_CONF_NO_OFFSET |
++		      SII902X_I2S_CONF_JUSTIFY;
++		break;
++	default:
++		DRM_ERROR("Unknown protocol %#x\n", fmt->fmt);
++		return -EINVAL;
++	}
++	mask = SII902X_I2S_CONF_NO_OFFSET | SII902X_I2S_CONF_WS_STROBING |
++	       SII902X_I2S_CONF_JUSTIFY | SII902X_I2S_CONF_LSB_DIR |
++	       SII902X_I2S_CONF_SCK_STROBING;
++
++	if (fmt->frame_clk_inv)
++		val ^= SII902X_I2S_CONF_WS_STROBING;
++
++	if (fmt->bit_clk_inv)
++		val ^= SII902X_I2S_CONF_SCK_STROBING;
++
++	/* Configure i2s interface */
++	regmap_update_bits(sii902x->regmap,
++			   SII902X_I2S_CONF, mask, val);
++
++	/*
++	 * Configure i2s interface mapping
++	 * Assume that only SD0 is used and connected to FIFO0
++	 */
++	regmap_update_bits(sii902x->regmap,
++			   SII902X_I2S_MAP,
++			   SII902X_I2S_MAP_SWITCH |
++			   SII902X_I2S_MAP_SD_MSK | SII902X_I2S_MAP_FIFO_MSK,
++			   SII902X_I2S_MAP_SWITCH |
++			   SII902X_I2S_MAP_SD0 | SII902X_I2S_MAP_FIFO0);
++
++	switch (params->sample_rate) {
++	case 32000:
++		rate = SII902X_SAMPLE_RATE_32000;
++		sii902x->audio.aes_rate = IEC958_AES3_CON_FS_32000;
++		break;
++	case 44100:
++		rate = SII902X_SAMPLE_RATE_44100;
++		sii902x->audio.aes_rate = IEC958_AES3_CON_FS_44100;
++		break;
++	case 48000:
++		rate = SII902X_SAMPLE_RATE_48000;
++		sii902x->audio.aes_rate = IEC958_AES3_CON_FS_48000;
++		break;
++	case 88200:
++		rate = SII902X_SAMPLE_RATE_88200;
++		sii902x->audio.aes_rate = IEC958_AES3_CON_FS_88200;
++		break;
++	case 96000:
++		rate = SII902X_SAMPLE_RATE_96000;
++		sii902x->audio.aes_rate = IEC958_AES3_CON_FS_96000;
++		break;
++	case 176400:
++		rate = SII902X_SAMPLE_RATE_176400;
++		sii902x->audio.aes_rate = IEC958_AES3_CON_FS_176400;
++		break;
++	case 192000:
++		rate = SII902X_SAMPLE_RATE_192000;
++		sii902x->audio.aes_rate = IEC958_AES3_CON_FS_192000;
++		break;
++	default:
++		DRM_ERROR("Unknown sampling rate %d\n", params->sample_rate);
++		return -EINVAL;
++	}
++
++	switch (params->sample_width) {
++	case 16:
++		size = SII902X_SAMPLE_RATE_SIZE_16;
++		sii902x->audio.aes_size = IEC958_AES4_CON_WORDLEN_20_16;
++		break;
++	case 20:
++		size = SII902X_SAMPLE_RATE_SIZE_20;
++		sii902x->audio.aes_size = IEC958_AES4_CON_WORDLEN_24_20;
++		break;
++	case 24:
++	case 32:
++		size = SII902X_SAMPLE_RATE_SIZE_24;
++		sii902x->audio.aes_size = IEC958_AES4_CON_WORDLEN_24_20 |
++					  IEC958_AES4_CON_MAX_WORDLEN_24;
++		break;
++	default:
++		DRM_ERROR("Unknown sample width %d\n", params->sample_width);
++		return -EINVAL;
++	}
++
++	/* Configure i2s interface rate and input/output word length */
++	regmap_update_bits(sii902x->regmap,
++			   SII902X_INDEXED_REG_PAGE, 0xff, 0x2);
++	regmap_update_bits(sii902x->regmap,
++			   SII902X_INDEXED_REG_IDX, 0xff, 0x24);
++	regmap_update_bits(sii902x->regmap,
++			   SII902X_INDEXED_REG_ACCESS, 0x0f,
++			   sii902x->audio.aes_size);
++
++	return regmap_update_bits(sii902x->regmap,
++				  SII902X_I2S_AUD_FMT,
++				  SII902X_I2S_AUD_FMT_FS_MSK |
++				  SII902X_I2S_AUD_FMT_SZ_MSK,
++				  SII902X_I2S_AUD_FMT_FS(rate) |
++				  SII902X_I2S_AUD_FMT_SZ(size));
++}
++
++static int sii902x_audio_hw_params(struct device *dev, void *data,
++				   struct hdmi_codec_daifmt *fmt,
++				   struct hdmi_codec_params *params)
++{
++	struct sii902x *sii902x = dev_get_drvdata(dev);
++	int ret;
++
++	if (fmt->bit_clk_master || fmt->frame_clk_master) {
++		DRM_ERROR("Master mode not supported\n");
++		return -EINVAL;
++	}
++
++	if (fmt->fmt == HDMI_I2S || fmt->fmt == HDMI_RIGHT_J ||
++	    fmt->fmt == HDMI_LEFT_J) {
++		/* Configure i2s interface */
++		ret = sii902x_i2s_configure(sii902x, params, fmt);
++		if (ret)
++			return ret;
++
++		/* Configure iec958 channel status */
++		ret = sii902x_audio_iec60958_config(sii902x);
++		if (ret)
++			return ret;
++	} else {
++		DRM_ERROR("Unsupported format 0x%x\n", fmt->fmt);
++		return -EINVAL;
++	}
++
++	/* Configure audio infoframes */
++	return sii902x_audio_infoframe_config(sii902x, params);
++}
++
++static int sii902x_audio_digital_mute(struct device *dev,
++				      void *data, bool enable)
++{
++	struct sii902x *sii902x = dev_get_drvdata(dev);
++	int ret;
++
++	DRM_DEBUG("%s audio\n", enable ? "mute" : "unmute");
++
++	if (enable)
++		ret = regmap_update_bits(sii902x->regmap, SII902X_AIF,
++					 SII902X_AIF_MUTE, SII902X_AIF_MUTE);
++	else
++		ret = regmap_update_bits(sii902x->regmap, SII902X_AIF,
++					 SII902X_AIF_MUTE, 0);
++
++	return ret;
++}
++
++static int sii902x_audio_get_eld(struct device *dev, void *data,
++				 u8 *buf, size_t len)
++{
++	struct sii902x *sii902x = dev_get_drvdata(dev);
++	struct drm_connector *connector = &sii902x->connector;
++
++	if (!sii902x->edid)
++		return -ENODEV;
++
++	memcpy(buf, connector->eld, min(sizeof(connector->eld), len));
++
++	return 0;
++}
++
++static void sii902x_audio_shutdown(struct device *dev, void *data)
++{}
++
++static int sii902x_audio_get_dai_id(struct snd_soc_component *component,
++				    struct device_node *endpoint)
++{
++	struct of_endpoint of_ep;
++	int ret;
++
++	ret = of_graph_parse_endpoint(endpoint, &of_ep);
++	if (ret < 0)
++		return ret;
++
++	/* HDMI sound should be located at reg = <1> */
++	if (of_ep.port == 1)
++		return 0;
++
++	return -EINVAL;
++}
++
+ static const struct drm_bridge_funcs sii902x_bridge_funcs = {
+ 	.attach = sii902x_bridge_attach,
+ 	.mode_set = sii902x_bridge_mode_set,
+@@ -348,10 +778,39 @@ static const struct regmap_access_table sii902x_volatile_table = {
+ static const struct regmap_config sii902x_regmap_config = {
+ 	.reg_bits = 8,
+ 	.val_bits = 8,
++	/* map up to infoframe data registers. 0xbf-0xde */
++	.max_register = 0xde,
+ 	.volatile_table = &sii902x_volatile_table,
+ 	.cache_type = REGCACHE_NONE,
+ };
+ 
++static const struct hdmi_codec_ops sii902x_codec_ops = {
++	.hw_params = sii902x_audio_hw_params,
++	.audio_shutdown = sii902x_audio_shutdown,
++	.get_dai_id = sii902x_audio_get_dai_id,
++	.digital_mute = sii902x_audio_digital_mute,
++	.get_eld = sii902x_audio_get_eld,
++};
++
++static int sii902x_register_audio_driver(struct device *dev,
++					 struct sii902x *sii902x)
++{
++	struct hdmi_codec_pdata codec_data = {
++		.ops = &sii902x_codec_ops,
++		.max_i2s_channels = 2,
++		.i2s = 1,
++	};
++
++	sii902x->audio_pdev = platform_device_register_data(
++		dev, HDMI_CODEC_DRV_NAME, PLATFORM_DEVID_AUTO,
++		&codec_data, sizeof(codec_data));
++
++	if (IS_ERR(sii902x->audio_pdev))
++		return PTR_ERR(sii902x->audio_pdev);
++
++	return 0;
++}
++
+ static irqreturn_t sii902x_interrupt(int irq, void *data)
+ {
+ 	struct sii902x *sii902x = data;
+@@ -366,15 +825,134 @@ static irqreturn_t sii902x_interrupt(int irq, void *data)
+ 	return IRQ_HANDLED;
+ }
+ 
++/*
++ * The purpose of sii902x_i2c_bypass_select is to enable the pass through
++ * mode of the HDMI transmitter. Do not use regmap from within this function,
++ * only use sii902x_*_unlocked functions to read/modify/write registers.
++ * We are holding the parent adapter lock here, keep this in mind before
++ * adding more i2c transactions.
++ */
++static int sii902x_i2c_bypass_select(struct i2c_mux_core *mux, u32 chan_id)
++{
++	struct sii902x *sii902x = i2c_mux_priv(mux);
++	struct device *dev = &sii902x->i2c->dev;
++	unsigned long timeout;
++	u8 status;
++	int ret;
++
++	ret = sii902x_update_bits_unlocked(sii902x->i2c, SII902X_SYS_CTRL_DATA,
++					   SII902X_SYS_CTRL_DDC_BUS_REQ,
++					   SII902X_SYS_CTRL_DDC_BUS_REQ);
++
++	timeout = jiffies +
++		  msecs_to_jiffies(SII902X_I2C_BUS_ACQUISITION_TIMEOUT_MS);
++	do {
++		ret = sii902x_read_unlocked(sii902x->i2c, SII902X_SYS_CTRL_DATA,
++					    &status);
++		if (ret)
++			return ret;
++	} while (!(status & SII902X_SYS_CTRL_DDC_BUS_GRTD) &&
++		 time_before(jiffies, timeout));
++
++	if (!(status & SII902X_SYS_CTRL_DDC_BUS_GRTD)) {
++		dev_err(dev, "Failed to acquire the i2c bus\n");
++		return -ETIMEDOUT;
++	}
++
++	ret = sii902x_write_unlocked(sii902x->i2c, SII902X_SYS_CTRL_DATA,
++				     status);
++	if (ret)
++		return ret;
++	return 0;
++}
++
++/*
++ * The purpose of sii902x_i2c_bypass_deselect is to disable the pass through
++ * mode of the HDMI transmitter. Do not use regmap from within this function,
++ * only use sii902x_*_unlocked functions to read/modify/write registers.
++ * We are holding the parent adapter lock here, keep this in mind before
++ * adding more i2c transactions.
++ */
++static int sii902x_i2c_bypass_deselect(struct i2c_mux_core *mux, u32 chan_id)
++{
++	struct sii902x *sii902x = i2c_mux_priv(mux);
++	struct device *dev = &sii902x->i2c->dev;
++	unsigned long timeout;
++	unsigned int retries;
++	u8 status;
++	int ret;
++
++	/*
++	 * When the HDMI transmitter is in pass through mode, we need an
++	 * (undocumented) additional delay between STOP and START conditions
++	 * to guarantee the bus won't get stuck.
++	 */
++	udelay(30);
++
++	/*
++	 * Sometimes the I2C bus can stall after failure to use the
++	 * EDID channel. Retry a few times to see if things clear
++	 * up, else continue anyway.
++	 */
++	retries = 5;
++	do {
++		ret = sii902x_read_unlocked(sii902x->i2c, SII902X_SYS_CTRL_DATA,
++					    &status);
++		retries--;
++	} while (ret && retries);
++	if (ret) {
++		dev_err(dev, "failed to read status (%d)\n", ret);
++		return ret;
++	}
++
++	ret = sii902x_update_bits_unlocked(sii902x->i2c, SII902X_SYS_CTRL_DATA,
++					   SII902X_SYS_CTRL_DDC_BUS_REQ |
++					   SII902X_SYS_CTRL_DDC_BUS_GRTD, 0);
++	if (ret)
++		return ret;
++
++	timeout = jiffies +
++		  msecs_to_jiffies(SII902X_I2C_BUS_ACQUISITION_TIMEOUT_MS);
++	do {
++		ret = sii902x_read_unlocked(sii902x->i2c, SII902X_SYS_CTRL_DATA,
++					    &status);
++		if (ret)
++			return ret;
++	} while (status & (SII902X_SYS_CTRL_DDC_BUS_REQ |
++			   SII902X_SYS_CTRL_DDC_BUS_GRTD) &&
++		 time_before(jiffies, timeout));
++
++	if (status & (SII902X_SYS_CTRL_DDC_BUS_REQ |
++		      SII902X_SYS_CTRL_DDC_BUS_GRTD)) {
++		dev_err(dev, "failed to release the i2c bus\n");
++		return -ETIMEDOUT;
++	}
++
++	return 0;
++}
++
+ static int sii902x_probe(struct i2c_client *client,
+ 			 const struct i2c_device_id *id)
+ {
+ 	struct device *dev = &client->dev;
+ 	unsigned int status = 0;
+ 	struct sii902x *sii902x;
++	unsigned char data[2] = { SII902X_CEC_SETUP, 0};
++	struct i2c_msg msg = {
++		.addr	= SII902X_CEC_I2C_ADDR << 1,
++		.flags	= 0,
++		.len	= 2,
++		.buf	= data,
++	};
+ 	u8 chipid[4];
+ 	int ret;
+ 
++	ret = i2c_check_functionality(client->adapter, I2C_FUNC_I2C);
++	if (!ret) {
++		dev_err(dev, "I2C adapter not suitable\n");
++		return -EIO;
++	}
++
+ 	sii902x = devm_kzalloc(dev, sizeof(*sii902x), GFP_KERNEL);
+ 	if (!sii902x)
+ 		return -ENOMEM;
+@@ -392,39 +970,67 @@ static int sii902x_probe(struct i2c_client *client,
+ 		return PTR_ERR(sii902x->reset_gpio);
+ 	}
+ 
++	sii902x->supplies[0].supply = "iovcc";
++	sii902x->supplies[1].supply = "cvcc12";
++	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(sii902x->supplies),
++				      sii902x->supplies);
++	if (ret) {
++		if(ret != -EPROBE_DEFER)
++			dev_err(dev, "regulator_bulk_get failed\n");
++		return ret;
++	}
++
++	ret = regulator_bulk_enable(ARRAY_SIZE(sii902x->supplies),
++				    sii902x->supplies);
++	if (ret) {
++		dev_err(dev, "regulator_bulk_enable failed\n");
++		return ret;
++	}
++
++	pinctrl_pm_select_sleep_state(&sii902x->i2c->dev);
+ 	sii902x_reset(sii902x);
+ 
+ 	ret = regmap_write(sii902x->regmap, SII902X_REG_TPI_RQB, 0x0);
+ 	if (ret)
+-		return ret;
++		goto err_disable_regulator;
+ 
+ 	ret = regmap_bulk_read(sii902x->regmap, SII902X_REG_CHIPID(0),
+ 			       &chipid, 4);
+ 	if (ret) {
+ 		dev_err(dev, "regmap_read failed %d\n", ret);
+-		return ret;
++		goto err_disable_regulator;
+ 	}
+ 
+ 	if (chipid[0] != 0xb0) {
+ 		dev_err(dev, "Invalid chipid: %02x (expecting 0xb0)\n",
+ 			chipid[0]);
+-		return -EINVAL;
++		ret = -EINVAL;
++		goto err_disable_regulator;
+ 	}
+ 
++	/*
++	 * By default, CEC must be disabled to allow other CEC devives
++	 * to bypass the bridge.
++	 */
++	ret = i2c_transfer(client->adapter, &msg, 1);
++	if (ret < 0)
++		dev_warn(&client->dev, "Failed to disable CEC device!\n");
++
+ 	/* Clear all pending interrupts */
+ 	regmap_read(sii902x->regmap, SII902X_INT_STATUS, &status);
+ 	regmap_write(sii902x->regmap, SII902X_INT_STATUS, status);
+ 
+ 	if (client->irq > 0) {
+-		regmap_write(sii902x->regmap, SII902X_INT_ENABLE,
+-			     SII902X_HOTPLUG_EVENT);
++		regmap_update_bits(sii902x->regmap, SII902X_INT_ENABLE,
++				   SII902X_HOTPLUG_EVENT,
++				   SII902X_HOTPLUG_EVENT);
+ 
+ 		ret = devm_request_threaded_irq(dev, client->irq, NULL,
+ 						sii902x_interrupt,
+ 						IRQF_ONESHOT, dev_name(dev),
+ 						sii902x);
+ 		if (ret)
+-			return ret;
++			goto err_disable_regulator;
+ 	}
+ 
+ 	sii902x->bridge.funcs = &sii902x_bridge_funcs;
+@@ -433,7 +1039,31 @@ static int sii902x_probe(struct i2c_client *client,
+ 
+ 	i2c_set_clientdata(client, sii902x);
+ 
++	sii902x->i2cmux = i2c_mux_alloc(client->adapter, dev,
++					1, 0, I2C_MUX_GATE,
++					sii902x_i2c_bypass_select,
++					sii902x_i2c_bypass_deselect);
++	if (!sii902x->i2cmux) {
++		dev_err(dev, "failed to allocate I2C mux\n");
++		return -ENOMEM;
++	}
++
++	sii902x->i2cmux->priv = sii902x;
++	ret = i2c_mux_add_adapter(sii902x->i2cmux, 0, 0, 0);
++	if (ret) {
++		dev_err(dev, "Couldn't add i2c mux adapter\n");
++		return ret;
++	}
++
++	sii902x_register_audio_driver(dev, sii902x);
++
+ 	return 0;
++
++err_disable_regulator:
++	regulator_bulk_disable(ARRAY_SIZE(sii902x->supplies),
++			       sii902x->supplies);
++
++	return ret;
+ }
+ 
+ static int sii902x_remove(struct i2c_client *client)
+@@ -441,11 +1071,76 @@ static int sii902x_remove(struct i2c_client *client)
+ {
+ 	struct sii902x *sii902x = i2c_get_clientdata(client);
+ 
++	if (sii902x->i2cmux)
++		i2c_mux_del_adapters(sii902x->i2cmux);
++
+ 	drm_bridge_remove(&sii902x->bridge);
+ 
++	regulator_bulk_disable(ARRAY_SIZE(sii902x->supplies),
++			       sii902x->supplies);
++
++	return 0;
++}
++
++static int sii902x_pm_suspend(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct sii902x *sii902x = i2c_get_clientdata(client);
++
++	DRM_DEBUG_DRIVER("\n");
++
++	if (sii902x->reset_gpio)
++		gpiod_set_value(sii902x->reset_gpio, 1);
++
++	regulator_bulk_disable(ARRAY_SIZE(sii902x->supplies),
++			       sii902x->supplies);
++
+ 	return 0;
+ }
+ 
++static int sii902x_pm_resume(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct sii902x *sii902x = i2c_get_clientdata(client);
++	unsigned char data[2] = { SII902X_CEC_SETUP, 0};
++	struct i2c_msg msg = {
++		.addr	= SII902X_CEC_I2C_ADDR << 1,
++		.flags	= 0,
++		.len	= 2,
++		.buf	= data,
++	};
++	int ret;
++
++	DRM_DEBUG_DRIVER("\n");
++
++	ret = regulator_bulk_enable(ARRAY_SIZE(sii902x->supplies),
++				    sii902x->supplies);
++	if (ret) {
++		DRM_ERROR("regulator_bulk_enable failed\n");
++		return ret;
++	}
++
++	if (sii902x->reset_gpio)
++		gpiod_set_value(sii902x->reset_gpio, 0);
++
++	regmap_write(sii902x->regmap, SII902X_REG_TPI_RQB, 0x00);
++
++	ret = i2c_transfer(client->adapter, &msg, 1);
++	if (ret < 0)
++		DRM_ERROR("Failed to disable CEC device!\n");
++
++	if (client->irq > 0)
++		regmap_update_bits(sii902x->regmap, SII902X_INT_ENABLE,
++				   SII902X_HOTPLUG_EVENT,
++				   SII902X_HOTPLUG_EVENT);
++
++	return 0;
++}
++
++static const struct dev_pm_ops sii902x_pm_ops = {
++	SET_SYSTEM_SLEEP_PM_OPS(sii902x_pm_suspend, sii902x_pm_resume)
++};
++
+ static const struct of_device_id sii902x_dt_ids[] = {
+ 	{ .compatible = "sil,sii9022", },
+ 	{ }
+@@ -464,6 +1159,7 @@ static struct i2c_driver sii902x_driver = {
+ 	.driver = {
+ 		.name = "sii902x",
+ 		.of_match_table = sii902x_dt_ids,
++		.pm = &sii902x_pm_ops,
+ 	},
+ 	.id_table = sii902x_i2c_ids,
+ };
+diff --git a/drivers/gpu/drm/drm_modes.c b/drivers/gpu/drm/drm_modes.c
+index 02db9ac..d9d9ad9 100644
+--- a/drivers/gpu/drm/drm_modes.c
++++ b/drivers/gpu/drm/drm_modes.c
+@@ -130,7 +130,7 @@ EXPORT_SYMBOL(drm_mode_probed_add);
+  * according to the hdisplay, vdisplay, vrefresh.
+  * It is based from the VESA(TM) Coordinated Video Timing Generator by
+  * Graham Loveridge April 9, 2003 available at
+- * http://www.elo.utfsm.cl/~elo212/docs/CVTd6r1.xls 
++ * http://www.elo.utfsm.cl/~elo212/docs/CVTd6r1.xls
+  *
+  * And it is copied from xf86CVTmode in xserver/hw/xfree86/modes/xf86cvt.c.
+  * What I have done is to translate it by using integer calculation.
+@@ -611,6 +611,15 @@ void drm_display_mode_from_videomode(const struct videomode *vm,
+ 		dmode->flags |= DRM_MODE_FLAG_DBLSCAN;
+ 	if (vm->flags & DISPLAY_FLAGS_DOUBLECLK)
+ 		dmode->flags |= DRM_MODE_FLAG_DBLCLK;
++	if (vm->flags & DISPLAY_FLAGS_PIXDATA_POSEDGE)
++		dmode->flags |= DRM_MODE_FLAG_PPIXDATA;
++	else if (vm->flags & DISPLAY_FLAGS_PIXDATA_NEGEDGE)
++		dmode->flags |= DRM_MODE_FLAG_NPIXDATA;
++	if (vm->flags & DISPLAY_FLAGS_DE_HIGH)
++		dmode->flags |= DRM_MODE_FLAG_PDE;
++	else if (vm->flags & DISPLAY_FLAGS_DE_LOW)
++		dmode->flags |= DRM_MODE_FLAG_NDE;
++
+ 	drm_mode_set_name(dmode);
+ }
+ EXPORT_SYMBOL_GPL(drm_display_mode_from_videomode);
+@@ -652,6 +661,14 @@ void drm_display_mode_to_videomode(const struct drm_display_mode *dmode,
+ 		vm->flags |= DISPLAY_FLAGS_DOUBLESCAN;
+ 	if (dmode->flags & DRM_MODE_FLAG_DBLCLK)
+ 		vm->flags |= DISPLAY_FLAGS_DOUBLECLK;
++	if (dmode->flags & DRM_MODE_FLAG_PPIXDATA)
++		vm->flags |= DISPLAY_FLAGS_PIXDATA_POSEDGE;
++	else if (dmode->flags & DRM_MODE_FLAG_NPIXDATA)
++		vm->flags |= DISPLAY_FLAGS_PIXDATA_NEGEDGE;
++	if (dmode->flags & DRM_MODE_FLAG_PDE)
++		vm->flags |= DISPLAY_FLAGS_DE_HIGH;
++	else if (dmode->flags & DRM_MODE_FLAG_NDE)
++		vm->flags |= DISPLAY_FLAGS_DE_LOW;
+ }
+ EXPORT_SYMBOL_GPL(drm_display_mode_to_videomode);
+ 
+diff --git a/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c b/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c
+index 87fa316..a76d03a 100644
+--- a/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c
++++ b/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c
+@@ -67,15 +67,15 @@ struct otm8009a {
+ };
+ 
+ static const struct drm_display_mode default_mode = {
+-	.clock = 32729,
++	.clock = 33000,
+ 	.hdisplay = 480,
+ 	.hsync_start = 480 + 120,
+-	.hsync_end = 480 + 120 + 63,
+-	.htotal = 480 + 120 + 63 + 120,
++	.hsync_end = 480 + 120 + 64,
++	.htotal = 480 + 120 + 64 + 120,
+ 	.vdisplay = 800,
+-	.vsync_start = 800 + 12,
+-	.vsync_end = 800 + 12 + 12,
+-	.vtotal = 800 + 12 + 12 + 12,
++	.vsync_start = 800 + 14,
++	.vsync_end = 800 + 14 + 14,
++	.vtotal = 800 + 14 + 14 + 14,
+ 	.vrefresh = 50,
+ 	.flags = 0,
+ 	.width_mm = 52,
+diff --git a/drivers/gpu/drm/panel/panel-raydium-rm68200.c b/drivers/gpu/drm/panel/panel-raydium-rm68200.c
+index 7759353..94436ea 100644
+--- a/drivers/gpu/drm/panel/panel-raydium-rm68200.c
++++ b/drivers/gpu/drm/panel/panel-raydium-rm68200.c
+@@ -81,15 +81,15 @@ struct rm68200 {
+ };
+ 
+ static const struct drm_display_mode default_mode = {
+-	.clock = 52582,
++	.clock = 54000,
+ 	.hdisplay = 720,
+-	.hsync_start = 720 + 38,
+-	.hsync_end = 720 + 38 + 8,
+-	.htotal = 720 + 38 + 8 + 38,
++	.hsync_start = 720 + 48,
++	.hsync_end = 720 + 48 + 9,
++	.htotal = 720 + 48 + 9 + 48,
+ 	.vdisplay = 1280,
+ 	.vsync_start = 1280 + 12,
+-	.vsync_end = 1280 + 12 + 4,
+-	.vtotal = 1280 + 12 + 4 + 12,
++	.vsync_end = 1280 + 12 + 5,
++	.vtotal = 1280 + 12 + 5 + 12,
+ 	.vrefresh = 50,
+ 	.flags = 0,
+ 	.width_mm = 68,
+diff --git a/drivers/gpu/drm/stm/drv.c b/drivers/gpu/drm/stm/drv.c
+index f2021b2..cf61875 100644
+--- a/drivers/gpu/drm/stm/drv.c
++++ b/drivers/gpu/drm/stm/drv.c
+@@ -26,7 +26,6 @@
+ 
+ static const struct drm_mode_config_funcs drv_mode_config_funcs = {
+ 	.fb_create = drm_gem_fb_create,
+-	.output_poll_changed = drm_fb_helper_output_poll_changed,
+ 	.atomic_check = drm_atomic_helper_check,
+ 	.atomic_commit = drm_atomic_helper_commit,
+ };
+@@ -52,7 +51,6 @@ DEFINE_DRM_GEM_CMA_FOPS(drv_driver_fops);
+ static struct drm_driver drv_driver = {
+ 	.driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_PRIME |
+ 			   DRIVER_ATOMIC,
+-	.lastclose = drm_fb_helper_lastclose,
+ 	.name = "stm",
+ 	.desc = "STMicroelectronics SoC DRM",
+ 	.date = "20170330",
+@@ -72,6 +70,8 @@ static struct drm_driver drv_driver = {
+ 	.gem_prime_vmap = drm_gem_cma_prime_vmap,
+ 	.gem_prime_vunmap = drm_gem_cma_prime_vunmap,
+ 	.gem_prime_mmap = drm_gem_cma_prime_mmap,
++	.get_scanout_position = ltdc_crtc_scanoutpos,
++	.get_vblank_timestamp = drm_calc_vbltimestamp_from_scanoutpos,
+ };
+ 
+ static int drv_load(struct drm_device *ddev)
+@@ -108,12 +108,6 @@ static int drv_load(struct drm_device *ddev)
+ 	drm_mode_config_reset(ddev);
+ 	drm_kms_helper_poll_init(ddev);
+ 
+-	if (ddev->mode_config.num_connector) {
+-		ret = drm_fb_cma_fbdev_init(ddev, 16, 0);
+-		if (ret)
+-			DRM_DEBUG("Warning: fails to create fbdev\n");
+-	}
+-
+ 	platform_set_drvdata(pdev, ddev);
+ 
+ 	return 0;
+@@ -126,12 +120,43 @@ static void drv_unload(struct drm_device *ddev)
+ {
+ 	DRM_DEBUG("%s\n", __func__);
+ 
+-	drm_fb_cma_fbdev_fini(ddev);
+ 	drm_kms_helper_poll_fini(ddev);
+ 	ltdc_unload(ddev);
+ 	drm_mode_config_cleanup(ddev);
+ }
+ 
++static __maybe_unused int drv_suspend(struct device *dev)
++{
++	struct drm_device *ddev = dev_get_drvdata(dev);
++	struct ltdc_device *ldev = ddev->dev_private;
++	struct drm_atomic_state *state;
++
++	drm_kms_helper_poll_disable(ddev);
++	state = drm_atomic_helper_suspend(ddev);
++	if (IS_ERR(state)) {
++		drm_kms_helper_poll_enable(ddev);
++		return PTR_ERR(state);
++	}
++	ldev->suspend_state = state;
++
++	return 0;
++}
++
++static __maybe_unused int drv_resume(struct device *dev)
++{
++	struct drm_device *ddev = dev_get_drvdata(dev);
++	struct ltdc_device *ldev = ddev->dev_private;
++
++	drm_atomic_helper_resume(ddev, ldev->suspend_state);
++	drm_kms_helper_poll_enable(ddev);
++
++	return 0;
++}
++
++static const struct dev_pm_ops drv_pm_ops = {
++	SET_SYSTEM_SLEEP_PM_OPS(drv_suspend, drv_resume)
++};
++
+ static int stm_drm_platform_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -154,6 +179,8 @@ static int stm_drm_platform_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		goto err_put;
+ 
++	drm_fbdev_generic_setup(ddev, 16);
++
+ 	return 0;
+ 
+ err_put:
+@@ -187,6 +214,7 @@ static struct platform_driver stm_drm_platform_driver = {
+ 	.driver = {
+ 		.name = "stm32-display",
+ 		.of_match_table = drv_dt_ids,
++		.pm = &drv_pm_ops,
+ 	},
+ };
+ 
+diff --git a/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c b/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c
+index a514b59..a6edd86 100644
+--- a/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c
++++ b/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c
+@@ -9,6 +9,7 @@
+ #include <linux/clk.h>
+ #include <linux/iopoll.h>
+ #include <linux/module.h>
++#include <linux/regulator/consumer.h>
+ #include <drm/drmP.h>
+ #include <drm/drm_mipi_dsi.h>
+ #include <drm/bridge/dw_mipi_dsi.h>
+@@ -76,6 +77,7 @@ struct dw_mipi_dsi_stm {
+ 	u32 hw_version;
+ 	int lane_min_kbps;
+ 	int lane_max_kbps;
++	struct regulator *vdd_supply;
+ };
+ 
+ static inline void dsi_write(struct dw_mipi_dsi_stm *dsi, u32 reg, u32 val)
+@@ -318,16 +320,30 @@ static int dw_mipi_dsi_stm_probe(struct platform_device *pdev)
+ 		return PTR_ERR(dsi->base);
+ 	}
+ 
++	dsi->vdd_supply = devm_regulator_get(dev, "phy-dsi");
++	if (IS_ERR(dsi->vdd_supply)) {
++		DRM_ERROR("can't get power supply\n");
++		return PTR_ERR(dsi->vdd_supply);
++	}
++
++	ret = regulator_enable(dsi->vdd_supply);
++	if (ret) {
++		DRM_ERROR("can't enable power supply\n");
++		return ret;
++	}
++
+ 	dsi->pllref_clk = devm_clk_get(dev, "ref");
+ 	if (IS_ERR(dsi->pllref_clk)) {
+ 		ret = PTR_ERR(dsi->pllref_clk);
+ 		dev_err(dev, "Unable to get pll reference clock: %d\n", ret);
++		regulator_disable(dsi->vdd_supply);
+ 		return ret;
+ 	}
+ 
+ 	ret = clk_prepare_enable(dsi->pllref_clk);
+ 	if (ret) {
+ 		dev_err(dev, "%s: Failed to enable pllref_clk\n", __func__);
++		regulator_disable(dsi->vdd_supply);
+ 		return ret;
+ 	}
+ 
+@@ -339,6 +355,7 @@ static int dw_mipi_dsi_stm_probe(struct platform_device *pdev)
+ 	dsi->dsi = dw_mipi_dsi_probe(pdev, &dw_mipi_dsi_stm_plat_data);
+ 	if (IS_ERR(dsi->dsi)) {
+ 		DRM_ERROR("Failed to initialize mipi dsi host\n");
++		regulator_disable(dsi->vdd_supply);
+ 		clk_disable_unprepare(dsi->pllref_clk);
+ 		return PTR_ERR(dsi->dsi);
+ 	}
+@@ -351,17 +368,53 @@ static int dw_mipi_dsi_stm_remove(struct platform_device *pdev)
+ 	struct dw_mipi_dsi_stm *dsi = platform_get_drvdata(pdev);
+ 
+ 	clk_disable_unprepare(dsi->pllref_clk);
++	regulator_disable(dsi->vdd_supply);
+ 	dw_mipi_dsi_remove(dsi->dsi);
+ 
+ 	return 0;
+ }
+ 
++static int __maybe_unused dw_mipi_dsi_stm_suspend(struct device *dev)
++{
++	struct dw_mipi_dsi_stm *dsi = dw_mipi_dsi_stm_plat_data.priv_data;
++
++	DRM_DEBUG_DRIVER("\n");
++
++	clk_disable_unprepare(dsi->pllref_clk);
++	regulator_disable(dsi->vdd_supply);
++
++	return 0;
++}
++
++static int __maybe_unused dw_mipi_dsi_stm_resume(struct device *dev)
++{
++	struct dw_mipi_dsi_stm *dsi = dw_mipi_dsi_stm_plat_data.priv_data;
++	int ret;
++
++	DRM_DEBUG_DRIVER("\n");
++
++	ret = regulator_enable(dsi->vdd_supply);
++	if (ret) {
++		DRM_ERROR("can't enable power supply\n");
++		return ret;
++	}
++	clk_prepare_enable(dsi->pllref_clk);
++
++	return 0;
++}
++
++static const struct dev_pm_ops dw_mipi_dsi_stm_pm_ops = {
++	SET_SYSTEM_SLEEP_PM_OPS(dw_mipi_dsi_stm_suspend,
++				dw_mipi_dsi_stm_resume)
++};
++
+ static struct platform_driver dw_mipi_dsi_stm_driver = {
+ 	.probe		= dw_mipi_dsi_stm_probe,
+ 	.remove		= dw_mipi_dsi_stm_remove,
+ 	.driver		= {
+ 		.of_match_table = dw_mipi_dsi_stm_dt_ids,
+ 		.name	= "stm32-display-dsi",
++		.pm = &dw_mipi_dsi_stm_pm_ops,
+ 	},
+ };
+ 
+diff --git a/drivers/gpu/drm/stm/ltdc.c b/drivers/gpu/drm/stm/ltdc.c
+index 808d9fb..599d2f8 100644
+--- a/drivers/gpu/drm/stm/ltdc.c
++++ b/drivers/gpu/drm/stm/ltdc.c
+@@ -148,6 +148,8 @@
+ #define IER_TERRIE	BIT(2)		/* Transfer ERRor Interrupt Enable */
+ #define IER_RRIE	BIT(3)		/* Register Reload Interrupt enable */
+ 
++#define CPSR_CYPOS	GENMASK(15, 0)	/* Current Y position */
++
+ #define ISR_LIF		BIT(0)		/* Line Interrupt Flag */
+ #define ISR_FUIF	BIT(1)		/* Fifo Underrun Interrupt Flag */
+ #define ISR_TERRIF	BIT(2)		/* Transfer ERRor Interrupt Flag */
+@@ -348,6 +350,33 @@ static inline u32 get_pixelformat_without_alpha(u32 drm)
+ 	}
+ }
+ 
++static int ltdc_power_up(struct ltdc_device *ldev)
++{
++	int ret;
++
++	DRM_DEBUG_DRIVER("\n");
++
++	if (!ldev->power_on) {
++		ret = clk_prepare_enable(ldev->pixel_clk);
++		if (ret) {
++			DRM_ERROR("failed to enable pixel clock (%d)\n",
++				  ret);
++			return ret;
++		}
++		ldev->power_on = true;
++	}
++
++	return 0;
++}
++
++static void ltdc_power_down(struct ltdc_device *ldev)
++{
++	DRM_DEBUG_DRIVER("\n");
++
++	clk_disable_unprepare(ldev->pixel_clk);
++	ldev->power_on = false;
++}
++
+ static irqreturn_t ltdc_irq_thread(int irq, void *arg)
+ {
+ 	struct drm_device *ddev = arg;
+@@ -408,9 +437,14 @@ static void ltdc_crtc_atomic_enable(struct drm_crtc *crtc,
+ 				    struct drm_crtc_state *old_state)
+ {
+ 	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
++	int ret;
+ 
+ 	DRM_DEBUG_DRIVER("\n");
+ 
++	ret = ltdc_power_up(ldev);
++	if (ret)
++		return;
++
+ 	/* Sets the background color value */
+ 	reg_write(ldev->regs, LTDC_BCCR, BCCR_BCBLACK);
+ 
+@@ -443,6 +477,8 @@ static void ltdc_crtc_atomic_disable(struct drm_crtc *crtc,
+ 
+ 	/* immediately commit disable of layers before switching off LTDC */
+ 	reg_set(ldev->regs, LTDC_SRCR, SRCR_IMR);
++
++	ltdc_power_down(ldev);
+ }
+ 
+ #define CLK_TOLERANCE_HZ 50
+@@ -497,13 +533,10 @@ static bool ltdc_crtc_mode_fixup(struct drm_crtc *crtc,
+ 	 * TODO clk_round_rate() does not work yet. When ready, it can
+ 	 * be used instead of clk_set_rate() then clk_get_rate().
+ 	 */
+-
+-	clk_disable(ldev->pixel_clk);
+ 	if (clk_set_rate(ldev->pixel_clk, rate) < 0) {
+ 		DRM_ERROR("Cannot set rate (%dHz) for pixel clk\n", rate);
+ 		return false;
+ 	}
+-	clk_enable(ldev->pixel_clk);
+ 
+ 	adjusted_mode->clock = clk_get_rate(ldev->pixel_clk) / 1000;
+ 
+@@ -518,6 +551,11 @@ static void ltdc_crtc_mode_set_nofb(struct drm_crtc *crtc)
+ 	u32 hsync, vsync, accum_hbp, accum_vbp, accum_act_w, accum_act_h;
+ 	u32 total_width, total_height;
+ 	u32 val;
++	int ret;
++
++	ret = ltdc_power_up(ldev);
++	if (ret)
++		return;
+ 
+ 	drm_display_mode_to_videomode(mode, &vm);
+ 
+@@ -546,10 +584,10 @@ static void ltdc_crtc_mode_set_nofb(struct drm_crtc *crtc)
+ 	if (vm.flags & DISPLAY_FLAGS_VSYNC_HIGH)
+ 		val |= GCR_VSPOL;
+ 
+-	if (vm.flags & DISPLAY_FLAGS_DE_HIGH)
++	if (vm.flags & DISPLAY_FLAGS_DE_LOW)
+ 		val |= GCR_DEPOL;
+ 
+-	if (vm.flags & DISPLAY_FLAGS_PIXDATA_NEGEDGE)
++	if (vm.flags & DISPLAY_FLAGS_PIXDATA_POSEDGE)
+ 		val |= GCR_PCPOL;
+ 
+ 	reg_update_bits(ldev->regs, LTDC_GCR,
+@@ -611,8 +649,14 @@ static const struct drm_crtc_helper_funcs ltdc_crtc_helper_funcs = {
+ static int ltdc_crtc_enable_vblank(struct drm_crtc *crtc)
+ {
+ 	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
++	int ret;
+ 
+ 	DRM_DEBUG_DRIVER("\n");
++
++	ret = ltdc_power_up(ldev);
++	if (ret)
++		return ret;
++
+ 	reg_set(ldev->regs, LTDC_IER, IER_LIE);
+ 
+ 	return 0;
+@@ -623,9 +667,58 @@ static void ltdc_crtc_disable_vblank(struct drm_crtc *crtc)
+ 	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
+ 
+ 	DRM_DEBUG_DRIVER("\n");
++
++	if (!ldev->power_on) {
++		DRM_WARN("power is already down\n");
++		return;
++	}
++
+ 	reg_clear(ldev->regs, LTDC_IER, IER_LIE);
+ }
+ 
++bool ltdc_crtc_scanoutpos(struct drm_device *ddev, unsigned int pipe,
++			  bool in_vblank_irq, int *vpos, int *hpos,
++			  ktime_t *stime, ktime_t *etime,
++			  const struct drm_display_mode *mode)
++{
++	struct ltdc_device *ldev = ddev->dev_private;
++	int line, vactive_start, vactive_end, vtotal;
++
++	if (stime)
++		*stime = ktime_get();
++
++	/* The active area starts after vsync + front porch and ends
++	 * at vsync + front porc + display size.
++	 * The total height also include back porch.
++	 * We have 3 possible cases to handle:
++	 * - line < vactive_start: vpos = line - vactive_start and will be
++	 * negative
++	 * - vactive_start < line < vactive_end: vpos = line - vactive_start
++	 * and will be positive
++	 * - line > vactive_end: vpos = line - vtotal - vactive_start
++	 * and will negative
++	 *
++	 * Computation for the two first cases are identical so we can
++	 * simplify the code and only test if line > vactive_end
++	 */
++	line = reg_read(ldev->regs, LTDC_CPSR) & CPSR_CYPOS;
++	vactive_start = reg_read(ldev->regs, LTDC_BPCR) & BPCR_AVBP;
++	vactive_end = reg_read(ldev->regs, LTDC_AWCR) & AWCR_AAH;
++	vtotal = reg_read(ldev->regs, LTDC_TWCR) & TWCR_TOTALH;
++
++	if (line > vactive_end)
++		*vpos = line - vtotal - vactive_start;
++	else
++		*vpos = line - vactive_start;
++
++	*hpos = 0;
++
++	if (etime)
++		*etime = ktime_get();
++
++	return true;
++}
++
+ static const struct drm_crtc_funcs ltdc_crtc_funcs = {
+ 	.destroy = drm_crtc_cleanup,
+ 	.set_config = drm_atomic_helper_set_config,
+@@ -646,24 +739,44 @@ static int ltdc_plane_atomic_check(struct drm_plane *plane,
+ 				   struct drm_plane_state *state)
+ {
+ 	struct drm_framebuffer *fb = state->fb;
+-	u32 src_x, src_y, src_w, src_h;
++	struct drm_crtc_state *crtc_state;
++	struct drm_rect *src = &state->src;
++	struct drm_rect *dst = &state->dst;
+ 
+ 	DRM_DEBUG_DRIVER("\n");
+ 
+ 	if (!fb)
+ 		return 0;
+ 
+-	/* convert src_ from 16:16 format */
+-	src_x = state->src_x >> 16;
+-	src_y = state->src_y >> 16;
+-	src_w = state->src_w >> 16;
+-	src_h = state->src_h >> 16;
++	/* convert src from 16:16 format */
++	src->x1 = state->src_x >> 16;
++	src->y1 = state->src_y >> 16;
++	src->x2 = (state->src_w >> 16) + src->x1 - 1;
++	src->y2 = (state->src_h >> 16) + src->y1 - 1;
++
++	dst->x1 = state->crtc_x;
++	dst->y1 = state->crtc_y;
++	dst->x2 = state->crtc_w + dst->x1 - 1;
++	dst->y2 = state->crtc_h + dst->y1 - 1;
+ 
+-	/* Reject scaling */
+-	if (src_w != state->crtc_w || src_h != state->crtc_h) {
+-		DRM_ERROR("Scaling is not supported");
++	DRM_DEBUG_DRIVER("plane:%d fb:%d (%dx%d)@(%d,%d) -> (%dx%d)@(%d,%d)\n",
++			 plane->base.id, fb->base.id,
++			 src->x2 - src->x1 + 1, src->y2 - src->y1 + 1,
++			 src->x1, src->y1,
++			 dst->x2 - dst->x1 + 1, dst->y2 - dst->y1 + 1,
++			 dst->x1, dst->y1);
++
++	crtc_state = drm_atomic_get_existing_crtc_state(state->state,
++							state->crtc);
++	/* destination coordinates do not have to exceed display sizes */
++	if (crtc_state && (crtc_state->mode.hdisplay <= dst->x2 ||
++			   crtc_state->mode.vdisplay <= dst->y2))
++		return -EINVAL;
++
++	/* source sizes do not have to exceed destination sizes */
++	if (dst->x2 - dst->x1 < src->x2 - src->x1 ||
++	    dst->y2 - dst->y1 < src->y2 - src->y1)
+ 		return -EINVAL;
+-	}
+ 
+ 	return 0;
+ }
+@@ -673,44 +786,36 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
+ {
+ 	struct ltdc_device *ldev = plane_to_ltdc(plane);
+ 	struct drm_plane_state *state = plane->state;
++	struct drm_rect *src = &state->src;
++	struct drm_rect *dst = &state->dst;
+ 	struct drm_framebuffer *fb = state->fb;
+ 	u32 lofs = plane->index * LAY_OFS;
+-	u32 x0 = state->crtc_x;
+-	u32 x1 = state->crtc_x + state->crtc_w - 1;
+-	u32 y0 = state->crtc_y;
+-	u32 y1 = state->crtc_y + state->crtc_h - 1;
+-	u32 src_x, src_y, src_w, src_h;
+ 	u32 val, pitch_in_bytes, line_length, paddr, ahbp, avbp, bpcr;
+ 	enum ltdc_pix_fmt pf;
++	struct drm_rect dr;
+ 
+ 	if (!state->crtc || !fb) {
+ 		DRM_DEBUG_DRIVER("fb or crtc NULL");
+ 		return;
+ 	}
+ 
+-	/* convert src_ from 16:16 format */
+-	src_x = state->src_x >> 16;
+-	src_y = state->src_y >> 16;
+-	src_w = state->src_w >> 16;
+-	src_h = state->src_h >> 16;
+-
+-	DRM_DEBUG_DRIVER("plane:%d fb:%d (%dx%d)@(%d,%d) -> (%dx%d)@(%d,%d)\n",
+-			 plane->base.id, fb->base.id,
+-			 src_w, src_h, src_x, src_y,
+-			 state->crtc_w, state->crtc_h,
+-			 state->crtc_x, state->crtc_y);
++	/* compute final coordinates of frame buffer */
++	dr.x1 = src->x1 + dst->x1;
++	dr.y1 = src->y1 + dst->y1;
++	dr.x2 = src->x2 + dst->x1;
++	dr.y2 = src->y2 + dst->y1;
+ 
+ 	bpcr = reg_read(ldev->regs, LTDC_BPCR);
+ 	ahbp = (bpcr & BPCR_AHBP) >> 16;
+ 	avbp = bpcr & BPCR_AVBP;
+ 
+ 	/* Configures the horizontal start and stop position */
+-	val = ((x1 + 1 + ahbp) << 16) + (x0 + 1 + ahbp);
++	val = ((dr.x2 + 1 + ahbp) << 16) + (dr.x1 + 1 + ahbp);
+ 	reg_update_bits(ldev->regs, LTDC_L1WHPCR + lofs,
+ 			LXWHPCR_WHSTPOS | LXWHPCR_WHSPPOS, val);
+ 
+ 	/* Configures the vertical start and stop position */
+-	val = ((y1 + 1 + avbp) << 16) + (y0 + 1 + avbp);
++	val = ((dr.y2 + 1 + avbp) << 16) + (dr.y1 + 1 + avbp);
+ 	reg_update_bits(ldev->regs, LTDC_L1WVPCR + lofs,
+ 			LXWVPCR_WVSTPOS | LXWVPCR_WVSPPOS, val);
+ 
+@@ -730,7 +835,7 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
+ 	/* Configures the color frame buffer pitch in bytes & line length */
+ 	pitch_in_bytes = fb->pitches[0];
+ 	line_length = drm_format_plane_cpp(fb->format->format, 0) *
+-		      (x1 - x0 + 1) + (ldev->caps.bus_width >> 3) - 1;
++		      (dr.x2 - dr.x1 + 1) + (ldev->caps.bus_width >> 3) - 1;
+ 	val = ((pitch_in_bytes << 16) | line_length);
+ 	reg_update_bits(ldev->regs, LTDC_L1CFBLR + lofs,
+ 			LXCFBLR_CFBLL | LXCFBLR_CFBP, val);
+@@ -753,7 +858,7 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
+ 			LXBFCR_BF2 | LXBFCR_BF1, val);
+ 
+ 	/* Configures the frame buffer line number */
+-	val = y1 - y0 + 1;
++	val = dr.y2 - dr.y1 + 1;
+ 	reg_update_bits(ldev->regs, LTDC_L1CFBLNR + lofs, LXCFBLNR_CFBLN, val);
+ 
+ 	/* Sets the FB address */
+@@ -772,11 +877,11 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
+ 
+ 	mutex_lock(&ldev->err_lock);
+ 	if (ldev->error_status & ISR_FUIF) {
+-		DRM_DEBUG_DRIVER("Fifo underrun\n");
++		DRM_WARN("ltdc fifo underrun: please verify display mode\n");
+ 		ldev->error_status &= ~ISR_FUIF;
+ 	}
+ 	if (ldev->error_status & ISR_TERRIF) {
+-		DRM_DEBUG_DRIVER("Transfer error\n");
++		DRM_WARN("ltdc transfer error\n");
+ 		ldev->error_status &= ~ISR_TERRIF;
+ 	}
+ 	mutex_unlock(&ldev->err_lock);
+@@ -1055,10 +1160,10 @@ int ltdc_load(struct drm_device *ddev)
+ 		return -ENODEV;
+ 	}
+ 
+-	if (clk_prepare_enable(ldev->pixel_clk)) {
+-		DRM_ERROR("Unable to prepare pixel clock\n");
+-		return -ENODEV;
+-	}
++	ldev->power_on = false;
++	ret = ltdc_power_up(ldev);
++	if (ret)
++		return ret;
+ 
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+ 	ldev->regs = devm_ioremap_resource(dev, res);
+@@ -1150,7 +1255,7 @@ int ltdc_load(struct drm_device *ddev)
+ 	for (i = 0; i < MAX_ENDPOINTS; i++)
+ 		drm_panel_bridge_remove(bridge[i]);
+ 
+-	clk_disable_unprepare(ldev->pixel_clk);
++	ltdc_power_down(ldev);
+ 
+ 	return ret;
+ }
+@@ -1165,7 +1270,7 @@ void ltdc_unload(struct drm_device *ddev)
+ 	for (i = 0; i < MAX_ENDPOINTS; i++)
+ 		drm_of_panel_bridge_remove(ddev->dev->of_node, 0, i);
+ 
+-	clk_disable_unprepare(ldev->pixel_clk);
++	ltdc_power_down(ldev);
+ }
+ 
+ MODULE_AUTHOR("Philippe Cornu <philippe.cornu@st.com>");
+diff --git a/drivers/gpu/drm/stm/ltdc.h b/drivers/gpu/drm/stm/ltdc.h
+index d5afb89..08bd69d 100644
+--- a/drivers/gpu/drm/stm/ltdc.h
++++ b/drivers/gpu/drm/stm/ltdc.h
+@@ -36,8 +36,14 @@ struct ltdc_device {
+ 	u32 error_status;
+ 	u32 irq_status;
+ 	struct fps_info plane_fpsi[LTDC_MAX_LAYER];
++	struct drm_atomic_state *suspend_state;
++	bool power_on;
+ };
+ 
++bool ltdc_crtc_scanoutpos(struct drm_device *dev, unsigned int pipe,
++			  bool in_vblank_irq, int *vpos, int *hpos,
++			  ktime_t *stime, ktime_t *etime,
++			  const struct drm_display_mode *mode);
+ int ltdc_load(struct drm_device *ddev);
+ void ltdc_unload(struct drm_device *ddev);
+ 
+diff --git a/include/uapi/drm/drm_mode.h b/include/uapi/drm/drm_mode.h
+index 8d67243..c20c4c3 100644
+--- a/include/uapi/drm/drm_mode.h
++++ b/include/uapi/drm/drm_mode.h
+@@ -89,6 +89,12 @@ extern "C" {
+ #define  DRM_MODE_FLAG_3D_TOP_AND_BOTTOM	(7<<14)
+ #define  DRM_MODE_FLAG_3D_SIDE_BY_SIDE_HALF	(8<<14)
+ 
++/* flags for polarity clock & data enable polarities */
++#define DRM_MODE_FLAG_PPIXDATA			(1 << 19)
++#define DRM_MODE_FLAG_NPIXDATA			(1 << 20)
++#define DRM_MODE_FLAG_PDE			(1 << 21)
++#define DRM_MODE_FLAG_NDE			(1 << 22)
++
+ /* Picture aspect ratio options */
+ #define DRM_MODE_PICTURE_ASPECT_NONE		0
+ #define DRM_MODE_PICTURE_ASPECT_4_3		1
+-- 
+2.7.4
+

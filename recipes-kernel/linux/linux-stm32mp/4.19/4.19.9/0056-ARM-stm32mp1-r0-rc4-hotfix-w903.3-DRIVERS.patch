@@ -1,0 +1,554 @@
+From b6678ec426d7dbc5248a2d98c0c2c7a5b55e4d5f Mon Sep 17 00:00:00 2001
+From: christophe montaud <christophe.montaud@st.com>
+Date: Wed, 16 Jan 2019 17:51:05 +0100
+Subject: [PATCH 56/58] ARM stm32mp1 r0 rc4 hotfix w903.3 DRIVERS
+
+---
+ drivers/clk/clk-stm32mp1.c       | 142 ++++++++++++++++++++--------------
+ drivers/i2c/busses/i2c-stm32f7.c |  33 +++++++-
+ drivers/irqchip/irq-stm32-exti.c | 160 +++++++++++++++++++++++++--------------
+ kernel/power/suspend.c           |   1 -
+ 4 files changed, 218 insertions(+), 118 deletions(-)
+
+diff --git a/drivers/clk/clk-stm32mp1.c b/drivers/clk/clk-stm32mp1.c
+index 7eccaa1..56d7b86 100644
+--- a/drivers/clk/clk-stm32mp1.c
++++ b/drivers/clk/clk-stm32mp1.c
+@@ -2215,8 +2215,8 @@ static const struct stm32_mux_cfg ker_mux_cfg[M_LAST] = {
+ 
+ static const struct clock_config stm32mp1_clock_cfg[] = {
+ 	/* Oscillator divider */
+-	DIV(NO_ID, "clk-hsi-div", "clk-hsi", 0, RCC_HSICFGR, 0, 2,
+-	    CLK_DIVIDER_READ_ONLY),
++	DIV(NO_ID, "clk-hsi-div", "clk-hsi", CLK_DIVIDER_POWER_OF_TWO,
++	    RCC_HSICFGR, 0, 2, CLK_DIVIDER_READ_ONLY),
+ 
+ 	/*  External / Internal Oscillators */
+ 	SGATE_MP1(CK_HSE, "ck_hse", "clk-hse", 0, RCC_OCENSETR, 8, 0),
+@@ -2517,11 +2517,10 @@ static const struct clock_config stm32mp1_clock_cfg[] = {
+ 		  CLK_SET_RATE_NO_REPARENT,
+ 		  _NO_GATE,
+ 		  _MMUX(M_ETHCK),
+-		  _DIV(RCC_ETHCKSELR, 4, 4, CLK_DIVIDER_ALLOW_ZERO, NULL)),
++		  _DIV(RCC_ETHCKSELR, 4, 4, 0, NULL)),
+ 
+ 	/* RTC clock */
+-	SDIV(NO_ID, "ck_hse_rtc", "ck_hse", 0, RCC_RTCDIVR, 0, 7,
+-	     CLK_DIVIDER_ALLOW_ZERO),
++	SDIV(NO_ID, "ck_hse_rtc", "ck_hse", 0, RCC_RTCDIVR, 0, 6, 0),
+ 
+ 	COMPOSITE(RTC, "ck_rtc", rtc_src, CLK_OPS_PARENT_ENABLE |
+ 		   CLK_SET_RATE_PARENT,
+@@ -2724,52 +2723,53 @@ static struct sreg clock_gating[] = {
+ };
+ 
+ struct smux {
+-	const char *name;
+-	struct clk *clk;
+-	struct clk *clkp;
++	u32 clk_id;
++	u32 mux_id;
++	struct clk_hw *hw;
+ };
+ 
+-#define KER_SRC(_clk_name)\
++#define KER_SRC(_clk_id, _mux_id)\
+ {\
+-	.name = _clk_name,\
+-}
+-
+-struct smux _mux_kernel[] = {
+-	KER_SRC("sdmmc1_k"),
+-	KER_SRC("spi2_k"),
+-	KER_SRC("spi4_k"),
+-	KER_SRC("i2c1_k"),
+-	KER_SRC("i2c3_k"),
+-	KER_SRC("lptim2_k"),
+-	KER_SRC("lptim3_k"),
+-	KER_SRC("usart2_k"),
+-	KER_SRC("usart3_k"),
+-	KER_SRC("uart7_k"),
+-	KER_SRC("sai1_k"),
+-	KER_SRC("ethck_k"),
+-	KER_SRC("i2c4_k"),
+-	KER_SRC("rng2_k"),
+-	KER_SRC("sdmmc3_k"),
+-	KER_SRC("fmc_k"),
+-	KER_SRC("qspi_k"),
+-	KER_SRC("usbphy_k"),
+-	KER_SRC("usbo_k"),
+-	KER_SRC("spdif_k"),
+-	KER_SRC("spi1_k"),
+-	KER_SRC("cec_k"),
+-	KER_SRC("lptim1_k"),
+-	KER_SRC("uart6_k"),
+-	KER_SRC("fdcan_k"),
+-	KER_SRC("sai2_k"),
+-	KER_SRC("sai3_k"),
+-	KER_SRC("sai4_k"),
+-	KER_SRC("adc12_k"),
+-	KER_SRC("dsi_k"),
+-	KER_SRC("ck_per"),
+-	KER_SRC("rng1_k"),
+-	KER_SRC("stgen_k"),
+-	KER_SRC("usart1_k"),
+-	KER_SRC("spi6_k"),
++	.clk_id = _clk_id,\
++	.mux_id = _mux_id,\
++}
++
++struct smux _mux_kernel[M_LAST] = {
++	KER_SRC(SDMMC1_K, M_SDMMC12),
++	KER_SRC(SDMMC3_K, M_SDMMC3),
++	KER_SRC(FMC_K, M_FMC),
++	KER_SRC(QSPI_K, M_QSPI),
++	KER_SRC(RNG1_K, M_RNG1),
++	KER_SRC(RNG2_K, M_RNG2),
++	KER_SRC(USBPHY_K, M_USBPHY),
++	KER_SRC(USBO_K, M_USBO),
++	KER_SRC(STGEN_K, M_STGEN),
++	KER_SRC(SPDIF_K, M_SPDIF),
++	KER_SRC(SPI1_K, M_SPI1),
++	KER_SRC(SPI2_K, M_SPI23),
++	KER_SRC(SPI4_K, M_SPI45),
++	KER_SRC(SPI6_K, M_SPI6),
++	KER_SRC(CEC_K, M_CEC),
++	KER_SRC(I2C1_K, M_I2C12),
++	KER_SRC(I2C3_K, M_I2C35),
++	KER_SRC(I2C4_K, M_I2C46),
++	KER_SRC(LPTIM1_K, M_LPTIM1),
++	KER_SRC(LPTIM2_K, M_LPTIM23),
++	KER_SRC(LPTIM4_K, M_LPTIM45),
++	KER_SRC(USART1_K, M_USART1),
++	KER_SRC(USART2_K, M_UART24),
++	KER_SRC(USART3_K, M_UART35),
++	KER_SRC(USART6_K, M_USART6),
++	KER_SRC(UART7_K, M_UART78),
++	KER_SRC(SAI1_K, M_SAI1),
++	KER_SRC(SAI2_K, M_SAI2),
++	KER_SRC(SAI3_K, M_SAI3),
++	KER_SRC(SAI4_K, M_SAI4),
++	KER_SRC(DSI_K, M_DSI),
++	KER_SRC(FDCAN_K, M_FDCAN),
++	KER_SRC(ADC12_K, M_ADC12),
++	KER_SRC(ETHCK_K, M_ETHCK),
++	KER_SRC(CK_PER, M_CKPER),
+ };
+ 
+ static struct sreg pll_clock[] = {
+@@ -2861,22 +2861,52 @@ static void stm32mp1_restore_pll(struct sreg *sreg, int size)
+ 	}
+ }
+ 
+-static void stm32mp1_backup_mux(struct smux *smux, int size)
++static void stm32mp1_backup_mux(struct device_node *np,
++				struct smux *smux, int size)
+ {
+ 	int i;
++	struct of_phandle_args clkspec;
++
++	clkspec.np = np;
++	clkspec.args_count = 1;
+ 
+ 	for (i = 0; i < size; i++) {
+-		smux[i].clk = __clk_lookup(smux[i].name);
+-		smux[i].clkp = clk_get_parent(smux[i].clk);
++		clkspec.args[0] = smux[i].clk_id;
++		smux[i].hw = __clk_get_hw(of_clk_get_from_provider(&clkspec));
+ 	}
+ }
+ 
+ static void stm32mp1_restore_mux(struct smux *smux, int size)
+ {
+ 	int i;
++	struct clk_hw *hw, *hwp1, *hwp2;
++	struct mux_cfg *mux;
++	u8 idx;
+ 
+-	for (i = 0; i < size; i++)
+-		clk_set_parent_force(smux[i].clk, smux[i].clkp);
++	/* These MUX are glitch free.
++	 * Then we have to restore mux thru clock framework
++	 * to be sure that CLK_OPS_PARENT_ENABLE will be exploited
++	 */
++	for (i = 0; i < M_LAST; i++) {
++		/* get parent strored in clock framework */
++		hw = smux[i].hw;
++		hwp1 = clk_hw_get_parent(hw);
++
++		/* Get parent corresponding to mux register */
++		mux = ker_mux_cfg[smux[i].mux_id].mux;
++		idx = readl_relaxed(rcc_base + mux->reg_off) >> mux->shift;
++		idx &= (BIT(mux->width) - 1);
++		hwp2 = clk_hw_get_parent_by_index(hw, idx);
++
++		/* check if parent from mux & clock framework are differents */
++		if (hwp1 != hwp2) {
++			/* update first clock framework with the true parent */
++			clk_set_parent(hw->clk, hwp2->clk);
++
++			/* Restore now new parent */
++			clk_set_parent(hw->clk, hwp1->clk);
++		}
++	}
+ }
+ 
+ #define RCC_BIT_HSI	0
+@@ -2900,9 +2930,6 @@ static int stm32mp1_clk_suspend(void)
+ 	/* Save clock gating regs */
+ 	stm32mp1_backup_sreg(clock_gating, ARRAY_SIZE(clock_gating));
+ 
+-	/* Save kernel clock regs */
+-	stm32mp1_backup_mux(_mux_kernel, ARRAY_SIZE(_mux_kernel));
+-
+ 	/* Enable ck_xxx_ker clocks if ck_xxx was on */
+ 	reg = readl_relaxed(rcc_base + RCC_OCENSETR) & RCC_CK_OSC_MASK;
+ 	writel_relaxed(reg << 1, rcc_base + RCC_OCENSETR);
+@@ -2970,6 +2997,9 @@ static int stm32_rcc_init_pwr(struct device_node *np)
+ 
+ 	SMC(STM32_SVC_RCC, STM32_WRITE, RCC_SREQCLRR, RCC_STOP_MASK);
+ 
++	/* Prepare kernel clock source backup */
++	stm32mp1_backup_mux(np, _mux_kernel, ARRAY_SIZE(_mux_kernel));
++
+ 	register_syscore_ops(&stm32mp1_clk_ops);
+ 
+ 	return 0;
+diff --git a/drivers/i2c/busses/i2c-stm32f7.c b/drivers/i2c/busses/i2c-stm32f7.c
+index ac30aea..3af2637 100644
+--- a/drivers/i2c/busses/i2c-stm32f7.c
++++ b/drivers/i2c/busses/i2c-stm32f7.c
+@@ -978,6 +978,26 @@ static int stm32f7_i2c_smbus_xfer_msg(struct stm32f7_i2c_dev *i2c_dev,
+ 		cr2 &= ~STM32F7_I2C_CR2_RD_WRN;
+ 		f7_msg->read_write = I2C_SMBUS_READ;
+ 		break;
++	case I2C_SMBUS_I2C_BLOCK_DATA:
++		if (data->block[0] > I2C_SMBUS_BLOCK_MAX) {
++			dev_err(dev, "Invalid block %s size %d\n",
++				f7_msg->read_write == I2C_SMBUS_READ ?
++				"read" : "write",
++				data->block[0]);
++			return -EINVAL;
++		}
++
++		if (f7_msg->read_write) {
++			f7_msg->stop = false;
++			f7_msg->count = data->block[0];
++			cr2 &= ~STM32F7_I2C_CR2_RD_WRN;
++		} else {
++			f7_msg->stop = true;
++			f7_msg->count = data->block[0] + 1;
++			for (i = 1; i <= data->block[0]; i++)
++				f7_msg->smbus_buf[i] = data->block[i];
++		}
++		break;
+ 	default:
+ 		dev_err(dev, "Unsupported smbus protocol %d\n", f7_msg->size);
+ 		return -EOPNOTSUPP;
+@@ -986,7 +1006,8 @@ static int stm32f7_i2c_smbus_xfer_msg(struct stm32f7_i2c_dev *i2c_dev,
+ 	f7_msg->buf = f7_msg->smbus_buf;
+ 
+ 	/* Configure PEC */
+-	if ((flags & I2C_CLIENT_PEC) && f7_msg->size != I2C_SMBUS_QUICK) {
++	if ((flags & I2C_CLIENT_PEC) && f7_msg->size != I2C_SMBUS_QUICK &&
++	    f7_msg->size != I2C_SMBUS_I2C_BLOCK_DATA) {
+ 		cr1 |= STM32F7_I2C_CR1_PECEN;
+ 		cr2 |= STM32F7_I2C_CR2_PECBYTE;
+ 		if (!f7_msg->read_write)
+@@ -1655,7 +1676,8 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
+ 	}
+ 
+ 	/* Check PEC */
+-	if ((flags & I2C_CLIENT_PEC) && size != I2C_SMBUS_QUICK && read_write) {
++	if ((flags & I2C_CLIENT_PEC) && size != I2C_SMBUS_QUICK &&
++	    size != I2C_SMBUS_I2C_BLOCK_DATA && read_write) {
+ 		ret = stm32f7_i2c_smbus_check_pec(i2c_dev);
+ 		if (ret)
+ 			goto pm_free;
+@@ -1672,6 +1694,10 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
+ 			data->word = f7_msg->smbus_buf[0] |
+ 				(f7_msg->smbus_buf[1] << 8);
+ 		break;
++		case I2C_SMBUS_I2C_BLOCK_DATA:
++		for (i = 0; i < data->block[0]; i++)
++			data->block[i + 1] = f7_msg->smbus_buf[i];
++		break;
+ 		case I2C_SMBUS_BLOCK_DATA:
+ 		case I2C_SMBUS_BLOCK_PROC_CALL:
+ 		for (i = 0; i <= f7_msg->smbus_buf[0]; i++)
+@@ -1854,7 +1880,8 @@ static u32 stm32f7_i2c_func(struct i2c_adapter *adap)
+ 		I2C_FUNC_SMBUS_QUICK | I2C_FUNC_SMBUS_BYTE |
+ 		I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA |
+ 		I2C_FUNC_SMBUS_BLOCK_DATA | I2C_FUNC_SMBUS_BLOCK_PROC_CALL |
+-		I2C_FUNC_SMBUS_PROC_CALL | I2C_FUNC_SMBUS_PEC;
++		I2C_FUNC_SMBUS_PROC_CALL | I2C_FUNC_SMBUS_PEC |
++		I2C_FUNC_SMBUS_I2C_BLOCK;
+ }
+ 
+ static struct i2c_algorithm stm32f7_i2c_algo = {
+diff --git a/drivers/irqchip/irq-stm32-exti.c b/drivers/irqchip/irq-stm32-exti.c
+index 223ee2e..793be075a 100644
+--- a/drivers/irqchip/irq-stm32-exti.c
++++ b/drivers/irqchip/irq-stm32-exti.c
+@@ -14,8 +14,10 @@
+ #include <linux/irqchip.h>
+ #include <linux/irqchip/chained_irq.h>
+ #include <linux/irqdomain.h>
++#include <linux/module.h>
+ #include <linux/of_address.h>
+ #include <linux/of_irq.h>
++#include <linux/of_platform.h>
+ #include <linux/syscore_ops.h>
+ 
+ #include <dt-bindings/interrupt-controller/arm-gic.h>
+@@ -37,12 +39,6 @@ struct stm32_exti_bank {
+ 
+ #define UNDEF_REG ~0
+ 
+-enum stm32_exti_hwspinlock {
+-	HWSPINLOCK_UNKNOWN,
+-	HWSPINLOCK_NONE,
+-	HWSPINLOCK_READY,
+-};
+-
+ struct stm32_desc_irq {
+ 	u32 exti;
+ 	u32 irq_parent;
+@@ -69,8 +65,6 @@ struct stm32_exti_host_data {
+ 	void __iomem *base;
+ 	struct stm32_exti_chip_data *chips_data;
+ 	const struct stm32_exti_drv_data *drv_data;
+-	struct device_node *node;
+-	enum stm32_exti_hwspinlock hwlock_state;
+ 	struct hwspinlock *hwlock;
+ };
+ 
+@@ -285,49 +279,27 @@ static int stm32_exti_set_type(struct irq_data *d,
+ 
+ static int stm32_exti_hwspin_lock(struct stm32_exti_chip_data *chip_data)
+ {
+-	struct stm32_exti_host_data *host_data = chip_data->host_data;
+-	struct hwspinlock *hwlock;
+-	int id, ret = 0, timeout = 0;
+-
+-	/* first time, check for hwspinlock availability */
+-	if (unlikely(host_data->hwlock_state == HWSPINLOCK_UNKNOWN)) {
+-		id = of_hwspin_lock_get_id(host_data->node, 0);
+-		if (id >= 0) {
+-			hwlock = hwspin_lock_request_specific(id);
+-			if (hwlock) {
+-				/* found valid hwspinlock */
+-				host_data->hwlock_state = HWSPINLOCK_READY;
+-				host_data->hwlock = hwlock;
+-				pr_debug("%s hwspinlock = %d\n", __func__, id);
+-			} else {
+-				host_data->hwlock_state = HWSPINLOCK_NONE;
+-			}
+-		} else if (id != -EPROBE_DEFER) {
+-			host_data->hwlock_state = HWSPINLOCK_NONE;
+-		} else {
+-			/* hwspinlock driver shall be ready at that stage */
+-			ret = -EPROBE_DEFER;
+-		}
+-	}
++	int ret, timeout = 0;
+ 
+-	if (likely(host_data->hwlock_state == HWSPINLOCK_READY)) {
+-		/*
+-		 * Use the x_raw API since we are under spin_lock protection.
+-		 * Do not use the x_timeout API because we are under irq_disable
+-		 * mode (see __setup_irq())
+-		 */
+-		do {
+-			ret = hwspin_trylock_raw(host_data->hwlock);
+-			if (!ret)
+-				return 0;
+-
+-			udelay(HWSPNLCK_RETRY_DELAY);
+-			timeout += HWSPNLCK_RETRY_DELAY;
+-		} while (timeout < HWSPNLCK_TIMEOUT);
+-
+-		if (ret == -EBUSY)
+-			ret = -ETIMEDOUT;
+-	}
++	if (!chip_data->host_data->hwlock)
++		return 0;
++
++	/*
++	 * Use the x_raw API since we are under spin_lock protection.
++	 * Do not use the x_timeout API because we are under irq_disable
++	 * mode (see __setup_irq())
++	 */
++	do {
++		ret = hwspin_trylock_raw(chip_data->host_data->hwlock);
++		if (!ret)
++			return 0;
++
++		udelay(HWSPNLCK_RETRY_DELAY);
++		timeout += HWSPNLCK_RETRY_DELAY;
++	} while (timeout < HWSPNLCK_TIMEOUT);
++
++	if (ret == -EBUSY)
++		ret = -ETIMEDOUT;
+ 
+ 	if (ret)
+ 		pr_err("%s can't get hwspinlock (%d)\n", __func__, ret);
+@@ -337,7 +309,7 @@ static int stm32_exti_hwspin_lock(struct stm32_exti_chip_data *chip_data)
+ 
+ static void stm32_exti_hwspin_unlock(struct stm32_exti_chip_data *chip_data)
+ {
+-	if (likely(chip_data->host_data->hwlock_state == HWSPINLOCK_READY))
++	if (chip_data->host_data->hwlock)
+ 		hwspin_unlock_raw(chip_data->host_data->hwlock);
+ }
+ 
+@@ -710,8 +682,6 @@ stm32_exti_host_data *stm32_exti_host_init(const struct stm32_exti_drv_data *dd,
+ 		return NULL;
+ 
+ 	host_data->drv_data = dd;
+-	host_data->node = node;
+-	host_data->hwlock_state = HWSPINLOCK_UNKNOWN;
+ 	host_data->chips_data = kcalloc(dd->bank_nr,
+ 					sizeof(struct stm32_exti_chip_data),
+ 					GFP_KERNEL);
+@@ -738,7 +708,8 @@ stm32_exti_host_data *stm32_exti_host_init(const struct stm32_exti_drv_data *dd,
+ 
+ static struct
+ stm32_exti_chip_data *stm32_exti_chip_init(struct stm32_exti_host_data *h_data,
+-					   u32 bank_idx)
++					   u32 bank_idx,
++					   struct device_node *node)
+ {
+ 	const struct stm32_exti_bank *stm32_bank;
+ 	struct stm32_exti_chip_data *chip_data;
+@@ -758,7 +729,7 @@ stm32_exti_chip_data *stm32_exti_chip_init(struct stm32_exti_host_data *h_data,
+ 	writel_relaxed(0, base + stm32_bank->imr_ofst);
+ 	writel_relaxed(0, base + stm32_bank->emr_ofst);
+ 
+-	pr_info("%pOF: bank%d\n", h_data->node, bank_idx);
++	pr_info("%pOF: bank%d\n", node, bank_idx);
+ 
+ 	return chip_data;
+ }
+@@ -798,7 +769,7 @@ static int __init stm32_exti_init(const struct stm32_exti_drv_data *drv_data,
+ 		struct stm32_exti_chip_data *chip_data;
+ 
+ 		stm32_bank = drv_data->exti_banks[i];
+-		chip_data = stm32_exti_chip_init(host_data, i);
++		chip_data = stm32_exti_chip_init(host_data, i, node);
+ 
+ 		gc = irq_get_domain_generic_chip(domain, i * IRQS_PER_BANK);
+ 
+@@ -880,7 +851,7 @@ __init stm32_exti_hierarchy_init(const struct stm32_exti_drv_data *drv_data,
+ 		return -ENOMEM;
+ 
+ 	for (i = 0; i < drv_data->bank_nr; i++)
+-		stm32_exti_chip_init(host_data, i);
++		stm32_exti_chip_init(host_data, i, node);
+ 
+ 	domain = irq_domain_add_hierarchy(parent_domain, 0,
+ 					  drv_data->bank_nr * IRQS_PER_BANK,
+@@ -938,6 +909,71 @@ __init stm32_exti_hierarchy_init(const struct stm32_exti_drv_data *drv_data,
+ 	return ret;
+ }
+ 
++/* Note : stm32_exti_probe() is called after stm32*_exti_of_init() */
++static int stm32_exti_probe(struct platform_device *pdev)
++{
++	int id, ret = 0;
++
++	id = of_hwspin_lock_get_id(pdev->dev.of_node, 0);
++
++	if (id == -EPROBE_DEFER)
++		/* hwspinlock framework not ready */
++		return -EPROBE_DEFER;
++
++	if (id == -ENOENT)
++		/* no hwspinlock defined (not an error, it is optional) */
++		return 0;
++
++	if (id >= 0) {
++		stm32_host_data->hwlock = hwspin_lock_request_specific(id);
++		if (!stm32_host_data->hwlock) {
++			dev_err(&pdev->dev, "Failed to request hwspinlock\n");
++			ret = -EINVAL;
++		}
++	} else {
++		dev_err(&pdev->dev, "Failed to get hwspinlock\n");
++		ret = id;
++	}
++
++	return ret;
++}
++
++static int stm32_exti_remove(struct platform_device *pdev)
++{
++	if (stm32_host_data->hwlock)
++		return hwspin_lock_free(stm32_host_data->hwlock);
++
++	return 0;
++}
++
++static const struct of_device_id stm32_exti_ids[] = {
++	{ .compatible = "st,stm32mp1-exti", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, stm32_exti_ids);
++
++static struct platform_driver stm32_exti_driver = {
++	.probe		= stm32_exti_probe,
++	.remove		= stm32_exti_remove,
++	.driver		= {
++		.name	= "stm32_exti",
++		.of_match_table = stm32_exti_ids,
++	},
++};
++
++static int __init stm32_exti_arch_init(void)
++{
++	return platform_driver_register(&stm32_exti_driver);
++}
++
++static void __exit stm32_exti_arch_exit(void)
++{
++	return platform_driver_unregister(&stm32_exti_driver);
++}
++
++arch_initcall(stm32_exti_arch_init);
++module_exit(stm32_exti_arch_exit);
++
+ static int __init stm32f4_exti_of_init(struct device_node *np,
+ 				       struct device_node *parent)
+ {
+@@ -957,7 +993,15 @@ IRQCHIP_DECLARE(stm32h7_exti, "st,stm32h7-exti", stm32h7_exti_of_init);
+ static int __init stm32mp1_exti_of_init(struct device_node *np,
+ 					struct device_node *parent)
+ {
+-	return stm32_exti_hierarchy_init(&stm32mp1_drv_data, np, parent);
++	int ret;
++
++	ret = stm32_exti_hierarchy_init(&stm32mp1_drv_data, np, parent);
++
++	/* Clear the OF_POPULATED flag so that stm32_exti_probe can be called */
++	if (!ret)
++		of_node_clear_flag(np, OF_POPULATED);
++
++	return ret;
+ }
+ 
+ IRQCHIP_DECLARE(stm32mp1_exti, "st,stm32mp1-exti", stm32mp1_exti_of_init);
+diff --git a/kernel/power/suspend.c b/kernel/power/suspend.c
+index 0bd595a..64f6aec 100644
+--- a/kernel/power/suspend.c
++++ b/kernel/power/suspend.c
+@@ -36,7 +36,6 @@
+ #include "power.h"
+ 
+ const char * const pm_labels[] = {
+-	[PM_SUSPEND_TO_IDLE] = "freeze",
+ 	[PM_SUSPEND_STANDBY] = "standby",
+ 	[PM_SUSPEND_MEM] = "mem",
+ };
+-- 
+2.7.4
+

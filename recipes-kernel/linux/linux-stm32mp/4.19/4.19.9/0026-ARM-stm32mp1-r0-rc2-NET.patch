@@ -1,0 +1,273 @@
+From f03da721a19075ead436b2edbe4c4080feb8dac8 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@st.com>
+Date: Mon, 26 Nov 2018 14:44:24 +0100
+Subject: [PATCH 26/52] ARM-stm32mp1-r0-rc2-NET
+
+---
+ .../devicetree/bindings/net/stm32-dwmac.txt        |   6 +-
+ drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c  | 102 +++++++++++++++++----
+ .../net/ethernet/stmicro/stmmac/stmmac_platform.c  |   3 +
+ .../wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c  |   6 ++
+ 4 files changed, 94 insertions(+), 23 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/net/stm32-dwmac.txt b/Documentation/devicetree/bindings/net/stm32-dwmac.txt
+index 1341012..f42dc68 100644
+--- a/Documentation/devicetree/bindings/net/stm32-dwmac.txt
++++ b/Documentation/devicetree/bindings/net/stm32-dwmac.txt
+@@ -24,9 +24,9 @@ Required properties:
+ 	       encompases the glue register, and the offset of the control register.
+ 
+ Optional properties:
+-- clock-names:     For MPU family "mac-clk-ck" for PHY without quartz
+-- st,int-phyclk (boolean) :  valid only where PHY do not have quartz and need to be clock
+-	           by RCC
++- clock-names:     For MPU family "eth-ck" for PHY without quartz
++- st,eth_clk_sel (boolean) : set this property in RGMII PHY when you do not want use 125Mhz
++- st,eth_ref_clk_sel (boolean) :  set this property in RMII mode when you have PHY without crystal 50MHz
+ 
+ Example:
+ 
+diff --git a/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c b/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
+index d1cf145..545b168 100644
+--- a/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
++++ b/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
+@@ -25,9 +25,24 @@
+ 
+ #define SYSCFG_MCU_ETH_MASK		BIT(23)
+ #define SYSCFG_MP1_ETH_MASK		GENMASK(23, 16)
++#define SYSCFG_PMCCLRR_OFFSET		0x40
+ 
+ #define SYSCFG_PMCR_ETH_CLK_SEL		BIT(16)
+ #define SYSCFG_PMCR_ETH_REF_CLK_SEL	BIT(17)
++
++/*  Ethernet PHY interface selection in register SYSCFG Configuration
++ *------------------------------------------
++ * src	 |BIT(23)| BIT(22)| BIT(21)|BIT(20)|
++ *------------------------------------------
++ * MII   |   0	 |   0	  |   0    |   1   |
++ *------------------------------------------
++ * GMII  |   0	 |   0	  |   0    |   0   |
++ *------------------------------------------
++ * RGMII |   0	 |   0	  |   1	   |  n/a  |
++ *------------------------------------------
++ * RMII  |   1	 |   0	  |   0	   |  n/a  |
++ *------------------------------------------
++ */
+ #define SYSCFG_PMCR_ETH_SEL_MII		BIT(20)
+ #define SYSCFG_PMCR_ETH_SEL_RGMII	BIT(21)
+ #define SYSCFG_PMCR_ETH_SEL_RMII	BIT(23)
+@@ -35,15 +50,54 @@
+ #define SYSCFG_MCU_ETH_SEL_MII		0
+ #define SYSCFG_MCU_ETH_SEL_RMII		1
+ 
++/* STM32MP1 register definitions
++ *
++ * Below table summarizes the clock requirement and clock sources for
++ * supported phy interface modes.
++ * __________________________________________________________________________
++ *|PHY_MODE | Normal | PHY wo crystal|   PHY wo crystal   |No 125Mhz from PHY|
++ *|         |        |      25MHz    |        50MHz       |                  |
++ * ---------------------------------------------------------------------------
++ *|  MII    |	 -   |     eth-ck    |	      n/a	  |	  n/a        |
++ *|         |        |		     |                    |		     |
++ * ---------------------------------------------------------------------------
++ *|  GMII   |	 -   |     eth-ck    |	      n/a	  |	  n/a        |
++ *|         |        |               |                    |		     |
++ * ---------------------------------------------------------------------------
++ *| RGMII   |	 -   |     eth-ck    |	      n/a	  |  eth-ck (no pin) |
++ *|         |        |               |                    |  st,eth_clk_sel  |
++ * ---------------------------------------------------------------------------
++ *| RMII    |	 -   |     eth-ck    |	    eth-ck        |	  n/a        |
++ *|         |        |		     | st,eth_ref_clk_sel |		     |
++ * ---------------------------------------------------------------------------
++ *
++ * BIT(17) : set this bit in RMII mode when you have PHY without crystal 50MHz
++ * BIT(16) : set this bit in GMII/RGMII PHY when you do not want use 125Mhz
++ * from PHY
++ *-----------------------------------------------------
++ * src	 |         BIT(17)       |       BIT(16)      |
++ *-----------------------------------------------------
++ * MII   |           n/a	 |         n/a        |
++ *-----------------------------------------------------
++ * GMII  |           n/a         |   st,eth_clk_sel   |
++ *-----------------------------------------------------
++ * RGMII |           n/a         |   st,eth_clk_sel   |
++ *-----------------------------------------------------
++ * RMII  |   st,eth_ref_clk_sel	 |         n/a        |
++ *-----------------------------------------------------
++ *
++ */
++
+ struct stm32_dwmac {
+ 	struct clk *clk_tx;
+ 	struct clk *clk_rx;
+ 	struct clk *clk_eth_ck;
+ 	struct clk *clk_ethstp;
+ 	struct clk *syscfg_clk;
+-	bool int_phyclk;	/* Clock from RCC to drive PHY */
++	int eth_clk_sel_reg;
++	int eth_ref_clk_sel_reg;
+ 	int irq_pwr_wakeup;
+-	u32 mode_reg;		/* MAC glue-logic mode register */
++	u32 mode_reg;		 /* MAC glue-logic mode register */
+ 	struct regmap *regmap;
+ 	u32 speed;
+ 	const struct stm32_ops *ops;
+@@ -103,7 +157,7 @@ static int stm32mp1_clk_prepare(struct stm32_dwmac *dwmac, bool prepare)
+ 		if (ret)
+ 			return ret;
+ 
+-		if (dwmac->int_phyclk) {
++		if (dwmac->clk_eth_ck) {
+ 			ret = clk_prepare_enable(dwmac->clk_eth_ck);
+ 			if (ret) {
+ 				clk_disable_unprepare(dwmac->syscfg_clk);
+@@ -112,7 +166,7 @@ static int stm32mp1_clk_prepare(struct stm32_dwmac *dwmac, bool prepare)
+ 		}
+ 	} else {
+ 		clk_disable_unprepare(dwmac->syscfg_clk);
+-		if (dwmac->int_phyclk)
++		if (dwmac->clk_eth_ck)
+ 			clk_disable_unprepare(dwmac->clk_eth_ck);
+ 	}
+ 	return ret;
+@@ -122,7 +176,7 @@ static int stm32mp1_set_mode(struct plat_stmmacenet_data *plat_dat)
+ {
+ 	struct stm32_dwmac *dwmac = plat_dat->bsp_priv;
+ 	u32 reg = dwmac->mode_reg;
+-	int val;
++	int val, ret;
+ 
+ 	switch (plat_dat->interface) {
+ 	case PHY_INTERFACE_MODE_MII:
+@@ -131,19 +185,19 @@ static int stm32mp1_set_mode(struct plat_stmmacenet_data *plat_dat)
+ 		break;
+ 	case PHY_INTERFACE_MODE_GMII:
+ 		val = SYSCFG_PMCR_ETH_SEL_GMII;
+-		if (dwmac->int_phyclk)
++		if (dwmac->eth_clk_sel_reg)
+ 			val |= SYSCFG_PMCR_ETH_CLK_SEL;
+ 		pr_debug("SYSCFG init : PHY_INTERFACE_MODE_GMII\n");
+ 		break;
+ 	case PHY_INTERFACE_MODE_RMII:
+ 		val = SYSCFG_PMCR_ETH_SEL_RMII;
+-		if (dwmac->int_phyclk)
++		if (dwmac->eth_ref_clk_sel_reg)
+ 			val |= SYSCFG_PMCR_ETH_REF_CLK_SEL;
+ 		pr_debug("SYSCFG init : PHY_INTERFACE_MODE_RMII\n");
+ 		break;
+ 	case PHY_INTERFACE_MODE_RGMII:
+ 		val = SYSCFG_PMCR_ETH_SEL_RGMII;
+-		if (dwmac->int_phyclk)
++		if (dwmac->eth_clk_sel_reg)
+ 			val |= SYSCFG_PMCR_ETH_CLK_SEL;
+ 		pr_debug("SYSCFG init : PHY_INTERFACE_MODE_RGMII\n");
+ 		break;
+@@ -154,6 +208,11 @@ static int stm32mp1_set_mode(struct plat_stmmacenet_data *plat_dat)
+ 		return -EINVAL;
+ 	}
+ 
++	/* Need to update PMCCLRR (clear register) */
++	ret = regmap_update_bits(dwmac->regmap, reg + SYSCFG_PMCCLRR_OFFSET,
++				 dwmac->ops->syscfg_eth_mask, ~val);
++
++	/* Update PMCSETR (set register) */
+ 	return regmap_update_bits(dwmac->regmap, reg,
+ 				 dwmac->ops->syscfg_eth_mask, val);
+ }
+@@ -237,22 +296,25 @@ static int stm32mp1_parse_data(struct stm32_dwmac *dwmac,
+ 	struct device_node *np = dev->of_node;
+ 	int err = 0;
+ 
+-	dwmac->int_phyclk = of_property_read_bool(np, "st,int-phyclk");
++	/* Gigabit Ethernet 125MHz clock selection. */
++	dwmac->eth_clk_sel_reg = of_property_read_bool(np, "st,eth_clk_sel");
+ 
+-	/* Check if internal clk from RCC selected */
+-	if (dwmac->int_phyclk) {
+-		/*  Get ETH_CLK clocks */
+-		dwmac->clk_eth_ck = devm_clk_get(dev, "eth-ck");
+-		if (IS_ERR(dwmac->clk_eth_ck)) {
+-			dev_err(dev, "No ETH CK clock provided...\n");
+-			return PTR_ERR(dwmac->clk_eth_ck);
+-		}
++	/* Ethernet 50Mhz RMII clock selection */
++	dwmac->eth_ref_clk_sel_reg =
++		of_property_read_bool(np, "st,eth_ref_clk_sel");
++
++	/*  Get ETH_CLK clocks */
++	dwmac->clk_eth_ck = devm_clk_get(dev, "eth-ck");
++	if (IS_ERR(dwmac->clk_eth_ck)) {
++		dev_warn(dev, "No phy clock provided...\n");
++		dwmac->clk_eth_ck = NULL;
+ 	}
+ 
+ 	/*  Clock used for low power mode */
+ 	dwmac->clk_ethstp = devm_clk_get(dev, "ethstp");
+ 	if (IS_ERR(dwmac->clk_ethstp)) {
+-		dev_err(dev, "No ETH peripheral clock provided for CStop mode ...\n");
++		dev_err(dev,
++			"No ETH peripheral clock provided for CStop mode ...\n");
+ 		return PTR_ERR(dwmac->clk_ethstp);
+ 	}
+ 
+@@ -268,7 +330,7 @@ static int stm32mp1_parse_data(struct stm32_dwmac *dwmac,
+ 	 */
+ 	dwmac->irq_pwr_wakeup = platform_get_irq_byname(pdev,
+ 							"stm32_pwr_wakeup");
+-	if (!dwmac->int_phyclk && dwmac->irq_pwr_wakeup >= 0) {
++	if ((!dwmac->clk_eth_ck) && dwmac->irq_pwr_wakeup >= 0) {
+ 		err = device_init_wakeup(&pdev->dev, true);
+ 		if (err) {
+ 			dev_err(&pdev->dev, "Failed to init wake up irq\n");
+@@ -370,7 +432,7 @@ static int stm32mp1_suspend(struct stm32_dwmac *dwmac)
+ 
+ 	clk_disable_unprepare(dwmac->clk_tx);
+ 	clk_disable_unprepare(dwmac->syscfg_clk);
+-	if (dwmac->int_phyclk)
++	if (dwmac->clk_eth_ck)
+ 		clk_disable_unprepare(dwmac->clk_eth_ck);
+ 
+ 	return ret;
+diff --git a/drivers/net/ethernet/stmicro/stmmac/stmmac_platform.c b/drivers/net/ethernet/stmicro/stmmac/stmmac_platform.c
+index 2b800ce..3031f2b 100644
+--- a/drivers/net/ethernet/stmicro/stmmac/stmmac_platform.c
++++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_platform.c
+@@ -408,6 +408,9 @@ stmmac_probe_config_dt(struct platform_device *pdev, const char **mac)
+ 	/* Default to phy auto-detection */
+ 	plat->phy_addr = -1;
+ 
++	/* Get clk_csr from device tree */
++	of_property_read_u32(np, "clk_csr", &plat->clk_csr);
++
+ 	/* "snps,phy-addr" is not a standard property. Mark it as deprecated
+ 	 * and warn of its use. Remove this when phy node support is added.
+ 	 */
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c
+index d2f788d..c7b41ce 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c
+@@ -1129,7 +1129,10 @@ static int brcmf_ops_sdio_suspend(struct device *dev)
+ 			enable_irq_wake(sdiodev->settings->bus.sdio.oob_irq_nr);
+ 		else
+ 			sdio_flags |= MMC_PM_WAKE_SDIO_IRQ;
++	} else {
++		brcmf_sdiod_intr_unregister(sdiodev);
+ 	}
++
+ 	if (sdio_set_host_pm_flags(sdiodev->func1, sdio_flags))
+ 		brcmf_err("Failed to set pm_flags %x\n", sdio_flags);
+ 	return 0;
+@@ -1145,6 +1148,9 @@ static int brcmf_ops_sdio_resume(struct device *dev)
+ 	if (func->num != 2)
+ 		return 0;
+ 
++	if (!sdiodev->wowl_enabled)
++		brcmf_sdiod_intr_register(sdiodev);
++
+ 	brcmf_sdiod_freezer_off(sdiodev);
+ 	return 0;
+ }
+-- 
+2.7.4
+

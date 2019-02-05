@@ -1,0 +1,604 @@
+From d00006c83840de8fa5a6049ce31117d4e9c76184 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Mon, 10 Dec 2018 15:40:47 +0100
+Subject: [PATCH 40/52] ARM: stm32mp1-r0-rc3: PINCTRL PWM RESET RTC
+
+---
+ drivers/pinctrl/stm32/pinctrl-stm32.c | 219 +++++++++++++++++++++++-----------
+ drivers/regulator/stpmic1_regulator.c |  17 +--
+ 2 files changed, 152 insertions(+), 84 deletions(-)
+
+diff --git a/drivers/pinctrl/stm32/pinctrl-stm32.c b/drivers/pinctrl/stm32/pinctrl-stm32.c
+index 914bee4..7a27431 100644
+--- a/drivers/pinctrl/stm32/pinctrl-stm32.c
++++ b/drivers/pinctrl/stm32/pinctrl-stm32.c
+@@ -7,6 +7,7 @@
+  * Heavily based on Mediatek's pinctrl driver
+  */
+ #include <linux/clk.h>
++#include <linux/delay.h>
+ #include <linux/gpio/driver.h>
+ #include <linux/hwspinlock.h>
+ #include <linux/io.h>
+@@ -65,7 +66,8 @@
+ #define gpio_range_to_bank(chip) \
+ 		container_of(chip, struct stm32_gpio_bank, range)
+ 
+-#define HWSPINLOCK_TIMEOUT	5 /* msec */
++#define HWSPNLCK_TIMEOUT	1000 /* usec */
++#define HWSPNLCK_RETRY_DELAY	100  /* usec */
+ 
+ static const char * const stm32_gpio_functions[] = {
+ 	"gpio", "af0", "af1",
+@@ -110,6 +112,8 @@ struct stm32_pinctrl {
+ 	struct irq_domain	*domain;
+ 	struct regmap		*regmap;
+ 	struct regmap_field	*irqmux[STM32_GPIO_PINS_PER_BANK];
++	u16 irqmux_map;
++	spinlock_t irqmux_lock;		/* interrupt mux lock */
+ 	struct stm32_desc_pin *pins;
+ 	u32 npins;
+ 	u32 pkg;
+@@ -150,6 +154,26 @@ static inline u32 stm32_gpio_get_alt(u32 function)
+ 	return 0;
+ }
+ 
++static int stm32_pctrl_hwspin_lock_timeout(struct hwspinlock *hwlock)
++{
++	int ret, timeout = 0;
++
++	/*
++	 * Use the x_raw API since we are under spin_lock protection and do not
++	 * use the x_timeout API because we are under irq_disable mode
++	 */
++	do {
++		ret = hwspin_trylock_raw(hwlock);
++		if (!ret)
++			return ret;
++
++		udelay(HWSPNLCK_RETRY_DELAY);
++		timeout += HWSPNLCK_RETRY_DELAY;
++	} while (timeout < HWSPNLCK_TIMEOUT);
++
++	return ret == -EBUSY ? -ETIMEDOUT : ret;
++}
++
+ /* GPIO functions */
+ 
+ static inline void __stm32_gpio_set(struct stm32_gpio_bank *bank,
+@@ -326,9 +350,40 @@ static int stm32_gpio_domain_activate(struct irq_domain *d,
+ {
+ 	struct stm32_gpio_bank *bank = d->host_data;
+ 	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
++	unsigned long flags;
++	int ret = 0;
++
++	/*
++	 * gpio irq mux is shared between several banks, a lock has to be done
++	 * to avoid overriding.
++	 */
++	spin_lock_irqsave(&pctl->irqmux_lock, flags);
++
++	if (pctl->irqmux_map & BIT(irq_data->hwirq)) {
++		dev_err(pctl->dev, "irq line %ld already requested.\n",
++			irq_data->hwirq);
++		ret = -EBUSY;
++		goto unlock;
++	} else {
++		pctl->irqmux_map |= BIT(irq_data->hwirq);
++	}
+ 
+ 	regmap_field_write(pctl->irqmux[irq_data->hwirq], bank->bank_ioport_nr);
+-	return 0;
++unlock:
++	spin_unlock_irqrestore(&pctl->irqmux_lock, flags);
++	return ret;
++}
++
++static void stm32_gpio_domain_deactivate(struct irq_domain *d,
++					 struct irq_data *irq_data)
++{
++	struct stm32_gpio_bank *bank = d->host_data;
++	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
++	unsigned long flags;
++
++	spin_lock_irqsave(&pctl->irqmux_lock, flags);
++	pctl->irqmux_map &= ~BIT(irq_data->hwirq);
++	spin_unlock_irqrestore(&pctl->irqmux_lock, flags);
+ }
+ 
+ static int stm32_gpio_domain_alloc(struct irq_domain *d,
+@@ -357,6 +412,7 @@ static const struct irq_domain_ops stm32_gpio_domain_ops = {
+ 	.alloc          = stm32_gpio_domain_alloc,
+ 	.free           = irq_domain_free_irqs_common,
+ 	.activate	= stm32_gpio_domain_activate,
++	.deactivate	= stm32_gpio_domain_deactivate,
+ };
+ 
+ /* Pinctrl functions */
+@@ -436,7 +492,7 @@ static int stm32_pctrl_dt_subnode_to_map(struct pinctrl_dev *pctldev,
+ 	unsigned int num_configs;
+ 	bool has_config = 0;
+ 	unsigned reserve = 0;
+-	int num_pins, num_funcs, maps_per_pin, i, err;
++	int num_pins, num_funcs, maps_per_pin, i, err = 0;
+ 
+ 	pctl = pinctrl_dev_get_drvdata(pctldev);
+ 
+@@ -463,41 +519,45 @@ static int stm32_pctrl_dt_subnode_to_map(struct pinctrl_dev *pctldev,
+ 	if (has_config && num_pins >= 1)
+ 		maps_per_pin++;
+ 
+-	if (!num_pins || !maps_per_pin)
+-		return -EINVAL;
++	if (!num_pins || !maps_per_pin) {
++		err = -EINVAL;
++		goto exit;
++	}
+ 
+ 	reserve = num_pins * maps_per_pin;
+ 
+ 	err = pinctrl_utils_reserve_map(pctldev, map,
+ 			reserved_maps, num_maps, reserve);
+ 	if (err)
+-		return err;
++		goto exit;
+ 
+ 	for (i = 0; i < num_pins; i++) {
+ 		err = of_property_read_u32_index(node, "pinmux",
+ 				i, &pinfunc);
+ 		if (err)
+-			return err;
++			goto exit;
+ 
+ 		pin = STM32_GET_PIN_NO(pinfunc);
+ 		func = STM32_GET_PIN_FUNC(pinfunc);
+ 
+ 		if (!stm32_pctrl_is_function_valid(pctl, pin, func)) {
+ 			dev_err(pctl->dev, "invalid function.\n");
+-			return -EINVAL;
++			err = -EINVAL;
++			goto exit;
+ 		}
+ 
+ 		grp = stm32_pctrl_find_group_by_pin(pctl, pin);
+ 		if (!grp) {
+ 			dev_err(pctl->dev, "unable to match pin %d to group\n",
+ 					pin);
+-			return -EINVAL;
++			err = -EINVAL;
++			goto exit;
+ 		}
+ 
+ 		err = stm32_pctrl_dt_node_to_map_func(pctl, pin, func, grp, map,
+ 				reserved_maps, num_maps);
+ 		if (err)
+-			return err;
++			goto exit;
+ 
+ 		if (has_config) {
+ 			err = pinctrl_utils_add_map_configs(pctldev, map,
+@@ -505,11 +565,13 @@ static int stm32_pctrl_dt_subnode_to_map(struct pinctrl_dev *pctldev,
+ 					configs, num_configs,
+ 					PIN_MAP_TYPE_CONFIGS_GROUP);
+ 			if (err)
+-				return err;
++				goto exit;
+ 		}
+ 	}
+ 
+-	return 0;
++exit:
++	kfree(configs);
++	return err;
+ }
+ 
+ static int stm32_pctrl_dt_node_to_map(struct pinctrl_dev *pctldev,
+@@ -599,8 +661,8 @@ static int stm32_pmx_get_func_groups(struct pinctrl_dev *pctldev,
+ 	return 0;
+ }
+ 
+-static void stm32_pmx_set_mode(struct stm32_gpio_bank *bank,
+-		int pin, u32 mode, u32 alt)
++static int stm32_pmx_set_mode(struct stm32_gpio_bank *bank,
++			      int pin, u32 mode, u32 alt)
+ {
+ 	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
+ 	u32 val;
+@@ -612,12 +674,12 @@ static void stm32_pmx_set_mode(struct stm32_gpio_bank *bank,
+ 	clk_enable(bank->clk);
+ 	spin_lock_irqsave(&bank->lock, flags);
+ 
+-	if (pctl->hwlock)
+-		err = hwspin_lock_timeout(pctl->hwlock, HWSPINLOCK_TIMEOUT);
+-
+-	if (err) {
+-		dev_err(pctl->dev, "Can't get hwspinlock\n");
+-		goto unlock;
++	if (pctl->hwlock) {
++		err = stm32_pctrl_hwspin_lock_timeout(pctl->hwlock);
++		if (err) {
++			dev_err(pctl->dev, "Can't get hwspinlock\n");
++			goto unlock;
++		}
+ 	}
+ 
+ 	val = readl_relaxed(bank->base + alt_offset);
+@@ -633,11 +695,12 @@ static void stm32_pmx_set_mode(struct stm32_gpio_bank *bank,
+ 	stm32_gpio_backup_mode(bank, pin, mode, alt);
+ 
+ 	if (pctl->hwlock)
+-		hwspin_unlock(pctl->hwlock);
++		hwspin_unlock_raw(pctl->hwlock);
+ 
+ unlock:
+ 	spin_unlock_irqrestore(&bank->lock, flags);
+ 	clk_disable(bank->clk);
++	return err;
+ }
+ 
+ void stm32_pmx_get_mode(struct stm32_gpio_bank *bank, int pin, u32 *mode,
+@@ -694,9 +757,7 @@ static int stm32_pmx_set_mux(struct pinctrl_dev *pctldev,
+ 	mode = stm32_gpio_get_mode(function);
+ 	alt = stm32_gpio_get_alt(function);
+ 
+-	stm32_pmx_set_mode(bank, pin, mode, alt);
+-
+-	return 0;
++	return stm32_pmx_set_mode(bank, pin, mode, alt);
+ }
+ 
+ static int stm32_pmx_gpio_set_direction(struct pinctrl_dev *pctldev,
+@@ -706,9 +767,7 @@ static int stm32_pmx_gpio_set_direction(struct pinctrl_dev *pctldev,
+ 	struct stm32_gpio_bank *bank = gpiochip_get_data(range->gc);
+ 	int pin = stm32_gpio_pin(gpio);
+ 
+-	stm32_pmx_set_mode(bank, pin, !input, 0);
+-
+-	return 0;
++	return stm32_pmx_set_mode(bank, pin, !input, 0);
+ }
+ 
+ static const struct pinmux_ops stm32_pmx_ops = {
+@@ -722,8 +781,8 @@ static const struct pinmux_ops stm32_pmx_ops = {
+ 
+ /* Pinconf functions */
+ 
+-static void stm32_pconf_set_driving(struct stm32_gpio_bank *bank,
+-	unsigned offset, u32 drive)
++static int stm32_pconf_set_driving(struct stm32_gpio_bank *bank,
++				   unsigned offset, u32 drive)
+ {
+ 	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
+ 	unsigned long flags;
+@@ -733,12 +792,12 @@ static void stm32_pconf_set_driving(struct stm32_gpio_bank *bank,
+ 	clk_enable(bank->clk);
+ 	spin_lock_irqsave(&bank->lock, flags);
+ 
+-	if (pctl->hwlock)
+-		err = hwspin_lock_timeout(pctl->hwlock, HWSPINLOCK_TIMEOUT);
+-
+-	if (err) {
+-		dev_err(pctl->dev, "Can't get hwspinlock\n");
+-		goto unlock;
++	if (pctl->hwlock) {
++		err = stm32_pctrl_hwspin_lock_timeout(pctl->hwlock);
++		if (err) {
++			dev_err(pctl->dev, "Can't get hwspinlock\n");
++			goto unlock;
++		}
+ 	}
+ 
+ 	val = readl_relaxed(bank->base + STM32_GPIO_TYPER);
+@@ -749,11 +808,12 @@ static void stm32_pconf_set_driving(struct stm32_gpio_bank *bank,
+ 	stm32_gpio_backup_driving(bank, offset, drive);
+ 
+ 	if (pctl->hwlock)
+-		hwspin_unlock(pctl->hwlock);
++		hwspin_unlock_raw(pctl->hwlock);
+ 
+ unlock:
+ 	spin_unlock_irqrestore(&bank->lock, flags);
+ 	clk_disable(bank->clk);
++	return err;
+ }
+ 
+ static u32 stm32_pconf_get_driving(struct stm32_gpio_bank *bank,
+@@ -774,8 +834,8 @@ static u32 stm32_pconf_get_driving(struct stm32_gpio_bank *bank,
+ 	return (val >> offset);
+ }
+ 
+-static void stm32_pconf_set_speed(struct stm32_gpio_bank *bank,
+-	unsigned offset, u32 speed)
++static int stm32_pconf_set_speed(struct stm32_gpio_bank *bank,
++				 unsigned offset, u32 speed)
+ {
+ 	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
+ 	unsigned long flags;
+@@ -785,12 +845,12 @@ static void stm32_pconf_set_speed(struct stm32_gpio_bank *bank,
+ 	clk_enable(bank->clk);
+ 	spin_lock_irqsave(&bank->lock, flags);
+ 
+-	if (pctl->hwlock)
+-		err = hwspin_lock_timeout(pctl->hwlock, HWSPINLOCK_TIMEOUT);
+-
+-	if (err) {
+-		dev_err(pctl->dev, "Can't get hwspinlock\n");
+-		goto unlock;
++	if (pctl->hwlock) {
++		err = stm32_pctrl_hwspin_lock_timeout(pctl->hwlock);
++		if (err) {
++			dev_err(pctl->dev, "Can't get hwspinlock\n");
++			goto unlock;
++		}
+ 	}
+ 
+ 	val = readl_relaxed(bank->base + STM32_GPIO_SPEEDR);
+@@ -801,11 +861,12 @@ static void stm32_pconf_set_speed(struct stm32_gpio_bank *bank,
+ 	stm32_gpio_backup_speed(bank, offset, speed);
+ 
+ 	if (pctl->hwlock)
+-		hwspin_unlock(pctl->hwlock);
++		hwspin_unlock_raw(pctl->hwlock);
+ 
+ unlock:
+ 	spin_unlock_irqrestore(&bank->lock, flags);
+ 	clk_disable(bank->clk);
++	return err;
+ }
+ 
+ static u32 stm32_pconf_get_speed(struct stm32_gpio_bank *bank,
+@@ -826,8 +887,8 @@ static u32 stm32_pconf_get_speed(struct stm32_gpio_bank *bank,
+ 	return (val >> (offset * 2));
+ }
+ 
+-static void stm32_pconf_set_bias(struct stm32_gpio_bank *bank,
+-	unsigned offset, u32 bias)
++static int stm32_pconf_set_bias(struct stm32_gpio_bank *bank,
++				unsigned offset, u32 bias)
+ {
+ 	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
+ 	unsigned long flags;
+@@ -837,12 +898,12 @@ static void stm32_pconf_set_bias(struct stm32_gpio_bank *bank,
+ 	clk_enable(bank->clk);
+ 	spin_lock_irqsave(&bank->lock, flags);
+ 
+-	if (pctl->hwlock)
+-		err = hwspin_lock_timeout(pctl->hwlock, HWSPINLOCK_TIMEOUT);
+-
+-	if (err) {
+-		dev_err(pctl->dev, "Can't get hwspinlock\n");
+-		goto unlock;
++	if (pctl->hwlock) {
++		err = stm32_pctrl_hwspin_lock_timeout(pctl->hwlock);
++		if (err) {
++			dev_err(pctl->dev, "Can't get hwspinlock\n");
++			goto unlock;
++		}
+ 	}
+ 
+ 	val = readl_relaxed(bank->base + STM32_GPIO_PUPDR);
+@@ -853,11 +914,12 @@ static void stm32_pconf_set_bias(struct stm32_gpio_bank *bank,
+ 	stm32_gpio_backup_bias(bank, offset, bias);
+ 
+ 	if (pctl->hwlock)
+-		hwspin_unlock(pctl->hwlock);
++		hwspin_unlock_raw(pctl->hwlock);
+ 
+ unlock:
+ 	spin_unlock_irqrestore(&bank->lock, flags);
+ 	clk_disable(bank->clk);
++	return err;
+ }
+ 
+ static u32 stm32_pconf_get_bias(struct stm32_gpio_bank *bank,
+@@ -920,22 +982,22 @@ static int stm32_pconf_parse_conf(struct pinctrl_dev *pctldev,
+ 
+ 	switch (param) {
+ 	case PIN_CONFIG_DRIVE_PUSH_PULL:
+-		stm32_pconf_set_driving(bank, offset, 0);
++		ret = stm32_pconf_set_driving(bank, offset, 0);
+ 		break;
+ 	case PIN_CONFIG_DRIVE_OPEN_DRAIN:
+-		stm32_pconf_set_driving(bank, offset, 1);
++		ret = stm32_pconf_set_driving(bank, offset, 1);
+ 		break;
+ 	case PIN_CONFIG_SLEW_RATE:
+-		stm32_pconf_set_speed(bank, offset, arg);
++		ret = stm32_pconf_set_speed(bank, offset, arg);
+ 		break;
+ 	case PIN_CONFIG_BIAS_DISABLE:
+-		stm32_pconf_set_bias(bank, offset, 0);
++		ret = stm32_pconf_set_bias(bank, offset, 0);
+ 		break;
+ 	case PIN_CONFIG_BIAS_PULL_UP:
+-		stm32_pconf_set_bias(bank, offset, 1);
++		ret = stm32_pconf_set_bias(bank, offset, 1);
+ 		break;
+ 	case PIN_CONFIG_BIAS_PULL_DOWN:
+-		stm32_pconf_set_bias(bank, offset, 2);
++		ret = stm32_pconf_set_bias(bank, offset, 2);
+ 		break;
+ 	case PIN_CONFIG_OUTPUT:
+ 		__stm32_gpio_set(bank, offset, arg);
+@@ -1295,6 +1357,8 @@ int stm32_pctl_probe(struct platform_device *pdev)
+ 		pctl->hwlock = hwspin_lock_request_specific(hwlock_id);
+ 	}
+ 
++	spin_lock_init(&pctl->irqmux_lock);
++
+ 	pctl->dev = dev;
+ 	pctl->match_data = match->data;
+ 
+@@ -1414,22 +1478,23 @@ void stm32_gpio_backup_bias(struct stm32_gpio_bank *bank,
+ 	bank->pin_backup[offset] |= bias << STM32_GPIO_BKP_PUPD_SHIFT;
+ }
+ 
+-void stm32_pinctrl_restore_gpio_regs(struct stm32_pinctrl *pctl, u32 pin)
++int stm32_pinctrl_restore_gpio_regs(struct stm32_pinctrl *pctl, u32 pin)
+ {
+ 	const struct pin_desc *desc = pin_desc_get(pctl->pctl_dev, pin);
+ 	struct pinctrl_gpio_range *range;
+ 	struct stm32_gpio_bank *bank;
+ 	u32 val, alt, mode, offset = stm32_gpio_pin(pin);
+ 	bool pin_is_irq;
++	int ret;
+ 
+ 	range = pinctrl_find_gpio_range_from_pin(pctl->pctl_dev, pin);
+ 	if (!range)
+-		return;
++		return 0;
+ 
+ 	pin_is_irq = gpiochip_line_is_irq(range->gc, offset);
+ 
+ 	if (!desc || (!pin_is_irq && !desc->gpio_owner))
+-		return;
++		return 0;
+ 
+ 	bank = gpiochip_get_data(range->gc);
+ 
+@@ -1438,7 +1503,10 @@ void stm32_pinctrl_restore_gpio_regs(struct stm32_pinctrl *pctl, u32 pin)
+ 	mode = bank->pin_backup[offset] & STM32_GPIO_BKP_MODE_MASK;
+ 	mode >>= STM32_GPIO_BKP_MODE_SHIFT;
+ 
+-	stm32_pmx_set_mode(bank, offset, mode, alt);
++	ret = stm32_pmx_set_mode(bank, offset, mode, alt);
++	if (ret)
++		return ret;
++
+ 	if (mode == 1) {
+ 		val = bank->pin_backup[offset] & BIT(STM32_GPIO_BKP_VAL);
+ 		val = val >> STM32_GPIO_BKP_VAL;
+@@ -1447,28 +1515,39 @@ void stm32_pinctrl_restore_gpio_regs(struct stm32_pinctrl *pctl, u32 pin)
+ 
+ 	val = bank->pin_backup[offset] & BIT(STM32_GPIO_BKP_TYPE);
+ 	val >>= STM32_GPIO_BKP_TYPE;
+-	stm32_pconf_set_driving(bank, offset, val);
++	ret = stm32_pconf_set_driving(bank, offset, val);
++	if (ret)
++		return ret;
+ 
+ 	val = bank->pin_backup[offset] & STM32_GPIO_BKP_SPEED_MASK;
+ 	val >>= STM32_GPIO_BKP_SPEED_SHIFT;
+-	stm32_pconf_set_speed(bank, offset, val);
++	ret = stm32_pconf_set_speed(bank, offset, val);
++	if (ret)
++		return ret;
+ 
+ 	val = bank->pin_backup[offset] & STM32_GPIO_BKP_PUPD_MASK;
+ 	val >>= STM32_GPIO_BKP_PUPD_SHIFT;
+-	stm32_pconf_set_bias(bank, offset, val);
++	ret = stm32_pconf_set_bias(bank, offset, val);
++	if (ret)
++		return ret;
+ 
+ 	if (pin_is_irq)
+ 		regmap_field_write(pctl->irqmux[offset], bank->bank_ioport_nr);
++
++	return 0;
+ }
+ 
+ int stm32_pinctrl_resume(struct device *dev)
+ {
+ 	struct stm32_pinctrl *pctl = dev_get_drvdata(dev);
+ 	struct stm32_pinctrl_group *g = pctl->groups;
+-	int i;
++	int i, ret;
+ 
+-	for (i = g->pin; i < g->pin + pctl->ngroups; i++)
+-		stm32_pinctrl_restore_gpio_regs(pctl, i);
++	for (i = g->pin; i < g->pin + pctl->ngroups; i++) {
++		ret = stm32_pinctrl_restore_gpio_regs(pctl, i);
++		if (ret)
++			return ret;
++	}
+ 
+ 	return 0;
+ }
+diff --git a/drivers/regulator/stpmic1_regulator.c b/drivers/regulator/stpmic1_regulator.c
+index 96f1808..31c960c 100644
+--- a/drivers/regulator/stpmic1_regulator.c
++++ b/drivers/regulator/stpmic1_regulator.c
+@@ -76,8 +76,9 @@ enum {
+ #define STPMIC1_BUCK_MODE_LP BUCK_HPLP_ENABLE_MASK
+ 
+ struct regulator_linear_range buck1_ranges[] = {
+-	REGULATOR_LINEAR_RANGE(600000, 0, 30, 25000),
+-	REGULATOR_LINEAR_RANGE(1350000, 31, 63, 0),
++	REGULATOR_LINEAR_RANGE(725000, 0, 4, 0),
++	REGULATOR_LINEAR_RANGE(725000, 5, 36, 25000),
++	REGULATOR_LINEAR_RANGE(1500000, 37, 63, 0),
+ };
+ 
+ struct regulator_linear_range buck2_ranges[] = {
+@@ -157,7 +158,6 @@ static struct regulator_ops stpmic1_ldo_ops = {
+ 	.disable = regulator_disable_regmap,
+ 	.get_voltage_sel = regulator_get_voltage_sel_regmap,
+ 	.set_voltage_sel = regulator_set_voltage_sel_regmap,
+-	.set_pull_down = regulator_set_pull_down_regmap,
+ 	.set_over_current_protection = stpmic1_set_icc,
+ };
+ 
+@@ -169,7 +169,6 @@ static struct regulator_ops stpmic1_ldo3_ops = {
+ 	.disable = regulator_disable_regmap,
+ 	.get_voltage_sel = regulator_get_voltage_sel_regmap,
+ 	.set_voltage_sel = regulator_set_voltage_sel_regmap,
+-	.set_pull_down = regulator_set_pull_down_regmap,
+ 	.get_bypass = regulator_get_bypass_regmap,
+ 	.set_bypass = regulator_set_bypass_regmap,
+ 	.set_over_current_protection = stpmic1_set_icc,
+@@ -179,7 +178,6 @@ static struct regulator_ops stpmic1_ldo4_fixed_regul_ops = {
+ 	.is_enabled = regulator_is_enabled_regmap,
+ 	.enable = regulator_enable_regmap,
+ 	.disable = regulator_disable_regmap,
+-	.set_pull_down = regulator_set_pull_down_regmap,
+ 	.set_over_current_protection = stpmic1_set_icc,
+ };
+ 
+@@ -201,7 +199,6 @@ static struct regulator_ops stpmic1_vref_ddr_ops = {
+ 	.is_enabled = regulator_is_enabled_regmap,
+ 	.enable = regulator_enable_regmap,
+ 	.disable = regulator_disable_regmap,
+-	.set_pull_down = regulator_set_pull_down_regmap,
+ };
+ 
+ static struct regulator_ops stpmic1_switch_regul_ops = {
+@@ -227,8 +224,6 @@ static struct regulator_ops stpmic1_switch_regul_ops = {
+ 	.enable_val = 1, \
+ 	.disable_val = 0, \
+ 	.enable_time = PMIC_ENABLE_TIME_US, \
+-	.pull_down_reg = ids##_PULL_DOWN_REG, \
+-	.pull_down_mask = ids##_PULL_DOWN_MASK, \
+ 	.supply_name = #base, \
+ }
+ 
+@@ -252,8 +247,6 @@ static struct regulator_ops stpmic1_switch_regul_ops = {
+ 	.bypass_mask = LDO_BYPASS_MASK, \
+ 	.bypass_val_on = LDO_BYPASS_MASK, \
+ 	.bypass_val_off = 0, \
+-	.pull_down_reg = ids##_PULL_DOWN_REG, \
+-	.pull_down_mask = ids##_PULL_DOWN_MASK, \
+ 	.supply_name = #base, \
+ }
+ 
+@@ -271,8 +264,6 @@ static struct regulator_ops stpmic1_switch_regul_ops = {
+ 	.enable_val = 1, \
+ 	.disable_val = 0, \
+ 	.enable_time = PMIC_ENABLE_TIME_US, \
+-	.pull_down_reg = ids##_PULL_DOWN_REG, \
+-	.pull_down_mask = ids##_PULL_DOWN_MASK, \
+ 	.supply_name = #base, \
+ }
+ 
+@@ -312,8 +303,6 @@ static struct regulator_ops stpmic1_switch_regul_ops = {
+ 	.enable_val = 1, \
+ 	.disable_val = 0, \
+ 	.enable_time = PMIC_ENABLE_TIME_US, \
+-	.pull_down_reg = ids##_PULL_DOWN_REG, \
+-	.pull_down_mask = ids##_PULL_DOWN_MASK, \
+ 	.supply_name = #base, \
+ }
+ 
+-- 
+2.7.4
+

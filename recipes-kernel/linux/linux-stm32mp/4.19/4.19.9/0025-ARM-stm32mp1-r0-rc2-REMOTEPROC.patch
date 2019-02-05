@@ -1,0 +1,372 @@
+From 222782ff647dfeb33bb442031792a893372fad82 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@st.com>
+Date: Mon, 26 Nov 2018 14:43:58 +0100
+Subject: [PATCH 25/52] ARM-stm32mp1-r0-rc2-REMOTEPROC
+
+---
+ .../devicetree/bindings/remoteproc/rproc-srm.txt   |  14 ++-
+ .../devicetree/bindings/remoteproc/stm32-rproc.txt |  15 ++-
+ drivers/nvmem/stm32-romem.c                        |  44 +++++----
+ drivers/remoteproc/rproc_srm_core.h                |  14 +--
+ drivers/remoteproc/rproc_srm_dev.c                 | 103 +--------------------
+ drivers/remoteproc/stm32_rproc.c                   |   2 +-
+ 6 files changed, 42 insertions(+), 150 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/remoteproc/rproc-srm.txt b/Documentation/devicetree/bindings/remoteproc/rproc-srm.txt
+index dce10c0..19a5255 100644
+--- a/Documentation/devicetree/bindings/remoteproc/rproc-srm.txt
++++ b/Documentation/devicetree/bindings/remoteproc/rproc-srm.txt
+@@ -23,12 +23,16 @@ Optional properties:
+ - clocks: clocks required by the coprocessor
+ - clock-names: see clock-bindings.txt
+ - pinctrl-x: pins configurations required by the coprocessor
+-- pinctrl-names: see pinctrl-bindings.txt.
+-	"rproc_default" is a special pin configuration which is applied except
+-	if the 'early-booted' property is set.
+-	In a general way, it is recommended to use names prefixed with "rproc_".
++	The SRM reserves the pins for the coprocessor, which prevents the local
++	processor to use them.
++- pinctrl-names: all names must be prefixed with "rproc_" (ex: "rproc_default").
++	This rule must be strictly followed in order to prevent the SRM to
++	(over)write a pin configuration which is done by the coprocessor.
+ - x-supply: power supplies required by the coprocessor
+-- interrupts: see interrupts.txt
++- interrupts: external interrupts configurations required by the coprocessor.
++	This is optional since the configuration is done by the coprocessor.
++	When defined, the SRM (over)writes the configuration which allows the
++	interrupt controller to check for configuration conflicts.
+ - interrupt-parent: see interrupts.txt
+ - interrupt-names: see interrupts.txt
+ 
+diff --git a/Documentation/devicetree/bindings/remoteproc/stm32-rproc.txt b/Documentation/devicetree/bindings/remoteproc/stm32-rproc.txt
+index ee00f1c..7df6a26 100644
+--- a/Documentation/devicetree/bindings/remoteproc/stm32-rproc.txt
++++ b/Documentation/devicetree/bindings/remoteproc/stm32-rproc.txt
+@@ -33,18 +33,15 @@ Optional properties:
+ 		      - from local to remote = send message
+ 		      - from remote to local = send message ack
+ 		- a channel (b) working the opposite direction of channel (a)
+-		- a channel (c) used for two different purposes:
+-		    - used by the remote proc to signal when it has completed
+-		      its critical initalisation.
+-		      Mono-directional channel: from remote to local
+-		    - used by the local proc to notify the remote proc that it
+-		      is about to be shut down.
+-		      Mono-directional channel: from local to remote, where ACK
+-		      from the remote means that it is ready for shutdown
++		- a channel (c) used by the local proc to notify the remote proc
++		  that it is about to be shut down.
++		  Mono-directional channel:
++		      - from local to remote, where ACK from the remote means
++		        that it is ready for shutdown
+ - mbox-names:	This property is required if the mboxes property is used.
+ 		- must be "vq0" for channel (a)
+ 		- must be "vq1" for channel (b)
+-		- must be "init_shdn" for channel (c)
++		- must be "shutdown" for channel (c)
+ - memory-region: phandle to the reserved memory node to be associated with the
+ 		remoteproc device.
+ - st,syscfg-pdds: Reference to the system configuration controlling the remote
+diff --git a/drivers/nvmem/stm32-romem.c b/drivers/nvmem/stm32-romem.c
+index 198872f..34b388c 100644
+--- a/drivers/nvmem/stm32-romem.c
++++ b/drivers/nvmem/stm32-romem.c
+@@ -19,6 +19,12 @@
+ #define STM32_SMC_WRITE_SHADOW		0x03
+ #define STM32_SMC_READ_OTP		0x04
+ 
++/* shadow registers offest */
++#define STM32MP15_BSEC_DATA0		0x200
++
++/* 32 (x 32-bits) lower shadow registers */
++#define STM32MP15_BSEC_NUM_LOWER	32
++
+ struct stm32_romem_cfg {
+ 	int size;
+ };
+@@ -77,13 +83,21 @@ static int stm32_bsec_read(void *context, unsigned int offset, void *buf,
+ 		return -EINVAL;
+ 
+ 	for (i = roffset; (i < roffset + rbytes); i += 4) {
+-		ret = stm32_bsec_smc(STM32_SMC_READ_OTP, i >> 2, 0, &val);
+-		if (ret) {
+-			dev_err(priv->dev, "Failed to read data%d (%d)\n",
+-				i >> 2, ret);
+-			return ret;
++		u32 otp = i >> 2;
++
++		if (otp < STM32MP15_BSEC_NUM_LOWER) {
++			/* read lower data from shadow registers */
++			val = readl_relaxed(
++				priv->base + STM32MP15_BSEC_DATA0 + i);
++		} else {
++			ret = stm32_bsec_smc(STM32_SMC_READ_SHADOW, otp, 0,
++					     &val);
++			if (ret) {
++				dev_err(priv->dev, "Can't read data%d (%d)\n",
++					otp, ret);
++				return ret;
++			}
+ 		}
+-
+ 		/* skip first bytes in case of unaligned read */
+ 		if (skip_bytes)
+ 			size = min(bytes, (size_t)(4 - skip_bytes));
+@@ -127,7 +141,6 @@ static int stm32_romem_probe(struct platform_device *pdev)
+ 	const struct stm32_romem_cfg *cfg;
+ 	struct device *dev = &pdev->dev;
+ 	struct stm32_romem_priv *priv;
+-	struct nvmem_device *nvmem;
+ 	struct resource *res;
+ 
+ 	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+@@ -154,26 +167,12 @@ static int stm32_romem_probe(struct platform_device *pdev)
+ 		priv->cfg.size = resource_size(res);
+ 		priv->cfg.reg_read = stm32_romem_read;
+ 	} else {
+-		priv->cfg.read_only = false;
+ 		priv->cfg.size = cfg->size;
+ 		priv->cfg.reg_read = stm32_bsec_read;
+ 		priv->cfg.reg_write = stm32_bsec_write;
+ 	}
+ 
+-	nvmem = nvmem_register(&priv->cfg);
+-	if (IS_ERR(nvmem))
+-		return PTR_ERR(nvmem);
+-
+-	platform_set_drvdata(pdev, nvmem);
+-
+-	return 0;
+-}
+-
+-static int stm32_romem_remove(struct platform_device *pdev)
+-{
+-	struct nvmem_device *nvmem = platform_get_drvdata(pdev);
+-
+-	return nvmem_unregister(nvmem);
++	return PTR_ERR_OR_ZERO(devm_nvmem_register(dev, &priv->cfg));
+ }
+ 
+ static const struct stm32_romem_cfg stm32mp15_bsec_cfg = {
+@@ -191,7 +190,6 @@ MODULE_DEVICE_TABLE(of, stm32_romem_of_match);
+ 
+ static struct platform_driver stm32_romem_driver = {
+ 	.probe = stm32_romem_probe,
+-	.remove = stm32_romem_remove,
+ 	.driver = {
+ 		.name = "stm32-romem",
+ 		.of_match_table = of_match_ptr(stm32_romem_of_match),
+diff --git a/drivers/remoteproc/rproc_srm_core.h b/drivers/remoteproc/rproc_srm_core.h
+index 7915f35..7dffdb38 100644
+--- a/drivers/remoteproc/rproc_srm_core.h
++++ b/drivers/remoteproc/rproc_srm_core.h
+@@ -20,12 +20,10 @@
+ /**
+  * Resource type used in resource manager rpmsg:
+  *  RPROC_SRM_RSC_CLOCK:        clock resource
+- *  RPROC_SRM_RSC_PIN:          pin resource
+  *  RPROC_SRM_RSC_REGU:         regulator resource
+  */
+ #define RPROC_SRM_RSC_CLOCK     0x00
+-#define RPROC_SRM_RSC_PIN       0x01
+-#define RPROC_SRM_RSC_REGU      0x02
++#define RPROC_SRM_RSC_REGU      0x01
+ 
+ /**
+  * struct clock_cfg - clock configuration used in resource manager rpmsg
+@@ -63,14 +61,6 @@ struct regu_cfg {
+ };
+ 
+ /**
+- * struct pin_cfg - pin configuration used in resource manager rpmsg
+- * @name:       current pin configuration name (meaningful in GetConfig message)
+- */
+-struct pin_cfg {
+-	u8 name[16];
+-};
+-
+-/**
+  * struct rpmsg_srm_msg - message structure used between processors to
+  *                        dynamically update resources configuration
+  * @message_type: type of the message: see RPROC_SRM_MSG*
+@@ -81,7 +71,6 @@ struct pin_cfg {
+  *              see RPROC_SRM_RSC*
+  * @clock_cfg:  clock config - relevant if &rsc_type is RPROC_SRM_RSC_CLOCK
+  * @regu_cfg:   regulator config - relevant if &rsc_type is RPROC_SRM_RSC_REGU
+- * @pin_cfg:    pin config - relevant if &rsc_type is RPROC_SRM_RSC_PIN
+  */
+ struct rpmsg_srm_msg {
+ 	u32 message_type;
+@@ -90,7 +79,6 @@ struct rpmsg_srm_msg {
+ 	union {
+ 		struct clock_cfg clock_cfg;
+ 		struct regu_cfg regu_cfg;
+-		struct pin_cfg pin_cfg;
+ 	};
+ };
+ 
+diff --git a/drivers/remoteproc/rproc_srm_dev.c b/drivers/remoteproc/rproc_srm_dev.c
+index b026f961..7dc99c5 100644
+--- a/drivers/remoteproc/rproc_srm_dev.c
++++ b/drivers/remoteproc/rproc_srm_dev.c
+@@ -31,7 +31,6 @@ struct rproc_srm_pin_info {
+ 	struct list_head list;
+ 	unsigned int index;
+ 	char *name;
+-	bool selected;
+ };
+ 
+ struct rproc_srm_regu_info {
+@@ -544,83 +543,6 @@ static int rproc_srm_dev_regus_get(struct rproc_srm_dev *rproc_srm_dev)
+ }
+ 
+ /* Pins */
+-static int rproc_srm_dev_pin_set_cfg(struct rproc_srm_dev *rproc_srm_dev,
+-				     struct pin_cfg *cfg)
+-{
+-	struct rproc_srm_pin_info *pi, *p = NULL;
+-	struct device *dev = rproc_srm_dev->dev;
+-	struct pinctrl_state *state;
+-	int ret;
+-
+-	list_for_each_entry(pi, &rproc_srm_dev->pin_list_head, list) {
+-		if (!strcmp(pi->name, cfg->name)) {
+-			p = pi;
+-			break;
+-		}
+-	}
+-
+-	if (!p) {
+-		dev_err(dev, "unknown pin config (%s)\n", cfg->name);
+-		return -EINVAL;
+-	}
+-
+-	state = pinctrl_lookup_state(rproc_srm_dev->pctrl, cfg->name);
+-	if (IS_ERR(state)) {
+-		dev_err(dev, "cannot get pin config (%s)\n", cfg->name);
+-		return -EINVAL;
+-	}
+-
+-	ret = pinctrl_select_state(rproc_srm_dev->pctrl, state);
+-	if (ret < 0) {
+-		dev_err(dev, "cannot set pin config (%s)\n", cfg->name);
+-		return ret;
+-	}
+-
+-	list_for_each_entry(pi, &rproc_srm_dev->pin_list_head, list) {
+-		pi->selected = (pi == p);
+-	}
+-
+-	dev_dbg(dev, "pin config (%s) selected\n", p->name);
+-
+-	return 0;
+-}
+-
+-static int rproc_srm_dev_pin_get_cfg(struct rproc_srm_dev *rproc_srm_dev,
+-				     struct pin_cfg *cfg)
+-{
+-	struct rproc_srm_pin_info *p;
+-
+-	list_for_each_entry(p, &rproc_srm_dev->pin_list_head, list) {
+-		if (p->selected) {
+-			strlcpy(cfg->name, p->name, sizeof(cfg->name));
+-			return 0;
+-		}
+-	}
+-
+-	dev_warn(rproc_srm_dev->dev, "cannot find selected pin state\n");
+-	strcpy(cfg->name, "");
+-
+-	return 0;
+-}
+-
+-static int rproc_srm_dev_pins_setup(struct rproc_srm_dev *rproc_srm_dev)
+-{
+-	struct rproc_srm_pin_info *p;
+-	struct pin_cfg cfg = { .name = "rproc_default" };
+-
+-	if (rproc_srm_dev->early_boot)
+-		/* in early_boot mode do not update pin config */
+-		return 0;
+-
+-	/* set the "rproc_default" pin config if defined */
+-	list_for_each_entry(p, &rproc_srm_dev->pin_list_head, list) {
+-		if (!strcmp(p->name, cfg.name))
+-			return rproc_srm_dev_pin_set_cfg(rproc_srm_dev, &cfg);
+-	}
+-
+-	return 0;
+-}
+-
+ static void rproc_srm_dev_pins_put(struct rproc_srm_dev *rproc_srm_dev)
+ {
+ 	struct device *dev = rproc_srm_dev->dev;
+@@ -677,11 +599,9 @@ static int rproc_srm_dev_pins_get(struct rproc_srm_dev *rproc_srm_dev)
+ 		}
+ 		p->name = devm_kstrdup(dev, name, GFP_KERNEL);
+ 
+-		if (!strcmp(p->name, PINCTRL_STATE_DEFAULT)) {
+-			if (rproc_srm_dev->early_boot)
+-				dev_warn(dev, "pin config potentially overwritten!\n");
+-			p->selected = true;
+-		}
++		/* pinctrl-names shall not be "default" (but "rproc_default") */
++		if (!strcmp(p->name, PINCTRL_STATE_DEFAULT))
++			dev_warn(dev, "pin config potentially overwritten!\n");
+ 
+ 		p->index = i;
+ 
+@@ -726,13 +646,6 @@ static int rproc_srm_dev_notify_cb(struct notifier_block *nb, unsigned long evt,
+ 				ret = rproc_srm_dev_clock_get_cfg(rproc_srm_dev,
+ 								  &o.clock_cfg);
+ 			break;
+-		case RPROC_SRM_RSC_PIN:
+-			ret = rproc_srm_dev_pin_set_cfg(rproc_srm_dev,
+-							&i->pin_cfg);
+-			if (!ret)
+-				ret = rproc_srm_dev_pin_get_cfg(rproc_srm_dev,
+-								&o.pin_cfg);
+-			break;
+ 		case RPROC_SRM_RSC_REGU:
+ 			ret = rproc_srm_dev_regu_set_cfg(rproc_srm_dev,
+ 							 &i->regu_cfg);
+@@ -752,10 +665,6 @@ static int rproc_srm_dev_notify_cb(struct notifier_block *nb, unsigned long evt,
+ 			ret = rproc_srm_dev_clock_get_cfg(rproc_srm_dev,
+ 							  &o.clock_cfg);
+ 			break;
+-		case RPROC_SRM_RSC_PIN:
+-			ret = rproc_srm_dev_pin_get_cfg(rproc_srm_dev,
+-							&o.pin_cfg);
+-			break;
+ 		case RPROC_SRM_RSC_REGU:
+ 			ret = rproc_srm_dev_regu_get_cfg(rproc_srm_dev,
+ 							 &o.regu_cfg);
+@@ -810,11 +719,7 @@ rproc_srm_dev_bind(struct device *dev, struct device *master, void *data)
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = rproc_srm_dev_pins_setup(rproc_srm_dev);
+-	if (ret)
+-		return ret;
+-
+-	/* For IRQs: nothing to setup */
++	/* For pins and IRQs: nothing to setup */
+ 	return 0;
+ }
+ 
+diff --git a/drivers/remoteproc/stm32_rproc.c b/drivers/remoteproc/stm32_rproc.c
+index 998de67..548afdd 100644
+--- a/drivers/remoteproc/stm32_rproc.c
++++ b/drivers/remoteproc/stm32_rproc.c
+@@ -29,7 +29,7 @@
+ 
+ #define STM32_MBX_VQ0		"vq0"
+ #define STM32_MBX_VQ1		"vq1"
+-#define STM32_MBX_SHUTDOWN	"init_shdn"
++#define STM32_MBX_SHUTDOWN	"shutdown"
+ 
+ struct stm32_syscon {
+ 	struct regmap *map;
+-- 
+2.7.4
+

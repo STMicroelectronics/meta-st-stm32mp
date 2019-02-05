@@ -1,0 +1,135 @@
+From adfe9751275d51343a5b7f26ea93246ae617d986 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Mon, 10 Dec 2018 15:37:06 +0100
+Subject: [PATCH 36/52] ARM: stm32mp1-r0-rc3: INPUT TTY
+
+---
+ .../devicetree/bindings/serial/st,stm32-usart.txt      |  1 +
+ drivers/input/touchscreen/edt-ft5x06.c                 |  8 +++++++-
+ drivers/input/touchscreen/goodix.c                     |  9 +++++++++
+ drivers/tty/serial/stm32-usart.c                       | 18 ++++++++++++++++--
+ 4 files changed, 33 insertions(+), 3 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/serial/st,stm32-usart.txt b/Documentation/devicetree/bindings/serial/st,stm32-usart.txt
+index 90ba52f..08b4990 100644
+--- a/Documentation/devicetree/bindings/serial/st,stm32-usart.txt
++++ b/Documentation/devicetree/bindings/serial/st,stm32-usart.txt
+@@ -14,6 +14,7 @@ Required properties:
+ - clocks: The input clock of the USART instance
+ 
+ Optional properties:
++- resets: Must contain the phandle to the reset controller.
+ - pinctrl-names: Set to "default". An additional "sleep" state can be defined
+   to set pins in sleep state when in low power. In case the device is used as
+   a wakeup source, "idle" state is defined in order to keep RX pin active.
+diff --git a/drivers/input/touchscreen/edt-ft5x06.c b/drivers/input/touchscreen/edt-ft5x06.c
+index 1e18ca0..c1c6f2a 100644
+--- a/drivers/input/touchscreen/edt-ft5x06.c
++++ b/drivers/input/touchscreen/edt-ft5x06.c
+@@ -1033,7 +1033,7 @@ static int edt_ft5x06_ts_probe(struct i2c_client *client,
+ 
+ 	error = edt_ft5x06_ts_identify(client, tsdata, fw_version);
+ 	if (error) {
+-		dev_err(&client->dev, "touchscreen probe failed\n");
++		dev_dbg(&client->dev, "touchscreen probe failed\n");
+ 		return error;
+ 	}
+ 
+@@ -1152,11 +1152,16 @@ static const struct edt_i2c_chip_data edt_ft6236_data = {
+ 	.max_support_points = 2,
+ };
+ 
++static const struct edt_i2c_chip_data edt_ft6336_data = {
++	.max_support_points = 2,
++};
++
+ static const struct i2c_device_id edt_ft5x06_ts_id[] = {
+ 	{ .name = "edt-ft5x06", .driver_data = (long)&edt_ft5x06_data },
+ 	{ .name = "edt-ft5506", .driver_data = (long)&edt_ft5506_data },
+ 	/* Note no edt- prefix for compatibility with the ft6236.c driver */
+ 	{ .name = "ft6236", .driver_data = (long)&edt_ft6236_data },
++	{ .name = "ft6336", .driver_data = (long)&edt_ft6336_data },
+ 	{ /* sentinel */ }
+ };
+ MODULE_DEVICE_TABLE(i2c, edt_ft5x06_ts_id);
+@@ -1169,6 +1174,7 @@ static const struct of_device_id edt_ft5x06_of_match[] = {
+ 	{ .compatible = "edt,edt-ft5506", .data = &edt_ft5506_data },
+ 	/* Note focaltech vendor prefix for compatibility with ft6236.c */
+ 	{ .compatible = "focaltech,ft6236", .data = &edt_ft6236_data },
++	{ .compatible = "focaltech,ft6336", .data = &edt_ft6336_data },
+ 	{ /* sentinel */ }
+ };
+ MODULE_DEVICE_TABLE(of, edt_ft5x06_of_match);
+diff --git a/drivers/input/touchscreen/goodix.c b/drivers/input/touchscreen/goodix.c
+index f2d9c2c..9ce8db4 100644
+--- a/drivers/input/touchscreen/goodix.c
++++ b/drivers/input/touchscreen/goodix.c
+@@ -27,6 +27,7 @@
+ #include <linux/delay.h>
+ #include <linux/irq.h>
+ #include <linux/interrupt.h>
++#include <linux/gpio.h>
+ #include <linux/slab.h>
+ #include <linux/acpi.h>
+ #include <linux/of.h>
+@@ -357,6 +358,13 @@ static void goodix_free_irq(struct goodix_ts_data *ts)
+ 
+ static int goodix_request_irq(struct goodix_ts_data *ts)
+ {
++	int gpio;
++
++	gpio = desc_to_gpio(ts->gpiod_int);
++
++	if (gpio_is_valid(gpio))
++		ts->client->irq = gpio_to_irq(gpio);
++
+ 	return devm_request_threaded_irq(&ts->client->dev, ts->client->irq,
+ 					 NULL, goodix_ts_irq_handler,
+ 					 ts->irq_flags, ts->client->name, ts);
+@@ -949,6 +957,7 @@ static const struct of_device_id goodix_of_match[] = {
+ 	{ .compatible = "goodix,gt9271" },
+ 	{ .compatible = "goodix,gt928" },
+ 	{ .compatible = "goodix,gt967" },
++	{ .compatible = "goodix,gt9147",},
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(of, goodix_of_match);
+diff --git a/drivers/tty/serial/stm32-usart.c b/drivers/tty/serial/stm32-usart.c
+index 5c6c3c0..d606eb5 100644
+--- a/drivers/tty/serial/stm32-usart.c
++++ b/drivers/tty/serial/stm32-usart.c
+@@ -938,6 +938,7 @@ static int stm32_init_port(struct stm32_port *stm32port,
+ {
+ 	struct uart_port *port = &stm32port->port;
+ 	struct resource *res;
++	struct pinctrl *uart_pinctrl;
+ 	int ret;
+ 
+ 	port->iotype	= UPIO_MEM;
+@@ -952,8 +953,21 @@ static int stm32_init_port(struct stm32_port *stm32port,
+ 
+ 	stm32port->wakeirq = platform_get_irq_byname(pdev, "wakeup");
+ 	stm32port->fifoen = stm32port->info->cfg.has_fifo;
+-	stm32port->console_pins = pinctrl_lookup_state(pdev->dev.pins->p,
+-						       "no_console_suspend");
++
++	uart_pinctrl = devm_pinctrl_get(&pdev->dev);
++	if (IS_ERR(uart_pinctrl)) {
++		ret = PTR_ERR(uart_pinctrl);
++		if (ret != -ENODEV) {
++			dev_err(&pdev->dev,"Can't get pinctrl, error %d\n",
++				ret);
++			return ret;
++		}
++		stm32port->console_pins = ERR_PTR(-ENODEV);
++	}
++	else
++		stm32port->console_pins = pinctrl_lookup_state
++			(uart_pinctrl,"no_console_suspend");
++
+ 	if (IS_ERR(stm32port->console_pins)
+ 	    && PTR_ERR(stm32port->console_pins) != -ENODEV)
+ 		return PTR_ERR(stm32port->console_pins);
+-- 
+2.7.4
+

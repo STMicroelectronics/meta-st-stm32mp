@@ -1,0 +1,5144 @@
+From 4134cd0a2ec7d17327dbdf141ec05268e195cd71 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Tue, 13 Nov 2018 12:19:04 +0100
+Subject: [PATCH 05/52] ARM: stm32mp1-r0-rc1: IIO
+
+---
+ drivers/iio/adc/Kconfig                   |   10 +
+ drivers/iio/adc/Makefile                  |    1 +
+ drivers/iio/adc/stm32-adc-core.c          |  399 ++++++--
+ drivers/iio/adc/stm32-adc-core.h          |   87 ++
+ drivers/iio/adc/stm32-adc-temp.c          |  412 +++++++++
+ drivers/iio/adc/stm32-adc.c               | 1431 ++++++++++++++++++++++++-----
+ drivers/iio/adc/stm32-dfsdm-adc.c         |  627 ++++++++++---
+ drivers/iio/adc/stm32-dfsdm-core.c        |  176 +++-
+ drivers/iio/counter/stm32-lptimer-cnt.c   |   55 ++
+ drivers/iio/trigger/stm32-timer-trigger.c |  167 +++-
+ 10 files changed, 2870 insertions(+), 495 deletions(-)
+ create mode 100644 drivers/iio/adc/stm32-adc-temp.c
+
+diff --git a/drivers/iio/adc/Kconfig b/drivers/iio/adc/Kconfig
+index 4a75492..f2c1d8b 100644
+--- a/drivers/iio/adc/Kconfig
++++ b/drivers/iio/adc/Kconfig
+@@ -679,6 +679,16 @@ config STM32_ADC
+ 	  This driver can also be built as a module.  If so, the module
+ 	  will be called stm32-adc.
+ 
++config STM32_ADC_TEMP
++	tristate "STMicroelectronics STM32 ADC temperature sensor"
++	depends on STM32_ADC
++	help
++	  Select this option to enable the driver for temperature sensor
++	  connected internally to STM32 ADC.
++
++	  This driver can also be built as a module.  If so, the module
++	  will be called stm32-adc-temp.
++
+ config STM32_DFSDM_CORE
+ 	tristate "STMicroelectronics STM32 DFSDM core"
+ 	depends on (ARCH_STM32 && OF) || COMPILE_TEST
+diff --git a/drivers/iio/adc/Makefile b/drivers/iio/adc/Makefile
+index 03db7b5..527f9ef 100644
+--- a/drivers/iio/adc/Makefile
++++ b/drivers/iio/adc/Makefile
+@@ -65,6 +65,7 @@ obj-$(CONFIG_STX104) += stx104.o
+ obj-$(CONFIG_SUN4I_GPADC) += sun4i-gpadc-iio.o
+ obj-$(CONFIG_STM32_ADC_CORE) += stm32-adc-core.o
+ obj-$(CONFIG_STM32_ADC) += stm32-adc.o
++obj-$(CONFIG_STM32_ADC_TEMP) += stm32-adc-temp.o
+ obj-$(CONFIG_STM32_DFSDM_CORE) += stm32-dfsdm-core.o
+ obj-$(CONFIG_STM32_DFSDM_ADC) += stm32-dfsdm-adc.o
+ obj-$(CONFIG_TI_ADC081C) += ti-adc081c.o
+diff --git a/drivers/iio/adc/stm32-adc-core.c b/drivers/iio/adc/stm32-adc-core.c
+index ca432e7..a32e826 100644
+--- a/drivers/iio/adc/stm32-adc-core.c
++++ b/drivers/iio/adc/stm32-adc-core.c
+@@ -10,12 +10,16 @@
+  */
+ 
+ #include <linux/clk.h>
++#include <linux/iio/iio.h>
++#include <linux/iio/trigger.h>
+ #include <linux/interrupt.h>
+ #include <linux/irqchip/chained_irq.h>
+ #include <linux/irqdesc.h>
+ #include <linux/irqdomain.h>
+ #include <linux/module.h>
+ #include <linux/of_device.h>
++#include <linux/of_irq.h>
++#include <linux/pm_runtime.h>
+ #include <linux/regulator/consumer.h>
+ #include <linux/slab.h>
+ 
+@@ -23,12 +27,29 @@
+ 
+ /* STM32F4 - common registers for all ADC instances: 1, 2 & 3 */
+ #define STM32F4_ADC_CSR			(STM32_ADCX_COMN_OFFSET + 0x00)
+-#define STM32F4_ADC_CCR			(STM32_ADCX_COMN_OFFSET + 0x04)
+ 
+ /* STM32F4_ADC_CSR - bit fields */
++#define STM32F4_OVR3			BIT(21)
++#define STM32F4_JEOC3			BIT(18)
+ #define STM32F4_EOC3			BIT(17)
++#define STM32F4_AWD3			BIT(16)
++#define STM32F4_OVR2			BIT(13)
++#define STM32F4_JEOC2			BIT(10)
+ #define STM32F4_EOC2			BIT(9)
++#define STM32F4_AWD2			BIT(8)
++#define STM32F4_OVR1			BIT(5)
++#define STM32F4_JEOC1			BIT(2)
+ #define STM32F4_EOC1			BIT(1)
++#define STM32F4_AWD1			BIT(0)
++#define STM32F4_EOC_MASK1		(STM32F4_EOC1 | STM32F4_AWD1 | \
++					 STM32F4_OVR1)
++#define STM32F4_EOC_MASK2		(STM32F4_EOC2 | STM32F4_AWD2 | \
++					 STM32F4_OVR2)
++#define STM32F4_EOC_MASK3		(STM32F4_EOC3 | STM32F4_AWD3 | \
++					 STM32F4_OVR3)
++#define STM32F4_JEOC_MASK1		(STM32F4_JEOC1 | STM32F4_AWD1)
++#define STM32F4_JEOC_MASK2		(STM32F4_JEOC2 | STM32F4_AWD2)
++#define STM32F4_JEOC_MASK3		(STM32F4_JEOC3 | STM32F4_AWD3)
+ 
+ /* STM32F4_ADC_CCR - bit fields */
+ #define STM32F4_ADC_ADCPRE_SHIFT	16
+@@ -36,11 +57,30 @@
+ 
+ /* STM32H7 - common registers for all ADC instances */
+ #define STM32H7_ADC_CSR			(STM32_ADCX_COMN_OFFSET + 0x00)
+-#define STM32H7_ADC_CCR			(STM32_ADCX_COMN_OFFSET + 0x08)
+ 
+ /* STM32H7_ADC_CSR - bit fields */
++#define STM32H7_AWD3_SLV		BIT(25)
++#define STM32H7_AWD2_SLV		BIT(24)
++#define STM32H7_AWD1_SLV		BIT(23)
++#define STM32H7_JEOS_SLV		BIT(22)
++#define STM32H7_OVR_SLV			BIT(20)
+ #define STM32H7_EOC_SLV			BIT(18)
++#define STM32H7_AWD3_MST		BIT(9)
++#define STM32H7_AWD2_MST		BIT(8)
++#define STM32H7_AWD1_MST		BIT(7)
++#define STM32H7_JEOS_MST		BIT(6)
++#define STM32H7_OVR_MST			BIT(4)
+ #define STM32H7_EOC_MST			BIT(2)
++#define STM32H7_EOC_MASK1		(STM32H7_EOC_MST | STM32H7_AWD1_MST | \
++					 STM32H7_AWD2_MST | STM32H7_AWD3_MST | \
++					 STM32H7_OVR_MST)
++#define STM32H7_EOC_MASK2		(STM32H7_EOC_SLV | STM32H7_AWD1_SLV | \
++					 STM32H7_AWD2_SLV | STM32H7_AWD3_SLV | \
++					 STM32H7_OVR_SLV)
++#define STM32H7_JEOC_MASK1		(STM32H7_JEOS_MST | STM32H7_AWD1_MST | \
++					 STM32H7_AWD2_MST | STM32H7_AWD3_MST)
++#define STM32H7_JEOC_MASK2		(STM32H7_JEOS_SLV | STM32H7_AWD1_SLV | \
++					 STM32H7_AWD2_SLV | STM32H7_AWD3_SLV)
+ 
+ /* STM32H7_ADC_CCR - bit fields */
+ #define STM32H7_PRESC_SHIFT		18
+@@ -51,15 +91,23 @@
+ /**
+  * stm32_adc_common_regs - stm32 common registers, compatible dependent data
+  * @csr:	common status register offset
++ * @ccr:	common control register offset
+  * @eoc1:	adc1 end of conversion flag in @csr
+  * @eoc2:	adc2 end of conversion flag in @csr
+  * @eoc3:	adc3 end of conversion flag in @csr
++ * @jeoc1:	adc1 end of injected conversion flag in @csr
++ * @jeoc2:	adc2 end of injected conversion flag in @csr
++ * @jeoc3:	adc3 end of injected conversion flag in @csr
+  */
+ struct stm32_adc_common_regs {
+ 	u32 csr;
++	u32 ccr;
+ 	u32 eoc1_msk;
+ 	u32 eoc2_msk;
+ 	u32 eoc3_msk;
++	u32 jeoc1_msk;
++	u32 jeoc2_msk;
++	u32 jeoc3_msk;
+ };
+ 
+ struct stm32_adc_priv;
+@@ -69,11 +117,13 @@ struct stm32_adc_priv;
+  * @regs:	common registers for all instances
+  * @clk_sel:	clock selection routine
+  * @max_clk_rate_hz: maximum analog clock rate (Hz, from datasheet)
++ * @exti_trigs	EXTI triggers info
+  */
+ struct stm32_adc_priv_cfg {
+ 	const struct stm32_adc_common_regs *regs;
+ 	int (*clk_sel)(struct platform_device *, struct stm32_adc_priv *);
+ 	u32 max_clk_rate_hz;
++	struct stm32_adc_trig_info *exti_trigs;
+ };
+ 
+ /**
+@@ -82,18 +132,22 @@ struct stm32_adc_priv_cfg {
+  * @domain:		irq domain reference
+  * @aclk:		clock reference for the analog circuitry
+  * @bclk:		bus clock common for all ADCs, depends on part used
++ * @max_clk_rate	desired maximum clock rate
+  * @vref:		regulator reference
+  * @cfg:		compatible configuration data
+  * @common:		common data for all ADC instances
++ * @ccr_bak:		backup'ed CCR in low power mode
+  */
+ struct stm32_adc_priv {
+ 	int				irq[STM32_ADC_MAX_ADCS];
+ 	struct irq_domain		*domain;
+ 	struct clk			*aclk;
+ 	struct clk			*bclk;
++	u32				max_clk_rate;
+ 	struct regulator		*vref;
+ 	const struct stm32_adc_priv_cfg	*cfg;
+ 	struct stm32_adc_common		common;
++	u32				ccr_bak;
+ };
+ 
+ static struct stm32_adc_priv *to_stm32_adc_priv(struct stm32_adc_common *com)
+@@ -129,7 +183,7 @@ static int stm32f4_adc_clk_sel(struct platform_device *pdev,
+ 	}
+ 
+ 	for (i = 0; i < ARRAY_SIZE(stm32f4_pclk_div); i++) {
+-		if ((rate / stm32f4_pclk_div[i]) <= priv->cfg->max_clk_rate_hz)
++		if ((rate / stm32f4_pclk_div[i]) <= priv->max_clk_rate)
+ 			break;
+ 	}
+ 	if (i >= ARRAY_SIZE(stm32f4_pclk_div)) {
+@@ -218,7 +272,7 @@ static int stm32h7_adc_clk_sel(struct platform_device *pdev,
+ 			if (ckmode)
+ 				continue;
+ 
+-			if ((rate / div) <= priv->cfg->max_clk_rate_hz)
++			if ((rate / div) <= priv->max_clk_rate)
+ 				goto out;
+ 		}
+ 	}
+@@ -238,7 +292,7 @@ static int stm32h7_adc_clk_sel(struct platform_device *pdev,
+ 		if (!ckmode)
+ 			continue;
+ 
+-		if ((rate / div) <= priv->cfg->max_clk_rate_hz)
++		if ((rate / div) <= priv->max_clk_rate)
+ 			goto out;
+ 	}
+ 
+@@ -265,16 +319,23 @@ static int stm32h7_adc_clk_sel(struct platform_device *pdev,
+ /* STM32F4 common registers definitions */
+ static const struct stm32_adc_common_regs stm32f4_adc_common_regs = {
+ 	.csr = STM32F4_ADC_CSR,
+-	.eoc1_msk = STM32F4_EOC1,
+-	.eoc2_msk = STM32F4_EOC2,
+-	.eoc3_msk = STM32F4_EOC3,
++	.ccr = STM32F4_ADC_CCR,
++	.eoc1_msk = STM32F4_EOC_MASK1,
++	.eoc2_msk = STM32F4_EOC_MASK2,
++	.eoc3_msk = STM32F4_EOC_MASK3,
++	.jeoc1_msk = STM32F4_JEOC_MASK1,
++	.jeoc2_msk = STM32F4_JEOC_MASK2,
++	.jeoc3_msk = STM32F4_JEOC_MASK3,
+ };
+ 
+ /* STM32H7 common registers definitions */
+ static const struct stm32_adc_common_regs stm32h7_adc_common_regs = {
+ 	.csr = STM32H7_ADC_CSR,
+-	.eoc1_msk = STM32H7_EOC_MST,
+-	.eoc2_msk = STM32H7_EOC_SLV,
++	.ccr = STM32H7_ADC_CCR,
++	.eoc1_msk = STM32H7_EOC_MASK1,
++	.eoc2_msk = STM32H7_EOC_MASK2,
++	.jeoc1_msk = STM32H7_JEOC_MASK1,
++	.jeoc2_msk = STM32H7_JEOC_MASK2,
+ };
+ 
+ /* ADC common interrupt for all instances */
+@@ -296,6 +357,15 @@ static void stm32_adc_irq_handler(struct irq_desc *desc)
+ 	if (status & priv->cfg->regs->eoc3_msk)
+ 		generic_handle_irq(irq_find_mapping(priv->domain, 2));
+ 
++	if (status & priv->cfg->regs->jeoc1_msk)
++		generic_handle_irq(irq_find_mapping(priv->domain, 3));
++
++	if (status & priv->cfg->regs->jeoc2_msk)
++		generic_handle_irq(irq_find_mapping(priv->domain, 4));
++
++	if (status & priv->cfg->regs->jeoc3_msk)
++		generic_handle_irq(irq_find_mapping(priv->domain, 5));
++
+ 	chained_irq_exit(chip, desc);
+ };
+ 
+@@ -344,7 +414,8 @@ static int stm32_adc_irq_probe(struct platform_device *pdev,
+ 		}
+ 	}
+ 
+-	priv->domain = irq_domain_add_simple(np, STM32_ADC_MAX_ADCS, 0,
++	/* 2 interrupt sources per ADC instance: regular & injected */
++	priv->domain = irq_domain_add_simple(np, STM32_ADC_MAX_ADCS * 2, 0,
+ 					     &stm32_adc_domain_ops,
+ 					     priv);
+ 	if (!priv->domain) {
+@@ -368,7 +439,7 @@ static void stm32_adc_irq_remove(struct platform_device *pdev,
+ 	int hwirq;
+ 	unsigned int i;
+ 
+-	for (hwirq = 0; hwirq < STM32_ADC_MAX_ADCS; hwirq++)
++	for (hwirq = 0; hwirq < STM32_ADC_MAX_ADCS * 2; hwirq++)
+ 		irq_dispose_mapping(irq_find_mapping(priv->domain, hwirq));
+ 	irq_domain_remove(priv->domain);
+ 
+@@ -379,13 +450,186 @@ static void stm32_adc_irq_remove(struct platform_device *pdev,
+ 	}
+ }
+ 
++static struct stm32_adc_trig_info stm32f4_adc_exti_trigs[] = {
++	{ "exti11", STM32_EXT15, 0, TRG_REGULAR },
++	{ "exti15", 0, STM32_EXT15, TRG_INJECTED },
++	{},
++};
++
++static struct stm32_adc_trig_info stm32h7_adc_exti_trigs[] = {
++	{ "exti11", STM32_EXT6, 0, TRG_REGULAR },
++	{ "exti15", 0, STM32_EXT6, TRG_INJECTED },
++	{},
++};
++
++static int is_stm32_adc_child_dev(struct device *dev, void *data)
++{
++	return dev == data;
++}
++
++static int stm32_adc_validate_device(struct iio_trigger *trig,
++				     struct iio_dev *indio_dev)
++{
++	/* Iterate over stm32 adc child devices, is indio_dev one of them ? */
++	if (device_for_each_child(trig->dev.parent, indio_dev->dev.parent,
++				  is_stm32_adc_child_dev))
++		return 0;
++
++	return -EINVAL;
++}
++
++static const struct iio_trigger_ops stm32_adc_trigger_ops = {
++	.validate_device = stm32_adc_validate_device,
++};
++
++static irqreturn_t stm32_adc_trigger_isr(int irq, void *p)
++{
++	/* EXTI handler shouldn't be invoked, and isn't used */
++	return IRQ_HANDLED;
++}
++
++static struct iio_trigger *stm32_adc_trig_alloc_register(
++					struct platform_device *pdev,
++					struct stm32_adc_priv *priv,
++					struct stm32_adc_trig_info *trinfo)
++{
++	struct iio_trigger *trig;
++	int ret;
++
++	trig = devm_iio_trigger_alloc(&pdev->dev, "%s-%s", trinfo->name,
++				      dev_name(&pdev->dev));
++	if (!trig)
++		return ERR_PTR(-ENOMEM);
++
++	trig->dev.parent = &pdev->dev;
++	trig->ops = &stm32_adc_trigger_ops;
++	iio_trigger_set_drvdata(trig, trinfo);
++
++	ret = devm_iio_trigger_register(&pdev->dev, trig);
++	if (ret) {
++		dev_err(&pdev->dev, "%s trig register failed\n", trinfo->name);
++		return ERR_PTR(ret);
++	}
++
++	list_add_tail(&trig->alloc_list, &priv->common.extrig_list);
++
++	return trig;
++}
++
++static int stm32_adc_triggers_probe(struct platform_device *pdev,
++				    struct stm32_adc_priv *priv)
++{
++	struct device_node *child, *node = pdev->dev.of_node;
++	struct stm32_adc_trig_info *trinfo = priv->cfg->exti_trigs;
++	struct iio_trigger *trig;
++	int i, irq, ret;
++
++	INIT_LIST_HEAD(&priv->common.extrig_list);
++
++	for (i = 0; trinfo && trinfo[i].name; i++) {
++		for_each_available_child_of_node(node, child) {
++			if (of_property_match_string(child, "trigger-name",
++						     trinfo[i].name) < 0)
++				continue;
++			trig = stm32_adc_trig_alloc_register(pdev, priv,
++							     &trinfo[i]);
++			if (IS_ERR(trig))
++				return PTR_ERR(trig);
++
++			/*
++			 * STM32 ADC can use EXTI GPIO (external interrupt line)
++			 * as trigger source. EXTI line can generate IRQs and/or
++			 * be used as trigger: EXTI line is hard wired as
++			 * an input of ADC trigger selection MUX (muxed in with
++			 * extsel on ADC controller side).
++			 * Getting IRQs when trigger occurs is unused, rely on
++			 * EOC interrupt instead. So, get EXTI IRQ, then mask it
++			 * by default (on EXTI controller). After this, EXTI
++			 * line HW path is configured (GPIO->EXTI->ADC),
++			 */
++			irq = of_irq_get(child, 0);
++			if (irq <= 0) {
++				dev_err(&pdev->dev, "Can't get trigger irq\n");
++				return irq ? irq : -ENODEV;
++			}
++
++			ret = devm_request_irq(&pdev->dev, irq,
++					       stm32_adc_trigger_isr, 0, NULL,
++					       trig);
++			if (ret) {
++				dev_err(&pdev->dev, "Request IRQ failed\n");
++				return ret;
++			}
++			disable_irq(irq);
++		}
++	}
++
++	return 0;
++}
++
++static int stm32_adc_core_hw_start(struct device *dev)
++{
++	struct stm32_adc_common *common = dev_get_drvdata(dev);
++	struct stm32_adc_priv *priv = to_stm32_adc_priv(common);
++	int ret;
++
++	ret = regulator_enable(priv->vref);
++	if (ret < 0) {
++		dev_err(dev, "vref enable failed\n");
++		return ret;
++	}
++
++	if (priv->bclk) {
++		ret = clk_prepare_enable(priv->bclk);
++		if (ret < 0) {
++			dev_err(dev, "bus clk enable failed\n");
++			goto err_regulator_disable;
++		}
++	}
++
++	if (priv->aclk) {
++		ret = clk_prepare_enable(priv->aclk);
++		if (ret < 0) {
++			dev_err(dev, "adc clk enable failed\n");
++			goto err_bclk_disable;
++		}
++	}
++
++	writel_relaxed(priv->ccr_bak, priv->common.base + priv->cfg->regs->ccr);
++
++	return 0;
++
++err_bclk_disable:
++	if (priv->bclk)
++		clk_disable_unprepare(priv->bclk);
++err_regulator_disable:
++	regulator_disable(priv->vref);
++
++	return ret;
++}
++
++static void stm32_adc_core_hw_stop(struct device *dev)
++{
++	struct stm32_adc_common *common = dev_get_drvdata(dev);
++	struct stm32_adc_priv *priv = to_stm32_adc_priv(common);
++
++	/* Backup CCR that may be lost (depends on power state to achieve) */
++	priv->ccr_bak = readl_relaxed(priv->common.base + priv->cfg->regs->ccr);
++	if (priv->aclk)
++		clk_disable_unprepare(priv->aclk);
++	if (priv->bclk)
++		clk_disable_unprepare(priv->bclk);
++	regulator_disable(priv->vref);
++}
++
+ static int stm32_adc_probe(struct platform_device *pdev)
+ {
+ 	struct stm32_adc_priv *priv;
+ 	struct device *dev = &pdev->dev;
+ 	struct device_node *np = pdev->dev.of_node;
+ 	struct resource *res;
+-	int ret;
++	u32 max_rate;
++	int i, ret;
+ 
+ 	if (!pdev->dev.of_node)
+ 		return -ENODEV;
+@@ -393,6 +637,7 @@ static int stm32_adc_probe(struct platform_device *pdev)
+ 	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+ 	if (!priv)
+ 		return -ENOMEM;
++	platform_set_drvdata(pdev, &priv->common);
+ 
+ 	priv->cfg = (const struct stm32_adc_priv_cfg *)
+ 		of_match_device(dev->driver->of_match_table, dev)->data;
+@@ -402,6 +647,8 @@ static int stm32_adc_probe(struct platform_device *pdev)
+ 	if (IS_ERR(priv->common.base))
+ 		return PTR_ERR(priv->common.base);
+ 	priv->common.phys_base = res->start;
++	for (i = 0; i < STM32_ADC_MAX_ADCS; i++)
++		mutex_init(&priv->common.inj[i]);
+ 
+ 	priv->vref = devm_regulator_get(&pdev->dev, "vref");
+ 	if (IS_ERR(priv->vref)) {
+@@ -410,67 +657,60 @@ static int stm32_adc_probe(struct platform_device *pdev)
+ 		return ret;
+ 	}
+ 
+-	ret = regulator_enable(priv->vref);
+-	if (ret < 0) {
+-		dev_err(&pdev->dev, "vref enable failed\n");
+-		return ret;
+-	}
+-
+-	ret = regulator_get_voltage(priv->vref);
+-	if (ret < 0) {
+-		dev_err(&pdev->dev, "vref get voltage failed, %d\n", ret);
+-		goto err_regulator_disable;
+-	}
+-	priv->common.vref_mv = ret / 1000;
+-	dev_dbg(&pdev->dev, "vref+=%dmV\n", priv->common.vref_mv);
+-
+ 	priv->aclk = devm_clk_get(&pdev->dev, "adc");
+ 	if (IS_ERR(priv->aclk)) {
+ 		ret = PTR_ERR(priv->aclk);
+-		if (ret == -ENOENT) {
+-			priv->aclk = NULL;
+-		} else {
++		if (ret != -ENOENT) {
+ 			dev_err(&pdev->dev, "Can't get 'adc' clock\n");
+-			goto err_regulator_disable;
+-		}
+-	}
+-
+-	if (priv->aclk) {
+-		ret = clk_prepare_enable(priv->aclk);
+-		if (ret < 0) {
+-			dev_err(&pdev->dev, "adc clk enable failed\n");
+-			goto err_regulator_disable;
++			return ret;
+ 		}
++		priv->aclk = NULL;
+ 	}
+ 
+ 	priv->bclk = devm_clk_get(&pdev->dev, "bus");
+ 	if (IS_ERR(priv->bclk)) {
+ 		ret = PTR_ERR(priv->bclk);
+-		if (ret == -ENOENT) {
+-			priv->bclk = NULL;
+-		} else {
++		if (ret != -ENOENT) {
+ 			dev_err(&pdev->dev, "Can't get 'bus' clock\n");
+-			goto err_aclk_disable;
++			return ret;
+ 		}
++		priv->bclk = NULL;
+ 	}
+ 
+-	if (priv->bclk) {
+-		ret = clk_prepare_enable(priv->bclk);
+-		if (ret < 0) {
+-			dev_err(&pdev->dev, "adc clk enable failed\n");
+-			goto err_aclk_disable;
+-		}
++	pm_runtime_get_noresume(dev);
++	pm_runtime_set_active(dev);
++	pm_runtime_enable(dev);
++
++	ret = stm32_adc_core_hw_start(dev);
++	if (ret)
++		goto err_pm_stop;
++
++	ret = regulator_get_voltage(priv->vref);
++	if (ret < 0) {
++		dev_err(&pdev->dev, "vref get voltage failed, %d\n", ret);
++		goto err_hw_stop;
+ 	}
++	priv->common.vref_mv = ret / 1000;
++	dev_dbg(&pdev->dev, "vref+=%dmV\n", priv->common.vref_mv);
++
++	ret = of_property_read_u32(pdev->dev.of_node, "st,max-clk-rate-hz",
++				   &max_rate);
++	if (!ret)
++		priv->max_clk_rate = min(max_rate, priv->cfg->max_clk_rate_hz);
++	else
++		priv->max_clk_rate = priv->cfg->max_clk_rate_hz;
+ 
+ 	ret = priv->cfg->clk_sel(pdev, priv);
+ 	if (ret < 0)
+-		goto err_bclk_disable;
++		goto err_hw_stop;
+ 
+ 	ret = stm32_adc_irq_probe(pdev, priv);
+ 	if (ret < 0)
+-		goto err_bclk_disable;
++		goto err_hw_stop;
+ 
+-	platform_set_drvdata(pdev, &priv->common);
++	ret = stm32_adc_triggers_probe(pdev, priv);
++	if (ret < 0)
++		goto err_irq_remove;
+ 
+ 	ret = of_platform_populate(np, NULL, NULL, &pdev->dev);
+ 	if (ret < 0) {
+@@ -478,21 +718,18 @@ static int stm32_adc_probe(struct platform_device *pdev)
+ 		goto err_irq_remove;
+ 	}
+ 
++	pm_runtime_put(dev);
++
+ 	return 0;
+ 
+ err_irq_remove:
+ 	stm32_adc_irq_remove(pdev, priv);
+-
+-err_bclk_disable:
+-	if (priv->bclk)
+-		clk_disable_unprepare(priv->bclk);
+-
+-err_aclk_disable:
+-	if (priv->aclk)
+-		clk_disable_unprepare(priv->aclk);
+-
+-err_regulator_disable:
+-	regulator_disable(priv->vref);
++err_hw_stop:
++	stm32_adc_core_hw_stop(dev);
++err_pm_stop:
++	pm_runtime_disable(dev);
++	pm_runtime_set_suspended(dev);
++	pm_runtime_put_noidle(dev);
+ 
+ 	return ret;
+ }
+@@ -502,33 +739,58 @@ static int stm32_adc_remove(struct platform_device *pdev)
+ 	struct stm32_adc_common *common = platform_get_drvdata(pdev);
+ 	struct stm32_adc_priv *priv = to_stm32_adc_priv(common);
+ 
++	pm_runtime_get_sync(&pdev->dev);
+ 	of_platform_depopulate(&pdev->dev);
+ 	stm32_adc_irq_remove(pdev, priv);
+-	if (priv->bclk)
+-		clk_disable_unprepare(priv->bclk);
+-	if (priv->aclk)
+-		clk_disable_unprepare(priv->aclk);
+-	regulator_disable(priv->vref);
++	stm32_adc_core_hw_stop(&pdev->dev);
++	pm_runtime_disable(&pdev->dev);
++	pm_runtime_set_suspended(&pdev->dev);
++	pm_runtime_put_noidle(&pdev->dev);
+ 
+ 	return 0;
+ }
+ 
++#if defined(CONFIG_PM)
++static int stm32_adc_core_runtime_suspend(struct device *dev)
++{
++	stm32_adc_core_hw_stop(dev);
++
++	return 0;
++}
++
++static int stm32_adc_core_runtime_resume(struct device *dev)
++{
++	return stm32_adc_core_hw_start(dev);
++}
++#endif
++
++static const struct dev_pm_ops stm32_adc_core_pm_ops = {
++	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
++				pm_runtime_force_resume)
++	SET_RUNTIME_PM_OPS(stm32_adc_core_runtime_suspend,
++			   stm32_adc_core_runtime_resume,
++			   NULL)
++};
++
+ static const struct stm32_adc_priv_cfg stm32f4_adc_priv_cfg = {
+ 	.regs = &stm32f4_adc_common_regs,
+ 	.clk_sel = stm32f4_adc_clk_sel,
+ 	.max_clk_rate_hz = 36000000,
++	.exti_trigs = stm32f4_adc_exti_trigs,
+ };
+ 
+ static const struct stm32_adc_priv_cfg stm32h7_adc_priv_cfg = {
+ 	.regs = &stm32h7_adc_common_regs,
+ 	.clk_sel = stm32h7_adc_clk_sel,
+ 	.max_clk_rate_hz = 36000000,
++	.exti_trigs = stm32h7_adc_exti_trigs,
+ };
+ 
+ static const struct stm32_adc_priv_cfg stm32mp1_adc_priv_cfg = {
+ 	.regs = &stm32h7_adc_common_regs,
+ 	.clk_sel = stm32h7_adc_clk_sel,
+ 	.max_clk_rate_hz = 40000000,
++	.exti_trigs = stm32h7_adc_exti_trigs,
+ };
+ 
+ static const struct of_device_id stm32_adc_of_match[] = {
+@@ -552,6 +814,7 @@ static struct platform_driver stm32_adc_driver = {
+ 	.driver = {
+ 		.name = "stm32-adc-core",
+ 		.of_match_table = stm32_adc_of_match,
++		.pm = &stm32_adc_core_pm_ops,
+ 	},
+ };
+ module_platform_driver(stm32_adc_driver);
+diff --git a/drivers/iio/adc/stm32-adc-core.h b/drivers/iio/adc/stm32-adc-core.h
+index 8af507b..a209ea4 100644
+--- a/drivers/iio/adc/stm32-adc-core.h
++++ b/drivers/iio/adc/stm32-adc-core.h
+@@ -25,20 +25,107 @@
+  * --------------------------------------------------------
+  */
+ #define STM32_ADC_MAX_ADCS		3
++#define STM32_ADC_OFFSET		0x100
+ #define STM32_ADCX_COMN_OFFSET		0x300
+ 
++/* Number of linear calibration shadow registers / LINCALRDYW control bits */
++#define STM32H7_LINCALFACT_NUM		6
++
++/**
++ * struct stm32_adc_calib - optional adc calibration data
++ * @calfact_s: Calibration offset for single ended channels
++ * @calfact_d: Calibration offset in differential
++ * @lincalfact: Linearity calibration factor
++ * @calibrated: Indicates calibration status
++ */
++struct stm32_adc_calib {
++	u32			calfact_s;
++	u32			calfact_d;
++	u32			lincalfact[STM32H7_LINCALFACT_NUM];
++	bool			calibrated;
++};
++
++/* STM32F4 - common registers for all ADC instances: 1, 2 & 3 */
++#define STM32F4_ADC_CCR			(STM32_ADCX_COMN_OFFSET + 0x04)
++
++/* STM32F4_ADC_CCR - bit fields */
++#define STM32F4_ADC_TSVREFE		BIT(23)
++
++/* STM32H7 - common registers for all ADC instances */
++#define STM32H7_ADC_CCR			(STM32_ADCX_COMN_OFFSET + 0x08)
++
++/* STM32H7_ADC_CCR - bit fields */
++#define STM32H7_VSENSEEN		BIT(23)
++
+ /**
+  * struct stm32_adc_common - stm32 ADC driver common data (for all instances)
+  * @base:		control registers base cpu addr
+  * @phys_base:		control registers base physical addr
+  * @rate:		clock rate used for analog circuitry
+  * @vref_mv:		vref voltage (mv)
++ * @extrig_list:	External trigger list registered by adc core
++ *
++ * Reserved variables for child devices, shared between regular/injected:
++ * @difsel		bitmask array to set single-ended/differential channel
++ * @pcsel		bitmask array to preselect channels on some devices
++ * @smpr_val:		sampling time settings (e.g. smpr1 / smpr2)
+  */
+ struct stm32_adc_common {
+ 	void __iomem			*base;
+ 	phys_addr_t			phys_base;
+ 	unsigned long			rate;
+ 	int				vref_mv;
++	struct list_head		extrig_list;
++	u32				difsel[STM32_ADC_MAX_ADCS];
++	u32				pcsel[STM32_ADC_MAX_ADCS];
++	u32				smpr_val[STM32_ADC_MAX_ADCS][2];
++	int				prepcnt[STM32_ADC_MAX_ADCS];
++	struct mutex			inj[STM32_ADC_MAX_ADCS]; /* injected */
++	struct stm32_adc_calib		cal[STM32_ADC_MAX_ADCS];
++};
++
++/* extsel - trigger mux selection value */
++enum stm32_adc_extsel {
++	STM32_EXT0,
++	STM32_EXT1,
++	STM32_EXT2,
++	STM32_EXT3,
++	STM32_EXT4,
++	STM32_EXT5,
++	STM32_EXT6,
++	STM32_EXT7,
++	STM32_EXT8,
++	STM32_EXT9,
++	STM32_EXT10,
++	STM32_EXT11,
++	STM32_EXT12,
++	STM32_EXT13,
++	STM32_EXT14,
++	STM32_EXT15,
++	STM32_EXT16,
++	STM32_EXT17,
++	STM32_EXT18,
++	STM32_EXT19,
++	STM32_EXT20,
++};
++
++/* trigger information flags */
++#define TRG_REGULAR	BIT(0)
++#define TRG_INJECTED	BIT(1)
++#define TRG_BOTH	(TRG_REGULAR | TRG_INJECTED)
++
++/**
++ * struct stm32_adc_trig_info - ADC trigger info
++ * @name:		name of the trigger, corresponding to its source
++ * @extsel:		regular trigger selection
++ * @jextsel:		injected trigger selection
++ * @flags:		trigger flags: e.g. for regular, injected or both
++ */
++struct stm32_adc_trig_info {
++	const char *name;
++	u32 extsel;
++	u32 jextsel;
++	u32 flags;
+ };
+ 
+ #endif
+diff --git a/drivers/iio/adc/stm32-adc-temp.c b/drivers/iio/adc/stm32-adc-temp.c
+new file mode 100644
+index 0000000..dd31916
+--- /dev/null
++++ b/drivers/iio/adc/stm32-adc-temp.c
+@@ -0,0 +1,412 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * STM32 ADC temperature sensor driver.
++ * This file is part of STM32 ADC driver.
++ *
++ * Copyright (C) 2017, STMicroelectronics - All Rights Reserved
++ * Author: Fabrice Gasnier <fabrice.gasnier@st.com> for STMicroelectronics.
++ */
++
++#include <linux/delay.h>
++#include <linux/iio/consumer.h>
++#include <linux/iio/iio.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/nvmem-consumer.h>
++#include <linux/platform_device.h>
++#include <linux/pm_runtime.h>
++#include <linux/of_device.h>
++#include <linux/slab.h>
++#include <linux/thermal.h>
++
++#include "stm32-adc-core.h"
++
++#define STM32_ADC_TEMP_SUSPEND_DELAY_MS	2000
++
++/*
++ * stm32_adc_temp_cfg - stm32 temperature compatible configuration data
++ * @avg_slope:		temp sensor average slope (uV/deg: from datasheet)
++ * @ts:			temp sensor sample temperature (°C: from datasheet)
++ * @vts:		temp sensor voltage @ts (mV: V25 or V30 in datasheet)
++ * @en_bit:		temp sensor enable bits
++ * @en_reg:		temp sensor enable register
++ * @ts_cal_bits:	temp sensor ts_cal[1..2] raw resolution (bits)
++ * @t1:			ts_cal1 sample temperature (°C: from datasheet)
++ * @t2:			ts_cal2 sample temperature (°C: from datasheet)
++ */
++struct stm32_adc_temp_cfg {
++	unsigned int avg_slope;
++	unsigned int ts;
++	unsigned int vts;
++	unsigned int en_bit;
++	unsigned int en_reg;
++	unsigned int ts_cal_bits;
++	unsigned int t1;
++	unsigned int t2;
++};
++
++/*
++ * stm32_adc_temp - private data of STM32 ADC temperature sensor driver
++ * @base:		control registers base cpu addr
++ * @cfg:		compatible configuration data
++ * @temp_offset:	temperature sensor offset
++ * @temp_scale:		temperature sensor scale
++ * @realbits:		adc resolution
++ * @ts_chan		temperature sensor ADC channel (consumer)
++ * @tzd:		thermal zone device
++ */
++struct stm32_adc_temp {
++	void __iomem			*base;
++	const struct stm32_adc_temp_cfg	*cfg;
++	int				temp_offset;
++	int				temp_scale;
++	int				realbits;
++	struct iio_channel		*ts_chan;
++	struct thermal_zone_device	*tzd;
++};
++
++static const struct iio_chan_spec stm32_adc_temp_channel = {
++	.type = IIO_TEMP,
++	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
++		BIT(IIO_CHAN_INFO_SCALE) |
++		BIT(IIO_CHAN_INFO_OFFSET),
++	.datasheet_name = "adc_temp",
++};
++
++static int stm32_adc_temp_get_temp(void *data, int *temp)
++{
++	struct stm32_adc_temp *priv = data;
++	struct iio_dev *indio_dev = iio_priv_to_dev(priv);
++	struct device *dev = indio_dev->dev.parent;
++	s64 val64;
++	int sense, ret;
++
++	ret = pm_runtime_get_sync(dev);
++	if (ret < 0) {
++		pm_runtime_put_noidle(dev);
++		return ret;
++	}
++
++	ret = iio_read_channel_raw(priv->ts_chan, &sense);
++	pm_runtime_mark_last_busy(dev);
++	pm_runtime_put_autosuspend(dev);
++	if (ret != IIO_VAL_INT)
++		return ret < 0 ? ret : -EINVAL;
++
++	val64 = (s64)(sense + priv->temp_offset) * priv->temp_scale;
++	*temp = val64 >> priv->realbits;
++
++	return 0;
++}
++
++static const struct thermal_zone_of_device_ops stm32_adc_tzd_ops = {
++	.get_temp = &stm32_adc_temp_get_temp,
++};
++
++static int stm32_adc_temp_read_raw(struct iio_dev *indio_dev,
++				   struct iio_chan_spec const *chan,
++				   int *val, int *val2, long mask)
++{
++	struct stm32_adc_temp *priv = iio_priv(indio_dev);
++	struct device *dev = indio_dev->dev.parent;
++	int ret;
++
++	switch (mask) {
++	case IIO_CHAN_INFO_RAW:
++		ret = pm_runtime_get_sync(dev);
++		if (ret < 0) {
++			pm_runtime_put_noidle(dev);
++			return ret;
++		}
++		ret = iio_read_channel_raw(priv->ts_chan, val);
++		pm_runtime_mark_last_busy(dev);
++		pm_runtime_put_autosuspend(dev);
++		return ret;
++
++	case IIO_CHAN_INFO_SCALE:
++		*val = priv->temp_scale;
++		*val2 = priv->realbits;
++		return IIO_VAL_FRACTIONAL_LOG2;
++
++	case IIO_CHAN_INFO_OFFSET:
++		*val = priv->temp_offset;
++		return IIO_VAL_INT;
++
++	default:
++		return -EINVAL;
++	}
++}
++
++static const struct iio_info stm32_adc_temp_iio_info = {
++	.read_raw = stm32_adc_temp_read_raw,
++};
++
++static void stm32_adc_temp_set_enable_state(struct device *dev, bool en)
++{
++	struct stm32_adc_temp *priv = dev_get_drvdata(dev);
++	u32 val = readl_relaxed(priv->base + priv->cfg->en_reg);
++
++	if (en)
++		val |= priv->cfg->en_bit;
++	else
++		val &= ~priv->cfg->en_bit;
++	writel_relaxed(val, priv->base + priv->cfg->en_reg);
++
++	/*
++	 * Temperature sensor "startup time" from datasheet, must be greater
++	 * than slowest supported device.
++	 */
++	if (en)
++		usleep_range(40, 50);
++}
++
++static int stm32_adc_temp_setup_offset_scale(struct platform_device *pdev,
++					     struct stm32_adc_temp *priv)
++{
++	int scale_type, vref_mv, ret;
++	u16 ts_cal1 = 0, ts_cal2 = 0;
++	unsigned int slope, vts, ts;
++	u64 val64;
++
++	scale_type = iio_read_channel_scale(priv->ts_chan, &vref_mv,
++					    &priv->realbits);
++	if (scale_type != IIO_VAL_FRACTIONAL_LOG2)
++		return scale_type < 0 ? scale_type : -EINVAL;
++
++	/* Optional read of temperature sensor calibration data */
++	ret = nvmem_cell_read_u16(&pdev->dev, "ts_cal1", &ts_cal1);
++	if (ret && ret != -ENOENT && ret != -ENOSYS)
++		return ret;
++	ret = nvmem_cell_read_u16(&pdev->dev, "ts_cal2", &ts_cal2);
++	if (ret && ret != -ENOENT && ret != -ENOSYS)
++		return ret;
++
++	if (!ts_cal1 || !ts_cal2) {
++		/* Use datasheet temperature sensor characteristics */
++		slope = priv->cfg->avg_slope;
++		ts = priv->cfg->ts;
++		vts = priv->cfg->vts;
++	} else {
++		/*
++		 * Compute average slope (µV/°C) from calibration data:
++		 * - ts_cal1: raw data @t1(°C), factory vref = 3.3V
++		 * - ts_cal2: raw data @t2(°C), factory vref = 3.3V
++		 */
++		slope = ts_cal2 - ts_cal1;
++		slope *= 3300000 / (priv->cfg->t2 - priv->cfg->t1);
++		slope >>= priv->cfg->ts_cal_bits;
++		ts = priv->cfg->t1;
++		vts = ts_cal1 * 3300;
++		vts >>= priv->cfg->ts_cal_bits;
++	}
++
++	dev_dbg(&pdev->dev, "ts_cal1=%x ts_cal2=%x slope=%d vts=%d\n",
++		ts_cal1, ts_cal2, slope, vts);
++
++	priv->temp_scale = vref_mv * 1000000 / slope;
++
++	/*
++	 * T (°C) = (Vsense - V25) / AVG_slope + 25.
++	 * raw offset to subtract @0°C: Vts0 = V25 - 25 * AVG_slope
++	 */
++	val64 = ts << priv->realbits;
++	priv->temp_offset = div_u64(val64 * (u64)slope, 1000LL);
++	priv->temp_offset -= vts << priv->realbits;
++	priv->temp_offset /= vref_mv;
++
++	return 0;
++}
++
++static int stm32_adc_temp_probe(struct platform_device *pdev)
++{
++	struct stm32_adc_common *common = dev_get_drvdata(pdev->dev.parent);
++	struct device *dev = &pdev->dev;
++	struct stm32_adc_temp *priv;
++	struct iio_dev *indio_dev;
++	int ret;
++
++	indio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(*priv));
++	if (!indio_dev)
++		return -ENOMEM;
++
++	indio_dev->name = dev_name(dev);
++	indio_dev->dev.parent = dev;
++	indio_dev->dev.of_node = pdev->dev.of_node;
++	indio_dev->info = &stm32_adc_temp_iio_info;
++	indio_dev->modes = INDIO_DIRECT_MODE;
++	indio_dev->channels = &stm32_adc_temp_channel;
++	indio_dev->num_channels = 1;
++
++	priv = iio_priv(indio_dev);
++	priv->base = common->base;
++	priv->cfg = (const struct stm32_adc_temp_cfg *)
++		of_match_device(dev->driver->of_match_table, dev)->data;
++
++	priv->ts_chan = devm_iio_channel_get(dev, NULL);
++	platform_set_drvdata(pdev, priv);
++	if (IS_ERR(priv->ts_chan)) {
++		ret = PTR_ERR(priv->ts_chan);
++		dev_err(&indio_dev->dev, "Can't get temp channel: %d\n", ret);
++		return ret;
++	}
++
++	ret = stm32_adc_temp_setup_offset_scale(pdev, priv);
++	if (ret) {
++		dev_err(&indio_dev->dev, "Can't get offset/scale: %d\n", ret);
++		return ret;
++	}
++
++	/* Get stm32-adc-core PM online */
++	pm_runtime_get_noresume(dev);
++	pm_runtime_set_active(dev);
++	pm_runtime_set_autosuspend_delay(dev, STM32_ADC_TEMP_SUSPEND_DELAY_MS);
++	pm_runtime_use_autosuspend(dev);
++	pm_runtime_enable(dev);
++
++	/* Power-on temperature sensor */
++	stm32_adc_temp_set_enable_state(dev, true);
++
++	ret = iio_device_register(indio_dev);
++	if (ret) {
++		dev_err(&indio_dev->dev, "Can't register iio dev: %d\n", ret);
++		goto fail;
++	}
++
++	priv->tzd = thermal_zone_of_sensor_register(dev, 0, priv,
++						    &stm32_adc_tzd_ops);
++	/* Optional thermal zone device */
++	if (IS_ERR(priv->tzd)) {
++		ret = PTR_ERR(priv->tzd);
++		if (ret != -ENOENT && ret != -ENODEV) {
++			dev_err(&indio_dev->dev, "Can't register thermal: %d\n",
++				ret);
++			goto unreg;
++		}
++		dev_dbg(&indio_dev->dev, "Not using thermal: %d\n", ret);
++		priv->tzd = NULL;
++	}
++
++	pm_runtime_mark_last_busy(dev);
++	pm_runtime_put_autosuspend(dev);
++
++	return 0;
++
++unreg:
++	iio_device_unregister(indio_dev);
++
++fail:
++	stm32_adc_temp_set_enable_state(dev, false);
++	pm_runtime_disable(dev);
++	pm_runtime_set_suspended(dev);
++	pm_runtime_put_noidle(dev);
++
++	return ret;
++}
++
++static int stm32_adc_temp_remove(struct platform_device *pdev)
++{
++	struct stm32_adc_temp *priv = platform_get_drvdata(pdev);
++	struct iio_dev *indio_dev = iio_priv_to_dev(priv);
++
++	pm_runtime_get_sync(&pdev->dev);
++	if (priv->tzd)
++		thermal_zone_of_sensor_unregister(&pdev->dev, priv->tzd);
++	iio_device_unregister(indio_dev);
++	stm32_adc_temp_set_enable_state(&pdev->dev, false);
++	pm_runtime_disable(&pdev->dev);
++	pm_runtime_set_suspended(&pdev->dev);
++	pm_runtime_put_noidle(&pdev->dev);
++
++	return 0;
++}
++
++#if defined(CONFIG_PM)
++static int stm32_adc_temp_runtime_suspend(struct device *dev)
++{
++	stm32_adc_temp_set_enable_state(dev, false);
++
++	return 0;
++}
++
++static int stm32_adc_temp_runtime_resume(struct device *dev)
++{
++	stm32_adc_temp_set_enable_state(dev, true);
++
++	return 0;
++}
++#endif
++
++static const struct dev_pm_ops stm32_adc_temp_pm_ops = {
++	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
++				pm_runtime_force_resume)
++	SET_RUNTIME_PM_OPS(stm32_adc_temp_runtime_suspend,
++			   stm32_adc_temp_runtime_resume,
++			   NULL)
++};
++
++static const struct stm32_adc_temp_cfg stm32f4_adc_temp_cfg = {
++	.avg_slope = 2500,
++	.ts = 25,
++	.vts = 760, /* V25 from datasheet */
++	.en_reg = STM32F4_ADC_CCR,
++	.en_bit = STM32F4_ADC_TSVREFE,
++	.ts_cal_bits = 12,
++	.t1 = 30, /* ts_cal1 @30°C */
++	.t2 = 110, /* ts_cal2 @110°C */
++};
++
++static const struct stm32_adc_temp_cfg stm32h7_adc_temp_cfg = {
++	.avg_slope = 2000,
++	.ts = 30,
++	.vts = 620, /* V30 from datasheet */
++	.en_reg = STM32H7_ADC_CCR,
++	.en_bit = STM32H7_VSENSEEN,
++	.ts_cal_bits = 16,
++	.t1 = 30, /* ts_cal1 @30°C */
++	.t2 = 110, /* ts_cal2 @110°C */
++};
++
++/* TODO: update typical values when confirmed for stm32mp1 */
++static const struct stm32_adc_temp_cfg stm32mp1_adc_temp_cfg = {
++	.avg_slope = 2050,
++	.ts = 30,
++	.vts = 620, /* V30 from datasheet */
++	.en_reg = STM32H7_ADC_CCR,
++	.en_bit = STM32H7_VSENSEEN,
++	.ts_cal_bits = 16,
++	.t1 = 30, /* ts_cal1 @30°C */
++	.t2 = 130, /* ts_cal2 @130°C */
++};
++
++static const struct of_device_id stm32_adc_temp_of_match[] = {
++	{
++		.compatible = "st,stm32f4-adc-temp",
++		.data = (void *)&stm32f4_adc_temp_cfg,
++	},
++	{
++		.compatible = "st,stm32h7-adc-temp",
++		.data = (void *)&stm32h7_adc_temp_cfg,
++	},
++	{
++		.compatible = "st,stm32mp1-adc-temp",
++		.data = (void *)&stm32mp1_adc_temp_cfg,
++	},
++	{},
++};
++MODULE_DEVICE_TABLE(of, stm32_adc_temp_of_match);
++
++static struct platform_driver stm32_adc_temp_driver = {
++	.probe = stm32_adc_temp_probe,
++	.remove = stm32_adc_temp_remove,
++	.driver = {
++		.name = "stm32-adc-temp",
++		.of_match_table = of_match_ptr(stm32_adc_temp_of_match),
++		.pm = &stm32_adc_temp_pm_ops,
++	},
++};
++module_platform_driver(stm32_adc_temp_driver);
++
++MODULE_AUTHOR("Fabrice Gasnier <fabrice.gasnier@st.com>");
++MODULE_DESCRIPTION("STMicroelectronics STM32 ADC Temperature IIO driver");
++MODULE_LICENSE("GPL v2");
++MODULE_ALIAS("platform:stm32-adc-temp");
+diff --git a/drivers/iio/adc/stm32-adc.c b/drivers/iio/adc/stm32-adc.c
+index 3784118..980355e 100644
+--- a/drivers/iio/adc/stm32-adc.c
++++ b/drivers/iio/adc/stm32-adc.c
+@@ -12,6 +12,7 @@
+ #include <linux/dmaengine.h>
+ #include <linux/iio/iio.h>
+ #include <linux/iio/buffer.h>
++#include <linux/iio/events.h>
+ #include <linux/iio/timer/stm32-lptim-trigger.h>
+ #include <linux/iio/timer/stm32-timer-trigger.h>
+ #include <linux/iio/trigger.h>
+@@ -22,6 +23,7 @@
+ #include <linux/iopoll.h>
+ #include <linux/module.h>
+ #include <linux/platform_device.h>
++#include <linux/pm_runtime.h>
+ #include <linux/of.h>
+ #include <linux/of_device.h>
+ 
+@@ -46,14 +48,26 @@
+ #define STM32F4_ADC_DR			0x4C
+ 
+ /* STM32F4_ADC_SR - bit fields */
++#define STM32F4_OVR			BIT(5)
+ #define STM32F4_STRT			BIT(4)
++#define STM32F4_JSTRT			BIT(3)
++#define STM32F4_JEOC			BIT(2)
+ #define STM32F4_EOC			BIT(1)
++#define STM32F4_AWD			BIT(0)
+ 
+ /* STM32F4_ADC_CR1 - bit fields */
+ #define STM32F4_RES_SHIFT		24
++#define STM32F4_OVRIE			BIT(26)
+ #define STM32F4_RES_MASK		GENMASK(25, 24)
++#define STM32F4_AWDEN			BIT(23)
++#define STM32F4_JAWDEN			BIT(22)
++#define STM32F4_AWDSGL			BIT(9)
+ #define STM32F4_SCAN			BIT(8)
++#define STM32F4_JEOCIE			BIT(7)
++#define STM32F4_AWDIE			BIT(6)
+ #define STM32F4_EOCIE			BIT(5)
++#define STM32F4_AWDCH_SHIFT		0
++#define STM32F4_AWDCH_MASK		GENMASK(4, 0)
+ 
+ /* STM32F4_ADC_CR2 - bit fields */
+ #define STM32F4_SWSTART			BIT(30)
+@@ -61,6 +75,11 @@
+ #define STM32F4_EXTEN_MASK		GENMASK(29, 28)
+ #define STM32F4_EXTSEL_SHIFT		24
+ #define STM32F4_EXTSEL_MASK		GENMASK(27, 24)
++#define STM32F4_JSWSTART		BIT(22)
++#define STM32F4_JEXTEN_SHIFT		20
++#define STM32F4_JEXTEN_MASK		GENMASK(21, 20)
++#define STM32F4_JEXTSEL_SHIFT		16
++#define STM32F4_JEXTSEL_MASK		GENMASK(19, 16)
+ #define STM32F4_EOCS			BIT(10)
+ #define STM32F4_DDS			BIT(9)
+ #define STM32F4_DMA			BIT(8)
+@@ -74,21 +93,44 @@
+ #define STM32H7_ADC_SMPR1		0x14
+ #define STM32H7_ADC_SMPR2		0x18
+ #define STM32H7_ADC_PCSEL		0x1C
++#define STM32H7_ADC_LTR1		0x20
++#define STM32H7_ADC_HTR1		0x24
+ #define STM32H7_ADC_SQR1		0x30
+ #define STM32H7_ADC_SQR2		0x34
+ #define STM32H7_ADC_SQR3		0x38
+ #define STM32H7_ADC_SQR4		0x3C
+ #define STM32H7_ADC_DR			0x40
++#define STM32H7_ADC_JSQR		0x4C
++#define STM32H7_ADC_JDR1		0x80
++#define STM32H7_ADC_JDR2		0x84
++#define STM32H7_ADC_JDR3		0x88
++#define STM32H7_ADC_JDR4		0x8C
++#define STM32H7_ADC_AWD2CR		0xA0
++#define STM32H7_ADC_AWD3CR		0xA4
++#define STM32H7_ADC_LTR2		0xB0
++#define STM32H7_ADC_HTR2		0xB4
++#define STM32H7_ADC_LTR3		0xB8
++#define STM32H7_ADC_HTR3		0xBC
+ #define STM32H7_ADC_DIFSEL		0xC0
+ #define STM32H7_ADC_CALFACT		0xC4
+ #define STM32H7_ADC_CALFACT2		0xC8
+ 
+ /* STM32H7_ADC_ISR - bit fields */
+ #define STM32MP1_VREGREADY		BIT(12)
++#define STM32H7_AWD3			BIT(9)
++#define STM32H7_AWD2			BIT(8)
++#define STM32H7_AWD1			BIT(7)
++#define STM32H7_JEOS			BIT(6)
++#define STM32H7_OVR			BIT(4)
+ #define STM32H7_EOC			BIT(2)
+ #define STM32H7_ADRDY			BIT(0)
+ 
+ /* STM32H7_ADC_IER - bit fields */
++#define STM32H7_AWD3IE			STM32H7_AWD3
++#define STM32H7_AWD2IE			STM32H7_AWD2
++#define STM32H7_AWD1IE			STM32H7_AWD1
++#define STM32H7_JEOSIE			STM32H7_JEOS
++#define STM32H7_OVRIE			STM32H7_OVR
+ #define STM32H7_EOCIE			STM32H7_EOC
+ 
+ /* STM32H7_ADC_CR - bit fields */
+@@ -104,12 +146,19 @@
+ #define STM32H7_LINCALRDYW1		BIT(22)
+ #define STM32H7_ADCALLIN		BIT(16)
+ #define STM32H7_BOOST			BIT(8)
++#define STM32H7_JADSTP			BIT(5)
+ #define STM32H7_ADSTP			BIT(4)
++#define STM32H7_JADSTART		BIT(3)
+ #define STM32H7_ADSTART			BIT(2)
+ #define STM32H7_ADDIS			BIT(1)
+ #define STM32H7_ADEN			BIT(0)
+ 
+ /* STM32H7_ADC_CFGR bit fields */
++#define STM32H7_AWD1CH_SHIFT		26
++#define STM32H7_AWD1CH_MASK		GENMASK(30, 26)
++#define STM32H7_JAWD1EN			BIT(24)
++#define STM32H7_AWD1EN			BIT(23)
++#define STM32H7_AWD1SGL			BIT(22)
+ #define STM32H7_EXTEN_SHIFT		10
+ #define STM32H7_EXTEN_MASK		GENMASK(11, 10)
+ #define STM32H7_EXTSEL_SHIFT		5
+@@ -126,6 +175,12 @@ enum stm32h7_adc_dmngt {
+ 	STM32H7_DMNGT_DMA_CIRC,		/* DMA circular mode */
+ };
+ 
++/* STM32H7_ADC_JSQR - bit fields */
++#define STM32H7_JEXTEN_SHIFT		7
++#define STM32H7_JEXTEN_MASK		GENMASK(8, 7)
++#define STM32H7_JEXTSEL_SHIFT		2
++#define STM32H7_JEXTSEL_MASK		GENMASK(6, 2)
++
+ /* STM32H7_ADC_CALFACT - bit fields */
+ #define STM32H7_CALFACT_D_SHIFT		16
+ #define STM32H7_CALFACT_D_MASK		GENMASK(26, 16)
+@@ -136,18 +191,17 @@ enum stm32h7_adc_dmngt {
+ #define STM32H7_LINCALFACT_SHIFT	0
+ #define STM32H7_LINCALFACT_MASK		GENMASK(29, 0)
+ 
+-/* Number of linear calibration shadow registers / LINCALRDYW control bits */
+-#define STM32H7_LINCALFACT_NUM		6
+-
+ /* BOOST bit must be set on STM32H7 when ADC clock is above 20MHz */
+ #define STM32H7_BOOST_CLKRATE		20000000UL
+ 
+ #define STM32_ADC_CH_MAX		20	/* max number of channels */
+ #define STM32_ADC_CH_SZ			10	/* max channel name size */
+ #define STM32_ADC_MAX_SQ		16	/* SQ1..SQ16 */
++#define STM32_ADC_MAX_JSQ		4	/* JSQ1..JSQ4 */
+ #define STM32_ADC_MAX_SMP		7	/* SMPx range is [0..7] */
+ #define STM32_ADC_TIMEOUT_US		100000
+ #define STM32_ADC_TIMEOUT	(msecs_to_jiffies(STM32_ADC_TIMEOUT_US / 1000))
++#define STM32_ADC_AUTO_SUSPEND_DELAY_MS	2000
+ 
+ #define STM32_DMA_BUFFER_SIZE		PAGE_SIZE
+ 
+@@ -159,53 +213,6 @@ enum stm32_adc_exten {
+ 	STM32_EXTEN_HWTRIG_BOTH_EDGES,
+ };
+ 
+-/* extsel - trigger mux selection value */
+-enum stm32_adc_extsel {
+-	STM32_EXT0,
+-	STM32_EXT1,
+-	STM32_EXT2,
+-	STM32_EXT3,
+-	STM32_EXT4,
+-	STM32_EXT5,
+-	STM32_EXT6,
+-	STM32_EXT7,
+-	STM32_EXT8,
+-	STM32_EXT9,
+-	STM32_EXT10,
+-	STM32_EXT11,
+-	STM32_EXT12,
+-	STM32_EXT13,
+-	STM32_EXT14,
+-	STM32_EXT15,
+-	STM32_EXT16,
+-	STM32_EXT17,
+-	STM32_EXT18,
+-	STM32_EXT19,
+-	STM32_EXT20,
+-};
+-
+-/**
+- * struct stm32_adc_trig_info - ADC trigger info
+- * @name:		name of the trigger, corresponding to its source
+- * @extsel:		trigger selection
+- */
+-struct stm32_adc_trig_info {
+-	const char *name;
+-	enum stm32_adc_extsel extsel;
+-};
+-
+-/**
+- * struct stm32_adc_calib - optional adc calibration data
+- * @calfact_s: Calibration offset for single ended channels
+- * @calfact_d: Calibration offset in differential
+- * @lincalfact: Linearity calibration factor
+- */
+-struct stm32_adc_calib {
+-	u32			calfact_s;
+-	u32			calfact_d;
+-	u32			lincalfact[STM32H7_LINCALFACT_NUM];
+-};
+-
+ /**
+  * stm32_adc_regs - stm32 ADC misc registers & bitfield desc
+  * @reg:		register offset
+@@ -219,27 +226,73 @@ struct stm32_adc_regs {
+ };
+ 
+ /**
++ * struct stm32_adc_awd_reginfo - stm32 ADC analog watchdog regs desc
++ * @reg:		awd control register offset
++ * @en_bits:		ADW enable bits for regular conversions, in @reg
++ * @jen_bits:		ADW enable bits for injected conversions, in @reg
++ * @awdch_mask:		AWDCH bitfield mask, in @reg
++ * @awdch_shift:	AWDCH shift, in @reg
++ * @htr:		High threshold register offset
++ * @ltr:		Low threshold register offset
++ * @ier_msk:		interrupt enable bit mask in ier register
++ * @isr_msk:		interrupt status bit mask in isr register
++ */
++struct stm32_adc_awd_reginfo {
++	u32 reg;
++	u32 en_bits;
++	u32 jen_bits;
++	u32 awdch_mask;
++	u32 awdch_shift;
++	u32 htr;
++	u32 ltr;
++	u32 ier_msk;
++	u32 isr_msk;
++};
++
++/**
+  * stm32_adc_regspec - stm32 registers definition, compatible dependent data
+  * @dr:			data register offset
++ * @jdr:		injected data registers offsets
+  * @ier_eoc:		interrupt enable register & eocie bitfield
++ * @ier_jeoc:		interrupt enable register & jeocie bitfield
++ * @ier_ovr:		interrupt enable register & overrun bitfield
+  * @isr_eoc:		interrupt status register & eoc bitfield
++ * @isr_jeoc:		interrupt status register & jeoc bitfield
++ * @isr_ovr:		interrupt status register & overrun bitfield
+  * @sqr:		reference to sequence registers array
++ * @jsqr:		reference to injected sequence registers array
+  * @exten:		trigger control register & bitfield
+  * @extsel:		trigger selection register & bitfield
++ * @jexten:		injected trigger control register & bitfield
++ * @jextsel:		injected trigger selection register & bitfield
+  * @res:		resolution selection register & bitfield
+  * @smpr:		smpr1 & smpr2 registers offset array
+  * @smp_bits:		smpr1 & smpr2 index and bitfields
++ * @write_one_to_clear:	clear isr flags by writing one to it
++ * @awd_reginfo:	Analog watchdog description
++ * @num_awd:		Number of Analog watchdog
+  */
+ struct stm32_adc_regspec {
+ 	const u32 dr;
++	const u32 jdr[4];
+ 	const struct stm32_adc_regs ier_eoc;
++	const struct stm32_adc_regs ier_jeoc;
++	const struct stm32_adc_regs ier_ovr;
+ 	const struct stm32_adc_regs isr_eoc;
++	const struct stm32_adc_regs isr_jeoc;
++	const struct stm32_adc_regs isr_ovr;
+ 	const struct stm32_adc_regs *sqr;
++	const struct stm32_adc_regs *jsqr;
+ 	const struct stm32_adc_regs exten;
+ 	const struct stm32_adc_regs extsel;
++	const struct stm32_adc_regs jexten;
++	const struct stm32_adc_regs jextsel;
+ 	const struct stm32_adc_regs res;
+ 	const u32 smpr[2];
+ 	const struct stm32_adc_regs *smp_bits;
++	const bool write_one_to_clear;
++	const struct stm32_adc_awd_reginfo *awd_reginfo;
++	unsigned int num_awd;
+ };
+ 
+ struct stm32_adc;
+@@ -251,12 +304,12 @@ struct stm32_adc;
+  * @trigs:		external trigger sources
+  * @clk_required:	clock is required
+  * @has_vregready:	vregready status flag presence
+- * @selfcalib:		optional routine for self-calibration
+  * @prepare:		optional prepare routine (power-up, enable)
+  * @start_conv:		routine to start conversions
+  * @stop_conv:		routine to stop conversions
+  * @unprepare:		optional unprepare routine (disable, power-down)
+  * @smp_cycles:		programmable sampling time (ADC clock cycles)
++ * @is_started:		routine to get adc 'started' state
+  */
+ struct stm32_adc_cfg {
+ 	const struct stm32_adc_regspec	*regs;
+@@ -264,18 +317,39 @@ struct stm32_adc_cfg {
+ 	struct stm32_adc_trig_info	*trigs;
+ 	bool clk_required;
+ 	bool has_vregready;
+-	int (*selfcalib)(struct stm32_adc *);
+ 	int (*prepare)(struct stm32_adc *);
+ 	void (*start_conv)(struct stm32_adc *, bool dma);
+ 	void (*stop_conv)(struct stm32_adc *);
+ 	void (*unprepare)(struct stm32_adc *);
+ 	const unsigned int *smp_cycles;
++	bool (*is_started)(struct stm32_adc *adc);
++};
++
++/**
++ * struct stm32_adc_evt - Configuration data for Analog watchdog events
++ * @list:		event configuration list
++ * @awd_id:		assigned AWD index
++ * @chan:		IIO chan spec reference for this event
++ * @hthresh:		High threshold value
++ * @lthresh:		Low threshold value
++ * @enabled:		Event enabled state
++ * @set:		Flag, event has been assigned an AWD and has been set
++ */
++struct stm32_adc_evt {
++	struct list_head list;
++	int awd_id;
++	const struct iio_chan_spec *chan;
++	u32 hthresh;
++	u32 lthresh;
++	bool enabled;
++	bool set;
+ };
+ 
+ /**
+  * struct stm32_adc - private data of each ADC IIO instance
+  * @common:		reference to ADC block common data
+  * @offset:		ADC instance register offset in ADC block
++ * @id:			ADC instance id from offset
+  * @cfg:		compatible configuration data
+  * @completion:		end of single conversion completion
+  * @buffer:		data buffer
+@@ -290,15 +364,15 @@ struct stm32_adc_cfg {
+  * @rx_buf:		dma rx buffer cpu address
+  * @rx_dma_buf:		dma rx buffer bus address
+  * @rx_buf_sz:		dma rx buffer size
+- * @difsel		bitmask to set single-ended/differential channel
+- * @pcsel		bitmask to preselect channels on some devices
+- * @smpr_val:		sampling time settings (e.g. smpr1 / smpr2)
+- * @cal:		optional calibration data on some devices
+  * @chan_name:		channel name array
++ * @injected:		use injected channels on this adc
++ * @evt_list:		list of all events configured for this ADC block
++ * @awd_mask:		analog watchdog bitmask for this adc
+  */
+ struct stm32_adc {
+ 	struct stm32_adc_common	*common;
+ 	u32			offset;
++	u32			id;
+ 	const struct stm32_adc_cfg	*cfg;
+ 	struct completion	completion;
+ 	u16			buffer[STM32_ADC_MAX_SQ];
+@@ -313,11 +387,10 @@ struct stm32_adc {
+ 	u8			*rx_buf;
+ 	dma_addr_t		rx_dma_buf;
+ 	unsigned int		rx_buf_sz;
+-	u32			difsel;
+-	u32			pcsel;
+-	u32			smpr_val[2];
+-	struct stm32_adc_calib	cal;
+ 	char			chan_name[STM32_ADC_CH_MAX][STM32_ADC_CH_SZ];
++	bool			injected;
++	struct list_head	evt_list;
++	u32			awd_mask;
+ };
+ 
+ struct stm32_adc_diff_channel {
+@@ -342,9 +415,9 @@ static const unsigned int stm32f4_adc_resolutions[] = {
+ 	12, 10, 8, 6,
+ };
+ 
+-/* stm32f4 can have up to 16 channels */
++/* stm32f4 can have up to 19 channels (incl. 16 external sources) */
+ static const struct stm32_adc_info stm32f4_adc_info = {
+-	.max_channels = 16,
++	.max_channels = 19,
+ 	.resolutions = stm32f4_adc_resolutions,
+ 	.num_res = ARRAY_SIZE(stm32f4_adc_resolutions),
+ };
+@@ -390,25 +463,58 @@ static const struct stm32_adc_regs stm32f4_sq[STM32_ADC_MAX_SQ + 1] = {
+ 
+ /* STM32F4 external trigger sources for all instances */
+ static struct stm32_adc_trig_info stm32f4_adc_trigs[] = {
+-	{ TIM1_CH1, STM32_EXT0 },
+-	{ TIM1_CH2, STM32_EXT1 },
+-	{ TIM1_CH3, STM32_EXT2 },
+-	{ TIM2_CH2, STM32_EXT3 },
+-	{ TIM2_CH3, STM32_EXT4 },
+-	{ TIM2_CH4, STM32_EXT5 },
+-	{ TIM2_TRGO, STM32_EXT6 },
+-	{ TIM3_CH1, STM32_EXT7 },
+-	{ TIM3_TRGO, STM32_EXT8 },
+-	{ TIM4_CH4, STM32_EXT9 },
+-	{ TIM5_CH1, STM32_EXT10 },
+-	{ TIM5_CH2, STM32_EXT11 },
+-	{ TIM5_CH3, STM32_EXT12 },
+-	{ TIM8_CH1, STM32_EXT13 },
+-	{ TIM8_TRGO, STM32_EXT14 },
++	{ TIM1_CH1, STM32_EXT0, 0, TRG_REGULAR },
++	{ TIM1_CH2, STM32_EXT1, 0, TRG_REGULAR },
++	{ TIM1_CH3, STM32_EXT2, 0, TRG_REGULAR },
++	{ TIM2_CH2, STM32_EXT3, 0, TRG_REGULAR },
++	{ TIM2_CH3, STM32_EXT4, 0, TRG_REGULAR },
++	{ TIM2_CH4, STM32_EXT5, 0, TRG_REGULAR },
++	{ TIM2_TRGO, STM32_EXT6, STM32_EXT3, TRG_BOTH },
++	{ TIM3_CH1, STM32_EXT7, 0, TRG_REGULAR },
++	{ TIM3_TRGO, STM32_EXT8, 0, TRG_REGULAR },
++	{ TIM4_CH4, STM32_EXT9, 0, TRG_REGULAR },
++	{ TIM5_CH1, STM32_EXT10, 0, TRG_REGULAR },
++	{ TIM5_CH2, STM32_EXT11, 0, TRG_REGULAR },
++	{ TIM5_CH3, STM32_EXT12, 0, TRG_REGULAR },
++	{ TIM8_CH1, STM32_EXT13, 0, TRG_REGULAR },
++	{ TIM8_TRGO, STM32_EXT14, 0, TRG_REGULAR },
++	{ TIM1_CH4, 0, STM32_EXT0, TRG_INJECTED },
++	{ TIM1_TRGO, 0, STM32_EXT1, TRG_INJECTED },
++	{ TIM2_CH1, 0, STM32_EXT2, TRG_INJECTED },
++	{ TIM3_CH2, 0, STM32_EXT4, TRG_INJECTED },
++	{ TIM3_CH4, 0, STM32_EXT5, TRG_INJECTED },
++	{ TIM4_CH1, 0, STM32_EXT6, TRG_INJECTED },
++	{ TIM4_CH2, 0, STM32_EXT7, TRG_INJECTED  },
++	{ TIM4_CH3, 0, STM32_EXT8, TRG_INJECTED },
++	{ TIM4_TRGO, 0, STM32_EXT9, TRG_INJECTED },
++	{ TIM5_CH4, 0, STM32_EXT10, TRG_INJECTED },
++	{ TIM5_TRGO, 0, STM32_EXT11, TRG_INJECTED },
++	{ TIM8_CH2, 0, STM32_EXT12, TRG_INJECTED },
++	{ TIM8_CH3, 0, STM32_EXT13, TRG_INJECTED },
++	{ TIM8_CH4, 0, STM32_EXT14, TRG_INJECTED },
+ 	{}, /* sentinel */
+ };
+ 
+ /**
++ * stm32f4_jsq - describe injected sequence register:
++ * - JL: injected sequence len
++ * - JSQ4..SQ1: sequence entries
++ * When JL == 3, ADC converts JSQ1, JSQ2, JSQ3, JSQ4
++ * When JL == 2, ADC converts JSQ2, JSQ3, JSQ4
++ * When JL == 1, ADC converts JSQ3, JSQ4
++ * When JL == 0, ADC converts JSQ4
++ */
++static const struct stm32_adc_regs stm32f4_jsq[STM32_ADC_MAX_JSQ + 1] = {
++	/* JL: len bit field description to be kept as first element */
++	{ STM32F4_ADC_JSQR, GENMASK(21, 20), 20 },
++	/* JSQ4..JSQ1 registers & bit fields (reg, mask, shift) */
++	{ STM32F4_ADC_JSQR, GENMASK(19, 15), 15 },
++	{ STM32F4_ADC_JSQR, GENMASK(14, 10), 10 },
++	{ STM32F4_ADC_JSQR, GENMASK(9, 5), 5 },
++	{ STM32F4_ADC_JSQR, GENMASK(4, 0), 0 },
++};
++
++/**
+  * stm32f4_smp_bits[] - describe sampling time register index & bit fields
+  * Sorted so it can be indexed by channel number.
+  */
+@@ -441,17 +547,46 @@ static const unsigned int stm32f4_adc_smp_cycles[STM32_ADC_MAX_SMP + 1] = {
+ 	3, 15, 28, 56, 84, 112, 144, 480,
+ };
+ 
++static const struct stm32_adc_awd_reginfo stm32f4_awd_reginfo = {
++	.reg = STM32F4_ADC_CR1,
++	.en_bits = STM32F4_AWDSGL | STM32F4_AWDEN,
++	.jen_bits = STM32F4_AWDSGL | STM32F4_JAWDEN,
++	.awdch_mask = STM32F4_AWDCH_MASK,
++	.awdch_shift = STM32F4_AWDCH_SHIFT,
++	.htr = STM32F4_ADC_HTR,
++	.ltr = STM32F4_ADC_LTR,
++	.ier_msk = STM32F4_AWDIE,
++	.isr_msk = STM32F4_AWD,
++};
++
+ static const struct stm32_adc_regspec stm32f4_adc_regspec = {
+ 	.dr = STM32F4_ADC_DR,
++	.jdr = {
++		STM32F4_ADC_JDR1,
++		STM32F4_ADC_JDR2,
++		STM32F4_ADC_JDR3,
++		STM32F4_ADC_JDR4,
++	},
+ 	.ier_eoc = { STM32F4_ADC_CR1, STM32F4_EOCIE },
++	.ier_jeoc = { STM32F4_ADC_CR1, STM32F4_JEOCIE },
++	.ier_ovr = { STM32F4_ADC_CR1, STM32F4_OVRIE },
+ 	.isr_eoc = { STM32F4_ADC_SR, STM32F4_EOC },
++	.isr_jeoc = { STM32F4_ADC_SR, STM32F4_JEOC },
++	.isr_ovr = { STM32F4_ADC_SR, STM32F4_OVR },
+ 	.sqr = stm32f4_sq,
++	.jsqr = stm32f4_jsq,
+ 	.exten = { STM32F4_ADC_CR2, STM32F4_EXTEN_MASK, STM32F4_EXTEN_SHIFT },
+ 	.extsel = { STM32F4_ADC_CR2, STM32F4_EXTSEL_MASK,
+ 		    STM32F4_EXTSEL_SHIFT },
++	.jexten = { STM32F4_ADC_CR2, STM32F4_JEXTEN_MASK,
++		    STM32F4_JEXTEN_SHIFT },
++	.jextsel = { STM32F4_ADC_CR2, STM32F4_JEXTSEL_MASK,
++		     STM32F4_JEXTSEL_SHIFT },
+ 	.res = { STM32F4_ADC_CR1, STM32F4_RES_MASK, STM32F4_RES_SHIFT },
+ 	.smpr = { STM32F4_ADC_SMPR1, STM32F4_ADC_SMPR2 },
+ 	.smp_bits = stm32f4_smp_bits,
++	.awd_reginfo = &stm32f4_awd_reginfo,
++	.num_awd = 1,
+ };
+ 
+ static const struct stm32_adc_regs stm32h7_sq[STM32_ADC_MAX_SQ + 1] = {
+@@ -476,26 +611,41 @@ static const struct stm32_adc_regs stm32h7_sq[STM32_ADC_MAX_SQ + 1] = {
+ 	{ STM32H7_ADC_SQR4, GENMASK(10, 6), 6 },
+ };
+ 
++static const struct stm32_adc_regs stm32h7_jsq[STM32_ADC_MAX_JSQ + 1] = {
++	/* JL: len bit field description to be kept as first element */
++	{ STM32H7_ADC_JSQR, GENMASK(1, 0), 0 },
++	/* JSQ1..JSQ4 registers & bit fields (reg, mask, shift) */
++	{ STM32H7_ADC_JSQR, GENMASK(13, 9), 9 },
++	{ STM32H7_ADC_JSQR, GENMASK(19, 15), 15 },
++	{ STM32H7_ADC_JSQR, GENMASK(25, 21), 21 },
++	{ STM32H7_ADC_JSQR, GENMASK(31, 27), 27 },
++};
++
+ /* STM32H7 external trigger sources for all instances */
+ static struct stm32_adc_trig_info stm32h7_adc_trigs[] = {
+-	{ TIM1_CH1, STM32_EXT0 },
+-	{ TIM1_CH2, STM32_EXT1 },
+-	{ TIM1_CH3, STM32_EXT2 },
+-	{ TIM2_CH2, STM32_EXT3 },
+-	{ TIM3_TRGO, STM32_EXT4 },
+-	{ TIM4_CH4, STM32_EXT5 },
+-	{ TIM8_TRGO, STM32_EXT7 },
+-	{ TIM8_TRGO2, STM32_EXT8 },
+-	{ TIM1_TRGO, STM32_EXT9 },
+-	{ TIM1_TRGO2, STM32_EXT10 },
+-	{ TIM2_TRGO, STM32_EXT11 },
+-	{ TIM4_TRGO, STM32_EXT12 },
+-	{ TIM6_TRGO, STM32_EXT13 },
+-	{ TIM15_TRGO, STM32_EXT14 },
+-	{ TIM3_CH4, STM32_EXT15 },
+-	{ LPTIM1_OUT, STM32_EXT18 },
+-	{ LPTIM2_OUT, STM32_EXT19 },
+-	{ LPTIM3_OUT, STM32_EXT20 },
++	{ TIM1_CH1, STM32_EXT0, 0, TRG_REGULAR },
++	{ TIM1_CH2, STM32_EXT1, 0, TRG_REGULAR },
++	{ TIM1_CH3, STM32_EXT2, 0, TRG_REGULAR },
++	{ TIM2_CH2, STM32_EXT3, 0, TRG_REGULAR },
++	{ TIM3_TRGO, STM32_EXT4, STM32_EXT12, TRG_BOTH },
++	{ TIM4_CH4, STM32_EXT5, 0, TRG_REGULAR },
++	{ TIM8_TRGO, STM32_EXT7, STM32_EXT9, TRG_BOTH },
++	{ TIM8_TRGO2, STM32_EXT8, STM32_EXT10, TRG_BOTH },
++	{ TIM1_TRGO, STM32_EXT9, STM32_EXT0, TRG_BOTH },
++	{ TIM1_TRGO2, STM32_EXT10, STM32_EXT8, TRG_BOTH },
++	{ TIM2_TRGO, STM32_EXT11, STM32_EXT2, TRG_BOTH },
++	{ TIM4_TRGO, STM32_EXT12, STM32_EXT5, TRG_BOTH },
++	{ TIM6_TRGO, STM32_EXT13, STM32_EXT14, TRG_BOTH },
++	{ TIM15_TRGO, STM32_EXT14, STM32_EXT15, TRG_BOTH },
++	{ TIM3_CH4, STM32_EXT15, STM32_EXT4, TRG_BOTH },
++	{ LPTIM1_OUT, STM32_EXT18, STM32_EXT18, TRG_BOTH },
++	{ LPTIM2_OUT, STM32_EXT19, STM32_EXT19, TRG_BOTH },
++	{ LPTIM3_OUT, STM32_EXT20, STM32_EXT20, TRG_BOTH },
++	{ TIM1_CH4, 0, STM32_EXT1, TRG_INJECTED },
++	{ TIM2_CH1, 0, STM32_EXT3, TRG_INJECTED },
++	{ TIM8_CH4, 0, STM32_EXT7, TRG_INJECTED },
++	{ TIM3_CH3, 0, STM32_EXT11, TRG_INJECTED },
++	{ TIM3_CH1, 0, STM32_EXT13, TRG_INJECTED },
+ 	{},
+ };
+ 
+@@ -533,17 +683,72 @@ static const unsigned int stm32h7_adc_smp_cycles[STM32_ADC_MAX_SMP + 1] = {
+ 	1, 2, 8, 16, 32, 64, 387, 810,
+ };
+ 
++/**
++ * stm32h7_awd_reginfo[] - Analog watchdog description.
++ *
++ * two watchdog types are found in stm32h7 ADC:
++ * - AWD1 has en_bits, and can select either a single or all channel(s)
++ * - AWD2 & AWD3 are enabled by channel mask (in AWDxCR)
++ * Remaining is similar (high/low threshold regs, ier/isr regs & mask)
++ */
++static const struct stm32_adc_awd_reginfo stm32h7_awd_reginfo[] = {
++	{
++		/* AWD1: has en_bits, configure it to guard one channel */
++		.reg = STM32H7_ADC_CFGR,
++		.en_bits = STM32H7_AWD1SGL | STM32H7_AWD1EN,
++		.jen_bits = STM32H7_AWD1SGL | STM32H7_JAWD1EN,
++		.awdch_mask = STM32H7_AWD1CH_MASK,
++		.awdch_shift = STM32H7_AWD1CH_SHIFT,
++		.htr = STM32H7_ADC_HTR1,
++		.ltr = STM32H7_ADC_LTR1,
++		.ier_msk = STM32H7_AWD1IE,
++		.isr_msk = STM32H7_AWD1,
++	}, {
++		/* AWD2 uses channel mask in AWD2CR register */
++		.reg = STM32H7_ADC_AWD2CR,
++		.htr = STM32H7_ADC_HTR2,
++		.ltr = STM32H7_ADC_LTR2,
++		.ier_msk = STM32H7_AWD2IE,
++		.isr_msk = STM32H7_AWD2,
++	}, {
++		/* AWD3 uses channel mask in AWD3CR register */
++		.reg = STM32H7_ADC_AWD3CR,
++		.htr = STM32H7_ADC_HTR3,
++		.ltr = STM32H7_ADC_LTR3,
++		.ier_msk = STM32H7_AWD3IE,
++		.isr_msk = STM32H7_AWD3,
++	},
++};
++
+ static const struct stm32_adc_regspec stm32h7_adc_regspec = {
+ 	.dr = STM32H7_ADC_DR,
++	.jdr = {
++		STM32H7_ADC_JDR1,
++		STM32H7_ADC_JDR2,
++		STM32H7_ADC_JDR3,
++		STM32H7_ADC_JDR4,
++	},
+ 	.ier_eoc = { STM32H7_ADC_IER, STM32H7_EOCIE },
++	.ier_jeoc = { STM32H7_ADC_IER, STM32H7_JEOSIE },
++	.ier_ovr = { STM32H7_ADC_IER, STM32H7_OVRIE },
+ 	.isr_eoc = { STM32H7_ADC_ISR, STM32H7_EOC },
++	.isr_jeoc = { STM32H7_ADC_ISR, STM32H7_JEOS },
++	.isr_ovr = { STM32H7_ADC_ISR, STM32H7_OVR },
+ 	.sqr = stm32h7_sq,
++	.jsqr = stm32h7_jsq,
+ 	.exten = { STM32H7_ADC_CFGR, STM32H7_EXTEN_MASK, STM32H7_EXTEN_SHIFT },
+ 	.extsel = { STM32H7_ADC_CFGR, STM32H7_EXTSEL_MASK,
+ 		    STM32H7_EXTSEL_SHIFT },
++	.jexten = { STM32H7_ADC_JSQR, STM32H7_JEXTEN_MASK,
++		    STM32H7_JEXTEN_SHIFT },
++	.jextsel = { STM32H7_ADC_JSQR, STM32H7_JEXTSEL_MASK,
++		     STM32H7_JEXTSEL_SHIFT },
+ 	.res = { STM32H7_ADC_CFGR, STM32H7_RES_MASK, STM32H7_RES_SHIFT },
+ 	.smpr = { STM32H7_ADC_SMPR1, STM32H7_ADC_SMPR2 },
+ 	.smp_bits = stm32h7_smp_bits,
++	.write_one_to_clear = true,
++	.awd_reginfo = stm32h7_awd_reginfo,
++	.num_awd = ARRAY_SIZE(stm32h7_awd_reginfo),
+ };
+ 
+ /**
+@@ -599,8 +804,12 @@ static void stm32_adc_clr_bits(struct stm32_adc *adc, u32 reg, u32 bits)
+  */
+ static void stm32_adc_conv_irq_enable(struct stm32_adc *adc)
+ {
+-	stm32_adc_set_bits(adc, adc->cfg->regs->ier_eoc.reg,
+-			   adc->cfg->regs->ier_eoc.mask);
++	if (adc->injected)
++		stm32_adc_set_bits(adc, adc->cfg->regs->ier_jeoc.reg,
++				   adc->cfg->regs->ier_jeoc.mask);
++	else
++		stm32_adc_set_bits(adc, adc->cfg->regs->ier_eoc.reg,
++				   adc->cfg->regs->ier_eoc.mask);
+ };
+ 
+ /**
+@@ -609,8 +818,30 @@ static void stm32_adc_conv_irq_enable(struct stm32_adc *adc)
+  */
+ static void stm32_adc_conv_irq_disable(struct stm32_adc *adc)
+ {
+-	stm32_adc_clr_bits(adc, adc->cfg->regs->ier_eoc.reg,
+-			   adc->cfg->regs->ier_eoc.mask);
++	if (adc->injected)
++		stm32_adc_clr_bits(adc, adc->cfg->regs->ier_jeoc.reg,
++				   adc->cfg->regs->ier_jeoc.mask);
++	else
++		stm32_adc_clr_bits(adc, adc->cfg->regs->ier_eoc.reg,
++				   adc->cfg->regs->ier_eoc.mask);
++}
++
++static void stm32_adc_ovr_irq_enable(struct stm32_adc *adc)
++{
++	if (adc->injected)
++		return;
++
++	stm32_adc_set_bits(adc, adc->cfg->regs->ier_ovr.reg,
++			   adc->cfg->regs->ier_ovr.mask);
++}
++
++static void stm32_adc_ovr_irq_disable(struct stm32_adc *adc)
++{
++	if (adc->injected)
++		return;
++
++	stm32_adc_clr_bits(adc, adc->cfg->regs->ier_ovr.reg,
++			   adc->cfg->regs->ier_ovr.mask);
+ }
+ 
+ static void stm32_adc_set_res(struct stm32_adc *adc)
+@@ -623,6 +854,57 @@ static void stm32_adc_set_res(struct stm32_adc *adc)
+ 	stm32_adc_writel(adc, res->reg, val);
+ }
+ 
++static int stm32_adc_hw_stop(struct device *dev)
++{
++	struct stm32_adc *adc = dev_get_drvdata(dev);
++
++	if (adc->cfg->unprepare)
++		adc->cfg->unprepare(adc);
++
++	if (adc->clk)
++		clk_disable_unprepare(adc->clk);
++
++	return 0;
++}
++
++static int stm32_adc_hw_start(struct device *dev)
++{
++	struct stm32_adc *adc = dev_get_drvdata(dev);
++	int ret;
++
++	if (adc->clk) {
++		ret = clk_prepare_enable(adc->clk);
++		if (ret)
++			return ret;
++	}
++
++	stm32_adc_set_res(adc);
++
++	if (adc->cfg->prepare) {
++		ret = adc->cfg->prepare(adc);
++		if (ret)
++			goto err_clk_dis;
++	}
++
++	return 0;
++
++err_clk_dis:
++	if (adc->clk)
++		clk_disable_unprepare(adc->clk);
++
++	return ret;
++}
++
++static bool stm32f4_adc_is_started(struct stm32_adc *adc)
++{
++	u32 val = stm32_adc_readl(adc, STM32F4_ADC_SR);
++
++	if (adc->injected)
++		return !!(val & STM32F4_JSTRT);
++	else
++		return !!(val & STM32F4_STRT);
++}
++
+ /**
+  * stm32f4_adc_start_conv() - Start conversions for regular channels.
+  * @adc: stm32 adc instance
+@@ -635,30 +917,80 @@ static void stm32_adc_set_res(struct stm32_adc *adc)
+  */
+ static void stm32f4_adc_start_conv(struct stm32_adc *adc, bool dma)
+ {
++	u32 trig_msk, start_msk;
++
+ 	stm32_adc_set_bits(adc, STM32F4_ADC_CR1, STM32F4_SCAN);
+ 
+-	if (dma)
++	if (!adc->injected && dma)
+ 		stm32_adc_set_bits(adc, STM32F4_ADC_CR2,
+ 				   STM32F4_DMA | STM32F4_DDS);
+ 
+-	stm32_adc_set_bits(adc, STM32F4_ADC_CR2, STM32F4_EOCS | STM32F4_ADON);
++	if (!(stm32_adc_readl(adc, STM32F4_ADC_CR2) & STM32F4_ADON)) {
++		stm32_adc_set_bits(adc, STM32F4_ADC_CR2,
++				   STM32F4_EOCS | STM32F4_ADON);
++
++		/* Wait for Power-up time (tSTAB from datasheet) */
++		usleep_range(2, 3);
++	}
+ 
+-	/* Wait for Power-up time (tSTAB from datasheet) */
+-	usleep_range(2, 3);
++	if (adc->injected) {
++		trig_msk = STM32F4_JEXTEN_MASK;
++		start_msk = STM32F4_JSWSTART;
++	} else {
++		trig_msk = STM32F4_EXTEN_MASK;
++		start_msk = STM32F4_SWSTART;
++	}
+ 
+ 	/* Software start ? (e.g. trigger detection disabled ?) */
+-	if (!(stm32_adc_readl(adc, STM32F4_ADC_CR2) & STM32F4_EXTEN_MASK))
+-		stm32_adc_set_bits(adc, STM32F4_ADC_CR2, STM32F4_SWSTART);
++	if (!(stm32_adc_readl(adc, STM32F4_ADC_CR2) & trig_msk))
++		stm32_adc_set_bits(adc, STM32F4_ADC_CR2, start_msk);
+ }
+ 
+ static void stm32f4_adc_stop_conv(struct stm32_adc *adc)
+ {
+-	stm32_adc_clr_bits(adc, STM32F4_ADC_CR2, STM32F4_EXTEN_MASK);
+-	stm32_adc_clr_bits(adc, STM32F4_ADC_SR, STM32F4_STRT);
++	u32 val;
++
++	if (adc->injected) {
++		stm32_adc_clr_bits(adc, STM32F4_ADC_CR2, STM32F4_JEXTEN_MASK);
++		stm32_adc_clr_bits(adc, STM32F4_ADC_SR, STM32F4_JSTRT);
++	} else {
++		stm32_adc_clr_bits(adc, STM32F4_ADC_CR2, STM32F4_EXTEN_MASK);
++		stm32_adc_clr_bits(adc, STM32F4_ADC_SR, STM32F4_STRT);
++	}
++
++	/* Disable adc when all triggered conversion have been disabled */
++	val = stm32_adc_readl(adc, STM32F4_ADC_CR2);
++	val &= STM32F4_EXTEN_MASK | STM32F4_JEXTEN_MASK;
++	if (!val) {
++		stm32_adc_clr_bits(adc, STM32F4_ADC_CR1, STM32F4_SCAN);
++		stm32_adc_clr_bits(adc, STM32F4_ADC_CR2, STM32F4_ADON);
++	}
++
++	if (!adc->injected)
++		stm32_adc_clr_bits(adc, STM32F4_ADC_CR2,
++				   STM32F4_DMA | STM32F4_DDS);
++}
++
++static bool stm32h7_adc_is_enabled(struct stm32_adc *adc)
++{
++	return !!(stm32_adc_readl(adc, STM32H7_ADC_CR) & STM32H7_ADEN);
++}
++
++static bool stm32h7_adc_any_ongoing_conv(struct stm32_adc *adc)
++{
++	u32 val = stm32_adc_readl(adc, STM32H7_ADC_CR);
+ 
+-	stm32_adc_clr_bits(adc, STM32F4_ADC_CR1, STM32F4_SCAN);
+-	stm32_adc_clr_bits(adc, STM32F4_ADC_CR2,
+-			   STM32F4_ADON | STM32F4_DMA | STM32F4_DDS);
++	return !!(val & (STM32H7_ADSTART | STM32H7_JADSTART));
++}
++
++static bool stm32h7_adc_is_started(struct stm32_adc *adc)
++{
++	u32 val = stm32_adc_readl(adc, STM32H7_ADC_CR);
++
++	if (adc->injected)
++		return !!(val & STM32H7_JADSTART);
++	else
++		return !!(val & STM32H7_ADSTART);
+ }
+ 
+ static void stm32h7_adc_start_conv(struct stm32_adc *adc, bool dma)
+@@ -667,6 +999,11 @@ static void stm32h7_adc_start_conv(struct stm32_adc *adc, bool dma)
+ 	unsigned long flags;
+ 	u32 val;
+ 
++	if (adc->injected) {
++		stm32_adc_set_bits(adc, STM32H7_ADC_CR, STM32H7_JADSTART);
++		return;
++	}
++
+ 	if (dma)
+ 		dmngt = STM32H7_DMNGT_DMA_CIRC;
+ 	else
+@@ -687,6 +1024,16 @@ static void stm32h7_adc_stop_conv(struct stm32_adc *adc)
+ 	int ret;
+ 	u32 val;
+ 
++	if (adc->injected) {
++		stm32_adc_set_bits(adc, STM32H7_ADC_CR, STM32H7_JADSTP);
++		ret = stm32_adc_readl_poll_timeout(STM32H7_ADC_CR, val,
++						   !(val & (STM32H7_JADSTART)),
++						   100, STM32_ADC_TIMEOUT_US);
++		if (ret)
++			dev_warn(&indio_dev->dev, "stop failed\n");
++		return;
++	}
++
+ 	stm32_adc_set_bits(adc, STM32H7_ADC_CR, STM32H7_ADSTP);
+ 
+ 	ret = stm32_adc_readl_poll_timeout(STM32H7_ADC_CR, val,
+@@ -704,6 +1051,10 @@ static int stm32h7_adc_exit_pwr_down(struct stm32_adc *adc)
+ 	int ret;
+ 	u32 val;
+ 
++	/* Is ADC already up ? */
++	if (stm32_adc_readl(adc, STM32H7_ADC_CR) & STM32H7_ADVREGEN)
++		return 0;
++
+ 	/* Exit deep power down, then enable ADC voltage regulator */
+ 	stm32_adc_clr_bits(adc, STM32H7_ADC_CR, STM32H7_DEEPPWD);
+ 	stm32_adc_set_bits(adc, STM32H7_ADC_CR, STM32H7_ADVREGEN);
+@@ -730,6 +1081,10 @@ static int stm32h7_adc_exit_pwr_down(struct stm32_adc *adc)
+ 
+ static void stm32h7_adc_enter_pwr_down(struct stm32_adc *adc)
+ {
++	/* Check there is no regular or injected on-going conversions */
++	if (stm32h7_adc_any_ongoing_conv(adc))
++		return;
++
+ 	stm32_adc_clr_bits(adc, STM32H7_ADC_CR, STM32H7_BOOST);
+ 
+ 	/* Setting DEEPPWD disables ADC vreg and clears ADVREGEN */
+@@ -742,6 +1097,9 @@ static int stm32h7_adc_enable(struct stm32_adc *adc)
+ 	int ret;
+ 	u32 val;
+ 
++	if (stm32h7_adc_is_enabled(adc))
++		return 0;
++
+ 	stm32_adc_set_bits(adc, STM32H7_ADC_CR, STM32H7_ADEN);
+ 
+ 	/* Poll for ADRDY to be set (after adc startup time) */
+@@ -765,6 +1123,10 @@ static void stm32h7_adc_disable(struct stm32_adc *adc)
+ 	int ret;
+ 	u32 val;
+ 
++	/* Check there is no regular or injected on-going conversions */
++	if (stm32h7_adc_any_ongoing_conv(adc))
++		return;
++
+ 	/* Disable ADC and wait until it's effectively disabled */
+ 	stm32_adc_set_bits(adc, STM32H7_ADC_CR, STM32H7_ADDIS);
+ 	ret = stm32_adc_readl_poll_timeout(STM32H7_ADC_CR, val,
+@@ -777,18 +1139,15 @@ static void stm32h7_adc_disable(struct stm32_adc *adc)
+ /**
+  * stm32h7_adc_read_selfcalib() - read calibration shadow regs, save result
+  * @adc: stm32 adc instance
++ * Note: Must be called once ADC is enabled, so LINCALRDYW[1..6] are writable
+  */
+ static int stm32h7_adc_read_selfcalib(struct stm32_adc *adc)
+ {
+ 	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
++	struct stm32_adc_calib *cal = &adc->common->cal[adc->id];
+ 	int i, ret;
+ 	u32 lincalrdyw_mask, val;
+ 
+-	/* Enable adc so LINCALRDYW1..6 bits are writable */
+-	ret = stm32h7_adc_enable(adc);
+-	if (ret)
+-		return ret;
+-
+ 	/* Read linearity calibration */
+ 	lincalrdyw_mask = STM32H7_LINCALRDYW6;
+ 	for (i = STM32H7_LINCALFACT_NUM - 1; i >= 0; i--) {
+@@ -801,27 +1160,25 @@ static int stm32h7_adc_read_selfcalib(struct stm32_adc *adc)
+ 						   100, STM32_ADC_TIMEOUT_US);
+ 		if (ret) {
+ 			dev_err(&indio_dev->dev, "Failed to read calfact\n");
+-			goto disable;
++			return ret;
+ 		}
+ 
+ 		val = stm32_adc_readl(adc, STM32H7_ADC_CALFACT2);
+-		adc->cal.lincalfact[i] = (val & STM32H7_LINCALFACT_MASK);
+-		adc->cal.lincalfact[i] >>= STM32H7_LINCALFACT_SHIFT;
++		cal->lincalfact[i] = (val & STM32H7_LINCALFACT_MASK);
++		cal->lincalfact[i] >>= STM32H7_LINCALFACT_SHIFT;
+ 
+ 		lincalrdyw_mask >>= 1;
+ 	}
+ 
+ 	/* Read offset calibration */
+ 	val = stm32_adc_readl(adc, STM32H7_ADC_CALFACT);
+-	adc->cal.calfact_s = (val & STM32H7_CALFACT_S_MASK);
+-	adc->cal.calfact_s >>= STM32H7_CALFACT_S_SHIFT;
+-	adc->cal.calfact_d = (val & STM32H7_CALFACT_D_MASK);
+-	adc->cal.calfact_d >>= STM32H7_CALFACT_D_SHIFT;
+-
+-disable:
+-	stm32h7_adc_disable(adc);
++	cal->calfact_s = (val & STM32H7_CALFACT_S_MASK);
++	cal->calfact_s >>= STM32H7_CALFACT_S_SHIFT;
++	cal->calfact_d = (val & STM32H7_CALFACT_D_MASK);
++	cal->calfact_d >>= STM32H7_CALFACT_D_SHIFT;
++	cal->calibrated = true;
+ 
+-	return ret;
++	return 0;
+ }
+ 
+ /**
+@@ -832,11 +1189,16 @@ static int stm32h7_adc_read_selfcalib(struct stm32_adc *adc)
+ static int stm32h7_adc_restore_selfcalib(struct stm32_adc *adc)
+ {
+ 	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
++	struct stm32_adc_calib *cal = &adc->common->cal[adc->id];
+ 	int i, ret;
+ 	u32 lincalrdyw_mask, val;
+ 
+-	val = (adc->cal.calfact_s << STM32H7_CALFACT_S_SHIFT) |
+-		(adc->cal.calfact_d << STM32H7_CALFACT_D_SHIFT);
++	/* Check there is no regular or injected on-going conversions */
++	if (stm32h7_adc_any_ongoing_conv(adc))
++		return 0;
++
++	val = (cal->calfact_s << STM32H7_CALFACT_S_SHIFT) |
++		(cal->calfact_d << STM32H7_CALFACT_D_SHIFT);
+ 	stm32_adc_writel(adc, STM32H7_ADC_CALFACT, val);
+ 
+ 	lincalrdyw_mask = STM32H7_LINCALRDYW6;
+@@ -846,7 +1208,7 @@ static int stm32h7_adc_restore_selfcalib(struct stm32_adc *adc)
+ 		 * Write CALFACT2, and set LINCALRDYW[6..1] bit to trigger
+ 		 * data write. Then poll to wait for complete transfer.
+ 		 */
+-		val = adc->cal.lincalfact[i] << STM32H7_LINCALFACT_SHIFT;
++		val = cal->lincalfact[i] << STM32H7_LINCALFACT_SHIFT;
+ 		stm32_adc_writel(adc, STM32H7_ADC_CALFACT2, val);
+ 		stm32_adc_set_bits(adc, STM32H7_ADC_CR, lincalrdyw_mask);
+ 		ret = stm32_adc_readl_poll_timeout(STM32H7_ADC_CR, val,
+@@ -873,7 +1235,7 @@ static int stm32h7_adc_restore_selfcalib(struct stm32_adc *adc)
+ 			return ret;
+ 		}
+ 		val = stm32_adc_readl(adc, STM32H7_ADC_CALFACT2);
+-		if (val != adc->cal.lincalfact[i] << STM32H7_LINCALFACT_SHIFT) {
++		if (val != cal->lincalfact[i] << STM32H7_LINCALFACT_SHIFT) {
+ 			dev_err(&indio_dev->dev, "calfact not consistent\n");
+ 			return -EIO;
+ 		}
+@@ -898,19 +1260,19 @@ static int stm32h7_adc_restore_selfcalib(struct stm32_adc *adc)
+ #define STM32H7_ADC_CALIB_TIMEOUT_US		100000
+ 
+ /**
+- * stm32h7_adc_selfcalib() - Procedure to calibrate ADC (from power down)
++ * stm32h7_adc_selfcalib() - Procedure to calibrate ADC
+  * @adc: stm32 adc instance
+- * Exit from power down, calibrate ADC, then return to power down.
++ * Note: Must be called once ADC is out of power down.
+  */
+ static int stm32h7_adc_selfcalib(struct stm32_adc *adc)
+ {
+ 	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
++	struct stm32_adc_calib *cal = &adc->common->cal[adc->id];
+ 	int ret;
+ 	u32 val;
+ 
+-	ret = stm32h7_adc_exit_pwr_down(adc);
+-	if (ret)
+-		return ret;
++	if (cal->calibrated)
++		return cal->calibrated;
+ 
+ 	/*
+ 	 * Select calibration mode:
+@@ -927,7 +1289,7 @@ static int stm32h7_adc_selfcalib(struct stm32_adc *adc)
+ 					   STM32H7_ADC_CALIB_TIMEOUT_US);
+ 	if (ret) {
+ 		dev_err(&indio_dev->dev, "calibration failed\n");
+-		goto pwr_dwn;
++		goto out;
+ 	}
+ 
+ 	/*
+@@ -944,18 +1306,13 @@ static int stm32h7_adc_selfcalib(struct stm32_adc *adc)
+ 					   STM32H7_ADC_CALIB_TIMEOUT_US);
+ 	if (ret) {
+ 		dev_err(&indio_dev->dev, "calibration failed\n");
+-		goto pwr_dwn;
++		goto out;
+ 	}
+ 
++out:
+ 	stm32_adc_clr_bits(adc, STM32H7_ADC_CR,
+ 			   STM32H7_ADCALDIF | STM32H7_ADCALLIN);
+ 
+-	/* Read calibration result for future reference */
+-	ret = stm32h7_adc_read_selfcalib(adc);
+-
+-pwr_dwn:
+-	stm32h7_adc_enter_pwr_down(adc);
+-
+ 	return ret;
+ }
+ 
+@@ -972,23 +1329,43 @@ static int stm32h7_adc_selfcalib(struct stm32_adc *adc)
+  */
+ static int stm32h7_adc_prepare(struct stm32_adc *adc)
+ {
+-	int ret;
++	u32 *difsel = &adc->common->difsel[adc->id];
++	u32 *pcsel = &adc->common->pcsel[adc->id];
++	int calib, ret;
++
++	/* protect race between regular/injected prepare, unprepare */
++	mutex_lock(&adc->common->inj[adc->id]);
++	adc->common->prepcnt[adc->id]++;
++	if (adc->common->prepcnt[adc->id] > 1) {
++		mutex_unlock(&adc->common->inj[adc->id]);
++		return 0;
++	}
+ 
+ 	ret = stm32h7_adc_exit_pwr_down(adc);
+ 	if (ret)
+-		return ret;
++		goto unlock;
++
++	ret = stm32h7_adc_selfcalib(adc);
++	if (ret < 0)
++		goto pwr_dwn;
++	calib = ret;
+ 
+-	stm32_adc_writel(adc, STM32H7_ADC_DIFSEL, adc->difsel);
++	stm32_adc_writel(adc, STM32H7_ADC_DIFSEL, *difsel);
+ 
+ 	ret = stm32h7_adc_enable(adc);
+ 	if (ret)
+ 		goto pwr_dwn;
+ 
+-	ret = stm32h7_adc_restore_selfcalib(adc);
++	/* Either restore or read calibration result for future reference */
++	if (calib)
++		ret = stm32h7_adc_restore_selfcalib(adc);
++	else
++		ret = stm32h7_adc_read_selfcalib(adc);
+ 	if (ret)
+ 		goto disable;
+ 
+-	stm32_adc_writel(adc, STM32H7_ADC_PCSEL, adc->pcsel);
++	stm32_adc_writel(adc, STM32H7_ADC_PCSEL, *pcsel);
++	mutex_unlock(&adc->common->inj[adc->id]);
+ 
+ 	return 0;
+ 
+@@ -996,39 +1373,196 @@ static int stm32h7_adc_prepare(struct stm32_adc *adc)
+ 	stm32h7_adc_disable(adc);
+ pwr_dwn:
+ 	stm32h7_adc_enter_pwr_down(adc);
++unlock:
++	adc->common->prepcnt[adc->id]--;
++	mutex_unlock(&adc->common->inj[adc->id]);
+ 
+ 	return ret;
+ }
+ 
+ static void stm32h7_adc_unprepare(struct stm32_adc *adc)
+ {
++	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
++
++	mutex_lock(&adc->common->inj[adc->id]);
++	adc->common->prepcnt[adc->id]--;
++	if (adc->common->prepcnt[adc->id] > 0) {
++		mutex_unlock(&adc->common->inj[adc->id]);
++		return;
++	}
++
++	if (adc->common->prepcnt[adc->id] < 0)
++		dev_err(&indio_dev->dev, "Unbalanced (un)prepare\n");
+ 	stm32h7_adc_disable(adc);
+ 	stm32h7_adc_enter_pwr_down(adc);
++	mutex_unlock(&adc->common->inj[adc->id]);
+ }
+ 
+ /**
+- * stm32_adc_conf_scan_seq() - Build regular channels scan sequence
++ * stm32_adc_find_unused_awd() - Find an unused analog watchdog
++ * @adc: stm32 adc instance
++ *
++ * Loop for all AWD to find a free AWD.
++ * Returns free AWD index or busy error.
++ */
++static int stm32_adc_find_unused_awd(struct stm32_adc *adc)
++{
++	const struct stm32_adc_awd_reginfo *awd_reginfo =
++		adc->cfg->regs->awd_reginfo;
++	u32 val, mask;
++	int i;
++
++	/* find unused AWD, either use en bits or channel mask */
++	for (i = 0; i < adc->cfg->regs->num_awd; i++) {
++		val = stm32_adc_readl(adc, awd_reginfo[i].reg);
++		mask = awd_reginfo[i].en_bits | awd_reginfo[i].jen_bits;
++		if (mask && !(val & mask))
++			break;
++		if (!mask && !val)
++			break;
++	}
++
++	if (i >= adc->cfg->regs->num_awd)
++		return -EBUSY;
++
++	return i;
++}
++
++/**
++ * stm32_adc_awd_clear() - Disable analog watchdog for one adc
++ * @adc: stm32 adc instance
++ *
++ * Mask awd interrupts, disable awd.
++ */
++static void stm32_adc_awd_clear(struct stm32_adc *adc)
++{
++	int i;
++	u32 en_bits, ier = adc->cfg->regs->ier_eoc.reg;
++	struct stm32_adc_evt *evt;
++	const struct stm32_adc_awd_reginfo *awd_reginfo =
++		adc->cfg->regs->awd_reginfo;
++
++	list_for_each_entry(evt, &adc->evt_list, list) {
++		if (!evt->set)
++			continue;
++
++		i = evt->awd_id;
++
++		/* Disable AWD interrupt */
++		stm32_adc_clr_bits(adc, ier, awd_reginfo[i].ier_msk);
++
++		/* Disable AWD: either use en bits and channel num, or mask */
++		en_bits = awd_reginfo[i].en_bits | awd_reginfo[i].jen_bits;
++		if (en_bits)
++			stm32_adc_clr_bits(adc, awd_reginfo[i].reg, en_bits);
++		else
++			stm32_adc_writel(adc, awd_reginfo[i].reg, 0);
++
++		adc->awd_mask &= ~awd_reginfo[i].isr_msk;
++		evt->set = false;
++	}
++}
++
++/**
++ * stm32_adc_awd_set() - Set analog watchdog
++ * @adc: stm32 adc instance
++ *
++ * Set analog watchdog registers based on pre-built event list.
++ *
++ * Two watchdog types can be found in stm32 ADC:
++ * - 1st type can be used either on all channels, or on one channel. Choice
++ *   is made to assing it to one channel only. It is enabled with enable bits
++ *   and channel number.
++ * - 2nd type uses channel mask (choice to assign it to one channel only).
++ * In both case, set high & low threshold. Also unmask interrupt.
++ */
++static int stm32_adc_awd_set(struct stm32_adc *adc)
++{
++	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
++	int i;
++	struct stm32_adc_evt *evt;
++	const struct stm32_adc_awd_reginfo *awd_reginfo =
++		adc->cfg->regs->awd_reginfo;
++	u32 val, ier = adc->cfg->regs->ier_eoc.reg;
++
++	list_for_each_entry(evt, &adc->evt_list, list) {
++		if (!evt->enabled)
++			continue;
++
++		i = stm32_adc_find_unused_awd(adc);
++		if (i < 0) {
++			stm32_adc_awd_clear(adc);
++			return i;
++		}
++
++		evt->awd_id = i;
++		evt->set = true;
++		dev_dbg(&indio_dev->dev, "%s chan%d htr:%d ltr:%d\n",
++			__func__, evt->chan->channel, evt->hthresh,
++			evt->lthresh);
++
++		stm32_adc_writel(adc, awd_reginfo[i].htr, evt->hthresh);
++		stm32_adc_writel(adc, awd_reginfo[i].ltr, evt->lthresh);
++
++		/* Enable AWD: either use en bits and channel num, or mask */
++		if (awd_reginfo[i].en_bits | awd_reginfo[i].jen_bits) {
++			u32 mask = awd_reginfo[i].awdch_mask;
++			u32 shift = awd_reginfo[i].awdch_shift;
++
++			val = stm32_adc_readl(adc, awd_reginfo[i].reg);
++			val &= ~mask;
++			val |= (evt->chan->channel << shift) & mask;
++
++			if (adc->injected)
++				val |= awd_reginfo[i].jen_bits;
++			else
++				val |= awd_reginfo[i].en_bits;
++			stm32_adc_writel(adc, awd_reginfo[i].reg, val);
++		} else {
++			stm32_adc_writel(adc, awd_reginfo[i].reg,
++					 BIT(evt->chan->channel));
++		}
++
++		/* Enable AWD interrupt */
++		adc->awd_mask |= awd_reginfo[i].isr_msk;
++		stm32_adc_set_bits(adc, ier, awd_reginfo[i].ier_msk);
++	}
++
++	return 0;
++}
++
++/**
++ * stm32_adc_conf_scan_seq() - Build channels scan sequence
+  * @indio_dev: IIO device
+  * @scan_mask: channels to be converted
+  *
+  * Conversion sequence :
+  * Apply sampling time settings for all channels.
+  * Configure ADC scan sequence based on selected channels in scan_mask.
+- * Add channels to SQR registers, from scan_mask LSB to MSB, then
++ * Add channels to (J)SQR registers, from scan_mask LSB to MSB, then
+  * program sequence len.
+  */
+ static int stm32_adc_conf_scan_seq(struct iio_dev *indio_dev,
+ 				   const unsigned long *scan_mask)
+ {
+ 	struct stm32_adc *adc = iio_priv(indio_dev);
+-	const struct stm32_adc_regs *sqr = adc->cfg->regs->sqr;
++	u32 *smpr_val = adc->common->smpr_val[adc->id];
++	const struct stm32_adc_regs *sqr;
+ 	const struct iio_chan_spec *chan;
+ 	u32 val, bit;
+-	int i = 0;
++	int sq_max, i = 0;
++
++	if (adc->injected) {
++		sqr = adc->cfg->regs->jsqr;
++		sq_max = STM32_ADC_MAX_JSQ;
++	} else {
++		sqr = adc->cfg->regs->sqr;
++		sq_max = STM32_ADC_MAX_SQ;
++	}
+ 
+ 	/* Apply sampling time settings */
+-	stm32_adc_writel(adc, adc->cfg->regs->smpr[0], adc->smpr_val[0]);
+-	stm32_adc_writel(adc, adc->cfg->regs->smpr[1], adc->smpr_val[1]);
++	stm32_adc_writel(adc, adc->cfg->regs->smpr[0], smpr_val[0]);
++	stm32_adc_writel(adc, adc->cfg->regs->smpr[1], smpr_val[1]);
+ 
+ 	for_each_set_bit(bit, scan_mask, indio_dev->masklength) {
+ 		chan = indio_dev->channels + bit;
+@@ -1037,11 +1571,12 @@ static int stm32_adc_conf_scan_seq(struct iio_dev *indio_dev,
+ 		 * sequence, starting with SQ1.
+ 		 */
+ 		i++;
+-		if (i > STM32_ADC_MAX_SQ)
++		if (i > sq_max)
+ 			return -EINVAL;
+ 
+-		dev_dbg(&indio_dev->dev, "%s chan %d to SQ%d\n",
+-			__func__, chan->channel, i);
++		dev_dbg(&indio_dev->dev, "%s chan %d to %s%d\n",
++			__func__, chan->channel, adc->injected ? "JSQ" : "SQ",
++			i);
+ 
+ 		val = stm32_adc_readl(adc, sqr[i].reg);
+ 		val &= ~sqr[i].mask;
+@@ -1071,18 +1606,36 @@ static int stm32_adc_get_trig_extsel(struct iio_dev *indio_dev,
+ 				     struct iio_trigger *trig)
+ {
+ 	struct stm32_adc *adc = iio_priv(indio_dev);
++	struct stm32_adc_trig_info *trinfo;
++	struct iio_trigger *tr;
+ 	int i;
+ 
+ 	/* lookup triggers registered by stm32 timer trigger driver */
+ 	for (i = 0; adc->cfg->trigs[i].name; i++) {
++		trinfo = &adc->cfg->trigs[i];
+ 		/**
+ 		 * Checking both stm32 timer trigger type and trig name
+ 		 * should be safe against arbitrary trigger names.
+ 		 */
+ 		if ((is_stm32_timer_trigger(trig) ||
+ 		     is_stm32_lptim_trigger(trig)) &&
+-		    !strcmp(adc->cfg->trigs[i].name, trig->name)) {
+-			return adc->cfg->trigs[i].extsel;
++		    !strcmp(trinfo->name, trig->name)) {
++			if (adc->injected && (trinfo->flags & TRG_INJECTED))
++				return trinfo->jextsel;
++
++			if (!adc->injected && (trinfo->flags & TRG_REGULAR))
++				return trinfo->extsel;
++		}
++	}
++
++	/* loop for triggers registered by stm32-adc-core */
++	list_for_each_entry(tr, &adc->common->extrig_list, alloc_list) {
++		if (tr == trig) {
++			trinfo = iio_trigger_get_drvdata(trig);
++			if (adc->injected && (trinfo->flags & TRG_INJECTED))
++				return trinfo->jextsel;
++			if (!adc->injected && (trinfo->flags & TRG_REGULAR))
++				return trinfo->extsel;
+ 		}
+ 	}
+ 
+@@ -1102,10 +1655,24 @@ static int stm32_adc_set_trig(struct iio_dev *indio_dev,
+ 			      struct iio_trigger *trig)
+ {
+ 	struct stm32_adc *adc = iio_priv(indio_dev);
+-	u32 val, extsel = 0, exten = STM32_EXTEN_SWTRIG;
++	u32 val, extsel = 0, exten = STM32_EXTEN_SWTRIG, reg, mask,
++	    exten_shift, extsel_shift;
+ 	unsigned long flags;
+ 	int ret;
+ 
++	if (adc->injected) {
++		reg = adc->cfg->regs->jexten.reg;
++		mask = adc->cfg->regs->jexten.mask |
++			adc->cfg->regs->jextsel.mask;
++		exten_shift = adc->cfg->regs->jexten.shift;
++		extsel_shift = adc->cfg->regs->jextsel.shift;
++	} else {
++		reg = adc->cfg->regs->exten.reg;
++		mask = adc->cfg->regs->exten.mask | adc->cfg->regs->extsel.mask;
++		exten_shift = adc->cfg->regs->exten.shift;
++		extsel_shift = adc->cfg->regs->extsel.shift;
++	}
++
+ 	if (trig) {
+ 		ret = stm32_adc_get_trig_extsel(indio_dev, trig);
+ 		if (ret < 0)
+@@ -1117,11 +1684,9 @@ static int stm32_adc_set_trig(struct iio_dev *indio_dev,
+ 	}
+ 
+ 	spin_lock_irqsave(&adc->lock, flags);
+-	val = stm32_adc_readl(adc, adc->cfg->regs->exten.reg);
+-	val &= ~(adc->cfg->regs->exten.mask | adc->cfg->regs->extsel.mask);
+-	val |= exten << adc->cfg->regs->exten.shift;
+-	val |= extsel << adc->cfg->regs->extsel.shift;
+-	stm32_adc_writel(adc,  adc->cfg->regs->exten.reg, val);
++	val = stm32_adc_readl(adc, reg) & ~mask;
++	val |= (exten << exten_shift) | (extsel << extsel_shift);
++	stm32_adc_writel(adc,  reg, val);
+ 	spin_unlock_irqrestore(&adc->lock, flags);
+ 
+ 	return 0;
+@@ -1174,36 +1739,47 @@ static int stm32_adc_single_conv(struct iio_dev *indio_dev,
+ 				 int *res)
+ {
+ 	struct stm32_adc *adc = iio_priv(indio_dev);
++	struct device *dev = indio_dev->dev.parent;
+ 	const struct stm32_adc_regspec *regs = adc->cfg->regs;
++	u32 *smpr_val = adc->common->smpr_val[adc->id];
++	const struct stm32_adc_regs *sqr;
+ 	long timeout;
+ 	u32 val;
+ 	int ret;
+ 
+ 	reinit_completion(&adc->completion);
+ 
++	adc->num_conv = 1;
+ 	adc->bufi = 0;
+ 
+-	if (adc->cfg->prepare) {
+-		ret = adc->cfg->prepare(adc);
+-		if (ret)
+-			return ret;
++	ret = pm_runtime_get_sync(dev);
++	if (ret < 0) {
++		pm_runtime_put_noidle(dev);
++		return ret;
+ 	}
+ 
+ 	/* Apply sampling time settings */
+-	stm32_adc_writel(adc, regs->smpr[0], adc->smpr_val[0]);
+-	stm32_adc_writel(adc, regs->smpr[1], adc->smpr_val[1]);
++	stm32_adc_writel(adc, regs->smpr[0], smpr_val[0]);
++	stm32_adc_writel(adc, regs->smpr[1], smpr_val[1]);
++
++	if (adc->injected)
++		sqr = regs->jsqr;
++	else
++		sqr = regs->sqr;
+ 
+ 	/* Program chan number in regular sequence (SQ1) */
+-	val = stm32_adc_readl(adc, regs->sqr[1].reg);
+-	val &= ~regs->sqr[1].mask;
+-	val |= chan->channel << regs->sqr[1].shift;
+-	stm32_adc_writel(adc, regs->sqr[1].reg, val);
++	val = stm32_adc_readl(adc, sqr[1].reg) & ~sqr[1].mask;
++	val |= chan->channel << sqr[1].shift;
++	stm32_adc_writel(adc, sqr[1].reg, val);
+ 
+ 	/* Set regular sequence len (0 for 1 conversion) */
+-	stm32_adc_clr_bits(adc, regs->sqr[0].reg, regs->sqr[0].mask);
++	stm32_adc_clr_bits(adc, sqr[0].reg, sqr[0].mask);
+ 
+ 	/* Trigger detection disabled (conversion can be launched in SW) */
+-	stm32_adc_clr_bits(adc, regs->exten.reg, regs->exten.mask);
++	if (adc->injected)
++		stm32_adc_clr_bits(adc, regs->jexten.reg, regs->jexten.mask);
++	else
++		stm32_adc_clr_bits(adc, regs->exten.reg, regs->exten.mask);
+ 
+ 	stm32_adc_conv_irq_enable(adc);
+ 
+@@ -1224,8 +1800,8 @@ static int stm32_adc_single_conv(struct iio_dev *indio_dev,
+ 
+ 	stm32_adc_conv_irq_disable(adc);
+ 
+-	if (adc->cfg->unprepare)
+-		adc->cfg->unprepare(adc);
++	pm_runtime_mark_last_busy(dev);
++	pm_runtime_put_autosuspend(dev);
+ 
+ 	return ret;
+ }
+@@ -1272,14 +1848,72 @@ static int stm32_adc_read_raw(struct iio_dev *indio_dev,
+ 	}
+ }
+ 
++static irqreturn_t stm32_adc_threaded_isr(int irq, void *data)
++{
++	struct stm32_adc *adc = data;
++	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
++	struct stm32_adc_evt *evt;
++	const struct stm32_adc_regspec *regs = adc->cfg->regs;
++	const struct stm32_adc_awd_reginfo *awd_reginfo = regs->awd_reginfo;
++	u32 ier = regs->ier_eoc.reg, isr = regs->isr_eoc.reg;
++	u32 status = stm32_adc_readl(adc, isr);
++	irqreturn_t ret = IRQ_NONE;
++
++	/* Handle analog watchdog events */
++	list_for_each_entry(evt, &adc->evt_list, list) {
++		if (!evt->set || !(status & awd_reginfo[evt->awd_id].isr_msk))
++			continue;
++
++		/* We don't know whether it is a upper or lower threshold. */
++		iio_push_event(indio_dev,
++			       IIO_UNMOD_EVENT_CODE(evt->chan->type,
++						    evt->chan->channel,
++						    IIO_EV_TYPE_THRESH,
++						    IIO_EV_DIR_EITHER),
++			       iio_get_time_ns(indio_dev));
++
++		/* clear analog watchdog flag */
++		if (regs->write_one_to_clear)
++			stm32_adc_set_bits(adc, isr,
++					   awd_reginfo[evt->awd_id].isr_msk);
++		else
++			stm32_adc_clr_bits(adc, isr,
++					   awd_reginfo[evt->awd_id].isr_msk);
++
++		/* re-enable current awd interrupt */
++		stm32_adc_set_bits(adc, ier, awd_reginfo[evt->awd_id].ier_msk);
++
++		ret = IRQ_HANDLED;
++	}
++
++	return ret;
++}
++
+ static irqreturn_t stm32_adc_isr(int irq, void *data)
+ {
+ 	struct stm32_adc *adc = data;
+ 	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
+ 	const struct stm32_adc_regspec *regs = adc->cfg->regs;
++	const struct stm32_adc_awd_reginfo *awd_reginfo = regs->awd_reginfo;
+ 	u32 status = stm32_adc_readl(adc, regs->isr_eoc.reg);
++	u32 ier = adc->cfg->regs->ier_eoc.reg;
++	irqreturn_t ret = IRQ_NONE;
++	int i;
++
++	if (!adc->injected && (status & regs->isr_ovr.mask)) {
++		/*
++		 * Overrun occured on regular conversions. Can't recover easily
++		 * especially in scan mode: data for wrong channel may be read.
++		 * Then, unconditionally disable interrupts to stop processing
++		 * data, and lazily print error message (once).
++		 */
++		stm32_adc_ovr_irq_disable(adc);
++		stm32_adc_conv_irq_disable(adc);
++		dev_err(&indio_dev->dev, "Overrun interrupt, stopping.\n");
++		return IRQ_HANDLED;
++	}
+ 
+-	if (status & regs->isr_eoc.mask) {
++	if (!adc->injected && (status & regs->isr_eoc.mask)) {
+ 		/* Reading DR also clears EOC status flag */
+ 		adc->buffer[adc->bufi] = stm32_adc_readw(adc, regs->dr);
+ 		if (iio_buffer_enabled(indio_dev)) {
+@@ -1291,10 +1925,48 @@ static irqreturn_t stm32_adc_isr(int irq, void *data)
+ 		} else {
+ 			complete(&adc->completion);
+ 		}
+-		return IRQ_HANDLED;
++		ret = IRQ_HANDLED;
++	}
++
++	if (adc->injected && (status & regs->isr_jeoc.mask)) {
++		int i;
++
++		if (regs->write_one_to_clear)
++			stm32_adc_writel(adc, regs->isr_jeoc.reg,
++					 regs->isr_jeoc.mask);
++		else
++			stm32_adc_writel(adc, regs->isr_jeoc.reg,
++					 ~regs->isr_jeoc.mask);
++
++		for (i = 0; i < adc->num_conv; i++) {
++			adc->buffer[i] = stm32_adc_readw(adc, regs->jdr[i]);
++			adc->bufi++;
++		}
++
++		if (iio_buffer_enabled(indio_dev)) {
++			stm32_adc_conv_irq_disable(adc);
++			iio_trigger_poll(indio_dev->trig);
++		} else {
++			complete(&adc->completion);
++		}
++		ret = IRQ_HANDLED;
++	}
++
++	/* only check AWD assigned to this ADC (e.g. regular or injected) */
++	status &= adc->awd_mask;
++	if (status) {
++		for (i = 0; i < adc->cfg->regs->num_awd; i++) {
++			/* mask current awd interrupt */
++			if (status & awd_reginfo[i].isr_msk)
++				stm32_adc_clr_bits(adc, ier,
++						   awd_reginfo[i].ier_msk);
++		}
++
++		/* AWD has detected an event, need to wake IRQ thread */
++		ret = IRQ_WAKE_THREAD;
+ 	}
+ 
+-	return IRQ_NONE;
++	return ret;
+ }
+ 
+ /**
+@@ -1333,13 +2005,168 @@ static int stm32_adc_update_scan_mode(struct iio_dev *indio_dev,
+ 				      const unsigned long *scan_mask)
+ {
+ 	struct stm32_adc *adc = iio_priv(indio_dev);
++	struct device *dev = indio_dev->dev.parent;
+ 	int ret;
+ 
++	ret = pm_runtime_get_sync(dev);
++	if (ret < 0) {
++		pm_runtime_put_noidle(dev);
++		return ret;
++	}
++
+ 	adc->num_conv = bitmap_weight(scan_mask, indio_dev->masklength);
+ 
+ 	ret = stm32_adc_conf_scan_seq(indio_dev, scan_mask);
+-	if (ret)
+-		return ret;
++	pm_runtime_mark_last_busy(dev);
++	pm_runtime_put_autosuspend(dev);
++
++	return ret;
++}
++
++/*
++ * stm32 awd monitors specified channel(s) are within window range.
++ * Define events here as high/low thresholds, with a common enable for
++ * both directions. There is no way to know from interrupt flags, which
++ * direction an event occurred. It's up to upper layers then to check
++ * value.
++ */
++static const struct iio_event_spec stm32_adc_events[] = {
++	{
++		.type = IIO_EV_TYPE_THRESH,
++		.dir = IIO_EV_DIR_RISING,
++		.mask_separate = BIT(IIO_EV_INFO_VALUE),
++	}, {
++		.type = IIO_EV_TYPE_THRESH,
++		.dir = IIO_EV_DIR_FALLING,
++		.mask_separate = BIT(IIO_EV_INFO_VALUE),
++	}, {
++		.type = IIO_EV_TYPE_THRESH,
++		.dir = IIO_EV_DIR_EITHER,
++		.mask_separate = BIT(IIO_EV_INFO_ENABLE),
++	},
++};
++
++static int stm32_adc_read_event_config(struct iio_dev *indio_dev,
++				       const struct iio_chan_spec *chan,
++				       enum iio_event_type type,
++				       enum iio_event_direction dir)
++{
++	struct stm32_adc *adc = iio_priv(indio_dev);
++	struct stm32_adc_evt *evt;
++
++	list_for_each_entry(evt, &adc->evt_list, list)
++		if (evt->chan == chan)
++			return evt->enabled;
++
++	return 0;
++}
++
++static int stm32_adc_write_event_config(struct iio_dev *indio_dev,
++					const struct iio_chan_spec *chan,
++					enum iio_event_type type,
++					enum iio_event_direction dir,
++					int state)
++{
++	struct stm32_adc *adc = iio_priv(indio_dev);
++	struct stm32_adc_evt *evt;
++	bool found = false;
++	int i = 0;
++
++	/* AWD can only be configured before starting conversions */
++	if (adc->cfg->is_started(adc))
++		return -EBUSY;
++
++	list_for_each_entry(evt, &adc->evt_list, list) {
++		if (evt->chan == chan) {
++			found = true;
++			evt->enabled = !!state;
++		}
++
++		/* number of enabled AWD for this adc instance */
++		if (evt->enabled)
++			i++;
++
++		/* unique event per AWD: don't exceed number of AWD */
++		if (i > adc->cfg->regs->num_awd)
++			goto err_busy;
++	}
++
++	/* In case no threshold have been configured, can't enable evt */
++	if (!found)
++		return -EINVAL;
++
++	return 0;
++
++err_busy:
++	dev_err(&indio_dev->dev, "Number of awd exceeded\n");
++
++	list_for_each_entry(evt, &adc->evt_list, list)
++		if (evt->chan == chan)
++			evt->enabled = false;
++
++	return -EBUSY;
++}
++
++static int stm32_adc_read_thresh(struct iio_dev *indio_dev,
++				 const struct iio_chan_spec *chan,
++				 enum iio_event_type type,
++				 enum iio_event_direction dir,
++				 enum iio_event_info info, int *val,
++				 int *val2)
++{
++	struct stm32_adc *adc = iio_priv(indio_dev);
++	struct stm32_adc_evt *evt;
++
++	*val = 0;
++
++	list_for_each_entry(evt, &adc->evt_list, list) {
++		if (evt->chan == chan) {
++			if (dir == IIO_EV_DIR_RISING)
++				*val = evt->hthresh;
++			else
++				*val = evt->lthresh;
++			break;
++		}
++	}
++
++	return IIO_VAL_INT;
++}
++
++static int stm32_adc_write_thresh(struct iio_dev *indio_dev,
++				  const struct iio_chan_spec *chan,
++				  enum iio_event_type type,
++				  enum iio_event_direction dir,
++				  enum iio_event_info info, int val,
++				  int val2)
++{
++	struct stm32_adc *adc = iio_priv(indio_dev);
++	struct stm32_adc_evt *evt;
++	unsigned long flags;
++
++	if (adc->cfg->is_started(adc))
++		return -EBUSY;
++
++	/* Look for existing evt for this channel */
++	list_for_each_entry(evt, &adc->evt_list, list)
++		if (evt->chan == chan)
++			goto found;
++
++	/* Allocate new event: up to num_channels evts */
++	evt = devm_kzalloc(&indio_dev->dev, sizeof(*evt), GFP_KERNEL);
++	if (!evt)
++		return -ENOMEM;
++
++	evt->chan = chan;
++
++	spin_lock_irqsave(&adc->lock, flags);
++	list_add_tail(&evt->list, &adc->evt_list);
++	spin_unlock_irqrestore(&adc->lock, flags);
++
++found:
++	if (dir == IIO_EV_DIR_RISING)
++		evt->hthresh = val;
++	else
++		evt->lthresh = val;
+ 
+ 	return 0;
+ }
+@@ -1371,12 +2198,23 @@ static int stm32_adc_debugfs_reg_access(struct iio_dev *indio_dev,
+ 					unsigned *readval)
+ {
+ 	struct stm32_adc *adc = iio_priv(indio_dev);
++	struct device *dev = indio_dev->dev.parent;
++	int ret;
++
++	ret = pm_runtime_get_sync(dev);
++	if (ret < 0) {
++		pm_runtime_put_noidle(dev);
++		return ret;
++	}
+ 
+ 	if (!readval)
+ 		stm32_adc_writel(adc, reg, writeval);
+ 	else
+ 		*readval = stm32_adc_readl(adc, reg);
+ 
++	pm_runtime_mark_last_busy(dev);
++	pm_runtime_put_autosuspend(dev);
++
+ 	return 0;
+ }
+ 
+@@ -1385,6 +2223,10 @@ static const struct iio_info stm32_adc_iio_info = {
+ 	.validate_trigger = stm32_adc_validate_trigger,
+ 	.hwfifo_set_watermark = stm32_adc_set_watermark,
+ 	.update_scan_mode = stm32_adc_update_scan_mode,
++	.read_event_config = &stm32_adc_read_event_config,
++	.write_event_config = &stm32_adc_write_event_config,
++	.read_event_value = stm32_adc_read_thresh,
++	.write_event_value = stm32_adc_write_thresh,
+ 	.debugfs_reg_access = stm32_adc_debugfs_reg_access,
+ 	.of_xlate = stm32_adc_of_xlate,
+ };
+@@ -1459,21 +2301,28 @@ static int stm32_adc_dma_start(struct iio_dev *indio_dev)
+ 	return 0;
+ }
+ 
+-static int stm32_adc_buffer_postenable(struct iio_dev *indio_dev)
++static int __stm32_adc_buffer_postenable(struct iio_dev *indio_dev)
+ {
+ 	struct stm32_adc *adc = iio_priv(indio_dev);
++	struct device *dev = indio_dev->dev.parent;
+ 	int ret;
+ 
+-	if (adc->cfg->prepare) {
+-		ret = adc->cfg->prepare(adc);
+-		if (ret)
+-			return ret;
++	ret = pm_runtime_get_sync(dev);
++	if (ret < 0) {
++		pm_runtime_put_noidle(dev);
++		return ret;
++	}
++
++	ret = stm32_adc_awd_set(adc);
++	if (ret) {
++		dev_err(&indio_dev->dev, "Failed to configure awd\n");
++		goto err_pm_put;
+ 	}
+ 
+ 	ret = stm32_adc_set_trig(indio_dev, indio_dev->trig);
+ 	if (ret) {
+ 		dev_err(&indio_dev->dev, "Can't set trigger\n");
+-		goto err_unprepare;
++		goto err_clr_awd;
+ 	}
+ 
+ 	ret = stm32_adc_dma_start(indio_dev);
+@@ -1482,13 +2331,11 @@ static int stm32_adc_buffer_postenable(struct iio_dev *indio_dev)
+ 		goto err_clr_trig;
+ 	}
+ 
+-	ret = iio_triggered_buffer_postenable(indio_dev);
+-	if (ret < 0)
+-		goto err_stop_dma;
+-
+ 	/* Reset adc buffer index */
+ 	adc->bufi = 0;
+ 
++	stm32_adc_ovr_irq_enable(adc);
++
+ 	if (!adc->dma_chan)
+ 		stm32_adc_conv_irq_enable(adc);
+ 
+@@ -1496,30 +2343,42 @@ static int stm32_adc_buffer_postenable(struct iio_dev *indio_dev)
+ 
+ 	return 0;
+ 
+-err_stop_dma:
+-	if (adc->dma_chan)
+-		dmaengine_terminate_all(adc->dma_chan);
+ err_clr_trig:
+ 	stm32_adc_set_trig(indio_dev, NULL);
+-err_unprepare:
+-	if (adc->cfg->unprepare)
+-		adc->cfg->unprepare(adc);
++err_clr_awd:
++	stm32_adc_awd_clear(adc);
++err_pm_put:
++	pm_runtime_mark_last_busy(dev);
++	pm_runtime_put_autosuspend(dev);
+ 
+ 	return ret;
+ }
+ 
+-static int stm32_adc_buffer_predisable(struct iio_dev *indio_dev)
++static int stm32_adc_buffer_postenable(struct iio_dev *indio_dev)
+ {
+-	struct stm32_adc *adc = iio_priv(indio_dev);
+ 	int ret;
+ 
++	ret = iio_triggered_buffer_postenable(indio_dev);
++	if (ret < 0)
++		return ret;
++
++	ret = __stm32_adc_buffer_postenable(indio_dev);
++	if (ret < 0)
++		iio_triggered_buffer_predisable(indio_dev);
++
++	return ret;
++}
++
++static void __stm32_adc_buffer_predisable(struct iio_dev *indio_dev)
++{
++	struct stm32_adc *adc = iio_priv(indio_dev);
++	struct device *dev = indio_dev->dev.parent;
++
+ 	adc->cfg->stop_conv(adc);
+ 	if (!adc->dma_chan)
+ 		stm32_adc_conv_irq_disable(adc);
+ 
+-	ret = iio_triggered_buffer_predisable(indio_dev);
+-	if (ret < 0)
+-		dev_err(&indio_dev->dev, "predisable failed\n");
++	stm32_adc_ovr_irq_disable(adc);
+ 
+ 	if (adc->dma_chan)
+ 		dmaengine_terminate_all(adc->dma_chan);
+@@ -1527,8 +2386,21 @@ static int stm32_adc_buffer_predisable(struct iio_dev *indio_dev)
+ 	if (stm32_adc_set_trig(indio_dev, NULL))
+ 		dev_err(&indio_dev->dev, "Can't clear trigger\n");
+ 
+-	if (adc->cfg->unprepare)
+-		adc->cfg->unprepare(adc);
++	stm32_adc_awd_clear(adc);
++
++	pm_runtime_mark_last_busy(dev);
++	pm_runtime_put_autosuspend(dev);
++}
++
++static int stm32_adc_buffer_predisable(struct iio_dev *indio_dev)
++{
++	int ret;
++
++	__stm32_adc_buffer_predisable(indio_dev);
++
++	ret = iio_triggered_buffer_predisable(indio_dev);
++	if (ret < 0)
++		dev_err(&indio_dev->dev, "predisable failed\n");
+ 
+ 	return ret;
+ }
+@@ -1613,6 +2485,7 @@ static int stm32_adc_of_get_resolution(struct iio_dev *indio_dev)
+ static void stm32_adc_smpr_init(struct stm32_adc *adc, int channel, u32 smp_ns)
+ {
+ 	const struct stm32_adc_regs *smpr = &adc->cfg->regs->smp_bits[channel];
++	u32 *smpr_val = adc->common->smpr_val[adc->id];
+ 	u32 period_ns, shift = smpr->shift, mask = smpr->mask;
+ 	unsigned int smp, r = smpr->reg;
+ 
+@@ -1625,7 +2498,7 @@ static void stm32_adc_smpr_init(struct stm32_adc *adc, int channel, u32 smp_ns)
+ 		smp = STM32_ADC_MAX_SMP;
+ 
+ 	/* pre-build sampling time registers (e.g. smpr1, smpr2) */
+-	adc->smpr_val[r] = (adc->smpr_val[r] & ~mask) | (smp << shift);
++	smpr_val[r] = (smpr_val[r] & ~mask) | (smp << shift);
+ }
+ 
+ static void stm32_adc_chan_init_one(struct iio_dev *indio_dev,
+@@ -1634,6 +2507,8 @@ static void stm32_adc_chan_init_one(struct iio_dev *indio_dev,
+ {
+ 	struct stm32_adc *adc = iio_priv(indio_dev);
+ 	char *name = adc->chan_name[vinp];
++	u32 *difsel = &adc->common->difsel[adc->id];
++	u32 *pcsel = &adc->common->pcsel[adc->id];
+ 
+ 	chan->type = IIO_VOLTAGE;
+ 	chan->channel = vinp;
+@@ -1654,14 +2529,16 @@ static void stm32_adc_chan_init_one(struct iio_dev *indio_dev,
+ 	chan->scan_type.realbits = adc->cfg->adc_info->resolutions[adc->res];
+ 	chan->scan_type.storagebits = 16;
+ 	chan->ext_info = stm32_adc_ext_info;
++	chan->event_spec = stm32_adc_events;
++	chan->num_event_specs = ARRAY_SIZE(stm32_adc_events);
+ 
+ 	/* pre-build selected channels mask */
+-	adc->pcsel |= BIT(chan->channel);
++	*pcsel |= BIT(chan->channel);
+ 	if (differential) {
+ 		/* pre-build diff channels mask */
+-		adc->difsel |= BIT(chan->channel);
++		*difsel |= BIT(chan->channel);
+ 		/* Also add negative input to pre-selected channels */
+-		adc->pcsel |= BIT(chan->channel2);
++		*pcsel |= BIT(chan->channel2);
+ 	}
+ }
+ 
+@@ -1677,6 +2554,11 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
+ 	int scan_index = 0, num_channels = 0, num_diff = 0, ret, i;
+ 	u32 val, smp = 0;
+ 
++	if (of_property_read_bool(node, "st,injected")) {
++		dev_dbg(&indio_dev->dev, "Configured to use injected\n");
++		adc->injected = true;
++	}
++
+ 	ret = of_property_count_u32_elems(node, "st,adc-channels");
+ 	if (ret > adc_info->max_channels) {
+ 		dev_err(&indio_dev->dev, "Bad st,adc-channels?\n");
+@@ -1828,6 +2710,7 @@ static int stm32_adc_probe(struct platform_device *pdev)
+ 	init_completion(&adc->completion);
+ 	adc->cfg = (const struct stm32_adc_cfg *)
+ 		of_match_device(dev->driver->of_match_table, dev)->data;
++	INIT_LIST_HEAD(&adc->evt_list);
+ 
+ 	indio_dev->name = dev_name(&pdev->dev);
+ 	indio_dev->dev.parent = &pdev->dev;
+@@ -1838,10 +2721,18 @@ static int stm32_adc_probe(struct platform_device *pdev)
+ 	platform_set_drvdata(pdev, adc);
+ 
+ 	ret = of_property_read_u32(pdev->dev.of_node, "reg", &adc->offset);
+-	if (ret != 0) {
++	if (ret != 0 || adc->offset >= STM32_ADCX_COMN_OFFSET) {
+ 		dev_err(&pdev->dev, "missing reg property\n");
+ 		return -EINVAL;
+ 	}
++	adc->id = adc->offset / STM32_ADC_OFFSET;
++
++	of_property_read_u32(pdev->dev.of_node, "st,trigger-polarity",
++			     &adc->trigger_polarity);
++	if (adc->trigger_polarity >= ARRAY_SIZE(stm32_trig_pol_items)) {
++		dev_err(&pdev->dev, "Invalid st,trigger-polarity property\n");
++		return -EINVAL;
++	}
+ 
+ 	adc->irq = platform_get_irq(pdev, 0);
+ 	if (adc->irq < 0) {
+@@ -1849,8 +2740,9 @@ static int stm32_adc_probe(struct platform_device *pdev)
+ 		return adc->irq;
+ 	}
+ 
+-	ret = devm_request_irq(&pdev->dev, adc->irq, stm32_adc_isr,
+-			       0, pdev->name, adc);
++	ret = devm_request_threaded_irq(&pdev->dev, adc->irq, stm32_adc_isr,
++					stm32_adc_threaded_isr,
++					0, pdev->name, adc);
+ 	if (ret) {
+ 		dev_err(&pdev->dev, "failed to request IRQ\n");
+ 		return ret;
+@@ -1867,32 +2759,17 @@ static int stm32_adc_probe(struct platform_device *pdev)
+ 		}
+ 	}
+ 
+-	if (adc->clk) {
+-		ret = clk_prepare_enable(adc->clk);
+-		if (ret < 0) {
+-			dev_err(&pdev->dev, "clk enable failed\n");
+-			return ret;
+-		}
+-	}
+-
+ 	ret = stm32_adc_of_get_resolution(indio_dev);
+ 	if (ret < 0)
+-		goto err_clk_disable;
+-	stm32_adc_set_res(adc);
+-
+-	if (adc->cfg->selfcalib) {
+-		ret = adc->cfg->selfcalib(adc);
+-		if (ret)
+-			goto err_clk_disable;
+-	}
++		return ret;
+ 
+ 	ret = stm32_adc_chan_of_init(indio_dev);
+ 	if (ret < 0)
+-		goto err_clk_disable;
++		return ret;
+ 
+ 	ret = stm32_adc_dma_request(indio_dev);
+ 	if (ret < 0)
+-		goto err_clk_disable;
++		return ret;
+ 
+ 	ret = iio_triggered_buffer_setup(indio_dev,
+ 					 &iio_pollfunc_store_time,
+@@ -1903,15 +2780,35 @@ static int stm32_adc_probe(struct platform_device *pdev)
+ 		goto err_dma_disable;
+ 	}
+ 
++	/* Get stm32-adc-core PM online */
++	pm_runtime_get_noresume(dev);
++	pm_runtime_set_active(dev);
++	pm_runtime_set_autosuspend_delay(dev, STM32_ADC_AUTO_SUSPEND_DELAY_MS);
++	pm_runtime_use_autosuspend(dev);
++	pm_runtime_enable(dev);
++
++	ret = stm32_adc_hw_start(dev);
++	if (ret)
++		goto err_buffer_cleanup;
++
+ 	ret = iio_device_register(indio_dev);
+ 	if (ret) {
+ 		dev_err(&pdev->dev, "iio dev register failed\n");
+-		goto err_buffer_cleanup;
++		goto err_hw_stop;
+ 	}
+ 
++	pm_runtime_mark_last_busy(dev);
++	pm_runtime_put_autosuspend(dev);
++
+ 	return 0;
+ 
++err_hw_stop:
++	stm32_adc_hw_stop(dev);
++
+ err_buffer_cleanup:
++	pm_runtime_disable(dev);
++	pm_runtime_set_suspended(dev);
++	pm_runtime_put_noidle(dev);
+ 	iio_triggered_buffer_cleanup(indio_dev);
+ 
+ err_dma_disable:
+@@ -1921,9 +2818,6 @@ static int stm32_adc_probe(struct platform_device *pdev)
+ 				  adc->rx_buf, adc->rx_dma_buf);
+ 		dma_release_channel(adc->dma_chan);
+ 	}
+-err_clk_disable:
+-	if (adc->clk)
+-		clk_disable_unprepare(adc->clk);
+ 
+ 	return ret;
+ }
+@@ -1933,7 +2827,12 @@ static int stm32_adc_remove(struct platform_device *pdev)
+ 	struct stm32_adc *adc = platform_get_drvdata(pdev);
+ 	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
+ 
++	pm_runtime_get_sync(&pdev->dev);
+ 	iio_device_unregister(indio_dev);
++	stm32_adc_hw_stop(&pdev->dev);
++	pm_runtime_disable(&pdev->dev);
++	pm_runtime_set_suspended(&pdev->dev);
++	pm_runtime_put_noidle(&pdev->dev);
+ 	iio_triggered_buffer_cleanup(indio_dev);
+ 	if (adc->dma_chan) {
+ 		dma_free_coherent(adc->dma_chan->device->dev,
+@@ -1941,12 +2840,62 @@ static int stm32_adc_remove(struct platform_device *pdev)
+ 				  adc->rx_buf, adc->rx_dma_buf);
+ 		dma_release_channel(adc->dma_chan);
+ 	}
+-	if (adc->clk)
+-		clk_disable_unprepare(adc->clk);
+ 
+ 	return 0;
+ }
+ 
++#if defined(CONFIG_PM_SLEEP)
++static int stm32_adc_suspend(struct device *dev)
++{
++	struct stm32_adc *adc = dev_get_drvdata(dev);
++	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
++
++	if (iio_buffer_enabled(indio_dev))
++		__stm32_adc_buffer_predisable(indio_dev);
++
++	return pm_runtime_force_suspend(dev);
++}
++
++static int stm32_adc_resume(struct device *dev)
++{
++	struct stm32_adc *adc = dev_get_drvdata(dev);
++	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
++	int ret;
++
++	ret = pm_runtime_force_resume(dev);
++	if (ret < 0)
++		return ret;
++
++	if (!iio_buffer_enabled(indio_dev))
++		return 0;
++
++	ret = stm32_adc_update_scan_mode(indio_dev,
++					 indio_dev->active_scan_mask);
++	if (ret < 0)
++		return ret;
++
++	return __stm32_adc_buffer_postenable(indio_dev);
++}
++#endif
++
++#if defined(CONFIG_PM)
++static int stm32_adc_runtime_suspend(struct device *dev)
++{
++	return stm32_adc_hw_stop(dev);
++}
++
++static int stm32_adc_runtime_resume(struct device *dev)
++{
++	return stm32_adc_hw_start(dev);
++}
++#endif
++
++static const struct dev_pm_ops stm32_adc_pm_ops = {
++	SET_SYSTEM_SLEEP_PM_OPS(stm32_adc_suspend, stm32_adc_resume)
++	SET_RUNTIME_PM_OPS(stm32_adc_runtime_suspend, stm32_adc_runtime_resume,
++			   NULL)
++};
++
+ static const struct stm32_adc_cfg stm32f4_adc_cfg = {
+ 	.regs = &stm32f4_adc_regspec,
+ 	.adc_info = &stm32f4_adc_info,
+@@ -1955,18 +2904,19 @@ static const struct stm32_adc_cfg stm32f4_adc_cfg = {
+ 	.start_conv = stm32f4_adc_start_conv,
+ 	.stop_conv = stm32f4_adc_stop_conv,
+ 	.smp_cycles = stm32f4_adc_smp_cycles,
++	.is_started = stm32f4_adc_is_started,
+ };
+ 
+ static const struct stm32_adc_cfg stm32h7_adc_cfg = {
+ 	.regs = &stm32h7_adc_regspec,
+ 	.adc_info = &stm32h7_adc_info,
+ 	.trigs = stm32h7_adc_trigs,
+-	.selfcalib = stm32h7_adc_selfcalib,
+ 	.start_conv = stm32h7_adc_start_conv,
+ 	.stop_conv = stm32h7_adc_stop_conv,
+ 	.prepare = stm32h7_adc_prepare,
+ 	.unprepare = stm32h7_adc_unprepare,
+ 	.smp_cycles = stm32h7_adc_smp_cycles,
++	.is_started = stm32h7_adc_is_started,
+ };
+ 
+ static const struct stm32_adc_cfg stm32mp1_adc_cfg = {
+@@ -1974,12 +2924,12 @@ static const struct stm32_adc_cfg stm32mp1_adc_cfg = {
+ 	.adc_info = &stm32h7_adc_info,
+ 	.trigs = stm32h7_adc_trigs,
+ 	.has_vregready = true,
+-	.selfcalib = stm32h7_adc_selfcalib,
+ 	.start_conv = stm32h7_adc_start_conv,
+ 	.stop_conv = stm32h7_adc_stop_conv,
+ 	.prepare = stm32h7_adc_prepare,
+ 	.unprepare = stm32h7_adc_unprepare,
+ 	.smp_cycles = stm32h7_adc_smp_cycles,
++	.is_started = stm32h7_adc_is_started,
+ };
+ 
+ static const struct of_device_id stm32_adc_of_match[] = {
+@@ -1996,6 +2946,7 @@ static struct platform_driver stm32_adc_driver = {
+ 	.driver = {
+ 		.name = "stm32-adc",
+ 		.of_match_table = stm32_adc_of_match,
++		.pm = &stm32_adc_pm_ops,
+ 	},
+ };
+ module_platform_driver(stm32_adc_driver);
+diff --git a/drivers/iio/adc/stm32-dfsdm-adc.c b/drivers/iio/adc/stm32-dfsdm-adc.c
+index fcd4a1c..c97d9ee 100644
+--- a/drivers/iio/adc/stm32-dfsdm-adc.c
++++ b/drivers/iio/adc/stm32-dfsdm-adc.c
+@@ -12,6 +12,11 @@
+ #include <linux/iio/buffer.h>
+ #include <linux/iio/hw-consumer.h>
+ #include <linux/iio/sysfs.h>
++#include <linux/iio/timer/stm32-lptim-trigger.h>
++#include <linux/iio/timer/stm32-timer-trigger.h>
++#include <linux/iio/trigger.h>
++#include <linux/iio/trigger_consumer.h>
++#include <linux/iio/triggered_buffer.h>
+ #include <linux/interrupt.h>
+ #include <linux/module.h>
+ #include <linux/of_device.h>
+@@ -38,6 +43,11 @@
+ #define DFSDM_MAX_RES BIT(31)
+ #define DFSDM_DATA_RES BIT(23)
+ 
++/* Filter configuration */
++#define DFSDM_CR1_CFG_MASK (DFSDM_CR1_RCH_MASK | DFSDM_CR1_RCONT_MASK | \
++			    DFSDM_CR1_RSYNC_MASK | DFSDM_CR1_JSYNC_MASK | \
++			    DFSDM_CR1_JSCAN_MASK)
++
+ enum sd_converter_type {
+ 	DFSDM_AUDIO,
+ 	DFSDM_IIO,
+@@ -54,6 +64,8 @@ struct stm32_dfsdm_adc {
+ 	struct stm32_dfsdm *dfsdm;
+ 	const struct stm32_dfsdm_dev_data *dev_data;
+ 	unsigned int fl_id;
++	unsigned int nconv;
++	unsigned long smask;
+ 
+ 	/* ADC specific */
+ 	unsigned int oversamp;
+@@ -114,6 +126,61 @@ static int stm32_dfsdm_str2val(const char *str,
+ 	return -EINVAL;
+ }
+ 
++/**
++ * struct stm32_dfsdm_trig_info - DFSDM trigger info
++ * @name:		name of the trigger, corresponding to its source
++ * @jextsel:		trigger signal selection
++ */
++struct stm32_dfsdm_trig_info {
++	const char *name;
++	unsigned int jextsel;
++};
++
++/* hardware injected trigger enable, edge selection */
++enum stm32_dfsdm_jexten {
++	STM32_DFSDM_JEXTEN_DISABLED,
++	STM32_DFSDM_JEXTEN_RISING_EDGE,
++	STM32_DFSDM_JEXTEN_FALLING_EDGE,
++	STM32_DFSDM_EXTEN_BOTH_EDGES,
++};
++
++static const struct stm32_dfsdm_trig_info stm32_dfsdm_trigs[] = {
++	{ TIM1_TRGO, 0 },
++	{ TIM1_TRGO2, 1 },
++	{ TIM8_TRGO, 2 },
++	{ TIM8_TRGO2, 3 },
++	{ TIM3_TRGO, 4 },
++	{ TIM4_TRGO, 5 },
++	{ TIM16_OC1, 6 },
++	{ TIM6_TRGO, 7 },
++	{ TIM7_TRGO, 8 },
++	{ LPTIM1_OUT, 26 },
++	{ LPTIM2_OUT, 27 },
++	{ LPTIM3_OUT, 28 },
++	{},
++};
++
++static int stm32_dfsdm_get_jextsel(struct iio_dev *indio_dev,
++				   struct iio_trigger *trig)
++{
++	int i;
++
++	/* lookup triggers registered by stm32 timer trigger driver */
++	for (i = 0; stm32_dfsdm_trigs[i].name; i++) {
++		/**
++		 * Checking both stm32 timer trigger type and trig name
++		 * should be safe against arbitrary trigger names.
++		 */
++		if ((is_stm32_timer_trigger(trig) ||
++		     is_stm32_lptim_trigger(trig)) &&
++		    !strcmp(stm32_dfsdm_trigs[i].name, trig->name)) {
++			return stm32_dfsdm_trigs[i].jextsel;
++		}
++	}
++
++	return -EINVAL;
++}
++
+ static int stm32_dfsdm_set_osrs(struct stm32_dfsdm_filter *fl,
+ 				unsigned int fast, unsigned int oversamp)
+ {
+@@ -200,19 +267,39 @@ static int stm32_dfsdm_set_osrs(struct stm32_dfsdm_filter *fl,
+ 	return 0;
+ }
+ 
+-static int stm32_dfsdm_start_channel(struct stm32_dfsdm *dfsdm,
+-				     unsigned int ch_id)
++static int stm32_dfsdm_start_channel(struct stm32_dfsdm_adc *adc)
+ {
+-	return regmap_update_bits(dfsdm->regmap, DFSDM_CHCFGR1(ch_id),
+-				  DFSDM_CHCFGR1_CHEN_MASK,
+-				  DFSDM_CHCFGR1_CHEN(1));
++	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
++	struct regmap *regmap = adc->dfsdm->regmap;
++	const struct iio_chan_spec *chan;
++	unsigned int bit;
++	int ret;
++
++	for_each_set_bit(bit, &adc->smask, sizeof(adc->smask) * BITS_PER_BYTE) {
++		chan = indio_dev->channels + bit;
++		ret = regmap_update_bits(regmap, DFSDM_CHCFGR1(chan->channel),
++					 DFSDM_CHCFGR1_CHEN_MASK,
++					 DFSDM_CHCFGR1_CHEN(1));
++		if (ret < 0)
++			return ret;
++	}
++
++	return 0;
+ }
+ 
+-static void stm32_dfsdm_stop_channel(struct stm32_dfsdm *dfsdm,
+-				     unsigned int ch_id)
++static void stm32_dfsdm_stop_channel(struct stm32_dfsdm_adc *adc)
+ {
+-	regmap_update_bits(dfsdm->regmap, DFSDM_CHCFGR1(ch_id),
+-			   DFSDM_CHCFGR1_CHEN_MASK, DFSDM_CHCFGR1_CHEN(0));
++	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
++	struct regmap *regmap = adc->dfsdm->regmap;
++	const struct iio_chan_spec *chan;
++	unsigned int bit;
++
++	for_each_set_bit(bit, &adc->smask, sizeof(adc->smask) * BITS_PER_BYTE) {
++		chan = indio_dev->channels + bit;
++		regmap_update_bits(regmap, DFSDM_CHCFGR1(chan->channel),
++				   DFSDM_CHCFGR1_CHEN_MASK,
++				   DFSDM_CHCFGR1_CHEN(0));
++	}
+ }
+ 
+ static int stm32_dfsdm_chan_configure(struct stm32_dfsdm *dfsdm,
+@@ -237,9 +324,11 @@ static int stm32_dfsdm_chan_configure(struct stm32_dfsdm *dfsdm,
+ 				  DFSDM_CHCFGR1_CHINSEL(ch->alt_si));
+ }
+ 
+-static int stm32_dfsdm_start_filter(struct stm32_dfsdm *dfsdm,
+-				    unsigned int fl_id)
++static int stm32_dfsdm_start_filter(struct stm32_dfsdm_adc *adc,
++				    unsigned int fl_id,
++				    struct iio_trigger *trig)
+ {
++	struct stm32_dfsdm *dfsdm = adc->dfsdm;
+ 	int ret;
+ 
+ 	/* Enable filter */
+@@ -248,7 +337,11 @@ static int stm32_dfsdm_start_filter(struct stm32_dfsdm *dfsdm,
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	/* Start conversion */
++	/* Nothing more to do for injected (scan mode/triggered) conversions */
++	if (adc->nconv > 1 || trig)
++		return 0;
++
++	/* Software start (single or continuous) regular conversion */
+ 	return regmap_update_bits(dfsdm->regmap, DFSDM_CR1(fl_id),
+ 				  DFSDM_CR1_RSWSTART_MASK,
+ 				  DFSDM_CR1_RSWSTART(1));
+@@ -262,11 +355,45 @@ static void stm32_dfsdm_stop_filter(struct stm32_dfsdm *dfsdm,
+ 			   DFSDM_CR1_DFEN_MASK, DFSDM_CR1_DFEN(0));
+ }
+ 
+-static int stm32_dfsdm_filter_configure(struct stm32_dfsdm *dfsdm,
+-					unsigned int fl_id, unsigned int ch_id)
++static int stm32_dfsdm_filter_set_trig(struct stm32_dfsdm_adc *adc,
++				       unsigned int fl_id,
++				       struct iio_trigger *trig)
+ {
+-	struct regmap *regmap = dfsdm->regmap;
+-	struct stm32_dfsdm_filter *fl = &dfsdm->fl_list[fl_id];
++	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
++	struct regmap *regmap = adc->dfsdm->regmap;
++	u32 jextsel = 0, jexten = STM32_DFSDM_JEXTEN_DISABLED;
++	int ret;
++
++	if (trig) {
++		ret = stm32_dfsdm_get_jextsel(indio_dev, trig);
++		if (ret < 0)
++			return ret;
++
++		/* set trigger source and polarity (default to rising edge) */
++		jextsel = ret;
++		jexten = STM32_DFSDM_JEXTEN_RISING_EDGE;
++	}
++
++	ret = regmap_update_bits(regmap, DFSDM_CR1(fl_id),
++				 DFSDM_CR1_JEXTSEL_MASK | DFSDM_CR1_JEXTEN_MASK,
++				 DFSDM_CR1_JEXTSEL(jextsel) |
++				 DFSDM_CR1_JEXTEN(jexten));
++	if (ret < 0)
++		return ret;
++
++	return 0;
++}
++
++static int stm32_dfsdm_filter_configure(struct stm32_dfsdm_adc *adc,
++					unsigned int fl_id,
++					struct iio_trigger *trig)
++{
++	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
++	struct regmap *regmap = adc->dfsdm->regmap;
++	struct stm32_dfsdm_filter *fl = &adc->dfsdm->fl_list[fl_id];
++	u32 cr1;
++	const struct iio_chan_spec *chan;
++	unsigned int bit, jchg = 0;
+ 	int ret;
+ 
+ 	/* Average integrator oversampling */
+@@ -286,15 +413,68 @@ static int stm32_dfsdm_filter_configure(struct stm32_dfsdm *dfsdm,
+ 	if (ret)
+ 		return ret;
+ 
+-	/* No scan mode supported for the moment */
+-	ret = regmap_update_bits(regmap, DFSDM_CR1(fl_id), DFSDM_CR1_RCH_MASK,
+-				 DFSDM_CR1_RCH(ch_id));
++	ret = stm32_dfsdm_filter_set_trig(adc, fl_id, trig);
+ 	if (ret)
+ 		return ret;
+ 
+-	return regmap_update_bits(regmap, DFSDM_CR1(fl_id),
+-				  DFSDM_CR1_RSYNC_MASK,
+-				  DFSDM_CR1_RSYNC(fl->sync_mode));
++	/*
++	 * DFSDM modes configuration W.R.T audio/iio type modes
++	 * ----------------------------------------------------------------
++	 * Modes         | regular |  regular     | injected | injected   |
++	 *               |         |  continuous  |          | + scan     |
++	 * --------------|---------|--------------|----------|------------|
++	 * single conv   |    x    |              |          |            |
++	 * (1 chan)      |         |              |          |            |
++	 * --------------|---------|--------------|----------|------------|
++	 * 1 Audio chan	 |         | sample freq  |          |            |
++	 *               |         | or sync_mode |          |            |
++	 * --------------|---------|--------------|----------|------------|
++	 * 1 IIO chan	 |         | sample freq  | trigger  |            |
++	 *               |         | or sync_mode |          |            |
++	 * --------------|---------|--------------|----------|------------|
++	 * 2+ IIO chans  |         |              |          | trigger or |
++	 *               |         |              |          | sync_mode  |
++	 * ----------------------------------------------------------------
++	 */
++	if (adc->nconv == 1 && !trig) {
++		bit = __ffs(adc->smask);
++		chan = indio_dev->channels + bit;
++
++		/* Use regular conversion for single channel without trigger */
++		cr1 = DFSDM_CR1_RCH(chan->channel);
++
++		/* Continuous conversions triggered by SPI clock in buffer mode */
++		if (indio_dev->currentmode & INDIO_BUFFER_SOFTWARE)
++			cr1 |= DFSDM_CR1_RCONT(1);
++
++		cr1 |= DFSDM_CR1_RSYNC(fl->sync_mode);
++	} else {
++		/* Use injected conversion for multiple channels */
++		for_each_set_bit(bit, &adc->smask,
++				 sizeof(adc->smask) * BITS_PER_BYTE) {
++			chan = indio_dev->channels + bit;
++			jchg |= BIT(chan->channel);
++		}
++		ret = regmap_write(regmap, DFSDM_JCHGR(fl_id), jchg);
++		if (ret < 0)
++			return ret;
++
++		/* Use scan mode for multiple channels */
++		cr1 = DFSDM_CR1_JSCAN(!!(adc->nconv > 1));
++
++		/*
++		 * Continuous conversions not supported in injected mode,
++		 * either use:
++		 * - conversions in sync with filter 0
++		 * - triggered conversions
++		 */
++		if (!fl->sync_mode && !trig)
++			return -EINVAL;
++		cr1 |= DFSDM_CR1_JSYNC(fl->sync_mode);
++	}
++
++	return regmap_update_bits(regmap, DFSDM_CR1(fl_id), DFSDM_CR1_CFG_MASK,
++				  cr1);
+ }
+ 
+ static int stm32_dfsdm_channel_parse_of(struct stm32_dfsdm *dfsdm,
+@@ -378,13 +558,37 @@ static ssize_t dfsdm_adc_audio_get_spiclk(struct iio_dev *indio_dev,
+ 	return snprintf(buf, PAGE_SIZE, "%d\n", adc->spi_freq);
+ }
+ 
++static int dfsdm_adc_set_samp_freq(struct iio_dev *indio_dev,
++				   unsigned int sample_freq,
++				   unsigned int spi_freq)
++{
++	struct stm32_dfsdm_adc *adc = iio_priv(indio_dev);
++	struct stm32_dfsdm_filter *fl = &adc->dfsdm->fl_list[adc->fl_id];
++	unsigned int oversamp;
++	int ret;
++
++	oversamp = DIV_ROUND_CLOSEST(spi_freq, sample_freq);
++	if (spi_freq % sample_freq)
++		dev_warn(&indio_dev->dev, "Sampling rate not accurate (%d)\n",
++			 spi_freq / oversamp);
++
++	ret = stm32_dfsdm_set_osrs(fl, 0, oversamp);
++	if (ret < 0) {
++		dev_err(&indio_dev->dev, "No filter parameters that match!\n");
++		return ret;
++	}
++	adc->sample_freq = spi_freq / oversamp;
++	adc->oversamp = oversamp;
++
++	return 0;
++}
++
+ static ssize_t dfsdm_adc_audio_set_spiclk(struct iio_dev *indio_dev,
+ 					  uintptr_t priv,
+ 					  const struct iio_chan_spec *chan,
+ 					  const char *buf, size_t len)
+ {
+ 	struct stm32_dfsdm_adc *adc = iio_priv(indio_dev);
+-	struct stm32_dfsdm_filter *fl = &adc->dfsdm->fl_list[adc->fl_id];
+ 	struct stm32_dfsdm_channel *ch = &adc->dfsdm->ch_list[chan->channel];
+ 	unsigned int sample_freq = adc->sample_freq;
+ 	unsigned int spi_freq;
+@@ -403,17 +607,9 @@ static ssize_t dfsdm_adc_audio_set_spiclk(struct iio_dev *indio_dev,
+ 		return -EINVAL;
+ 
+ 	if (sample_freq) {
+-		if (spi_freq % sample_freq)
+-			dev_warn(&indio_dev->dev,
+-				 "Sampling rate not accurate (%d)\n",
+-				 spi_freq / (spi_freq / sample_freq));
+-
+-		ret = stm32_dfsdm_set_osrs(fl, 0, (spi_freq / sample_freq));
+-		if (ret < 0) {
+-			dev_err(&indio_dev->dev,
+-				"No filter parameters that match!\n");
++		ret = dfsdm_adc_set_samp_freq(indio_dev, sample_freq, spi_freq);
++		if (ret < 0)
+ 			return ret;
+-		}
+ 	}
+ 	adc->spi_freq = spi_freq;
+ 
+@@ -421,72 +617,44 @@ static ssize_t dfsdm_adc_audio_set_spiclk(struct iio_dev *indio_dev,
+ }
+ 
+ static int stm32_dfsdm_start_conv(struct stm32_dfsdm_adc *adc,
+-				  const struct iio_chan_spec *chan,
+-				  bool dma)
++				  struct iio_trigger *trig)
+ {
+ 	struct regmap *regmap = adc->dfsdm->regmap;
+ 	int ret;
+-	unsigned int dma_en = 0, cont_en = 0;
+ 
+-	ret = stm32_dfsdm_start_channel(adc->dfsdm, chan->channel);
++	ret = stm32_dfsdm_start_channel(adc);
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	ret = stm32_dfsdm_filter_configure(adc->dfsdm, adc->fl_id,
+-					   chan->channel);
++	ret = stm32_dfsdm_filter_configure(adc, adc->fl_id, trig);
+ 	if (ret < 0)
+ 		goto stop_channels;
+ 
+-	if (dma) {
+-		/* Enable DMA transfer*/
+-		dma_en =  DFSDM_CR1_RDMAEN(1);
+-		/* Enable conversion triggered by SPI clock*/
+-		cont_en = DFSDM_CR1_RCONT(1);
+-	}
+-	/* Enable DMA transfer*/
+-	ret = regmap_update_bits(regmap, DFSDM_CR1(adc->fl_id),
+-				 DFSDM_CR1_RDMAEN_MASK, dma_en);
++	ret = stm32_dfsdm_start_filter(adc, adc->fl_id, trig);
+ 	if (ret < 0)
+-		goto stop_channels;
+-
+-	/* Enable conversion triggered by SPI clock*/
+-	ret = regmap_update_bits(regmap, DFSDM_CR1(adc->fl_id),
+-				 DFSDM_CR1_RCONT_MASK, cont_en);
+-	if (ret < 0)
+-		goto stop_channels;
+-
+-	ret = stm32_dfsdm_start_filter(adc->dfsdm, adc->fl_id);
+-	if (ret < 0)
+-		goto stop_channels;
++		goto filter_unconfigure;
+ 
+ 	return 0;
+ 
+-stop_channels:
++filter_unconfigure:
+ 	regmap_update_bits(regmap, DFSDM_CR1(adc->fl_id),
+-			   DFSDM_CR1_RDMAEN_MASK, 0);
+-
+-	regmap_update_bits(regmap, DFSDM_CR1(adc->fl_id),
+-			   DFSDM_CR1_RCONT_MASK, 0);
+-	stm32_dfsdm_stop_channel(adc->dfsdm, chan->channel);
++			   DFSDM_CR1_CFG_MASK, 0);
++stop_channels:
++	stm32_dfsdm_stop_channel(adc);
+ 
+ 	return ret;
+ }
+ 
+-static void stm32_dfsdm_stop_conv(struct stm32_dfsdm_adc *adc,
+-				  const struct iio_chan_spec *chan)
++static void stm32_dfsdm_stop_conv(struct stm32_dfsdm_adc *adc)
+ {
+ 	struct regmap *regmap = adc->dfsdm->regmap;
+ 
+ 	stm32_dfsdm_stop_filter(adc->dfsdm, adc->fl_id);
+ 
+-	/* Clean conversion options */
+-	regmap_update_bits(regmap, DFSDM_CR1(adc->fl_id),
+-			   DFSDM_CR1_RDMAEN_MASK, 0);
+-
+ 	regmap_update_bits(regmap, DFSDM_CR1(adc->fl_id),
+-			   DFSDM_CR1_RCONT_MASK, 0);
++			   DFSDM_CR1_CFG_MASK, 0);
+ 
+-	stm32_dfsdm_stop_channel(adc->dfsdm, chan->channel);
++	stm32_dfsdm_stop_channel(adc);
+ }
+ 
+ static int stm32_dfsdm_set_watermark(struct iio_dev *indio_dev,
+@@ -494,6 +662,7 @@ static int stm32_dfsdm_set_watermark(struct iio_dev *indio_dev,
+ {
+ 	struct stm32_dfsdm_adc *adc = iio_priv(indio_dev);
+ 	unsigned int watermark = DFSDM_DMA_BUFFER_SIZE / 2;
++	unsigned int rx_buf_sz = DFSDM_DMA_BUFFER_SIZE;
+ 
+ 	/*
+ 	 * DMA cyclic transfers are used, buffer is split into two periods.
+@@ -502,7 +671,7 @@ static int stm32_dfsdm_set_watermark(struct iio_dev *indio_dev,
+ 	 * - one buffer (period) driver pushed to ASoC side.
+ 	 */
+ 	watermark = min(watermark, val * (unsigned int)(sizeof(u32)));
+-	adc->buf_sz = watermark * 2;
++	adc->buf_sz = min(rx_buf_sz, watermark * 2 * adc->nconv);
+ 
+ 	return 0;
+ }
+@@ -532,13 +701,41 @@ static unsigned int stm32_dfsdm_adc_dma_residue(struct stm32_dfsdm_adc *adc)
+ 	return 0;
+ }
+ 
+-static void stm32_dfsdm_audio_dma_buffer_done(void *data)
++static irqreturn_t stm32_dfsdm_adc_trigger_handler(int irq, void *p)
++{
++	struct iio_poll_func *pf = p;
++	struct iio_dev *indio_dev = pf->indio_dev;
++	struct stm32_dfsdm_adc *adc = iio_priv(indio_dev);
++	int available = stm32_dfsdm_adc_dma_residue(adc);
++
++	while (available >= indio_dev->scan_bytes) {
++		u32 *buffer = (u32 *)&adc->rx_buf[adc->bufi];
++
++		iio_push_to_buffers_with_timestamp(indio_dev, buffer,
++						   pf->timestamp);
++		available -= indio_dev->scan_bytes;
++		adc->bufi += indio_dev->scan_bytes;
++		if (adc->bufi >= adc->buf_sz)
++			adc->bufi = 0;
++	}
++
++	iio_trigger_notify_done(indio_dev->trig);
++
++	return IRQ_HANDLED;
++}
++
++static void stm32_dfsdm_dma_buffer_done(void *data)
+ {
+ 	struct iio_dev *indio_dev = data;
+ 	struct stm32_dfsdm_adc *adc = iio_priv(indio_dev);
+ 	int available = stm32_dfsdm_adc_dma_residue(adc);
+ 	size_t old_pos;
+ 
++	if (indio_dev->currentmode & INDIO_BUFFER_TRIGGERED) {
++		iio_trigger_poll_chained(indio_dev->trig);
++		return;
++	}
++
+ 	/*
+ 	 * FIXME: In Kernel interface does not support cyclic DMA buffer,and
+ 	 * offers only an interface to push data samples per samples.
+@@ -566,6 +763,9 @@ static void stm32_dfsdm_audio_dma_buffer_done(void *data)
+ 			adc->bufi = 0;
+ 			old_pos = 0;
+ 		}
++		/* regular iio buffer without trigger */
++		if (adc->dev_data->type == DFSDM_IIO)
++			iio_push_to_buffers(indio_dev, buffer);
+ 	}
+ 	if (adc->cb)
+ 		adc->cb(&adc->rx_buf[old_pos], adc->bufi - old_pos,
+@@ -575,6 +775,10 @@ static void stm32_dfsdm_audio_dma_buffer_done(void *data)
+ static int stm32_dfsdm_adc_dma_start(struct iio_dev *indio_dev)
+ {
+ 	struct stm32_dfsdm_adc *adc = iio_priv(indio_dev);
++	struct dma_slave_config config = {
++		.src_addr = (dma_addr_t)adc->dfsdm->phys_base,
++		.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
++	};
+ 	struct dma_async_tx_descriptor *desc;
+ 	dma_cookie_t cookie;
+ 	int ret;
+@@ -585,6 +789,14 @@ static int stm32_dfsdm_adc_dma_start(struct iio_dev *indio_dev)
+ 	dev_dbg(&indio_dev->dev, "%s size=%d watermark=%d\n", __func__,
+ 		adc->buf_sz, adc->buf_sz / 2);
+ 
++	if (adc->nconv == 1 && !indio_dev->trig)
++		config.src_addr += DFSDM_RDATAR(adc->fl_id);
++	else
++		config.src_addr += DFSDM_JDATAR(adc->fl_id);
++	ret = dmaengine_slave_config(adc->dma_chan, &config);
++	if (ret)
++		return ret;
++
+ 	/* Prepare a DMA cyclic transaction */
+ 	desc = dmaengine_prep_dma_cyclic(adc->dma_chan,
+ 					 adc->dma_buf,
+@@ -594,71 +806,154 @@ static int stm32_dfsdm_adc_dma_start(struct iio_dev *indio_dev)
+ 	if (!desc)
+ 		return -EBUSY;
+ 
+-	desc->callback = stm32_dfsdm_audio_dma_buffer_done;
++	desc->callback = stm32_dfsdm_dma_buffer_done;
+ 	desc->callback_param = indio_dev;
+ 
+ 	cookie = dmaengine_submit(desc);
+ 	ret = dma_submit_error(cookie);
+-	if (ret) {
+-		dmaengine_terminate_all(adc->dma_chan);
+-		return ret;
+-	}
++	if (ret)
++		goto err_stop_dma;
+ 
+ 	/* Issue pending DMA requests */
+ 	dma_async_issue_pending(adc->dma_chan);
+ 
++	if (adc->nconv == 1 && !indio_dev->trig) {
++		/* Enable regular DMA transfer*/
++		ret = regmap_update_bits(adc->dfsdm->regmap,
++					 DFSDM_CR1(adc->fl_id),
++					 DFSDM_CR1_RDMAEN_MASK,
++					 DFSDM_CR1_RDMAEN_MASK);
++	} else {
++		/* Enable injected DMA transfer*/
++		ret = regmap_update_bits(adc->dfsdm->regmap,
++					 DFSDM_CR1(adc->fl_id),
++					 DFSDM_CR1_JDMAEN_MASK,
++					 DFSDM_CR1_JDMAEN_MASK);
++	}
++
++	if (ret < 0)
++		goto err_stop_dma;
++
+ 	return 0;
++
++err_stop_dma:
++	dmaengine_terminate_all(adc->dma_chan);
++
++	return ret;
+ }
+ 
+-static int stm32_dfsdm_postenable(struct iio_dev *indio_dev)
++static void stm32_dfsdm_adc_dma_stop(struct iio_dev *indio_dev)
++{
++	struct stm32_dfsdm_adc *adc = iio_priv(indio_dev);
++
++	if (!adc->dma_chan)
++		return;
++
++	regmap_update_bits(adc->dfsdm->regmap, DFSDM_CR1(adc->fl_id),
++			   DFSDM_CR1_RDMAEN_MASK | DFSDM_CR1_JDMAEN_MASK, 0);
++	dmaengine_terminate_all(adc->dma_chan);
++}
++
++static int stm32_dfsdm_update_scan_mode(struct iio_dev *indio_dev,
++					const unsigned long *scan_mask)
++{
++	struct stm32_dfsdm_adc *adc = iio_priv(indio_dev);
++
++	adc->nconv = bitmap_weight(scan_mask, indio_dev->masklength);
++	adc->smask = *scan_mask;
++
++	dev_dbg(&indio_dev->dev, "nconv=%d mask=%lx\n", adc->nconv, *scan_mask);
++
++	return 0;
++}
++
++static int __stm32_dfsdm_postenable(struct iio_dev *indio_dev)
+ {
+ 	struct stm32_dfsdm_adc *adc = iio_priv(indio_dev);
+-	const struct iio_chan_spec *chan = &indio_dev->channels[0];
+ 	int ret;
+ 
+ 	/* Reset adc buffer index */
+ 	adc->bufi = 0;
+ 
++	if (adc->hwc) {
++		ret = iio_hw_consumer_enable(adc->hwc);
++		if (ret < 0)
++			return ret;
++	}
++
+ 	ret = stm32_dfsdm_start_dfsdm(adc->dfsdm);
+ 	if (ret < 0)
+-		return ret;
++		goto err_stop_hwc;
+ 
+-	ret = stm32_dfsdm_start_conv(adc, chan, true);
++	ret = stm32_dfsdm_adc_dma_start(indio_dev);
+ 	if (ret) {
+-		dev_err(&indio_dev->dev, "Can't start conversion\n");
++		dev_err(&indio_dev->dev, "Can't start DMA\n");
+ 		goto stop_dfsdm;
+ 	}
+ 
+-	if (adc->dma_chan) {
+-		ret = stm32_dfsdm_adc_dma_start(indio_dev);
+-		if (ret) {
+-			dev_err(&indio_dev->dev, "Can't start DMA\n");
+-			goto err_stop_conv;
+-		}
++	ret = stm32_dfsdm_start_conv(adc, indio_dev->trig);
++	if (ret) {
++		dev_err(&indio_dev->dev, "Can't start conversion\n");
++		goto err_stop_dma;
+ 	}
+ 
+ 	return 0;
+ 
+-err_stop_conv:
+-	stm32_dfsdm_stop_conv(adc, chan);
++err_stop_dma:
++	stm32_dfsdm_adc_dma_stop(indio_dev);
+ stop_dfsdm:
+ 	stm32_dfsdm_stop_dfsdm(adc->dfsdm);
++err_stop_hwc:
++	if (adc->hwc)
++		iio_hw_consumer_disable(adc->hwc);
+ 
+ 	return ret;
+ }
+ 
+-static int stm32_dfsdm_predisable(struct iio_dev *indio_dev)
++static int stm32_dfsdm_postenable(struct iio_dev *indio_dev)
++{
++	int ret;
++
++	if (indio_dev->currentmode == INDIO_BUFFER_TRIGGERED) {
++		ret = iio_triggered_buffer_postenable(indio_dev);
++		if (ret < 0)
++			return ret;
++	}
++
++	ret = __stm32_dfsdm_postenable(indio_dev);
++	if (ret < 0)
++		goto err_predisable;
++
++	return 0;
++
++err_predisable:
++	if (indio_dev->currentmode == INDIO_BUFFER_TRIGGERED)
++		iio_triggered_buffer_predisable(indio_dev);
++
++	return ret;
++}
++
++static void __stm32_dfsdm_predisable(struct iio_dev *indio_dev)
+ {
+ 	struct stm32_dfsdm_adc *adc = iio_priv(indio_dev);
+-	const struct iio_chan_spec *chan = &indio_dev->channels[0];
+ 
+-	if (adc->dma_chan)
+-		dmaengine_terminate_all(adc->dma_chan);
++	stm32_dfsdm_stop_conv(adc);
+ 
+-	stm32_dfsdm_stop_conv(adc, chan);
++	stm32_dfsdm_adc_dma_stop(indio_dev);
+ 
+ 	stm32_dfsdm_stop_dfsdm(adc->dfsdm);
+ 
++	if (adc->hwc)
++		iio_hw_consumer_disable(adc->hwc);
++}
++
++static int stm32_dfsdm_predisable(struct iio_dev *indio_dev)
++{
++	__stm32_dfsdm_predisable(indio_dev);
++
++	if (indio_dev->currentmode == INDIO_BUFFER_TRIGGERED)
++		iio_triggered_buffer_predisable(indio_dev);
++
+ 	return 0;
+ }
+ 
+@@ -736,7 +1031,9 @@ static int stm32_dfsdm_single_conv(struct iio_dev *indio_dev,
+ 	if (ret < 0)
+ 		goto stop_dfsdm;
+ 
+-	ret = stm32_dfsdm_start_conv(adc, chan, false);
++	adc->nconv = 1;
++	adc->smask = BIT(chan->scan_index);
++	ret = stm32_dfsdm_start_conv(adc, NULL);
+ 	if (ret < 0) {
+ 		regmap_update_bits(adc->dfsdm->regmap, DFSDM_CR2(adc->fl_id),
+ 				   DFSDM_CR2_REOCIE_MASK, DFSDM_CR2_REOCIE(0));
+@@ -757,7 +1054,7 @@ static int stm32_dfsdm_single_conv(struct iio_dev *indio_dev,
+ 	else
+ 		ret = IIO_VAL_INT;
+ 
+-	stm32_dfsdm_stop_conv(adc, chan);
++	stm32_dfsdm_stop_conv(adc);
+ 
+ stop_dfsdm:
+ 	stm32_dfsdm_stop_dfsdm(adc->dfsdm);
+@@ -777,16 +1074,23 @@ static int stm32_dfsdm_write_raw(struct iio_dev *indio_dev,
+ 
+ 	switch (mask) {
+ 	case IIO_CHAN_INFO_OVERSAMPLING_RATIO:
++		ret = iio_device_claim_direct_mode(indio_dev);
++		if (ret)
++			return ret;
+ 		ret = stm32_dfsdm_set_osrs(fl, 0, val);
+ 		if (!ret)
+ 			adc->oversamp = val;
+-
++		iio_device_release_direct_mode(indio_dev);
+ 		return ret;
+ 
+ 	case IIO_CHAN_INFO_SAMP_FREQ:
+ 		if (!val)
+ 			return -EINVAL;
+ 
++		ret = iio_device_claim_direct_mode(indio_dev);
++		if (ret)
++			return ret;
++
+ 		switch (ch->src) {
+ 		case DFSDM_CHANNEL_SPI_CLOCK_INTERNAL:
+ 			spi_freq = adc->dfsdm->spi_master_freq;
+@@ -799,20 +1103,9 @@ static int stm32_dfsdm_write_raw(struct iio_dev *indio_dev,
+ 			spi_freq = adc->spi_freq;
+ 		}
+ 
+-		if (spi_freq % val)
+-			dev_warn(&indio_dev->dev,
+-				 "Sampling rate not accurate (%d)\n",
+-				 spi_freq / (spi_freq / val));
+-
+-		ret = stm32_dfsdm_set_osrs(fl, 0, (spi_freq / val));
+-		if (ret < 0) {
+-			dev_err(&indio_dev->dev,
+-				"Not able to find parameter that match!\n");
+-			return ret;
+-		}
+-		adc->sample_freq = val;
+-
+-		return 0;
++		ret = dfsdm_adc_set_samp_freq(indio_dev, val, spi_freq);
++		iio_device_release_direct_mode(indio_dev);
++		return ret;
+ 	}
+ 
+ 	return -EINVAL;
+@@ -827,11 +1120,15 @@ static int stm32_dfsdm_read_raw(struct iio_dev *indio_dev,
+ 
+ 	switch (mask) {
+ 	case IIO_CHAN_INFO_RAW:
++		ret = iio_device_claim_direct_mode(indio_dev);
++		if (ret)
++			return ret;
+ 		ret = iio_hw_consumer_enable(adc->hwc);
+ 		if (ret < 0) {
+ 			dev_err(&indio_dev->dev,
+ 				"%s: IIO enable failed (channel %d)\n",
+ 				__func__, chan->channel);
++			iio_device_release_direct_mode(indio_dev);
+ 			return ret;
+ 		}
+ 		ret = stm32_dfsdm_single_conv(indio_dev, chan, val);
+@@ -840,8 +1137,10 @@ static int stm32_dfsdm_read_raw(struct iio_dev *indio_dev,
+ 			dev_err(&indio_dev->dev,
+ 				"%s: Conversion failed (channel %d)\n",
+ 				__func__, chan->channel);
++			iio_device_release_direct_mode(indio_dev);
+ 			return ret;
+ 		}
++		iio_device_release_direct_mode(indio_dev);
+ 		return IIO_VAL_INT;
+ 
+ 	case IIO_CHAN_INFO_OVERSAMPLING_RATIO:
+@@ -858,15 +1157,25 @@ static int stm32_dfsdm_read_raw(struct iio_dev *indio_dev,
+ 	return -EINVAL;
+ }
+ 
++static int stm32_dfsdm_validate_trigger(struct iio_dev *indio_dev,
++					struct iio_trigger *trig)
++{
++	return stm32_dfsdm_get_jextsel(indio_dev, trig) < 0 ? -EINVAL : 0;
++}
++
+ static const struct iio_info stm32_dfsdm_info_audio = {
+ 	.hwfifo_set_watermark = stm32_dfsdm_set_watermark,
+ 	.read_raw = stm32_dfsdm_read_raw,
+ 	.write_raw = stm32_dfsdm_write_raw,
++	.update_scan_mode = stm32_dfsdm_update_scan_mode,
+ };
+ 
+ static const struct iio_info stm32_dfsdm_info_adc = {
++	.hwfifo_set_watermark = stm32_dfsdm_set_watermark,
+ 	.read_raw = stm32_dfsdm_read_raw,
+ 	.write_raw = stm32_dfsdm_write_raw,
++	.update_scan_mode = stm32_dfsdm_update_scan_mode,
++	.validate_trigger = stm32_dfsdm_validate_trigger,
+ };
+ 
+ static irqreturn_t stm32_dfsdm_irq(int irq, void *arg)
+@@ -926,12 +1235,6 @@ static void stm32_dfsdm_dma_release(struct iio_dev *indio_dev)
+ static int stm32_dfsdm_dma_request(struct iio_dev *indio_dev)
+ {
+ 	struct stm32_dfsdm_adc *adc = iio_priv(indio_dev);
+-	struct dma_slave_config config = {
+-		.src_addr = (dma_addr_t)adc->dfsdm->phys_base +
+-			DFSDM_RDATAR(adc->fl_id),
+-		.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
+-	};
+-	int ret;
+ 
+ 	adc->dma_chan = dma_request_slave_channel(&indio_dev->dev, "rx");
+ 	if (!adc->dma_chan)
+@@ -941,23 +1244,14 @@ static int stm32_dfsdm_dma_request(struct iio_dev *indio_dev)
+ 					 DFSDM_DMA_BUFFER_SIZE,
+ 					 &adc->dma_buf, GFP_KERNEL);
+ 	if (!adc->rx_buf) {
+-		ret = -ENOMEM;
+-		goto err_release;
++		dma_release_channel(adc->dma_chan);
++		return -ENOMEM;
+ 	}
+ 
+-	ret = dmaengine_slave_config(adc->dma_chan, &config);
+-	if (ret)
+-		goto err_free;
++	indio_dev->modes |= INDIO_BUFFER_SOFTWARE;
++	indio_dev->setup_ops = &stm32_dfsdm_buffer_setup_ops;
+ 
+ 	return 0;
+-
+-err_free:
+-	dma_free_coherent(adc->dma_chan->device->dev, DFSDM_DMA_BUFFER_SIZE,
+-			  adc->rx_buf, adc->dma_buf);
+-err_release:
+-	dma_release_channel(adc->dma_chan);
+-
+-	return ret;
+ }
+ 
+ static int stm32_dfsdm_adc_chan_init_one(struct iio_dev *indio_dev,
+@@ -978,7 +1272,8 @@ static int stm32_dfsdm_adc_chan_init_one(struct iio_dev *indio_dev,
+ 	 * IIO_CHAN_INFO_OVERSAMPLING_RATIO: used to set oversampling
+ 	 */
+ 	ch->info_mask_separate = BIT(IIO_CHAN_INFO_RAW);
+-	ch->info_mask_shared_by_all = BIT(IIO_CHAN_INFO_OVERSAMPLING_RATIO);
++	ch->info_mask_shared_by_all = BIT(IIO_CHAN_INFO_OVERSAMPLING_RATIO) |
++					BIT(IIO_CHAN_INFO_SAMP_FREQ);
+ 
+ 	if (adc->dev_data->type == DFSDM_AUDIO) {
+ 		ch->scan_type.sign = 's';
+@@ -1000,9 +1295,6 @@ static int stm32_dfsdm_audio_init(struct iio_dev *indio_dev)
+ 	struct stm32_dfsdm_channel *d_ch;
+ 	int ret;
+ 
+-	indio_dev->modes |= INDIO_BUFFER_SOFTWARE;
+-	indio_dev->setup_ops = &stm32_dfsdm_buffer_setup_ops;
+-
+ 	ch = devm_kzalloc(&indio_dev->dev, sizeof(*ch), GFP_KERNEL);
+ 	if (!ch)
+ 		return -ENOMEM;
+@@ -1070,6 +1362,25 @@ static int stm32_dfsdm_adc_init(struct iio_dev *indio_dev)
+ 
+ 	init_completion(&adc->completion);
+ 
++	/* Optionally request DMA */
++	if (stm32_dfsdm_dma_request(indio_dev)) {
++	    dev_dbg(&indio_dev->dev, "No DMA support\n");
++	    return 0;
++	}
++
++	ret = iio_triggered_buffer_setup(indio_dev,
++					 &iio_pollfunc_store_time,
++					 &stm32_dfsdm_adc_trigger_handler,
++					 &stm32_dfsdm_buffer_setup_ops);
++	if (ret) {
++		stm32_dfsdm_dma_release(indio_dev);
++		dev_err(&indio_dev->dev, "buffer setup failed\n");
++		return ret;
++	}
++
++	/* lptimer/timer hardware triggers */
++	indio_dev->modes |= INDIO_HARDWARE_TRIGGERED;
++
+ 	return 0;
+ }
+ 
+@@ -1117,7 +1428,7 @@ static int stm32_dfsdm_adc_probe(struct platform_device *pdev)
+ 
+ 	iio->dev.parent = dev;
+ 	iio->dev.of_node = np;
+-	iio->modes = INDIO_DIRECT_MODE | INDIO_BUFFER_SOFTWARE;
++	iio->modes = INDIO_DIRECT_MODE;
+ 
+ 	platform_set_drvdata(pdev, adc);
+ 
+@@ -1203,10 +1514,48 @@ static int stm32_dfsdm_adc_remove(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
++#ifdef CONFIG_PM_SLEEP
++static int stm32_dfsdm_adc_suspend(struct device *dev)
++{
++	struct stm32_dfsdm_adc *adc = dev_get_drvdata(dev);
++	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
++
++	if (iio_buffer_enabled(indio_dev))
++		__stm32_dfsdm_predisable(indio_dev);
++
++	return 0;
++}
++static int stm32_dfsdm_adc_resume(struct device *dev)
++{
++	struct stm32_dfsdm_adc *adc = dev_get_drvdata(dev);
++	struct iio_dev *indio_dev = iio_priv_to_dev(adc);
++	const struct iio_chan_spec *chan;
++	struct stm32_dfsdm_channel *ch;
++	int i, ret;
++
++	/* restore channels configuration */
++	for (i = 0; i < indio_dev->num_channels; i++) {
++		chan = indio_dev->channels + i;
++		ch = &adc->dfsdm->ch_list[chan->channel];
++		ret = stm32_dfsdm_chan_configure(adc->dfsdm, ch);
++		if (ret)
++			return ret;
++	}
++
++	if (iio_buffer_enabled(indio_dev))
++		__stm32_dfsdm_postenable(indio_dev);
++
++	return 0;
++}
++#endif
++static SIMPLE_DEV_PM_OPS(stm32_dfsdm_adc_pm_ops,
++			 stm32_dfsdm_adc_suspend, stm32_dfsdm_adc_resume);
++
+ static struct platform_driver stm32_dfsdm_adc_driver = {
+ 	.driver = {
+ 		.name = "stm32-dfsdm-adc",
+ 		.of_match_table = stm32_dfsdm_adc_match,
++		.pm = &stm32_dfsdm_adc_pm_ops,
+ 	},
+ 	.probe = stm32_dfsdm_adc_probe,
+ 	.remove = stm32_dfsdm_adc_remove,
+diff --git a/drivers/iio/adc/stm32-dfsdm-core.c b/drivers/iio/adc/stm32-dfsdm-core.c
+index bf089f5..2d2c640 100644
+--- a/drivers/iio/adc/stm32-dfsdm-core.c
++++ b/drivers/iio/adc/stm32-dfsdm-core.c
+@@ -12,6 +12,8 @@
+ #include <linux/interrupt.h>
+ #include <linux/module.h>
+ #include <linux/of_device.h>
++#include <linux/pinctrl/consumer.h>
++#include <linux/pm_runtime.h>
+ #include <linux/regmap.h>
+ #include <linux/slab.h>
+ 
+@@ -90,6 +92,36 @@ struct dfsdm_priv {
+ 	struct clk *aclk; /* audio clock */
+ };
+ 
++static inline struct dfsdm_priv *to_stm32_dfsdm_priv(struct stm32_dfsdm *dfsdm)
++{
++	return container_of(dfsdm, struct dfsdm_priv, dfsdm);
++}
++
++static int stm32_dfsdm_clk_prepare_enable(struct stm32_dfsdm *dfsdm)
++{
++	struct dfsdm_priv *priv = to_stm32_dfsdm_priv(dfsdm);
++	int ret;
++
++	ret = clk_prepare_enable(priv->clk);
++	if (ret || !priv->aclk)
++		return ret;
++
++	ret = clk_prepare_enable(priv->aclk);
++	if (ret)
++		clk_disable_unprepare(priv->clk);
++
++	return ret;
++}
++
++static void stm32_dfsdm_clk_disable_unprepare(struct stm32_dfsdm *dfsdm)
++{
++	struct dfsdm_priv *priv = to_stm32_dfsdm_priv(dfsdm);
++
++	if (priv->aclk)
++		clk_disable_unprepare(priv->aclk);
++	clk_disable_unprepare(priv->clk);
++}
++
+ /**
+  * stm32_dfsdm_start_dfsdm - start global dfsdm interface.
+  *
+@@ -98,24 +130,17 @@ struct dfsdm_priv {
+  */
+ int stm32_dfsdm_start_dfsdm(struct stm32_dfsdm *dfsdm)
+ {
+-	struct dfsdm_priv *priv = container_of(dfsdm, struct dfsdm_priv, dfsdm);
++	struct dfsdm_priv *priv = to_stm32_dfsdm_priv(dfsdm);
+ 	struct device *dev = &priv->pdev->dev;
+ 	unsigned int clk_div = priv->spi_clk_out_div, clk_src;
+ 	int ret;
+ 
+ 	if (atomic_inc_return(&priv->n_active_ch) == 1) {
+-		ret = clk_prepare_enable(priv->clk);
++		ret = pm_runtime_get_sync(dev);
+ 		if (ret < 0) {
+-			dev_err(dev, "Failed to start clock\n");
++			pm_runtime_put_noidle(dev);
+ 			goto error_ret;
+ 		}
+-		if (priv->aclk) {
+-			ret = clk_prepare_enable(priv->aclk);
+-			if (ret < 0) {
+-				dev_err(dev, "Failed to start audio clock\n");
+-				goto disable_clk;
+-			}
+-		}
+ 
+ 		/* select clock source, e.g. 0 for "dfsdm" or 1 for "audio" */
+ 		clk_src = priv->aclk ? 1 : 0;
+@@ -123,21 +148,21 @@ int stm32_dfsdm_start_dfsdm(struct stm32_dfsdm *dfsdm)
+ 					 DFSDM_CHCFGR1_CKOUTSRC_MASK,
+ 					 DFSDM_CHCFGR1_CKOUTSRC(clk_src));
+ 		if (ret < 0)
+-			goto disable_aclk;
++			goto pm_put;
+ 
+ 		/* Output the SPI CLKOUT (if clk_div == 0 clock if OFF) */
+ 		ret = regmap_update_bits(dfsdm->regmap, DFSDM_CHCFGR1(0),
+ 					 DFSDM_CHCFGR1_CKOUTDIV_MASK,
+ 					 DFSDM_CHCFGR1_CKOUTDIV(clk_div));
+ 		if (ret < 0)
+-			goto disable_aclk;
++			goto pm_put;
+ 
+ 		/* Global enable of DFSDM interface */
+ 		ret = regmap_update_bits(dfsdm->regmap, DFSDM_CHCFGR1(0),
+ 					 DFSDM_CHCFGR1_DFSDMEN_MASK,
+ 					 DFSDM_CHCFGR1_DFSDMEN(1));
+ 		if (ret < 0)
+-			goto disable_aclk;
++			goto pm_put;
+ 	}
+ 
+ 	dev_dbg(dev, "%s: n_active_ch %d\n", __func__,
+@@ -145,11 +170,8 @@ int stm32_dfsdm_start_dfsdm(struct stm32_dfsdm *dfsdm)
+ 
+ 	return 0;
+ 
+-disable_aclk:
+-	clk_disable_unprepare(priv->aclk);
+-disable_clk:
+-	clk_disable_unprepare(priv->clk);
+-
++pm_put:
++	pm_runtime_put_sync(dev);
+ error_ret:
+ 	atomic_dec(&priv->n_active_ch);
+ 
+@@ -165,7 +187,7 @@ EXPORT_SYMBOL_GPL(stm32_dfsdm_start_dfsdm);
+  */
+ int stm32_dfsdm_stop_dfsdm(struct stm32_dfsdm *dfsdm)
+ {
+-	struct dfsdm_priv *priv = container_of(dfsdm, struct dfsdm_priv, dfsdm);
++	struct dfsdm_priv *priv = to_stm32_dfsdm_priv(dfsdm);
+ 	int ret;
+ 
+ 	if (atomic_dec_and_test(&priv->n_active_ch)) {
+@@ -183,9 +205,7 @@ int stm32_dfsdm_stop_dfsdm(struct stm32_dfsdm *dfsdm)
+ 		if (ret < 0)
+ 			return ret;
+ 
+-		clk_disable_unprepare(priv->clk);
+-		if (priv->aclk)
+-			clk_disable_unprepare(priv->aclk);
++		pm_runtime_put_sync(&priv->pdev->dev);
+ 	}
+ 	dev_dbg(&priv->pdev->dev, "%s: n_active_ch %d\n", __func__,
+ 		atomic_read(&priv->n_active_ch));
+@@ -243,13 +263,18 @@ static int stm32_dfsdm_parse_of(struct platform_device *pdev,
+ 		return 0;
+ 	}
+ 
+-	priv->spi_clk_out_div = div_u64_rem(clk_freq, spi_freq, &rem) - 1;
++	priv->spi_clk_out_div = div_u64_rem(clk_freq, spi_freq, &rem);
++
++	/* round up divider when clkout isn't accurate (e.g. !rem) */
++	if (priv->spi_clk_out_div && !rem)
++		priv->spi_clk_out_div--;
++
+ 	if (!priv->spi_clk_out_div) {
+ 		/* spi_clk_out_div == 0 means ckout is OFF */
+ 		dev_err(&pdev->dev, "spi-max-frequency not achievable\n");
+ 		return -EINVAL;
+ 	}
+-	priv->dfsdm.spi_master_freq = spi_freq;
++	priv->dfsdm.spi_master_freq = clk_freq / (priv->spi_clk_out_div + 1);
+ 
+ 	if (rem) {
+ 		dev_warn(&pdev->dev, "SPI clock not accurate\n");
+@@ -318,14 +343,115 @@ static int stm32_dfsdm_probe(struct platform_device *pdev)
+ 
+ 	platform_set_drvdata(pdev, dfsdm);
+ 
+-	return devm_of_platform_populate(&pdev->dev);
++	ret = stm32_dfsdm_clk_prepare_enable(dfsdm);
++	if (ret) {
++		dev_err(&pdev->dev, "Failed to start clock\n");
++		return ret;
++	}
++
++	pm_runtime_get_noresume(&pdev->dev);
++	pm_runtime_set_active(&pdev->dev);
++	pm_runtime_enable(&pdev->dev);
++
++	ret = of_platform_populate(pdev->dev.of_node, NULL, NULL, &pdev->dev);
++	if (ret)
++		goto pm_put;
++
++	pm_runtime_put(&pdev->dev);
++
++	return 0;
++
++pm_put:
++	pm_runtime_disable(&pdev->dev);
++	pm_runtime_set_suspended(&pdev->dev);
++	pm_runtime_put_noidle(&pdev->dev);
++	stm32_dfsdm_clk_disable_unprepare(dfsdm);
++
++	return ret;
+ }
+ 
++static int stm32_dfsdm_core_remove(struct platform_device *pdev)
++{
++	struct stm32_dfsdm *dfsdm = platform_get_drvdata(pdev);
++
++	pm_runtime_get_sync(&pdev->dev);
++	of_platform_depopulate(&pdev->dev);
++	pm_runtime_disable(&pdev->dev);
++	pm_runtime_set_suspended(&pdev->dev);
++	pm_runtime_put_noidle(&pdev->dev);
++	stm32_dfsdm_clk_disable_unprepare(dfsdm);
++
++	return 0;
++}
++
++#if defined CONFIG_PM_SLEEP
++static int stm32_dfsdm_core_suspend(struct device *dev)
++{
++	struct stm32_dfsdm *dfsdm = dev_get_drvdata(dev);
++	struct dfsdm_priv *priv = to_stm32_dfsdm_priv(dfsdm);
++	int ret;
++
++	ret = pm_runtime_force_suspend(dev);
++	if (ret)
++		return ret;
++
++	/* Balance devm_regmap_init_mmio_clk() clk_prepare() */
++	clk_unprepare(priv->clk);
++
++	return pinctrl_pm_select_sleep_state(dev);
++}
++
++static int stm32_dfsdm_core_resume(struct device *dev)
++{
++	struct stm32_dfsdm *dfsdm = dev_get_drvdata(dev);
++	struct dfsdm_priv *priv = to_stm32_dfsdm_priv(dfsdm);
++	int ret;
++
++	ret = pinctrl_pm_select_default_state(dev);
++	if (ret)
++		return ret;
++
++	ret = clk_prepare(priv->clk);
++	if (ret)
++		return ret;
++
++	return pm_runtime_force_resume(dev);
++}
++#endif
++
++#ifdef CONFIG_PM
++static int stm32_dfsdm_core_runtime_suspend(struct device *dev)
++{
++	struct stm32_dfsdm *dfsdm = dev_get_drvdata(dev);
++
++	stm32_dfsdm_clk_disable_unprepare(dfsdm);
++
++	return 0;
++}
++
++static int stm32_dfsdm_core_runtime_resume(struct device *dev)
++{
++	struct stm32_dfsdm *dfsdm = dev_get_drvdata(dev);
++
++	return stm32_dfsdm_clk_prepare_enable(dfsdm);
++}
++#endif
++
++static const struct dev_pm_ops stm32_dfsdm_core_pm_ops = {
++	SET_SYSTEM_SLEEP_PM_OPS(stm32_dfsdm_core_suspend,
++				stm32_dfsdm_core_resume)
++	SET_RUNTIME_PM_OPS(stm32_dfsdm_core_runtime_suspend,
++			   stm32_dfsdm_core_runtime_resume,
++			   NULL)
++};
++
+ static struct platform_driver stm32_dfsdm_driver = {
+ 	.probe = stm32_dfsdm_probe,
++	.remove = stm32_dfsdm_core_remove,
+ 	.driver = {
+ 		.name = "stm32-dfsdm",
+ 		.of_match_table = stm32_dfsdm_of_match,
++		.pm = &stm32_dfsdm_core_pm_ops,
+ 	},
+ };
+ 
+diff --git a/drivers/iio/counter/stm32-lptimer-cnt.c b/drivers/iio/counter/stm32-lptimer-cnt.c
+index 42fb8ba..2a49cce 100644
+--- a/drivers/iio/counter/stm32-lptimer-cnt.c
++++ b/drivers/iio/counter/stm32-lptimer-cnt.c
+@@ -14,6 +14,7 @@
+ #include <linux/iio/iio.h>
+ #include <linux/mfd/stm32-lptimer.h>
+ #include <linux/module.h>
++#include <linux/pinctrl/consumer.h>
+ #include <linux/platform_device.h>
+ 
+ struct stm32_lptim_cnt {
+@@ -23,6 +24,7 @@ struct stm32_lptim_cnt {
+ 	u32 preset;
+ 	u32 polarity;
+ 	u32 quadrature_mode;
++	bool enabled;
+ };
+ 
+ static int stm32_lptim_is_enabled(struct stm32_lptim_cnt *priv)
+@@ -50,6 +52,7 @@ static int stm32_lptim_set_enable_state(struct stm32_lptim_cnt *priv,
+ 
+ 	if (!enable) {
+ 		clk_disable(priv->clk);
++		priv->enabled = false;
+ 		return 0;
+ 	}
+ 
+@@ -79,6 +82,7 @@ static int stm32_lptim_set_enable_state(struct stm32_lptim_cnt *priv,
+ 		regmap_write(priv->regmap, STM32_LPTIM_CR, 0);
+ 		return ret;
+ 	}
++	priv->enabled = true;
+ 
+ 	/* Start LP timer in continuous mode */
+ 	return regmap_update_bits(priv->regmap, STM32_LPTIM_CR,
+@@ -361,6 +365,56 @@ static int stm32_lptim_cnt_probe(struct platform_device *pdev)
+ 	return devm_iio_device_register(&pdev->dev, indio_dev);
+ }
+ 
++#ifdef CONFIG_PM_SLEEP
++static int stm32_lptim_cnt_suspend(struct device *dev)
++{
++	struct stm32_lptim_cnt *priv = dev_get_drvdata(dev);
++	int ret;
++
++	/* Only take care of enabled counter: don't disturb other MFD child */
++	if (priv->enabled) {
++		ret = stm32_lptim_setup(priv, 0);
++		if (ret)
++			return ret;
++
++		ret = stm32_lptim_set_enable_state(priv, 0);
++		if (ret)
++			return ret;
++
++		/* Force enable state for later resume */
++		priv->enabled = true;
++	}
++
++	return pinctrl_pm_select_sleep_state(dev);
++}
++
++static int stm32_lptim_cnt_resume(struct device *dev)
++{
++	struct stm32_lptim_cnt *priv = dev_get_drvdata(dev);
++	int ret;
++
++	ret = pinctrl_pm_select_default_state(dev);
++	if (ret)
++		return ret;
++
++	if (priv->enabled) {
++		priv->enabled = false;
++		ret = stm32_lptim_setup(priv, 1);
++		if (ret)
++			return ret;
++
++		ret = stm32_lptim_set_enable_state(priv, 1);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++#endif
++
++static SIMPLE_DEV_PM_OPS(stm32_lptim_cnt_pm_ops, stm32_lptim_cnt_suspend,
++			 stm32_lptim_cnt_resume);
++
+ static const struct of_device_id stm32_lptim_cnt_of_match[] = {
+ 	{ .compatible = "st,stm32-lptimer-counter", },
+ 	{},
+@@ -372,6 +426,7 @@ static struct platform_driver stm32_lptim_cnt_driver = {
+ 	.driver = {
+ 		.name = "stm32-lptimer-counter",
+ 		.of_match_table = stm32_lptim_cnt_of_match,
++		.pm = &stm32_lptim_cnt_pm_ops,
+ 	},
+ };
+ module_platform_driver(stm32_lptim_cnt_driver);
+diff --git a/drivers/iio/trigger/stm32-timer-trigger.c b/drivers/iio/trigger/stm32-timer-trigger.c
+index ccf1ce6..4a4ce3c 100644
+--- a/drivers/iio/trigger/stm32-timer-trigger.c
++++ b/drivers/iio/trigger/stm32-timer-trigger.c
+@@ -12,6 +12,7 @@
+ #include <linux/iio/trigger.h>
+ #include <linux/mfd/stm32-timers.h>
+ #include <linux/module.h>
++#include <linux/pinctrl/consumer.h>
+ #include <linux/platform_device.h>
+ #include <linux/of_device.h>
+ 
+@@ -79,10 +80,20 @@ struct stm32_timer_trigger {
+ 	struct device *dev;
+ 	struct regmap *regmap;
+ 	struct clk *clk;
++	bool clk_enabled;
+ 	u32 max_arr;
+ 	const void *triggers;
+ 	const void *valids;
+ 	bool has_trgo2;
++	struct mutex lock; /* concurrent sysfs configuration */
++	unsigned int freq;
++	bool counter_en;
++	u32 cr1;
++	u32 cr2;
++	u32 psc;
++	u32 arr;
++	u32 cnt;
++	u32 smcr;
+ };
+ 
+ struct stm32_timer_trigger_cfg {
+@@ -106,7 +117,7 @@ static int stm32_timer_start(struct stm32_timer_trigger *priv,
+ {
+ 	unsigned long long prd, div;
+ 	int prescaler = 0;
+-	u32 ccer, cr1;
++	u32 ccer;
+ 
+ 	/* Period and prescaler values depends of clock rate */
+ 	div = (unsigned long long)clk_get_rate(priv->clk);
+@@ -136,9 +147,11 @@ static int stm32_timer_start(struct stm32_timer_trigger *priv,
+ 	if (ccer & TIM_CCER_CCXE)
+ 		return -EBUSY;
+ 
+-	regmap_read(priv->regmap, TIM_CR1, &cr1);
+-	if (!(cr1 & TIM_CR1_CEN))
++	mutex_lock(&priv->lock);
++	if (!priv->clk_enabled) {
++		priv->clk_enabled = true;
+ 		clk_enable(priv->clk);
++	}
+ 
+ 	regmap_write(priv->regmap, TIM_PSC, prescaler);
+ 	regmap_write(priv->regmap, TIM_ARR, prd - 1);
+@@ -157,30 +170,41 @@ static int stm32_timer_start(struct stm32_timer_trigger *priv,
+ 
+ 	/* Enable controller */
+ 	regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN, TIM_CR1_CEN);
++	mutex_unlock(&priv->lock);
+ 
+ 	return 0;
+ }
+ 
+-static void stm32_timer_stop(struct stm32_timer_trigger *priv)
++static void stm32_timer_stop(struct stm32_timer_trigger *priv,
++			     struct iio_trigger *trig)
+ {
+-	u32 ccer, cr1;
++	u32 ccer;
+ 
+ 	regmap_read(priv->regmap, TIM_CCER, &ccer);
+ 	if (ccer & TIM_CCER_CCXE)
+ 		return;
+ 
+-	regmap_read(priv->regmap, TIM_CR1, &cr1);
+-	if (cr1 & TIM_CR1_CEN)
+-		clk_disable(priv->clk);
+-
++	mutex_lock(&priv->lock);
+ 	/* Stop timer */
+ 	regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_ARPE, 0);
+ 	regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN, 0);
+ 	regmap_write(priv->regmap, TIM_PSC, 0);
+ 	regmap_write(priv->regmap, TIM_ARR, 0);
+ 
++	/* Force disable master mode */
++	if (stm32_timer_is_trgo2_name(trig->name))
++		regmap_update_bits(priv->regmap, TIM_CR2, TIM_CR2_MMS2, 0);
++	else
++		regmap_update_bits(priv->regmap, TIM_CR2, TIM_CR2_MMS, 0);
++
+ 	/* Make sure that registers are updated */
+ 	regmap_update_bits(priv->regmap, TIM_EGR, TIM_EGR_UG, TIM_EGR_UG);
++
++	if (priv->clk_enabled) {
++		priv->clk_enabled = false;
++		clk_disable(priv->clk);
++	}
++	mutex_unlock(&priv->lock);
+ }
+ 
+ static ssize_t stm32_tt_store_frequency(struct device *dev,
+@@ -197,12 +221,13 @@ static ssize_t stm32_tt_store_frequency(struct device *dev,
+ 		return ret;
+ 
+ 	if (freq == 0) {
+-		stm32_timer_stop(priv);
++		stm32_timer_stop(priv, trig);
+ 	} else {
+ 		ret = stm32_timer_start(priv, trig, freq);
+ 		if (ret)
+ 			return ret;
+ 	}
++	priv->freq = freq;
+ 
+ 	return len;
+ }
+@@ -295,11 +320,15 @@ static ssize_t stm32_tt_store_master_mode(struct device *dev,
+ 	for (i = 0; i <= master_mode_max; i++) {
+ 		if (!strncmp(master_mode_table[i], buf,
+ 			     strlen(master_mode_table[i]))) {
++			mutex_lock(&priv->lock);
++			if (!priv->clk_enabled) {
++				/* Clock should be enabled first */
++				priv->clk_enabled = true;
++				clk_enable(priv->clk);
++			}
+ 			regmap_update_bits(priv->regmap, TIM_CR2, mask,
+ 					   i << shift);
+-			/* Make sure that registers are updated */
+-			regmap_update_bits(priv->regmap, TIM_EGR,
+-					   TIM_EGR_UG, TIM_EGR_UG);
++			mutex_unlock(&priv->lock);
+ 			return len;
+ 		}
+ 	}
+@@ -437,7 +466,6 @@ static int stm32_counter_write_raw(struct iio_dev *indio_dev,
+ 				   int val, int val2, long mask)
+ {
+ 	struct stm32_timer_trigger *priv = iio_priv(indio_dev);
+-	u32 dat;
+ 
+ 	switch (mask) {
+ 	case IIO_CHAN_INFO_RAW:
+@@ -448,19 +476,24 @@ static int stm32_counter_write_raw(struct iio_dev *indio_dev,
+ 		return -EINVAL;
+ 
+ 	case IIO_CHAN_INFO_ENABLE:
++		mutex_lock(&priv->lock);
+ 		if (val) {
+-			regmap_read(priv->regmap, TIM_CR1, &dat);
+-			if (!(dat & TIM_CR1_CEN))
++			if (!priv->clk_enabled) {
++				priv->clk_enabled = true;
+ 				clk_enable(priv->clk);
++			}
+ 			regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN,
+ 					   TIM_CR1_CEN);
+ 		} else {
+-			regmap_read(priv->regmap, TIM_CR1, &dat);
+ 			regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN,
+ 					   0);
+-			if (dat & TIM_CR1_CEN)
++			if (priv->clk_enabled) {
++				priv->clk_enabled = false;
+ 				clk_disable(priv->clk);
++			}
+ 		}
++		priv->counter_en = !!val;
++		mutex_unlock(&priv->lock);
+ 		return 0;
+ 	}
+ 
+@@ -556,7 +589,6 @@ static int stm32_set_enable_mode(struct iio_dev *indio_dev,
+ {
+ 	struct stm32_timer_trigger *priv = iio_priv(indio_dev);
+ 	int sms = stm32_enable_mode2sms(mode);
+-	u32 val;
+ 
+ 	if (sms < 0)
+ 		return sms;
+@@ -564,11 +596,12 @@ static int stm32_set_enable_mode(struct iio_dev *indio_dev,
+ 	 * Triggered mode sets CEN bit automatically by hardware. So, first
+ 	 * enable counter clock, so it can use it. Keeps it in sync with CEN.
+ 	 */
+-	if (sms == 6) {
+-		regmap_read(priv->regmap, TIM_CR1, &val);
+-		if (!(val & TIM_CR1_CEN))
+-			clk_enable(priv->clk);
++	mutex_lock(&priv->lock);
++	if (sms == 6 && !priv->clk_enabled) {
++		clk_enable(priv->clk);
++		priv->clk_enabled = true;
+ 	}
++	mutex_unlock(&priv->lock);
+ 
+ 	regmap_update_bits(priv->regmap, TIM_SMCR, TIM_SMCR_SMS, sms);
+ 
+@@ -836,6 +869,7 @@ static int stm32_timer_trigger_probe(struct platform_device *pdev)
+ 	priv->triggers = triggers_table[index];
+ 	priv->valids = cfg->valids_table[index];
+ 	stm32_timer_detect_trgo2(priv);
++	mutex_init(&priv->lock);
+ 
+ 	ret = stm32_setup_iio_triggers(priv);
+ 	if (ret)
+@@ -846,6 +880,91 @@ static int stm32_timer_trigger_probe(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
++static int stm32_timer_trigger_remove(struct platform_device *pdev)
++{
++	struct stm32_timer_trigger *priv = platform_get_drvdata(pdev);
++	u32 val;
++
++	/* Check if nobody else use the timer, then disable it */
++	regmap_read(priv->regmap, TIM_CCER, &val);
++	if (!(val & TIM_CCER_CCXE))
++		regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN, 0);
++
++	if (priv->clk_enabled)
++		clk_disable(priv->clk);
++
++	return 0;
++}
++
++#ifdef CONFIG_PM_SLEEP
++static int stm32_tt_suspend(struct device *dev)
++{
++	struct stm32_timer_trigger *priv = dev_get_drvdata(dev);
++
++	/* Disable the timer */
++	if (priv->freq)
++		regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN, 0);
++	/* Register contents may be lost depending on low power mode. */
++	regmap_read(priv->regmap, TIM_CR1, &priv->cr1);
++	regmap_read(priv->regmap, TIM_CR2, &priv->cr2);
++	regmap_read(priv->regmap, TIM_PSC, &priv->psc);
++	regmap_read(priv->regmap, TIM_ARR, &priv->arr);
++	regmap_read(priv->regmap, TIM_CNT, &priv->cnt);
++	regmap_read(priv->regmap, TIM_SMCR, &priv->smcr);
++
++	if (priv->clk_enabled)
++		clk_disable(priv->clk);
++
++	return pinctrl_pm_select_sleep_state(dev);
++}
++
++static int stm32_tt_resume(struct device *dev)
++{
++	struct stm32_timer_trigger *priv = dev_get_drvdata(dev);
++	int ret;
++
++	ret = pinctrl_pm_select_default_state(dev);
++	if (ret)
++		return ret;
++
++	if (priv->clk_enabled) {
++		ret = clk_enable(priv->clk);
++		if (ret)
++			return ret;
++	}
++
++	/* restore master/slave modes */
++	regmap_write(priv->regmap, TIM_SMCR, priv->smcr);
++	regmap_update_bits(priv->regmap, TIM_CR2, TIM_CR2_MMS | TIM_CR2_MMS2,
++			   priv->cr2);
++
++	if (priv->freq) {
++		/* restore sampling_frequency (trgo / trgo2 triggers) */
++		regmap_write(priv->regmap, TIM_PSC, priv->psc);
++		regmap_write(priv->regmap, TIM_ARR, priv->arr);
++		regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_ARPE,
++				   TIM_CR1_ARPE);
++		regmap_update_bits(priv->regmap, TIM_EGR, TIM_EGR_UG,
++				   TIM_EGR_UG);
++	}
++
++	if (priv->counter_en) {
++		/* restore counter value, count_direction */
++		regmap_write(priv->regmap, TIM_CNT, priv->cnt);
++		regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_DIR,
++				   priv->cr1);
++	}
++
++	if (priv->freq || priv->counter_en)
++		regmap_update_bits(priv->regmap, TIM_CR1, TIM_CR1_CEN,
++				   TIM_CR1_CEN);
++
++	return 0;
++}
++#endif
++
++static SIMPLE_DEV_PM_OPS(stm32_tt_pm_ops, stm32_tt_suspend, stm32_tt_resume);
++
+ static const struct stm32_timer_trigger_cfg stm32_timer_trg_cfg = {
+ 	.valids_table = valids_table,
+ 	.num_valids_table = ARRAY_SIZE(valids_table),
+@@ -870,9 +989,11 @@ MODULE_DEVICE_TABLE(of, stm32_trig_of_match);
+ 
+ static struct platform_driver stm32_timer_trigger_driver = {
+ 	.probe = stm32_timer_trigger_probe,
++	.remove = stm32_timer_trigger_remove,
+ 	.driver = {
+ 		.name = "stm32-timer-trigger",
+ 		.of_match_table = stm32_trig_of_match,
++		.pm = &stm32_tt_pm_ops,
+ 	},
+ };
+ module_platform_driver(stm32_timer_trigger_driver);
+-- 
+2.7.4
+

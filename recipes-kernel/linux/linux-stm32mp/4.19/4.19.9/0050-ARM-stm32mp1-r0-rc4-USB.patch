@@ -1,0 +1,266 @@
+From fc74bada7f6940619f8930556b7c61fe618f2a64 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Fri, 21 Dec 2018 16:56:27 +0100
+Subject: [PATCH 50/52] ARM: stm32mp1-r0-rc4: USB
+
+---
+ Documentation/devicetree/bindings/usb/dwc2.txt |  2 +
+ drivers/usb/dwc2/core.h                        | 11 ++++
+ drivers/usb/dwc2/core_intr.c                   |  4 +-
+ drivers/usb/dwc2/hw.h                          |  2 +
+ drivers/usb/dwc2/params.c                      |  7 ++-
+ drivers/usb/dwc2/platform.c                    | 74 +++++++++++++++++++++++---
+ 6 files changed, 90 insertions(+), 10 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/usb/dwc2.txt b/Documentation/devicetree/bindings/usb/dwc2.txt
+index 32b245c..03c62de 100644
+--- a/Documentation/devicetree/bindings/usb/dwc2.txt
++++ b/Documentation/devicetree/bindings/usb/dwc2.txt
+@@ -43,6 +43,8 @@ Refer to phy/phy-bindings.txt for generic phy consumer properties
+   doesn't drive it.
+ - usb33d-supply: external VBUS and ID sensing comparators supply, in order to
+   perform OTG operation, used on STM32MP1 SoCs.
++- force-b-session-valid: force B-peripheral session instead of relying on
++  VBUS sensing (only valid when dr_mode = "peripheral").
+ 
+ Deprecated properties:
+ - g-use-dma: gadget DMA mode is automatically detected
+diff --git a/drivers/usb/dwc2/core.h b/drivers/usb/dwc2/core.h
+index 4c689d1..4c1736f 100644
+--- a/drivers/usb/dwc2/core.h
++++ b/drivers/usb/dwc2/core.h
+@@ -415,6 +415,12 @@ enum dwc2_ep0_state {
+  *			in DWORDS with possible values from from
+  *			16-32768 (default: 256, 256, 256, 256, 768,
+  *			768, 768, 768, 0, 0, 0, 0, 0, 0, 0).
++ * @force_b_session_valid: force B-peripheral session instead of relying on
++ *			VBUS sensing (only valid when dr_mode = "peripheral").
++ * @suspend_ignore_power_down: prevent the controller to enter low power mode
++ *			upon suspend interrupt. This may help in device mode,
++ *			when suspend (3ms idle bus) gets detected before
++ *			device session end (VBUS discharge > 3ms).
+  * @change_speed_quirk: Change speed configuration to DWC2_SPEED_PARAM_FULL
+  *                      while full&low speed device connect. And change speed
+  *                      back to DWC2_SPEED_PARAM_HIGH while device is gone.
+@@ -492,6 +498,8 @@ struct dwc2_core_params {
+ 	u32 g_rx_fifo_size;
+ 	u32 g_np_tx_fifo_size;
+ 	u32 g_tx_fifo_size[MAX_EPS_CHANNELS];
++	bool force_b_session_valid;
++	bool suspend_ignore_power_down;
+ 
+ 	bool change_speed_quirk;
+ };
+@@ -849,6 +857,8 @@ struct dwc2_hregs_backup {
+  *                      removed once all SoCs support usb transceiver.
+  * @supplies:           Definition of USB power supplies
+  * @vbus_supply:        Regulator supplying vbus.
++ * @usb33d:		Optional 3.3v regulator used on some stm32 devices to
++ *			supply ID and VBUS detection hardware.
+  * @phyif:              PHY interface width
+  * @lock:		Spinlock that protects all the driver data structures
+  * @priv:		Stores a pointer to the struct usb_hcd
+@@ -1032,6 +1042,7 @@ struct dwc2_hsotg {
+ 	struct dwc2_hsotg_plat *plat;
+ 	struct regulator_bulk_data supplies[DWC2_NUM_SUPPLIES];
+ 	struct regulator *vbus_supply;
++	struct regulator *usb33d;
+ 	u32 phyif;
+ 
+ 	spinlock_t lock;
+diff --git a/drivers/usb/dwc2/core_intr.c b/drivers/usb/dwc2/core_intr.c
+index 19ae259..7b4162c 100644
+--- a/drivers/usb/dwc2/core_intr.c
++++ b/drivers/usb/dwc2/core_intr.c
+@@ -492,7 +492,9 @@ static void dwc2_handle_usb_suspend_intr(struct dwc2_hsotg *hsotg)
+ 			hsotg->hw_params.hibernation);
+ 
+ 		/* Ignore suspend request before enumeration */
+-		if (!dwc2_is_device_connected(hsotg)) {
++		if (!dwc2_is_device_connected(hsotg) ||
++		    hsotg->params.force_b_session_valid ||
++		    hsotg->params.suspend_ignore_power_down) {
+ 			dev_dbg(hsotg->dev,
+ 				"ignore suspend request before enumeration\n");
+ 			return;
+diff --git a/drivers/usb/dwc2/hw.h b/drivers/usb/dwc2/hw.h
+index afde335..31f8c60 100644
+--- a/drivers/usb/dwc2/hw.h
++++ b/drivers/usb/dwc2/hw.h
+@@ -54,6 +54,8 @@
+ #define GOTGCTL_HSTSETHNPEN		BIT(10)
+ #define GOTGCTL_HNPREQ			BIT(9)
+ #define GOTGCTL_HSTNEGSCS		BIT(8)
++#define GOTGCTL_BVALOVAL		BIT(7)
++#define GOTGCTL_BVALOEN			BIT(6)
+ #define GOTGCTL_SESREQ			BIT(1)
+ #define GOTGCTL_SESREQSCS		BIT(0)
+ 
+diff --git a/drivers/usb/dwc2/params.c b/drivers/usb/dwc2/params.c
+index 63ccfc9..7fef905 100644
+--- a/drivers/usb/dwc2/params.c
++++ b/drivers/usb/dwc2/params.c
+@@ -167,7 +167,7 @@ static void dwc2_set_stm32mp1_hsotg_params(struct dwc2_hsotg *hsotg)
+ 	p->host_rx_fifo_size = 440;
+ 	p->host_nperio_tx_fifo_size = 256;
+ 	p->host_perio_tx_fifo_size = 256;
+-	p->power_down = false;
++	p->suspend_ignore_power_down = true;
+ }
+ 
+ const struct of_device_id dwc2_of_match_table[] = {
+@@ -404,6 +404,11 @@ static void dwc2_get_device_properties(struct dwc2_hsotg *hsotg)
+ 
+ 	if (of_find_property(hsotg->dev->of_node, "disable-over-current", NULL))
+ 		p->oc_disable = true;
++
++	if (hsotg->dr_mode == USB_DR_MODE_PERIPHERAL)
++		p->force_b_session_valid =
++			of_property_read_bool(hsotg->dev->of_node,
++					      "force-b-session-valid");
+ }
+ 
+ static void dwc2_check_param_otg_cap(struct dwc2_hsotg *hsotg)
+diff --git a/drivers/usb/dwc2/platform.c b/drivers/usb/dwc2/platform.c
+index 2061254..b2e5ddc 100644
+--- a/drivers/usb/dwc2/platform.c
++++ b/drivers/usb/dwc2/platform.c
+@@ -324,6 +324,10 @@ static int dwc2_driver_remove(struct platform_device *dev)
+ 	if (hsotg->gadget_enabled)
+ 		dwc2_hsotg_remove(hsotg);
+ 
++	if (hsotg->params.activate_stm_id_vb_detection &&
++	    !hsotg->params.force_b_session_valid)
++		regulator_disable(hsotg->usb33d);
++
+ 	if (hsotg->ll_hw_enabled)
+ 		dwc2_lowlevel_hw_disable(hsotg);
+ 
+@@ -474,18 +478,18 @@ static int dwc2_driver_probe(struct platform_device *dev)
+ 	if (retval)
+ 		goto error;
+ 
+-	if (hsotg->params.activate_stm_id_vb_detection) {
+-		struct regulator *usb33d;
++	if (hsotg->params.activate_stm_id_vb_detection &&
++	    !hsotg->params.force_b_session_valid) {
+ 		u32 ggpio;
+ 
+-		usb33d = devm_regulator_get(hsotg->dev, "usb33d");
+-		if (IS_ERR(usb33d)) {
+-			retval = PTR_ERR(usb33d);
++		hsotg->usb33d = devm_regulator_get(hsotg->dev, "usb33d");
++		if (IS_ERR(hsotg->usb33d)) {
++			retval = PTR_ERR(hsotg->usb33d);
+ 			dev_err(hsotg->dev,
+ 				"can't get voltage level detector supply\n");
+ 			goto error;
+ 		}
+-		retval = regulator_enable(usb33d);
++		retval = regulator_enable(hsotg->usb33d);
+ 		if (retval) {
+ 			dev_err(hsotg->dev,
+ 				"can't enable voltage level detector supply\n");
+@@ -498,6 +502,15 @@ static int dwc2_driver_probe(struct platform_device *dev)
+ 		dwc2_writel(hsotg, ggpio, GGPIO);
+ 	}
+ 
++	if (hsotg->params.force_b_session_valid) {
++		u32 gotgctl;
++
++		gotgctl = dwc2_readl(hsotg, GOTGCTL);
++		gotgctl |= GOTGCTL_BVALOVAL; /* B-peripheral session value */
++		gotgctl |= GOTGCTL_BVALOEN; /* B-peripheral override enable */
++		dwc2_writel(hsotg, gotgctl, GOTGCTL);
++	}
++
+ 	if (hsotg->params.activate_stm_fs_transceiver) {
+ 		u32 ggpio;
+ 
+@@ -516,7 +529,7 @@ static int dwc2_driver_probe(struct platform_device *dev)
+ 	if (hsotg->dr_mode != USB_DR_MODE_HOST) {
+ 		retval = dwc2_gadget_init(hsotg);
+ 		if (retval)
+-			goto error;
++			goto error_init;
+ 		hsotg->gadget_enabled = 1;
+ 	}
+ 
+@@ -525,7 +538,7 @@ static int dwc2_driver_probe(struct platform_device *dev)
+ 		if (retval) {
+ 			if (hsotg->gadget_enabled)
+ 				dwc2_hsotg_remove(hsotg);
+-			goto error;
++			goto error_init;
+ 		}
+ 		hsotg->hcd_enabled = 1;
+ 	}
+@@ -541,6 +554,10 @@ static int dwc2_driver_probe(struct platform_device *dev)
+ 
+ 	return 0;
+ 
++error_init:
++	if (hsotg->params.activate_stm_id_vb_detection &&
++	    !hsotg->params.force_b_session_valid)
++		regulator_disable(hsotg->usb33d);
+ error:
+ 	dwc2_lowlevel_hw_disable(hsotg);
+ 	return retval;
+@@ -554,6 +571,18 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
+ 	if (dwc2_is_device_mode(dwc2))
+ 		dwc2_hsotg_suspend(dwc2);
+ 
++	if (dwc2->params.activate_stm_id_vb_detection &&
++	    !dwc2->params.force_b_session_valid) {
++		u32 ggpio;
++
++		ggpio = dwc2_readl(dwc2, GGPIO);
++		ggpio &= ~GGPIO_STM32_OTG_GCCFG_IDEN;
++		ggpio &= ~GGPIO_STM32_OTG_GCCFG_VBDEN;
++		dwc2_writel(dwc2, ggpio, GGPIO);
++
++		regulator_disable(dwc2->usb33d);
++	}
++
+ 	if (dwc2->ll_hw_enabled)
+ 		ret = __dwc2_lowlevel_hw_disable(dwc2);
+ 
+@@ -571,6 +600,35 @@ static int __maybe_unused dwc2_resume(struct device *dev)
+ 			return ret;
+ 	}
+ 
++	/* Need to restore FORCEDEVMODE/FORCEHOSTMODE */
++	dwc2_force_dr_mode(dwc2);
++
++	if (dwc2->params.activate_stm_id_vb_detection &&
++	    !dwc2->params.force_b_session_valid) {
++		u32 ggpio;
++
++		ret = regulator_enable(dwc2->usb33d);
++		if (ret)
++			return ret;
++
++		ggpio = dwc2_readl(dwc2, GGPIO);
++		ggpio |= GGPIO_STM32_OTG_GCCFG_IDEN;
++		ggpio |= GGPIO_STM32_OTG_GCCFG_VBDEN;
++		dwc2_writel(dwc2, ggpio, GGPIO);
++
++		/* ID/VBUS detection startup time */
++		usleep_range(5000, 7000);
++	}
++
++	if (dwc2->params.force_b_session_valid) {
++		u32 gotgctl;
++
++		gotgctl = dwc2_readl(dwc2, GOTGCTL);
++		gotgctl |= GOTGCTL_BVALOVAL; /* B-peripheral session value */
++		gotgctl |= GOTGCTL_BVALOEN; /* B-peripheral override enable */
++		dwc2_writel(dwc2, gotgctl, GOTGCTL);
++	}
++
+ 	if (dwc2_is_device_mode(dwc2))
+ 		ret = dwc2_hsotg_resume(dwc2);
+ 
+-- 
+2.7.4
+

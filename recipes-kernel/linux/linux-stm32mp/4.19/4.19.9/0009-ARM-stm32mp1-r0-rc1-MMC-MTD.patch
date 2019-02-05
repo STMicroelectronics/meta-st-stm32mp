@@ -1,0 +1,4216 @@
+From c40b273973671e355eacd8bad62bd938b0ebc05f Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Tue, 13 Nov 2018 12:23:12 +0100
+Subject: [PATCH 09/52] ARM: stm32mp1-r0-rc1: MMC MTD
+
+---
+ drivers/mmc/host/Kconfig               |   10 +
+ drivers/mmc/host/Makefile              |    1 +
+ drivers/mmc/host/mmci.c                |  811 +++++++++----
+ drivers/mmc/host/mmci.h                |  180 ++-
+ drivers/mmc/host/mmci_qcom_dml.c       |   17 +-
+ drivers/mmc/host/mmci_stm32_sdmmc.c    |  282 +++++
+ drivers/mtd/nand/raw/Kconfig           |    9 +
+ drivers/mtd/nand/raw/Makefile          |    1 +
+ drivers/mtd/nand/raw/stm32_fmc2_nand.c | 2031 ++++++++++++++++++++++++++++++++
+ include/linux/amba/mmci.h              |   11 +-
+ 10 files changed, 3067 insertions(+), 286 deletions(-)
+ create mode 100644 drivers/mmc/host/mmci_stm32_sdmmc.c
+ create mode 100644 drivers/mtd/nand/raw/stm32_fmc2_nand.c
+
+diff --git a/drivers/mmc/host/Kconfig b/drivers/mmc/host/Kconfig
+index 694d082..9742519 100644
+--- a/drivers/mmc/host/Kconfig
++++ b/drivers/mmc/host/Kconfig
+@@ -34,6 +34,16 @@ config MMC_QCOM_DML
+ 
+ 	  if unsure, say N.
+ 
++config MMC_STM32_SDMMC
++	bool "STMicroelectronics STM32 SDMMC Controller"
++	depends on MMC_ARMMMCI
++	default y
++	help
++	  This selects the STMicroelectronics STM32 SDMMC host controller.
++	  If you have a STM32 sdmmc host with internal DMA say Y here.
++
++	  If unsure, say N.
++
+ config MMC_PXA
+ 	tristate "Intel PXA25x/26x/27x Multimedia Card Interface support"
+ 	depends on ARCH_PXA
+diff --git a/drivers/mmc/host/Makefile b/drivers/mmc/host/Makefile
+index ce8398e..f14410f 100644
+--- a/drivers/mmc/host/Makefile
++++ b/drivers/mmc/host/Makefile
+@@ -6,6 +6,7 @@
+ obj-$(CONFIG_MMC_ARMMMCI) += armmmci.o
+ armmmci-y := mmci.o
+ armmmci-$(CONFIG_MMC_QCOM_DML) += mmci_qcom_dml.o
++armmmci-$(CONFIG_MMC_STM32_SDMMC) += mmci_stm32_sdmmc.o
+ obj-$(CONFIG_MMC_PXA)		+= pxamci.o
+ obj-$(CONFIG_MMC_MXC)		+= mxcmmc.o
+ obj-$(CONFIG_MMC_MXS)		+= mxs-mmc.o
+diff --git a/drivers/mmc/host/mmci.c b/drivers/mmc/host/mmci.c
+index 1841d250..db50d1e 100644
+--- a/drivers/mmc/host/mmci.c
++++ b/drivers/mmc/host/mmci.c
+@@ -21,6 +21,7 @@
+ #include <linux/err.h>
+ #include <linux/highmem.h>
+ #include <linux/log2.h>
++#include <linux/mmc/mmc.h>
+ #include <linux/mmc/pm.h>
+ #include <linux/mmc/host.h>
+ #include <linux/mmc/card.h>
+@@ -28,8 +29,7 @@
+ #include <linux/amba/bus.h>
+ #include <linux/clk.h>
+ #include <linux/scatterlist.h>
+-#include <linux/gpio.h>
+-#include <linux/of_gpio.h>
++#include <linux/of.h>
+ #include <linux/regulator/consumer.h>
+ #include <linux/dmaengine.h>
+ #include <linux/dma-mapping.h>
+@@ -37,6 +37,7 @@
+ #include <linux/pm_runtime.h>
+ #include <linux/types.h>
+ #include <linux/pinctrl/consumer.h>
++#include <linux/reset.h>
+ 
+ #include <asm/div64.h>
+ #include <asm/io.h>
+@@ -46,41 +47,79 @@
+ 
+ #define DRIVER_NAME "mmci-pl18x"
+ 
++#ifdef CONFIG_DMA_ENGINE
++void mmci_variant_init(struct mmci_host *host);
++#else
++static inline void mmci_variant_init(struct mmci_host *host) {}
++#endif
++
++#ifdef CONFIG_MMC_STM32_SDMMC
++void sdmmc_variant_init(struct mmci_host *host);
++#else
++static inline void sdmmc_variant_init(struct mmci_host *host) {}
++#endif
++static void
++mmci_start_command(struct mmci_host *host, struct mmc_command *cmd, u32 c);
++
+ static unsigned int fmax = 515633;
+ 
+ static struct variant_data variant_arm = {
+ 	.fifosize		= 16 * 4,
+ 	.fifohalfsize		= 8 * 4,
++	.cmdreg_cpsm_enable	= MCI_CPSM_ENABLE,
++	.cmdreg_lrsp_crc	= MCI_CPSM_RESPONSE | MCI_CPSM_LONGRSP,
++	.cmdreg_srsp_crc	= MCI_CPSM_RESPONSE,
++	.cmdreg_srsp		= MCI_CPSM_RESPONSE,
+ 	.datalength_bits	= 16,
++	.datactrl_blocksz	= 11,
++	.datactrl_dpsm_enable	= MCI_DPSM_ENABLE,
+ 	.pwrreg_powerup		= MCI_PWR_UP,
+ 	.f_max			= 100000000,
+ 	.reversed_irq_handling	= true,
+ 	.mmcimask1		= true,
++	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
+ 	.start_err		= MCI_STARTBITERR,
+ 	.opendrain		= MCI_ROD,
++	.init			= mmci_variant_init,
+ };
+ 
+ static struct variant_data variant_arm_extended_fifo = {
+ 	.fifosize		= 128 * 4,
+ 	.fifohalfsize		= 64 * 4,
++	.cmdreg_cpsm_enable	= MCI_CPSM_ENABLE,
++	.cmdreg_lrsp_crc	= MCI_CPSM_RESPONSE | MCI_CPSM_LONGRSP,
++	.cmdreg_srsp_crc	= MCI_CPSM_RESPONSE,
++	.cmdreg_srsp		= MCI_CPSM_RESPONSE,
+ 	.datalength_bits	= 16,
++	.datactrl_blocksz	= 11,
++	.datactrl_dpsm_enable	= MCI_DPSM_ENABLE,
+ 	.pwrreg_powerup		= MCI_PWR_UP,
+ 	.f_max			= 100000000,
+ 	.mmcimask1		= true,
++	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
+ 	.start_err		= MCI_STARTBITERR,
+ 	.opendrain		= MCI_ROD,
++	.init			= mmci_variant_init,
+ };
+ 
+ static struct variant_data variant_arm_extended_fifo_hwfc = {
+ 	.fifosize		= 128 * 4,
+ 	.fifohalfsize		= 64 * 4,
+ 	.clkreg_enable		= MCI_ARM_HWFCEN,
++	.cmdreg_cpsm_enable	= MCI_CPSM_ENABLE,
++	.cmdreg_lrsp_crc	= MCI_CPSM_RESPONSE | MCI_CPSM_LONGRSP,
++	.cmdreg_srsp_crc	= MCI_CPSM_RESPONSE,
++	.cmdreg_srsp		= MCI_CPSM_RESPONSE,
+ 	.datalength_bits	= 16,
++	.datactrl_blocksz	= 11,
++	.datactrl_dpsm_enable	= MCI_DPSM_ENABLE,
+ 	.pwrreg_powerup		= MCI_PWR_UP,
+ 	.f_max			= 100000000,
+ 	.mmcimask1		= true,
++	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
+ 	.start_err		= MCI_STARTBITERR,
+ 	.opendrain		= MCI_ROD,
++	.init			= mmci_variant_init,
+ };
+ 
+ static struct variant_data variant_u300 = {
+@@ -88,7 +127,13 @@ static struct variant_data variant_u300 = {
+ 	.fifohalfsize		= 8 * 4,
+ 	.clkreg_enable		= MCI_ST_U300_HWFCEN,
+ 	.clkreg_8bit_bus_enable = MCI_ST_8BIT_BUS,
++	.cmdreg_cpsm_enable	= MCI_CPSM_ENABLE,
++	.cmdreg_lrsp_crc	= MCI_CPSM_RESPONSE | MCI_CPSM_LONGRSP,
++	.cmdreg_srsp_crc	= MCI_CPSM_RESPONSE,
++	.cmdreg_srsp		= MCI_CPSM_RESPONSE,
+ 	.datalength_bits	= 16,
++	.datactrl_blocksz	= 11,
++	.datactrl_dpsm_enable	= MCI_DPSM_ENABLE,
+ 	.datactrl_mask_sdio	= MCI_DPSM_ST_SDIOEN,
+ 	.st_sdio			= true,
+ 	.pwrreg_powerup		= MCI_PWR_ON,
+@@ -97,8 +142,10 @@ static struct variant_data variant_u300 = {
+ 	.pwrreg_clkgate		= true,
+ 	.pwrreg_nopower		= true,
+ 	.mmcimask1		= true,
++	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
+ 	.start_err		= MCI_STARTBITERR,
+ 	.opendrain		= MCI_OD,
++	.init			= mmci_variant_init,
+ };
+ 
+ static struct variant_data variant_nomadik = {
+@@ -106,7 +153,13 @@ static struct variant_data variant_nomadik = {
+ 	.fifohalfsize		= 8 * 4,
+ 	.clkreg			= MCI_CLK_ENABLE,
+ 	.clkreg_8bit_bus_enable = MCI_ST_8BIT_BUS,
++	.cmdreg_cpsm_enable	= MCI_CPSM_ENABLE,
++	.cmdreg_lrsp_crc	= MCI_CPSM_RESPONSE | MCI_CPSM_LONGRSP,
++	.cmdreg_srsp_crc	= MCI_CPSM_RESPONSE,
++	.cmdreg_srsp		= MCI_CPSM_RESPONSE,
+ 	.datalength_bits	= 24,
++	.datactrl_blocksz	= 11,
++	.datactrl_dpsm_enable	= MCI_DPSM_ENABLE,
+ 	.datactrl_mask_sdio	= MCI_DPSM_ST_SDIOEN,
+ 	.st_sdio		= true,
+ 	.st_clkdiv		= true,
+@@ -116,8 +169,10 @@ static struct variant_data variant_nomadik = {
+ 	.pwrreg_clkgate		= true,
+ 	.pwrreg_nopower		= true,
+ 	.mmcimask1		= true,
++	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
+ 	.start_err		= MCI_STARTBITERR,
+ 	.opendrain		= MCI_OD,
++	.init			= mmci_variant_init,
+ };
+ 
+ static struct variant_data variant_ux500 = {
+@@ -127,7 +182,13 @@ static struct variant_data variant_ux500 = {
+ 	.clkreg_enable		= MCI_ST_UX500_HWFCEN,
+ 	.clkreg_8bit_bus_enable = MCI_ST_8BIT_BUS,
+ 	.clkreg_neg_edge_enable	= MCI_ST_UX500_NEG_EDGE,
++	.cmdreg_cpsm_enable	= MCI_CPSM_ENABLE,
++	.cmdreg_lrsp_crc	= MCI_CPSM_RESPONSE | MCI_CPSM_LONGRSP,
++	.cmdreg_srsp_crc	= MCI_CPSM_RESPONSE,
++	.cmdreg_srsp		= MCI_CPSM_RESPONSE,
+ 	.datalength_bits	= 24,
++	.datactrl_blocksz	= 11,
++	.datactrl_dpsm_enable	= MCI_DPSM_ENABLE,
+ 	.datactrl_mask_sdio	= MCI_DPSM_ST_SDIOEN,
+ 	.st_sdio		= true,
+ 	.st_clkdiv		= true,
+@@ -141,8 +202,10 @@ static struct variant_data variant_ux500 = {
+ 	.busy_detect_mask	= MCI_ST_BUSYENDMASK,
+ 	.pwrreg_nopower		= true,
+ 	.mmcimask1		= true,
++	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
+ 	.start_err		= MCI_STARTBITERR,
+ 	.opendrain		= MCI_OD,
++	.init			= mmci_variant_init,
+ };
+ 
+ static struct variant_data variant_ux500v2 = {
+@@ -152,8 +215,14 @@ static struct variant_data variant_ux500v2 = {
+ 	.clkreg_enable		= MCI_ST_UX500_HWFCEN,
+ 	.clkreg_8bit_bus_enable = MCI_ST_8BIT_BUS,
+ 	.clkreg_neg_edge_enable	= MCI_ST_UX500_NEG_EDGE,
++	.cmdreg_cpsm_enable	= MCI_CPSM_ENABLE,
++	.cmdreg_lrsp_crc	= MCI_CPSM_RESPONSE | MCI_CPSM_LONGRSP,
++	.cmdreg_srsp_crc	= MCI_CPSM_RESPONSE,
++	.cmdreg_srsp		= MCI_CPSM_RESPONSE,
+ 	.datactrl_mask_ddrmode	= MCI_DPSM_ST_DDRMODE,
+ 	.datalength_bits	= 24,
++	.datactrl_blocksz	= 11,
++	.datactrl_dpsm_enable	= MCI_DPSM_ENABLE,
+ 	.datactrl_mask_sdio	= MCI_DPSM_ST_SDIOEN,
+ 	.st_sdio		= true,
+ 	.st_clkdiv		= true,
+@@ -168,8 +237,10 @@ static struct variant_data variant_ux500v2 = {
+ 	.busy_detect_mask	= MCI_ST_BUSYENDMASK,
+ 	.pwrreg_nopower		= true,
+ 	.mmcimask1		= true,
++	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
+ 	.start_err		= MCI_STARTBITERR,
+ 	.opendrain		= MCI_OD,
++	.init			= mmci_variant_init,
+ };
+ 
+ static struct variant_data variant_stm32 = {
+@@ -179,7 +250,14 @@ static struct variant_data variant_stm32 = {
+ 	.clkreg_enable		= MCI_ST_UX500_HWFCEN,
+ 	.clkreg_8bit_bus_enable = MCI_ST_8BIT_BUS,
+ 	.clkreg_neg_edge_enable	= MCI_ST_UX500_NEG_EDGE,
++	.cmdreg_cpsm_enable	= MCI_CPSM_ENABLE,
++	.cmdreg_lrsp_crc	= MCI_CPSM_RESPONSE | MCI_CPSM_LONGRSP,
++	.cmdreg_srsp_crc	= MCI_CPSM_RESPONSE,
++	.cmdreg_srsp		= MCI_CPSM_RESPONSE,
++	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
+ 	.datalength_bits	= 24,
++	.datactrl_blocksz	= 11,
++	.datactrl_dpsm_enable	= MCI_DPSM_ENABLE,
+ 	.datactrl_mask_sdio	= MCI_DPSM_ST_SDIOEN,
+ 	.st_sdio		= true,
+ 	.st_clkdiv		= true,
+@@ -187,6 +265,56 @@ static struct variant_data variant_stm32 = {
+ 	.f_max			= 48000000,
+ 	.pwrreg_clkgate		= true,
+ 	.pwrreg_nopower		= true,
++	.init			= mmci_variant_init,
++};
++
++static struct variant_data variant_stm32_sdmmc = {
++	.fifosize		= 16 * 4,
++	.fifohalfsize		= 8 * 4,
++	.f_max			= 208000000,
++	.stm32_clkdiv		= true,
++	.cmdreg_cpsm_enable	= MCI_CPSM_STM32_ENABLE,
++	.cmdreg_lrsp_crc	= MCI_CPSM_STM32_LRSP_CRC,
++	.cmdreg_srsp_crc	= MCI_CPSM_STM32_SRSP_CRC,
++	.cmdreg_srsp		= MCI_CPSM_STM32_SRSP,
++	.cmdreg_stop		= MCI_CPSM_STM32_CMDSTOP,
++	.data_cmd_enable	= MCI_CPSM_STM32_CMDTRANS,
++	.irq_pio_mask		= MCI_IRQ_PIO_STM32_MASK,
++	.datactrl_first		= true,
++	.datacnt_useless	= true,
++	.datalength_bits	= 25,
++	.datactrl_blocksz	= 14,
++	.stm32_idmabsize_mask	= GENMASK(12, 5),
++	.busy_detect		= true,
++	.busy_timeout		= true,
++	.busy_detect_flag	= MCI_STM32_BUSYD0,
++	.busy_detect_mask	= MCI_STM32_BUSYD0ENDMASK,
++	.init			= sdmmc_variant_init,
++};
++
++static struct variant_data variant_stm32_sdmmcv2 = {
++	.fifosize		= 16 * 4,
++	.fifohalfsize		= 8 * 4,
++	.f_max			= 208000000,
++	.stm32_clkdiv		= true,
++	.cmdreg_cpsm_enable	= MCI_CPSM_STM32_ENABLE,
++	.cmdreg_lrsp_crc	= MCI_CPSM_STM32_LRSP_CRC,
++	.cmdreg_srsp_crc	= MCI_CPSM_STM32_SRSP_CRC,
++	.cmdreg_srsp		= MCI_CPSM_STM32_SRSP,
++	.cmdreg_stop		= MCI_CPSM_STM32_CMDSTOP,
++	.data_cmd_enable	= MCI_CPSM_STM32_CMDTRANS,
++	.irq_pio_mask		= MCI_IRQ_PIO_STM32_MASK,
++	.datactrl_first		= true,
++	.datacnt_useless	= true,
++	.datalength_bits	= 25,
++	.datactrl_blocksz	= 14,
++	.stm32_idmabsize_mask	= GENMASK(16, 5),
++	.dma_lli		= true,
++	.busy_detect		= true,
++	.busy_timeout		= true,
++	.busy_detect_flag	= MCI_STM32_BUSYD0,
++	.busy_detect_mask	= MCI_STM32_BUSYD0ENDMASK,
++	.init			= sdmmc_variant_init,
+ };
+ 
+ static struct variant_data variant_qcom = {
+@@ -197,15 +325,22 @@ static struct variant_data variant_qcom = {
+ 				  MCI_QCOM_CLK_SELECT_IN_FBCLK,
+ 	.clkreg_8bit_bus_enable = MCI_QCOM_CLK_WIDEBUS_8,
+ 	.datactrl_mask_ddrmode	= MCI_QCOM_CLK_SELECT_IN_DDR_MODE,
++	.cmdreg_cpsm_enable	= MCI_CPSM_ENABLE,
++	.cmdreg_lrsp_crc	= MCI_CPSM_RESPONSE | MCI_CPSM_LONGRSP,
++	.cmdreg_srsp_crc	= MCI_CPSM_RESPONSE,
++	.cmdreg_srsp		= MCI_CPSM_RESPONSE,
+ 	.data_cmd_enable	= MCI_CPSM_QCOM_DATCMD,
+ 	.blksz_datactrl4	= true,
+ 	.datalength_bits	= 24,
++	.datactrl_blocksz	= 11,
++	.datactrl_dpsm_enable	= MCI_DPSM_ENABLE,
+ 	.pwrreg_powerup		= MCI_PWR_UP,
+ 	.f_max			= 208000000,
+ 	.explicit_mclk_control	= true,
+ 	.qcom_fifo		= true,
+ 	.qcom_dml		= true,
+ 	.mmcimask1		= true,
++	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
+ 	.start_err		= MCI_STARTBITERR,
+ 	.opendrain		= MCI_ROD,
+ 	.init			= qcom_variant_init,
+@@ -226,24 +361,6 @@ static int mmci_card_busy(struct mmc_host *mmc)
+ 	return busy;
+ }
+ 
+-/*
+- * Validate mmc prerequisites
+- */
+-static int mmci_validate_data(struct mmci_host *host,
+-			      struct mmc_data *data)
+-{
+-	if (!data)
+-		return 0;
+-
+-	if (!is_power_of_2(data->blksz)) {
+-		dev_err(mmc_dev(host->mmc),
+-			"unsupported block size (%d bytes)\n", data->blksz);
+-		return -EINVAL;
+-	}
+-
+-	return 0;
+-}
+-
+ static void mmci_reg_delay(struct mmci_host *host)
+ {
+ 	/*
+@@ -262,7 +379,7 @@ static void mmci_reg_delay(struct mmci_host *host)
+ /*
+  * This must be called with host->lock held
+  */
+-static void mmci_write_clkreg(struct mmci_host *host, u32 clk)
++void mmci_write_clkreg(struct mmci_host *host, u32 clk)
+ {
+ 	if (host->clk_reg != clk) {
+ 		host->clk_reg = clk;
+@@ -273,7 +390,7 @@ static void mmci_write_clkreg(struct mmci_host *host, u32 clk)
+ /*
+  * This must be called with host->lock held
+  */
+-static void mmci_write_pwrreg(struct mmci_host *host, u32 pwr)
++void mmci_write_pwrreg(struct mmci_host *host, u32 pwr)
+ {
+ 	if (host->pwr_reg != pwr) {
+ 		host->pwr_reg = pwr;
+@@ -357,9 +474,156 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
+ 	mmci_write_clkreg(host, clk);
+ }
+ 
++void mmci_dma_release(struct mmci_host *host)
++{
++	if (host->ops && host->ops->dma_release)
++		host->ops->dma_release(host);
++
++	host->use_dma = false;
++}
++
++void mmci_dma_setup(struct mmci_host *host)
++{
++	if (!host->ops || !host->ops->dma_setup)
++		return;
++
++	if (host->ops->dma_setup(host))
++		return;
++
++	/* initialize pre request cookie */
++	host->next_cookie = 1;
++
++	host->use_dma = true;
++}
++
++/*
++ * Validate mmc prerequisites
++ */
++static int mmci_validate_data(struct mmci_host *host,
++			      struct mmc_data *data)
++{
++	if (!data)
++		return 0;
++
++	if (!is_power_of_2(data->blksz)) {
++		dev_err(mmc_dev(host->mmc),
++			"unsupported block size (%d bytes)\n", data->blksz);
++		return -EINVAL;
++	}
++
++	if (host->ops && host->ops->validate_data)
++		return host->ops->validate_data(host, data);
++
++	return 0;
++}
++
++int mmci_prep_data(struct mmci_host *host, struct mmc_data *data, bool next)
++{
++	int err;
++
++	if (!host->ops || !host->ops->prep_data)
++		return 0;
++
++	err = host->ops->prep_data(host, data, next);
++
++	if (next && !err)
++		data->host_cookie = ++host->next_cookie < 0 ?
++			1 : host->next_cookie;
++
++	return err;
++}
++
++void mmci_unprep_data(struct mmci_host *host, struct mmc_data *data,
++		      int err)
++{
++	if (host->ops && host->ops->unprep_data)
++		host->ops->unprep_data(host, data, err);
++
++	data->host_cookie = 0;
++}
++
++void mmci_get_next_data(struct mmci_host *host, struct mmc_data *data)
++{
++	WARN_ON(data->host_cookie && data->host_cookie != host->next_cookie);
++
++	if (host->ops && host->ops->get_next_data)
++		host->ops->get_next_data(host, data);
++}
++
++int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
++{
++	struct mmc_data *data = host->data;
++	int ret;
++
++	if (!host->use_dma)
++		return -EINVAL;
++
++	ret = mmci_prep_data(host, data, false);
++	if (ret)
++		return ret;
++
++	if (!host->ops || !host->ops->dma_start)
++		return -EINVAL;
++
++	/* Okay, go for it. */
++	dev_vdbg(mmc_dev(host->mmc),
++		 "Submit MMCI DMA job, sglen %d blksz %04x blks %04x flags %08x\n",
++		 data->sg_len, data->blksz, data->blocks, data->flags);
++
++	host->ops->dma_start(host, &datactrl);
++
++	/* Trigger the DMA transfer */
++	mmci_write_datactrlreg(host, datactrl);
++
++	/*
++	 * Let the MMCI say when the data is ended and it's time
++	 * to fire next DMA request. When that happens, MMCI will
++	 * call mmci_data_end()
++	 */
++	writel(readl(host->base + MMCIMASK0) | MCI_DATAENDMASK,
++	       host->base + MMCIMASK0);
++	return 0;
++}
++
++void mmci_dma_finalize(struct mmci_host *host, struct mmc_data *data)
++{
++	if (!host->use_dma)
++		return;
++
++	if (host->ops && host->ops->dma_finalize)
++		host->ops->dma_finalize(host, data);
++}
++
++void mmci_dma_error(struct mmci_host *host)
++{
++	if (!host->use_dma)
++		return;
++
++	if (host->ops && host->ops->dma_error)
++		host->ops->dma_error(host);
++}
++
+ static void
+ mmci_request_end(struct mmci_host *host, struct mmc_request *mrq)
+ {
++	/*
++	 * If an error happens on command or data step, some variants
++	 * require a stop command to reinit the DPSM.
++	 * If it's not done the next data command freeze hardware block.
++	 */
++	if (host->variant->cmdreg_stop) {
++		u32 dpsm;
++
++		dpsm = readl_relaxed(host->base + MMCISTATUS);
++		dpsm &= MCI_STM32_DPSMACTIVE;
++
++		if (dpsm && ((mrq->cmd && mrq->cmd->error) ||
++			     (mrq->data && mrq->data->error))) {
++			mmci_start_command(host, &host->stop_abort, 0);
++			return;
++		}
++	}
++
+ 	writel(0, host->base + MMCICOMMAND);
+ 
+ 	BUG_ON(host->data);
+@@ -378,7 +642,7 @@ static void mmci_set_mask1(struct mmci_host *host, unsigned int mask)
+ 	if (host->singleirq) {
+ 		unsigned int mask0 = readl(base + MMCIMASK0);
+ 
+-		mask0 &= ~MCI_IRQ1MASK;
++		mask0 &= ~variant->irq_pio_mask;
+ 		mask0 |= mask;
+ 
+ 		writel(mask0, base + MMCIMASK0);
+@@ -415,31 +679,50 @@ static void mmci_init_sg(struct mmci_host *host, struct mmc_data *data)
+  * no custom DMA interfaces are supported.
+  */
+ #ifdef CONFIG_DMA_ENGINE
+-static void mmci_dma_setup(struct mmci_host *host)
++struct mmci_dmae_next {
++	struct dma_async_tx_descriptor *desc;
++	struct dma_chan	*chan;
++};
++
++struct mmci_dmae_priv {
++	struct dma_chan	*cur;
++	struct dma_chan	*rx_channel;
++	struct dma_chan	*tx_channel;
++	struct dma_async_tx_descriptor	*desc_current;
++	struct mmci_dmae_next next_data;
++};
++
++int mmci_dmae_setup(struct mmci_host *host)
+ {
+ 	const char *rxname, *txname;
++	struct mmci_dmae_priv *dmae;
+ 
+-	host->dma_rx_channel = dma_request_slave_channel(mmc_dev(host->mmc), "rx");
+-	host->dma_tx_channel = dma_request_slave_channel(mmc_dev(host->mmc), "tx");
++	dmae = devm_kzalloc(mmc_dev(host->mmc), sizeof(*dmae), GFP_KERNEL);
++	if (!dmae)
++		return -ENOMEM;
+ 
+-	/* initialize pre request cookie */
+-	host->next_data.cookie = 1;
++	host->dma_priv = dmae;
++
++	dmae->rx_channel = dma_request_slave_channel(mmc_dev(host->mmc),
++						     "rx");
++	dmae->tx_channel = dma_request_slave_channel(mmc_dev(host->mmc),
++						     "tx");
+ 
+ 	/*
+ 	 * If only an RX channel is specified, the driver will
+ 	 * attempt to use it bidirectionally, however if it is
+ 	 * is specified but cannot be located, DMA will be disabled.
+ 	 */
+-	if (host->dma_rx_channel && !host->dma_tx_channel)
+-		host->dma_tx_channel = host->dma_rx_channel;
++	if (dmae->rx_channel && !dmae->tx_channel)
++		dmae->tx_channel = dmae->rx_channel;
+ 
+-	if (host->dma_rx_channel)
+-		rxname = dma_chan_name(host->dma_rx_channel);
++	if (dmae->rx_channel)
++		rxname = dma_chan_name(dmae->rx_channel);
+ 	else
+ 		rxname = "none";
+ 
+-	if (host->dma_tx_channel)
+-		txname = dma_chan_name(host->dma_tx_channel);
++	if (dmae->tx_channel)
++		txname = dma_chan_name(dmae->tx_channel);
+ 	else
+ 		txname = "none";
+ 
+@@ -450,66 +733,84 @@ static void mmci_dma_setup(struct mmci_host *host)
+ 	 * Limit the maximum segment size in any SG entry according to
+ 	 * the parameters of the DMA engine device.
+ 	 */
+-	if (host->dma_tx_channel) {
+-		struct device *dev = host->dma_tx_channel->device->dev;
++	if (dmae->tx_channel) {
++		struct device *dev = dmae->tx_channel->device->dev;
+ 		unsigned int max_seg_size = dma_get_max_seg_size(dev);
+ 
+ 		if (max_seg_size < host->mmc->max_seg_size)
+ 			host->mmc->max_seg_size = max_seg_size;
+ 	}
+-	if (host->dma_rx_channel) {
+-		struct device *dev = host->dma_rx_channel->device->dev;
++	if (dmae->rx_channel) {
++		struct device *dev = dmae->rx_channel->device->dev;
+ 		unsigned int max_seg_size = dma_get_max_seg_size(dev);
+ 
+ 		if (max_seg_size < host->mmc->max_seg_size)
+ 			host->mmc->max_seg_size = max_seg_size;
+ 	}
+ 
+-	if (host->ops && host->ops->dma_setup)
+-		host->ops->dma_setup(host);
++	if (!dmae->tx_channel || !dmae->rx_channel) {
++		mmci_dmae_release(host);
++		return -EINVAL;
++	}
++
++	return 0;
+ }
+ 
+ /*
+  * This is used in or so inline it
+  * so it can be discarded.
+  */
+-static inline void mmci_dma_release(struct mmci_host *host)
++void mmci_dmae_release(struct mmci_host *host)
+ {
+-	if (host->dma_rx_channel)
+-		dma_release_channel(host->dma_rx_channel);
+-	if (host->dma_tx_channel)
+-		dma_release_channel(host->dma_tx_channel);
+-	host->dma_rx_channel = host->dma_tx_channel = NULL;
+-}
++	struct mmci_dmae_priv *dmae = host->dma_priv;
+ 
+-static void mmci_dma_data_error(struct mmci_host *host)
+-{
+-	dev_err(mmc_dev(host->mmc), "error during DMA transfer!\n");
+-	dmaengine_terminate_all(host->dma_current);
+-	host->dma_in_progress = false;
+-	host->dma_current = NULL;
+-	host->dma_desc_current = NULL;
+-	host->data->host_cookie = 0;
++	if (dmae->rx_channel)
++		dma_release_channel(dmae->rx_channel);
++	if (dmae->tx_channel)
++		dma_release_channel(dmae->tx_channel);
++	dmae->rx_channel = dmae->tx_channel = NULL;
+ }
+ 
+ static void mmci_dma_unmap(struct mmci_host *host, struct mmc_data *data)
+ {
++	struct mmci_dmae_priv *dmae = host->dma_priv;
+ 	struct dma_chan *chan;
+ 
+ 	if (data->flags & MMC_DATA_READ)
+-		chan = host->dma_rx_channel;
++		chan = dmae->rx_channel;
+ 	else
+-		chan = host->dma_tx_channel;
++		chan = dmae->tx_channel;
+ 
+ 	dma_unmap_sg(chan->device->dev, data->sg, data->sg_len,
+ 		     mmc_get_dma_dir(data));
+ }
+ 
+-static void mmci_dma_finalize(struct mmci_host *host, struct mmc_data *data)
++void mmci_dmae_error(struct mmci_host *host)
++{
++	struct mmci_dmae_priv *dmae = host->dma_priv;
++
++	if (!dma_inprogress(host))
++		return;
++
++	dev_err(mmc_dev(host->mmc), "error during DMA transfer!\n");
++	dmaengine_terminate_all(dmae->cur);
++	host->dma_in_progress = false;
++	dmae->cur = NULL;
++	dmae->desc_current = NULL;
++	host->data->host_cookie = 0;
++
++	mmci_dma_unmap(host, host->data);
++}
++
++void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data)
+ {
++	struct mmci_dmae_priv *dmae = host->dma_priv;
+ 	u32 status;
+ 	int i;
+ 
++	if (!dma_inprogress(host))
++		return;
++
+ 	/* Wait up to 1ms for the DMA to complete */
+ 	for (i = 0; ; i++) {
+ 		status = readl(host->base + MMCISTATUS);
+@@ -525,13 +826,12 @@ static void mmci_dma_finalize(struct mmci_host *host, struct mmc_data *data)
+ 	 * contiguous buffers.  On TX, we'll get a FIFO underrun error.
+ 	 */
+ 	if (status & MCI_RXDATAAVLBLMASK) {
+-		mmci_dma_data_error(host);
++		mmci_dma_error(host);
+ 		if (!data->error)
+ 			data->error = -EIO;
+-	}
+-
+-	if (!data->host_cookie)
++	} else if (!data->host_cookie) {
+ 		mmci_dma_unmap(host, data);
++	}
+ 
+ 	/*
+ 	 * Use of DMA with scatter-gather is impossible.
+@@ -543,15 +843,16 @@ static void mmci_dma_finalize(struct mmci_host *host, struct mmc_data *data)
+ 	}
+ 
+ 	host->dma_in_progress = false;
+-	host->dma_current = NULL;
+-	host->dma_desc_current = NULL;
++	dmae->cur = NULL;
++	dmae->desc_current = NULL;
+ }
+ 
+ /* prepares DMA channel and DMA descriptor, returns non-zero on failure */
+-static int __mmci_dma_prep_data(struct mmci_host *host, struct mmc_data *data,
++static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
+ 				struct dma_chan **dma_chan,
+ 				struct dma_async_tx_descriptor **dma_desc)
+ {
++	struct mmci_dmae_priv *dmae = host->dma_priv;
+ 	struct variant_data *variant = host->variant;
+ 	struct dma_slave_config conf = {
+ 		.src_addr = host->phybase + MMCIFIFO,
+@@ -570,10 +871,10 @@ static int __mmci_dma_prep_data(struct mmci_host *host, struct mmc_data *data,
+ 
+ 	if (data->flags & MMC_DATA_READ) {
+ 		conf.direction = DMA_DEV_TO_MEM;
+-		chan = host->dma_rx_channel;
++		chan = dmae->rx_channel;
+ 	} else {
+ 		conf.direction = DMA_MEM_TO_DEV;
+-		chan = host->dma_tx_channel;
++		chan = dmae->tx_channel;
+ 	}
+ 
+ 	/* If there's no DMA channel, fall back to PIO */
+@@ -610,160 +911,137 @@ static int __mmci_dma_prep_data(struct mmci_host *host, struct mmc_data *data,
+ 	return -ENOMEM;
+ }
+ 
+-static inline int mmci_dma_prep_data(struct mmci_host *host,
+-				     struct mmc_data *data)
++int mmci_dmae_prep_data(struct mmci_host *host,
++			struct mmc_data *data,
++			bool next)
+ {
++	struct mmci_dmae_priv *dmae = host->dma_priv;
++	struct mmci_dmae_next *nd = &dmae->next_data;
++
++	if (!host->use_dma)
++		return -EINVAL;
++
++	if (next)
++		return _mmci_dmae_prep_data(host, data, &nd->chan, &nd->desc);
+ 	/* Check if next job is already prepared. */
+-	if (host->dma_current && host->dma_desc_current)
++	if (dmae->cur && dmae->desc_current)
+ 		return 0;
+ 
+ 	/* No job were prepared thus do it now. */
+-	return __mmci_dma_prep_data(host, data, &host->dma_current,
+-				    &host->dma_desc_current);
++	return _mmci_dmae_prep_data(host, data, &dmae->cur,
++				    &dmae->desc_current);
+ }
+ 
+-static inline int mmci_dma_prep_next(struct mmci_host *host,
+-				     struct mmc_data *data)
++int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl)
+ {
+-	struct mmci_host_next *nd = &host->next_data;
+-	return __mmci_dma_prep_data(host, data, &nd->dma_chan, &nd->dma_desc);
+-}
+-
+-static int mmci_dma_start_data(struct mmci_host *host, unsigned int datactrl)
+-{
+-	int ret;
++	struct mmci_dmae_priv *dmae = host->dma_priv;
+ 	struct mmc_data *data = host->data;
+ 
+-	ret = mmci_dma_prep_data(host, host->data);
+-	if (ret)
+-		return ret;
+-
+-	/* Okay, go for it. */
+-	dev_vdbg(mmc_dev(host->mmc),
+-		 "Submit MMCI DMA job, sglen %d blksz %04x blks %04x flags %08x\n",
+-		 data->sg_len, data->blksz, data->blocks, data->flags);
+ 	host->dma_in_progress = true;
+-	dmaengine_submit(host->dma_desc_current);
+-	dma_async_issue_pending(host->dma_current);
++	dmaengine_submit(dmae->desc_current);
++	dma_async_issue_pending(dmae->cur);
+ 
+ 	if (host->variant->qcom_dml)
+ 		dml_start_xfer(host, data);
+ 
+-	datactrl |= MCI_DPSM_DMAENABLE;
++	*datactrl |= MCI_DPSM_DMAENABLE;
+ 
+-	/* Trigger the DMA transfer */
+-	mmci_write_datactrlreg(host, datactrl);
+-
+-	/*
+-	 * Let the MMCI say when the data is ended and it's time
+-	 * to fire next DMA request. When that happens, MMCI will
+-	 * call mmci_data_end()
+-	 */
+-	writel(readl(host->base + MMCIMASK0) | MCI_DATAENDMASK,
+-	       host->base + MMCIMASK0);
+ 	return 0;
+ }
+ 
+-static void mmci_get_next_data(struct mmci_host *host, struct mmc_data *data)
++void mmci_dmae_get_next_data(struct mmci_host *host, struct mmc_data *data)
+ {
+-	struct mmci_host_next *next = &host->next_data;
+-
+-	WARN_ON(data->host_cookie && data->host_cookie != next->cookie);
+-	WARN_ON(!data->host_cookie && (next->dma_desc || next->dma_chan));
++	struct mmci_dmae_priv *dmae = host->dma_priv;
++	struct mmci_dmae_next *next = &dmae->next_data;
+ 
+-	host->dma_desc_current = next->dma_desc;
+-	host->dma_current = next->dma_chan;
+-	next->dma_desc = NULL;
+-	next->dma_chan = NULL;
+-}
+-
+-static void mmci_pre_request(struct mmc_host *mmc, struct mmc_request *mrq)
+-{
+-	struct mmci_host *host = mmc_priv(mmc);
+-	struct mmc_data *data = mrq->data;
+-	struct mmci_host_next *nd = &host->next_data;
+-
+-	if (!data)
++	if (!host->use_dma)
+ 		return;
+ 
+-	BUG_ON(data->host_cookie);
++	WARN_ON(!data->host_cookie && (next->desc || next->chan));
+ 
+-	if (mmci_validate_data(host, data))
+-		return;
+-
+-	if (!mmci_dma_prep_next(host, data))
+-		data->host_cookie = ++nd->cookie < 0 ? 1 : nd->cookie;
++	dmae->desc_current = next->desc;
++	dmae->cur = next->chan;
++	next->desc = NULL;
++	next->chan = NULL;
+ }
+ 
+-static void mmci_post_request(struct mmc_host *mmc, struct mmc_request *mrq,
+-			      int err)
++void mmci_dmae_unprep_data(struct mmci_host *host,
++			   struct mmc_data *data, int err)
++
+ {
+-	struct mmci_host *host = mmc_priv(mmc);
+-	struct mmc_data *data = mrq->data;
++	struct mmci_dmae_priv *dmae = host->dma_priv;
+ 
+-	if (!data || !data->host_cookie)
++	if (!host->use_dma)
+ 		return;
+ 
+ 	mmci_dma_unmap(host, data);
+ 
+ 	if (err) {
+-		struct mmci_host_next *next = &host->next_data;
++		struct mmci_dmae_next *next = &dmae->next_data;
+ 		struct dma_chan *chan;
+ 		if (data->flags & MMC_DATA_READ)
+-			chan = host->dma_rx_channel;
++			chan = dmae->rx_channel;
+ 		else
+-			chan = host->dma_tx_channel;
++			chan = dmae->tx_channel;
+ 		dmaengine_terminate_all(chan);
+ 
+-		if (host->dma_desc_current == next->dma_desc)
+-			host->dma_desc_current = NULL;
++		if (dmae->desc_current == next->desc)
++			dmae->desc_current = NULL;
+ 
+-		if (host->dma_current == next->dma_chan) {
++		if (dmae->cur == next->chan) {
+ 			host->dma_in_progress = false;
+-			host->dma_current = NULL;
++			dmae->cur = NULL;
+ 		}
+ 
+-		next->dma_desc = NULL;
+-		next->dma_chan = NULL;
+-		data->host_cookie = 0;
++		next->desc = NULL;
++		next->chan = NULL;
+ 	}
+ }
+ 
+-#else
+-/* Blank functions if the DMA engine is not available */
+-static void mmci_get_next_data(struct mmci_host *host, struct mmc_data *data)
+-{
+-}
+-static inline void mmci_dma_setup(struct mmci_host *host)
+-{
+-}
++static struct mmci_host_ops mmci_variant_ops = {
++	.prep_data = mmci_dmae_prep_data,
++	.unprep_data = mmci_dmae_unprep_data,
++	.get_next_data = mmci_dmae_get_next_data,
++	.dma_setup = mmci_dmae_setup,
++	.dma_release = mmci_dmae_release,
++	.dma_start = mmci_dmae_start,
++	.dma_finalize = mmci_dmae_finalize,
++	.dma_error = mmci_dmae_error,
++};
+ 
+-static inline void mmci_dma_release(struct mmci_host *host)
++void mmci_variant_init(struct mmci_host *host)
+ {
++	host->ops = &mmci_variant_ops;
+ }
++#endif
+ 
+-static inline void mmci_dma_unmap(struct mmci_host *host, struct mmc_data *data)
++static void mmci_pre_request(struct mmc_host *mmc, struct mmc_request *mrq)
+ {
+-}
++	struct mmci_host *host = mmc_priv(mmc);
++	struct mmc_data *data = mrq->data;
+ 
+-static inline void mmci_dma_finalize(struct mmci_host *host,
+-				     struct mmc_data *data)
+-{
+-}
++	if (!data)
++		return;
+ 
+-static inline void mmci_dma_data_error(struct mmci_host *host)
+-{
++	WARN_ON(data->host_cookie);
++
++	if (mmci_validate_data(host, data))
++		return;
++
++	mmci_prep_data(host, data, true);
+ }
+ 
+-static inline int mmci_dma_start_data(struct mmci_host *host, unsigned int datactrl)
++static void mmci_post_request(struct mmc_host *mmc, struct mmc_request *mrq,
++			      int err)
+ {
+-	return -ENOSYS;
+-}
++	struct mmci_host *host = mmc_priv(mmc);
++	struct mmc_data *data = mrq->data;
+ 
+-#define mmci_pre_request NULL
+-#define mmci_post_request NULL
++	if (!data || !data->host_cookie)
++		return;
+ 
+-#endif
++	mmci_unprep_data(host, data, err);
++}
+ 
+ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
+ {
+@@ -793,11 +1071,11 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
+ 	BUG_ON(1 << blksz_bits != data->blksz);
+ 
+ 	if (variant->blksz_datactrl16)
+-		datactrl = MCI_DPSM_ENABLE | (data->blksz << 16);
++		datactrl = variant->datactrl_dpsm_enable | (data->blksz << 16);
+ 	else if (variant->blksz_datactrl4)
+-		datactrl = MCI_DPSM_ENABLE | (data->blksz << 4);
++		datactrl = variant->datactrl_dpsm_enable | (data->blksz << 4);
+ 	else
+-		datactrl = MCI_DPSM_ENABLE | blksz_bits << 4;
++		datactrl = variant->datactrl_dpsm_enable | blksz_bits << 4;
+ 
+ 	if (data->flags & MMC_DATA_READ)
+ 		datactrl |= MCI_DPSM_DIRECTION;
+@@ -831,7 +1109,7 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
+ 	 * Attempt to use DMA operation mode, if this
+ 	 * should fail, fall back to PIO mode
+ 	 */
+-	if (!mmci_dma_start_data(host, datactrl))
++	if (!mmci_dma_start(host, datactrl))
+ 		return;
+ 
+ 	/* IRQ mode, map the SG list for CPU reading/writing */
+@@ -864,21 +1142,40 @@ static void
+ mmci_start_command(struct mmci_host *host, struct mmc_command *cmd, u32 c)
+ {
+ 	void __iomem *base = host->base;
++	unsigned long long clks;
+ 
+ 	dev_dbg(mmc_dev(host->mmc), "op %02x arg %08x flags %08x\n",
+ 	    cmd->opcode, cmd->arg, cmd->flags);
+ 
+-	if (readl(base + MMCICOMMAND) & MCI_CPSM_ENABLE) {
++	if (readl(base + MMCICOMMAND) & host->variant->cmdreg_cpsm_enable) {
+ 		writel(0, base + MMCICOMMAND);
+ 		mmci_reg_delay(host);
+ 	}
+ 
+-	c |= cmd->opcode | MCI_CPSM_ENABLE;
++	if (host->variant->cmdreg_stop &&
++	    cmd->opcode == MMC_STOP_TRANSMISSION)
++		c |= host->variant->cmdreg_stop;
++
++	c |= cmd->opcode | host->variant->cmdreg_cpsm_enable;
+ 	if (cmd->flags & MMC_RSP_PRESENT) {
+ 		if (cmd->flags & MMC_RSP_136)
+-			c |= MCI_CPSM_LONGRSP;
+-		c |= MCI_CPSM_RESPONSE;
++			c |= host->variant->cmdreg_lrsp_crc;
++		else if (cmd->flags & MMC_RSP_CRC)
++			c |= host->variant->cmdreg_srsp_crc;
++		else
++			c |= host->variant->cmdreg_srsp;
++	}
++
++	if (host->variant->busy_timeout && cmd->flags & MMC_RSP_BUSY) {
++		if (!cmd->busy_timeout)
++			cmd->busy_timeout = 1000;
++
++		clks = (unsigned long long)cmd->busy_timeout * host->cclk;
++		do_div(clks, MSEC_PER_SEC);
++
++		writel_relaxed(clks, host->base + MMCIDATATIMER);
+ 	}
++
+ 	if (/*interrupt*/0)
+ 		c |= MCI_CPSM_INTERRUPT;
+ 
+@@ -895,21 +1192,22 @@ static void
+ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
+ 	      unsigned int status)
+ {
++	unsigned int status_err;
++
+ 	/* Make sure we have data to handle */
+ 	if (!data)
+ 		return;
+ 
+ 	/* First check for errors */
+-	if (status & (MCI_DATACRCFAIL | MCI_DATATIMEOUT |
+-		      host->variant->start_err |
+-		      MCI_TXUNDERRUN | MCI_RXOVERRUN)) {
++	status_err = status & (host->variant->start_err |
++			       MCI_DATACRCFAIL | MCI_DATATIMEOUT |
++			       MCI_TXUNDERRUN | MCI_RXOVERRUN);
++
++	if (status_err) {
+ 		u32 remain, success;
+ 
+ 		/* Terminate the DMA transfer */
+-		if (dma_inprogress(host)) {
+-			mmci_dma_data_error(host);
+-			mmci_dma_unmap(host, data);
+-		}
++		mmci_dma_error(host);
+ 
+ 		/*
+ 		 * Calculate how far we are into the transfer.  Note that
+@@ -918,22 +1216,26 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
+ 		 * can be as much as a FIFO-worth of data ahead.  This
+ 		 * matters for FIFO overruns only.
+ 		 */
+-		remain = readl(host->base + MMCIDATACNT);
+-		success = data->blksz * data->blocks - remain;
++		if (!host->variant->datacnt_useless) {
++			remain = readl(host->base + MMCIDATACNT);
++			success = data->blksz * data->blocks - remain;
++		} else {
++			success = 0;
++		}
+ 
+ 		dev_dbg(mmc_dev(host->mmc), "MCI ERROR IRQ, status 0x%08x at 0x%08x\n",
+-			status, success);
+-		if (status & MCI_DATACRCFAIL) {
++			status_err, success);
++		if (status_err & MCI_DATACRCFAIL) {
+ 			/* Last block was not successful */
+ 			success -= 1;
+ 			data->error = -EILSEQ;
+-		} else if (status & MCI_DATATIMEOUT) {
++		} else if (status_err & MCI_DATATIMEOUT) {
+ 			data->error = -ETIMEDOUT;
+-		} else if (status & MCI_STARTBITERR) {
++		} else if (status_err & MCI_STARTBITERR) {
+ 			data->error = -ECOMM;
+-		} else if (status & MCI_TXUNDERRUN) {
++		} else if (status_err & MCI_TXUNDERRUN) {
+ 			data->error = -EIO;
+-		} else if (status & MCI_RXOVERRUN) {
++		} else if (status_err & MCI_RXOVERRUN) {
+ 			if (success > host->variant->fifosize)
+ 				success -= host->variant->fifosize;
+ 			else
+@@ -947,8 +1249,8 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
+ 		dev_err(mmc_dev(host->mmc), "stray MCI_DATABLOCKEND interrupt\n");
+ 
+ 	if (status & MCI_DATAEND || data->error) {
+-		if (dma_inprogress(host))
+-			mmci_dma_finalize(host, data);
++		mmci_dma_finalize(host, data);
++
+ 		mmci_stop_data(host);
+ 
+ 		if (!data->error)
+@@ -968,7 +1270,9 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
+ 	     unsigned int status)
+ {
+ 	void __iomem *base = host->base;
++	bool busy_resp = !!(cmd->flags & MMC_RSP_BUSY);
+ 	bool sbc;
++	u32 err_msk;
+ 
+ 	if (!cmd)
+ 		return;
+@@ -980,18 +1284,21 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
+ 	 * handling. Note that we tag on any latent IRQs postponed
+ 	 * due to waiting for busy status.
+ 	 */
++	err_msk = MCI_CMDCRCFAIL | MCI_CMDTIMEOUT;
++	if (host->variant->busy_timeout && busy_resp)
++		err_msk |= MCI_DATATIMEOUT;
++
+ 	if (!((status|host->busy_status) &
+-	      (MCI_CMDCRCFAIL|MCI_CMDTIMEOUT|MCI_CMDSENT|MCI_CMDRESPEND)))
++	      (err_msk|MCI_CMDSENT|MCI_CMDRESPEND)))
+ 		return;
+ 
+ 	/*
+ 	 * ST Micro variant: handle busy detection.
+ 	 */
+-	if (host->variant->busy_detect) {
+-		bool busy_resp = !!(cmd->flags & MMC_RSP_BUSY);
++	if (busy_resp && host->variant->busy_detect) {
+ 
+ 		/* We are busy with a command, return */
+-		if (host->busy_status &&
++		if (host->busy_status && !(status & (err_msk)) &&
+ 		    (status & host->variant->busy_detect_flag))
+ 			return;
+ 
+@@ -1001,9 +1308,9 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
+ 		 * that the special busy status bit is still set before
+ 		 * proceeding.
+ 		 */
+-		if (!host->busy_status && busy_resp &&
+-		    !(status & (MCI_CMDCRCFAIL|MCI_CMDTIMEOUT)) &&
+-		    (readl(base + MMCISTATUS) & host->variant->busy_detect_flag)) {
++		if (!host->busy_status && !(status & (err_msk)) &&
++		    (readl(base + MMCISTATUS) &
++		     host->variant->busy_detect_flag)) {
+ 
+ 			/* Clear the busy start IRQ */
+ 			writel(host->variant->busy_detect_mask,
+@@ -1045,6 +1352,9 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
+ 		cmd->error = -ETIMEDOUT;
+ 	} else if (status & MCI_CMDCRCFAIL && cmd->flags & MMC_RSP_CRC) {
+ 		cmd->error = -EILSEQ;
++	} else if (busy_resp && host->variant->busy_timeout &&
++		  status & MCI_DATATIMEOUT) {
++		cmd->error = -ETIMEDOUT;
+ 	} else {
+ 		cmd->resp[0] = readl(base + MMCIRESPONSE0);
+ 		cmd->resp[1] = readl(base + MMCIRESPONSE1);
+@@ -1055,16 +1365,15 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
+ 	if ((!sbc && !cmd->data) || cmd->error) {
+ 		if (host->data) {
+ 			/* Terminate the DMA transfer */
+-			if (dma_inprogress(host)) {
+-				mmci_dma_data_error(host);
+-				mmci_dma_unmap(host, host->data);
+-			}
++			mmci_dma_error(host);
++
+ 			mmci_stop_data(host);
+ 		}
+ 		mmci_request_end(host, host->mrq);
+ 	} else if (sbc) {
+ 		mmci_start_command(host, host->mrq->cmd, 0);
+-	} else if (!(cmd->data->flags & MMC_DATA_READ)) {
++	} else if (!host->variant->datactrl_first &&
++		   !(cmd->data->flags & MMC_DATA_READ)) {
+ 		mmci_start_data(host, cmd->data);
+ 	}
+ }
+@@ -1264,7 +1573,7 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
+ 			if (status & host->mask1_reg)
+ 				mmci_pio_irq(irq, dev_id);
+ 
+-			status &= ~MCI_IRQ1MASK;
++			status &= ~host->variant->irq_pio_mask;
+ 		}
+ 
+ 		/*
+@@ -1277,7 +1586,8 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
+ 		 * to make sure that both start and end interrupts are always
+ 		 * cleared one after the other.
+ 		 */
+-		status &= readl(host->base + MMCIMASK0);
++		status &= readl(host->base + MMCIMASK0) |
++			host->variant->busy_detect_flag;
+ 		if (host->variant->busy_detect)
+ 			writel(status & ~host->variant->busy_detect_mask,
+ 			       host->base + MMCICLEAR);
+@@ -1301,6 +1611,7 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
+ 			status &= ~host->variant->busy_detect_flag;
+ 
+ 		ret = 1;
++
+ 	} while (status);
+ 
+ 	spin_unlock(&host->lock);
+@@ -1328,7 +1639,8 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
+ 	if (mrq->data)
+ 		mmci_get_next_data(host, mrq->data);
+ 
+-	if (mrq->data && mrq->data->flags & MMC_DATA_READ)
++	if (mrq->data &&
++	    (host->variant->datactrl_first || mrq->data->flags & MMC_DATA_READ))
+ 		mmci_start_data(host, mrq->data);
+ 
+ 	if (mrq->sbc)
+@@ -1438,8 +1750,16 @@ static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
+ 
+ 	spin_lock_irqsave(&host->lock, flags);
+ 
+-	mmci_set_clkreg(host, ios->clock);
+-	mmci_write_pwrreg(host, pwr);
++	if (host->ops && host->ops->set_clkreg)
++		host->ops->set_clkreg(host, ios->clock);
++	else
++		mmci_set_clkreg(host, ios->clock);
++
++	if (host->ops && host->ops->set_pwrreg)
++		host->ops->set_pwrreg(host, pwr);
++	else
++		mmci_write_pwrreg(host, pwr);
++
+ 	mmci_reg_delay(host);
+ 
+ 	spin_unlock_irqrestore(&host->lock, flags);
+@@ -1518,6 +1838,12 @@ static int mmci_of_parse(struct device_node *np, struct mmc_host *mmc)
+ 		host->pwr_reg_add |= MCI_ST_CMDDIREN;
+ 	if (of_get_property(np, "st,sig-pin-fbclk", NULL))
+ 		host->pwr_reg_add |= MCI_ST_FBCLKEN;
++	if (of_get_property(np, "st,sig-dir", NULL))
++		host->pwr_reg_add |= MCI_STM32_DIRPOL;
++	if (of_get_property(np, "st,neg-edge", NULL))
++		host->clk_reg_add |= MCI_STM32_CLK_NEGEDGE;
++	if (of_get_property(np, "st,use-ckin", NULL))
++		host->clk_reg_add |= MCI_STM32_CLK_SELCKIN;
+ 
+ 	if (of_get_property(np, "mmc-cap-mmc-highspeed", NULL))
+ 		mmc->caps |= MMC_CAP_MMC_HIGHSPEED;
+@@ -1644,6 +1970,8 @@ static int mmci_probe(struct amba_device *dev,
+ 	 */
+ 	if (variant->st_clkdiv)
+ 		mmc->f_min = DIV_ROUND_UP(host->mclk, 257);
++	else if (variant->stm32_clkdiv)
++		mmc->f_min = DIV_ROUND_UP(host->mclk, 2046);
+ 	else if (variant->explicit_mclk_control)
+ 		mmc->f_min = clk_round_rate(host->clk, 100000);
+ 	else
+@@ -1665,6 +1993,12 @@ static int mmci_probe(struct amba_device *dev,
+ 
+ 	dev_dbg(mmc_dev(mmc), "clocking block at %u Hz\n", mmc->f_max);
+ 
++	host->rst = devm_reset_control_get_optional_exclusive(&dev->dev, NULL);
++	if (IS_ERR(host->rst)) {
++		ret = PTR_ERR(host->rst);
++		goto clk_disable;
++	}
++
+ 	/* Get regulators and the supported OCR mask */
+ 	ret = mmc_regulator_get_supply(mmc);
+ 	if (ret)
+@@ -1675,13 +2009,6 @@ static int mmci_probe(struct amba_device *dev,
+ 	else if (plat->ocr_mask)
+ 		dev_warn(mmc_dev(mmc), "Platform OCR mask is ignored\n");
+ 
+-	/* DT takes precedence over platform data. */
+-	if (!np) {
+-		if (!plat->cd_invert)
+-			mmc->caps2 |= MMC_CAP2_CD_ACTIVE_HIGH;
+-		mmc->caps2 |= MMC_CAP2_RO_ACTIVE_HIGH;
+-	}
+-
+ 	/* We support these capabilities. */
+ 	mmc->caps |= MMC_CAP_CMD23;
+ 
+@@ -1689,6 +2016,8 @@ static int mmci_probe(struct amba_device *dev,
+ 	 * Enable busy detection.
+ 	 */
+ 	if (variant->busy_detect) {
++		u32 max_busy_timeout = 0;
++
+ 		mmci_ops.card_busy = mmci_card_busy;
+ 		/*
+ 		 * Not all variants have a flag to enable busy detection
+@@ -1698,7 +2027,18 @@ static int mmci_probe(struct amba_device *dev,
+ 			mmci_write_datactrlreg(host,
+ 					       host->variant->busy_dpsm_flag);
+ 		mmc->caps |= MMC_CAP_WAIT_WHILE_BUSY;
+-		mmc->max_busy_timeout = 0;
++
++		if (variant->busy_timeout)
++			max_busy_timeout = ~0UL / (mmc->f_max / MSEC_PER_SEC);
++
++		mmc->max_busy_timeout = max_busy_timeout;
++	}
++
++	/* prepare the stop command, used to abort and reinitialized the DPSM */
++	if (variant->cmdreg_stop) {
++		host->stop_abort.opcode = MMC_STOP_TRANSMISSION;
++		host->stop_abort.arg = 0;
++		host->stop_abort.flags = MMC_RSP_R1B | MMC_CMD_AC;
+ 	}
+ 
+ 	mmc->ops = &mmci_ops;
+@@ -1727,13 +2067,13 @@ static int mmci_probe(struct amba_device *dev,
+ 	/*
+ 	 * Block size can be up to 2048 bytes, but must be a power of two.
+ 	 */
+-	mmc->max_blk_size = 1 << 11;
++	mmc->max_blk_size = 1 << variant->datactrl_blocksz;
+ 
+ 	/*
+ 	 * Limit the number of blocks transferred so that we don't overflow
+ 	 * the maximum request size.
+ 	 */
+-	mmc->max_blk_count = mmc->max_req_size >> 11;
++	mmc->max_blk_count = mmc->max_req_size >> variant->datactrl_blocksz;
+ 
+ 	spin_lock_init(&host->lock);
+ 
+@@ -1749,30 +2089,16 @@ static int mmci_probe(struct amba_device *dev,
+ 	 * - not using DT but using a descriptor table, or
+ 	 * - using a table of descriptors ALONGSIDE DT, or
+ 	 * look up these descriptors named "cd" and "wp" right here, fail
+-	 * silently of these do not exist and proceed to try platform data
++	 * silently of these do not exist
+ 	 */
+ 	if (!np) {
+ 		ret = mmc_gpiod_request_cd(mmc, "cd", 0, false, 0, NULL);
+-		if (ret < 0) {
+-			if (ret == -EPROBE_DEFER)
+-				goto clk_disable;
+-			else if (gpio_is_valid(plat->gpio_cd)) {
+-				ret = mmc_gpio_request_cd(mmc, plat->gpio_cd, 0);
+-				if (ret)
+-					goto clk_disable;
+-			}
+-		}
++		if (ret == -EPROBE_DEFER)
++			goto clk_disable;
+ 
+ 		ret = mmc_gpiod_request_ro(mmc, "wp", 0, false, 0, NULL);
+-		if (ret < 0) {
+-			if (ret == -EPROBE_DEFER)
+-				goto clk_disable;
+-			else if (gpio_is_valid(plat->gpio_wp)) {
+-				ret = mmc_gpio_request_ro(mmc, plat->gpio_wp);
+-				if (ret)
+-					goto clk_disable;
+-			}
+-		}
++		if (ret == -EPROBE_DEFER)
++			goto clk_disable;
+ 	}
+ 
+ 	ret = devm_request_irq(&dev->dev, dev->irq[0], mmci_irq, IRQF_SHARED,
+@@ -1789,7 +2115,7 @@ static int mmci_probe(struct amba_device *dev,
+ 			goto clk_disable;
+ 	}
+ 
+-	writel(MCI_IRQENABLE, host->base + MMCIMASK0);
++	writel(MCI_IRQENABLE | variant->start_err, host->base + MMCIMASK0);
+ 
+ 	amba_set_drvdata(dev, mmc);
+ 
+@@ -1876,7 +2202,8 @@ static void mmci_restore(struct mmci_host *host)
+ 		writel(host->datactrl_reg, host->base + MMCIDATACTRL);
+ 		writel(host->pwr_reg, host->base + MMCIPOWER);
+ 	}
+-	writel(MCI_IRQENABLE, host->base + MMCIMASK0);
++	writel(MCI_IRQENABLE | host->variant->start_err,
++	       host->base + MMCIMASK0);
+ 	mmci_reg_delay(host);
+ 
+ 	spin_unlock_irqrestore(&host->lock, flags);
+@@ -1971,6 +2298,16 @@ static const struct amba_id mmci_ids[] = {
+ 		.mask   = 0x00ffffff,
+ 		.data	= &variant_stm32,
+ 	},
++	{
++		.id     = 0x10153180,
++		.mask	= 0xf0ffffff,
++		.data	= &variant_stm32_sdmmc,
++	},
++	{
++		.id     = 0x00253180,
++		.mask	= 0xf0ffffff,
++		.data	= &variant_stm32_sdmmcv2,
++	},
+ 	/* Qualcomm variants */
+ 	{
+ 		.id     = 0x00051180,
+diff --git a/drivers/mmc/host/mmci.h b/drivers/mmc/host/mmci.h
+index 517591d..36a744a 100644
+--- a/drivers/mmc/host/mmci.h
++++ b/drivers/mmc/host/mmci.h
+@@ -23,6 +23,14 @@
+ #define MCI_ST_DATA31DIREN	(1 << 5)
+ #define MCI_ST_FBCLKEN		(1 << 7)
+ #define MCI_ST_DATA74DIREN	(1 << 8)
++/*
++ * The STM32 sdmmc does not have PWR_UP/OD/ROD
++ * and uses the power register for
++ */
++#define MCI_STM32_PWR_CYC	0x02
++#define MCI_STM32_VSWITCH	BIT(2)
++#define MCI_STM32_VSWITCHEN	BIT(3)
++#define MCI_STM32_DIRPOL	BIT(4)
+ 
+ #define MMCICLOCK		0x004
+ #define MCI_CLK_ENABLE		(1 << 8)
+@@ -50,6 +58,19 @@
+ #define MCI_QCOM_CLK_SELECT_IN_FBCLK	BIT(15)
+ #define MCI_QCOM_CLK_SELECT_IN_DDR_MODE	(BIT(14) | BIT(15))
+ 
++/* Modified on STM32 sdmmc */
++#define MCI_STM32_CLK_CLKDIV_MSK	GENMASK(9, 0)
++#define MCI_STM32_CLK_WIDEBUS_4		BIT(14)
++#define MCI_STM32_CLK_WIDEBUS_8		BIT(15)
++#define MCI_STM32_CLK_NEGEDGE		BIT(16)
++#define MCI_STM32_CLK_HWFCEN		BIT(17)
++#define MCI_STM32_CLK_DDR		BIT(18)
++#define MCI_STM32_CLK_BUSSPEED		BIT(19)
++#define MCI_STM32_CLK_SEL_MSK		GENMASK(21, 20)
++#define MCI_STM32_CLK_SELCK		(0 << 20)
++#define MCI_STM32_CLK_SELCKIN		(1 << 20)
++#define MCI_STM32_CLK_SELFBCK		(2 << 20)
++
+ #define MMCIARGUMENT		0x008
+ 
+ /* The command register controls the Command Path State Machine (CPSM) */
+@@ -72,6 +93,15 @@
+ #define MCI_CPSM_QCOM_CCSDISABLE	BIT(15)
+ #define MCI_CPSM_QCOM_AUTO_CMD19	BIT(16)
+ #define MCI_CPSM_QCOM_AUTO_CMD21	BIT(21)
++/* Command register in STM32 sdmmc versions */
++#define MCI_CPSM_STM32_CMDTRANS		BIT(6)
++#define MCI_CPSM_STM32_CMDSTOP		BIT(7)
++#define MCI_CPSM_STM32_WAITRESP_MASK	GENMASK(9, 8)
++#define MCI_CPSM_STM32_NORSP		(0 << 8)
++#define MCI_CPSM_STM32_SRSP_CRC		(1 << 8)
++#define MCI_CPSM_STM32_SRSP		(2 << 8)
++#define MCI_CPSM_STM32_LRSP_CRC		(3 << 8)
++#define MCI_CPSM_STM32_ENABLE		BIT(12)
+ 
+ #define MMCIRESPCMD		0x010
+ #define MMCIRESPONSE0		0x014
+@@ -130,6 +160,10 @@
+ #define MCI_ST_SDIOIT		(1 << 22)
+ #define MCI_ST_CEATAEND		(1 << 23)
+ #define MCI_ST_CARDBUSY		(1 << 24)
++/* Extended status bits for the STM32 variants */
++#define MCI_STM32_DPSMACTIVE	BIT(12)
++#define MCI_STM32_BUSYD0	BIT(20)
++#define MCI_STM32_BUSYD0END	BIT(21)
+ 
+ #define MMCICLEAR		0x038
+ #define MCI_CMDCRCFAILCLR	(1 << 0)
+@@ -175,21 +209,45 @@
+ #define MCI_ST_SDIOITMASK	(1 << 22)
+ #define MCI_ST_CEATAENDMASK	(1 << 23)
+ #define MCI_ST_BUSYENDMASK	(1 << 24)
++/* Extended status bits for the STM32 variants */
++#define MCI_STM32_BUSYD0ENDMASK	BIT(21)
+ 
+ #define MMCIMASK1		0x040
+ #define MMCIFIFOCNT		0x048
+ #define MMCIFIFO		0x080 /* to 0x0bc */
+ 
++/* STM32 sdmmc registers for IDMA (Internal DMA) */
++#define MMCI_STM32_IDMACTRLR	0x050
++#define MMCI_STM32_IDMAEN	BIT(0)
++#define MMCI_STM32_IDMALLIEN	BIT(1)
++
++#define MMCI_STM32_IDMABSIZER		0x054
++#define MMCI_STM32_IDMABNDT_SHIFT	5
++#define MMCI_STM32_IDMABNDT_MASK	GENMASK(12, 5)
++
++#define MMCI_STM32_IDMABASE0R	0x058
++
++#define MMCI_STM32_IDMALAR	0x64
++#define MMCI_STM32_IDMALA_MASK	GENMASK(13, 0)
++#define MMCI_STM32_ABR		BIT(29)
++#define MMCI_STM32_ULS		BIT(30)
++#define MMCI_STM32_ULA		BIT(31)
++
++#define MMCI_STM32_IDMABAR	0x68
++
+ #define MCI_IRQENABLE	\
+-	(MCI_CMDCRCFAILMASK|MCI_DATACRCFAILMASK|MCI_CMDTIMEOUTMASK|	\
+-	MCI_DATATIMEOUTMASK|MCI_TXUNDERRUNMASK|MCI_RXOVERRUNMASK|	\
+-	MCI_CMDRESPENDMASK|MCI_CMDSENTMASK|MCI_STARTBITERRMASK)
++	(MCI_CMDCRCFAILMASK | MCI_DATACRCFAILMASK | MCI_CMDTIMEOUTMASK | \
++	MCI_DATATIMEOUTMASK | MCI_TXUNDERRUNMASK | MCI_RXOVERRUNMASK |	\
++	MCI_CMDRESPENDMASK | MCI_CMDSENTMASK)
+ 
+ /* These interrupts are directed to IRQ1 when two IRQ lines are available */
+-#define MCI_IRQ1MASK \
++#define MCI_IRQ_PIO_MASK \
+ 	(MCI_RXFIFOHALFFULLMASK | MCI_RXDATAAVLBLMASK | \
+ 	 MCI_TXFIFOHALFEMPTYMASK)
+ 
++#define MCI_IRQ_PIO_STM32_MASK \
++	(MCI_RXFIFOHALFFULLMASK | MCI_TXFIFOHALFEMPTYMASK)
++
+ #define NR_SG		128
+ 
+ #define MMCI_PINCTRL_STATE_OPENDRAIN "opendrain"
+@@ -204,6 +262,11 @@ struct mmci_host;
+  * @clkreg_enable: enable value for MMCICLOCK register
+  * @clkreg_8bit_bus_enable: enable value for 8 bit bus
+  * @clkreg_neg_edge_enable: enable value for inverted data/cmd output
++ * @cmdreg_cpsm_enable: enable value for CPSM
++ * @cmdreg_lrsp_crc: enable value for long response with crc
++ * @cmdreg_srsp_crc: enable value for short response with crc
++ * @cmdreg_srsp: enable value for short response without crc
++ * @cmdreg_stop: enable value for stop and abort transmission
+  * @datalength_bits: number of bits in the MMCIDATALENGTH register
+  * @fifosize: number of bytes that can be written when MMCI_TXFIFOEMPTY
+  *	      is asserted (likewise for RX)
+@@ -212,11 +275,17 @@ struct mmci_host;
+  * @data_cmd_enable: enable value for data commands.
+  * @st_sdio: enable ST specific SDIO logic
+  * @st_clkdiv: true if using a ST-specific clock divider algorithm
++ * @stm32_clkdiv: true if using a STM32-specific clock divider algorithm
+  * @datactrl_mask_ddrmode: ddr mode mask in datactrl register.
+  * @blksz_datactrl16: true if Block size is at b16..b30 position in datactrl register
+  * @blksz_datactrl4: true if Block size is at b4..b16 position in datactrl
+  *		     register
+  * @datactrl_mask_sdio: SDIO enable mask in datactrl register
++ * @datactrl_blksz: block size in power of two
++ * @datactrl_dpsm_enable: enable value for DPSM
++ * @datactrl_first: true if data must be setup before send command
++ * @datacnt_useless: true if you could not use datacnt register to read
++ *		     remaining data
+  * @pwrreg_powerup: power up value for MMCIPOWER register
+  * @f_max: maximum clk frequency supported by the controller.
+  * @signal_direction: input/out direction of bus signals can be indicated
+@@ -233,53 +302,77 @@ struct mmci_host;
+  * @qcom_dml: enables qcom specific dma glue for dma transfers.
+  * @reversed_irq_handling: handle data irq before cmd irq.
+  * @mmcimask1: true if variant have a MMCIMASK1 register.
++ * @irq_pio_mask: bitmask used to manage interrupt pio transfert in mmcimask
++ *		  register
+  * @start_err: bitmask identifying the STARTBITERR bit inside MMCISTATUS
+  *	       register.
+  * @opendrain: bitmask identifying the OPENDRAIN bit inside MMCIPOWER register
++ * @dma_lli: true if variant has dma link list feature.
++ * @stm32_idmabsize_mask: stm32 sdmmc idma buffer size.
+  */
+ struct variant_data {
+ 	unsigned int		clkreg;
+ 	unsigned int		clkreg_enable;
+ 	unsigned int		clkreg_8bit_bus_enable;
+ 	unsigned int		clkreg_neg_edge_enable;
++	unsigned int		cmdreg_cpsm_enable;
++	unsigned int		cmdreg_lrsp_crc;
++	unsigned int		cmdreg_srsp_crc;
++	unsigned int		cmdreg_srsp;
++	unsigned int		cmdreg_stop;
+ 	unsigned int		datalength_bits;
+ 	unsigned int		fifosize;
+ 	unsigned int		fifohalfsize;
+ 	unsigned int		data_cmd_enable;
+ 	unsigned int		datactrl_mask_ddrmode;
+ 	unsigned int		datactrl_mask_sdio;
+-	bool			st_sdio;
+-	bool			st_clkdiv;
+-	bool			blksz_datactrl16;
+-	bool			blksz_datactrl4;
++	unsigned int		datactrl_blocksz;
++	unsigned int		datactrl_dpsm_enable;
++	u8			datactrl_first:1;
++	u8			datacnt_useless:1;
++	u8			st_sdio:1;
++	u8			st_clkdiv:1;
++	u8			stm32_clkdiv:1;
++	u8			blksz_datactrl16:1;
++	u8			blksz_datactrl4:1;
+ 	u32			pwrreg_powerup;
+ 	u32			f_max;
+-	bool			signal_direction;
+-	bool			pwrreg_clkgate;
+-	bool			busy_detect;
++	u8			signal_direction:1;
++	u8			pwrreg_clkgate:1;
++	u8			busy_detect:1;
++	u8			busy_timeout:1;
+ 	u32			busy_dpsm_flag;
+ 	u32			busy_detect_flag;
+ 	u32			busy_detect_mask;
+-	bool			pwrreg_nopower;
+-	bool			explicit_mclk_control;
+-	bool			qcom_fifo;
+-	bool			qcom_dml;
+-	bool			reversed_irq_handling;
+-	bool			mmcimask1;
++	u8			pwrreg_nopower:1;
++	u8			explicit_mclk_control:1;
++	u8			qcom_fifo:1;
++	u8			qcom_dml:1;
++	u8			reversed_irq_handling:1;
++	u8			mmcimask1:1;
++	unsigned int		irq_pio_mask;
+ 	u32			start_err;
+ 	u32			opendrain;
++	u8			dma_lli:1;
++	u32			stm32_idmabsize_mask;
+ 	void (*init)(struct mmci_host *host);
+ };
+ 
+ /* mmci variant callbacks */
+ struct mmci_host_ops {
+-	void (*dma_setup)(struct mmci_host *host);
+-};
+-
+-struct mmci_host_next {
+-	struct dma_async_tx_descriptor	*dma_desc;
+-	struct dma_chan			*dma_chan;
+-	s32				cookie;
++	int (*validate_data)(struct mmci_host *host, struct mmc_data *data);
++	int (*prep_data)(struct mmci_host *host, struct mmc_data *data,
++			 bool next);
++	void (*unprep_data)(struct mmci_host *host, struct mmc_data *data,
++			    int err);
++	void (*get_next_data)(struct mmci_host *host, struct mmc_data *data);
++	int (*dma_setup)(struct mmci_host *host);
++	void (*dma_release)(struct mmci_host *host);
++	int (*dma_start)(struct mmci_host *host, unsigned int *datactrl);
++	void (*dma_finalize)(struct mmci_host *host, struct mmc_data *data);
++	void (*dma_error)(struct mmci_host *host);
++	void (*set_clkreg)(struct mmci_host *host, unsigned int desired);
++	void (*set_pwrreg)(struct mmci_host *host, unsigned int pwr);
+ };
+ 
+ struct mmci_host {
+@@ -287,10 +380,13 @@ struct mmci_host {
+ 	void __iomem		*base;
+ 	struct mmc_request	*mrq;
+ 	struct mmc_command	*cmd;
++	struct mmc_command	stop_abort;
+ 	struct mmc_data		*data;
+ 	struct mmc_host		*mmc;
+ 	struct clk		*clk;
+-	bool			singleirq;
++	u8			singleirq:1;
++
++	struct reset_control	*rst;
+ 
+ 	spinlock_t		lock;
+ 
+@@ -301,10 +397,11 @@ struct mmci_host {
+ 	u32			pwr_reg;
+ 	u32			pwr_reg_add;
+ 	u32			clk_reg;
++	u32			clk_reg_add;
+ 	u32			datactrl_reg;
+ 	u32			busy_status;
+ 	u32			mask1_reg;
+-	bool			vqmmc_enabled;
++	u8			vqmmc_enabled:1;
+ 	struct mmci_platform_data *plat;
+ 	struct mmci_host_ops	*ops;
+ 	struct variant_data	*variant;
+@@ -323,18 +420,25 @@ struct mmci_host {
+ 	unsigned int		size;
+ 	int (*get_rx_fifocnt)(struct mmci_host *h, u32 status, int remain);
+ 
+-#ifdef CONFIG_DMA_ENGINE
+-	/* DMA stuff */
+-	struct dma_chan		*dma_current;
+-	struct dma_chan		*dma_rx_channel;
+-	struct dma_chan		*dma_tx_channel;
+-	struct dma_async_tx_descriptor	*dma_desc_current;
+-	struct mmci_host_next	next_data;
+-	bool			dma_in_progress;
++	u8			use_dma:1;
++	u8			dma_in_progress:1;
++	void			*dma_priv;
+ 
+-#define dma_inprogress(host)	((host)->dma_in_progress)
+-#else
+-#define dma_inprogress(host)	(0)
+-#endif
++	s32			next_cookie;
+ };
+ 
++#define dma_inprogress(host)	((host)->dma_in_progress)
++
++void mmci_write_clkreg(struct mmci_host *host, u32 clk);
++void mmci_write_pwrreg(struct mmci_host *host, u32 pwr);
++
++int mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
++			bool next);
++void mmci_dmae_unprep_data(struct mmci_host *host, struct mmc_data *data,
++			   int err);
++void mmci_dmae_get_next_data(struct mmci_host *host, struct mmc_data *data);
++int mmci_dmae_setup(struct mmci_host *host);
++void mmci_dmae_release(struct mmci_host *host);
++int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl);
++void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data);
++void mmci_dmae_error(struct mmci_host *host);
+diff --git a/drivers/mmc/host/mmci_qcom_dml.c b/drivers/mmc/host/mmci_qcom_dml.c
+index be3fab5..25d0a75 100644
+--- a/drivers/mmc/host/mmci_qcom_dml.c
++++ b/drivers/mmc/host/mmci_qcom_dml.c
+@@ -119,19 +119,23 @@ static int of_get_dml_pipe_index(struct device_node *np, const char *name)
+ }
+ 
+ /* Initialize the dml hardware connected to SD Card controller */
+-static void qcom_dma_setup(struct mmci_host *host)
++static int qcom_dma_setup(struct mmci_host *host)
+ {
+ 	u32 config;
+ 	void __iomem *base;
+ 	int consumer_id, producer_id;
+ 	struct device_node *np = host->mmc->parent->of_node;
+ 
++	if (mmci_dmae_setup(host))
++		return -EINVAL;
++
+ 	consumer_id = of_get_dml_pipe_index(np, "tx");
+ 	producer_id = of_get_dml_pipe_index(np, "rx");
+ 
+ 	if (producer_id < 0 || consumer_id < 0) {
+ 		host->variant->qcom_dml = false;
+-		return;
++		mmci_dmae_release(host);
++		return -EINVAL;
+ 	}
+ 
+ 	base = host->base + DML_OFFSET;
+@@ -175,10 +179,19 @@ static void qcom_dma_setup(struct mmci_host *host)
+ 
+ 	/* Make sure dml initialization is finished */
+ 	mb();
++
++	return 0;
+ }
+ 
+ static struct mmci_host_ops qcom_variant_ops = {
++	.prep_data = mmci_dmae_prep_data,
++	.unprep_data = mmci_dmae_unprep_data,
++	.get_next_data = mmci_dmae_get_next_data,
+ 	.dma_setup = qcom_dma_setup,
++	.dma_release = mmci_dmae_release,
++	.dma_start = mmci_dmae_start,
++	.dma_finalize = mmci_dmae_finalize,
++	.dma_error = mmci_dmae_error,
+ };
+ 
+ void qcom_variant_init(struct mmci_host *host)
+diff --git a/drivers/mmc/host/mmci_stm32_sdmmc.c b/drivers/mmc/host/mmci_stm32_sdmmc.c
+new file mode 100644
+index 0000000..cfbfc6f
+--- /dev/null
++++ b/drivers/mmc/host/mmci_stm32_sdmmc.c
+@@ -0,0 +1,282 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
++ * Author: Ludovic.barre@st.com for STMicroelectronics.
++ */
++#include <linux/delay.h>
++#include <linux/dma-mapping.h>
++#include <linux/mmc/host.h>
++#include <linux/mmc/card.h>
++#include <linux/reset.h>
++#include <linux/scatterlist.h>
++#include "mmci.h"
++
++#define SDMMC_LLI_BUF_LEN	PAGE_SIZE
++#define SDMMC_IDMA_BURST	BIT(MMCI_STM32_IDMABNDT_SHIFT)
++
++struct sdmmc_lli_desc {
++	u32 idmalar;
++	u32 idmabase;
++	u32 idmasize;
++};
++
++struct sdmmc_priv {
++	dma_addr_t sg_dma;
++	void *sg_cpu;
++};
++
++int sdmmc_idma_validate_data(struct mmci_host *host,
++			     struct mmc_data *data)
++{
++	struct scatterlist *sg;
++	int i;
++
++	/*
++	 * idma has constraints on idmabase & idmasize for each element
++	 * excepted the last element which has no constraint on idmasize
++	 */
++	for_each_sg(data->sg, sg, data->sg_len - 1, i) {
++		if (!IS_ALIGNED(sg_dma_address(data->sg), sizeof(u32)) ||
++		    !IS_ALIGNED(sg_dma_len(data->sg), SDMMC_IDMA_BURST)) {
++			dev_err(mmc_dev(host->mmc),
++				"unaligned scatterlist: ofst:%x length:%d\n",
++				data->sg->offset, data->sg->length);
++			return -EINVAL;
++		}
++	}
++
++	if (!IS_ALIGNED(sg_dma_address(data->sg), sizeof(u32))) {
++		dev_err(mmc_dev(host->mmc),
++			"unaligned last scatterlist: ofst:%x length:%d\n",
++			data->sg->offset, data->sg->length);
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int _sdmmc_idma_prep_data(struct mmci_host *host,
++				 struct mmc_data *data)
++{
++	int n_elem;
++
++	n_elem = dma_map_sg(mmc_dev(host->mmc),
++			    data->sg,
++			    data->sg_len,
++			    mmc_get_dma_dir(data));
++
++	if (!n_elem) {
++		dev_err(mmc_dev(host->mmc), "dma_map_sg failed\n");
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int sdmmc_idma_prep_data(struct mmci_host *host,
++				struct mmc_data *data, bool next)
++{
++	/* Check if job is already prepared. */
++	if (!next && data->host_cookie == host->next_cookie)
++		return 0;
++
++	return _sdmmc_idma_prep_data(host, data);
++}
++
++static void sdmmc_idma_unprep_data(struct mmci_host *host,
++				   struct mmc_data *data, int err)
++{
++	dma_unmap_sg(mmc_dev(host->mmc), data->sg, data->sg_len,
++		     mmc_get_dma_dir(data));
++}
++
++static int sdmmc_idma_setup(struct mmci_host *host)
++{
++	struct sdmmc_priv *idma;
++
++	idma = devm_kzalloc(mmc_dev(host->mmc), sizeof(*idma), GFP_KERNEL);
++	if (!idma)
++		return -ENOMEM;
++
++	host->dma_priv = idma;
++
++	if (host->variant->dma_lli) {
++		idma->sg_cpu = dmam_alloc_coherent(mmc_dev(host->mmc),
++						   SDMMC_LLI_BUF_LEN,
++						   &idma->sg_dma, GFP_KERNEL);
++		if (!idma->sg_cpu) {
++			dev_err(mmc_dev(host->mmc),
++				"Failed to alloc IDMA descriptor\n");
++			return -ENOMEM;
++		}
++		host->mmc->max_segs = SDMMC_LLI_BUF_LEN /
++			sizeof(struct sdmmc_lli_desc);
++		host->mmc->max_seg_size = host->variant->stm32_idmabsize_mask;
++	} else {
++		host->mmc->max_segs = 1;
++		host->mmc->max_seg_size = host->mmc->max_req_size;
++	}
++
++	return 0;
++}
++
++static int sdmmc_idma_start(struct mmci_host *host, unsigned int *datactrl)
++
++{
++	struct sdmmc_priv *idma = host->dma_priv;
++	struct sdmmc_lli_desc *desc = (struct sdmmc_lli_desc *)idma->sg_cpu;
++	struct mmc_data *data = host->data;
++	struct scatterlist *sg;
++	int i;
++
++	if (!host->variant->dma_lli || data->sg_len == 1) {
++		writel_relaxed(sg_dma_address(data->sg),
++			       host->base + MMCI_STM32_IDMABASE0R);
++		writel_relaxed(MMCI_STM32_IDMAEN,
++			       host->base + MMCI_STM32_IDMACTRLR);
++		return 0;
++	}
++
++	for_each_sg(data->sg, sg, data->sg_len, i) {
++		desc[i].idmalar = (i + 1) * sizeof(struct sdmmc_lli_desc);
++		desc[i].idmalar |= MMCI_STM32_ULA | MMCI_STM32_ULS
++			| MMCI_STM32_ABR;
++		desc[i].idmabase = sg_dma_address(sg);
++		desc[i].idmasize = sg_dma_len(sg);
++	}
++
++	/* notice the end of link list */
++	desc[data->sg_len - 1].idmalar &= ~MMCI_STM32_ULA;
++
++	dma_wmb();
++	writel_relaxed(idma->sg_dma, host->base + MMCI_STM32_IDMABAR);
++	writel_relaxed(desc[0].idmalar, host->base + MMCI_STM32_IDMALAR);
++	writel_relaxed(desc[0].idmabase, host->base + MMCI_STM32_IDMABASE0R);
++	writel_relaxed(desc[0].idmasize, host->base + MMCI_STM32_IDMABSIZER);
++	writel_relaxed(MMCI_STM32_IDMAEN | MMCI_STM32_IDMALLIEN,
++		       host->base + MMCI_STM32_IDMACTRLR);
++
++	return 0;
++}
++
++static void sdmmc_idma_finalize(struct mmci_host *host, struct mmc_data *data)
++{
++	writel_relaxed(0, host->base + MMCI_STM32_IDMACTRLR);
++}
++
++static void mmci_sdmmc_set_clkreg(struct mmci_host *host, unsigned int desired)
++{
++	unsigned int clk = 0, ddr = 0;
++
++	if (host->mmc->ios.timing == MMC_TIMING_MMC_DDR52 ||
++	    host->mmc->ios.timing == MMC_TIMING_UHS_DDR50)
++		ddr = MCI_STM32_CLK_DDR;
++
++	/*
++	 * cclk = mclk / (2 * clkdiv)
++	 * clkdiv 0 => bypass
++	 * in ddr mode bypass is not possible
++	 */
++	if (desired) {
++		if (desired >= host->mclk && !ddr) {
++			host->cclk = host->mclk;
++		} else {
++			clk = DIV_ROUND_UP(host->mclk, 2 * desired);
++			if (clk > MCI_STM32_CLK_CLKDIV_MSK)
++				clk = MCI_STM32_CLK_CLKDIV_MSK;
++			host->cclk = host->mclk / (2 * clk);
++		}
++	} else {
++		/*
++		 * while power-on phase the clock can't be define to 0,
++		 * Only power-off and power-cyc deactivate the clock.
++		 * if desired clock is 0, set max divider
++		 */
++		clk = MCI_STM32_CLK_CLKDIV_MSK;
++		host->cclk = host->mclk / (2 * clk);
++	}
++
++	/* Set actual clock for debug */
++	if (host->mmc->ios.power_mode == MMC_POWER_ON)
++		host->mmc->actual_clock = host->cclk;
++	else
++		host->mmc->actual_clock = 0;
++
++	if (host->mmc->ios.bus_width == MMC_BUS_WIDTH_4)
++		clk |= MCI_STM32_CLK_WIDEBUS_4;
++	if (host->mmc->ios.bus_width == MMC_BUS_WIDTH_8)
++		clk |= MCI_STM32_CLK_WIDEBUS_8;
++
++	clk |= MCI_STM32_CLK_HWFCEN;
++	clk |= host->clk_reg_add;
++	clk |= ddr;
++
++	/*
++	 * SDMMC_FBCK is selected when an external Delay Block is needed
++	 * with SDR104.
++	 */
++	if (host->mmc->ios.timing >= MMC_TIMING_UHS_SDR50) {
++		clk |= MCI_STM32_CLK_BUSSPEED;
++		if (host->mmc->ios.timing == MMC_TIMING_UHS_SDR104) {
++			clk &= ~MCI_STM32_CLK_SEL_MSK;
++			clk |= MCI_STM32_CLK_SELFBCK;
++		}
++	}
++
++	mmci_write_clkreg(host, clk);
++}
++
++static void mmci_sdmmc_set_pwrreg(struct mmci_host *host, unsigned int pwr)
++{
++	struct mmc_ios ios = host->mmc->ios;
++
++	pwr = host->pwr_reg_add;
++
++	if (ios.power_mode == MMC_POWER_OFF) {
++		/* Only a reset could power-off sdmmc */
++		reset_control_assert(host->rst);
++		udelay(2);
++		reset_control_deassert(host->rst);
++
++		/*
++		 * Set the SDMMC in Power-cycle state.
++		 * This will make that the SDMMC_D[7:0], SDMMC_CMD and SDMMC_CK
++		 * are driven low, to prevent the Card from being supplied
++		 * through the signal lines.
++		 */
++		mmci_write_pwrreg(host, MCI_STM32_PWR_CYC | pwr);
++	} else if (ios.power_mode == MMC_POWER_ON) {
++		/*
++		 * After power-off (reset): the irq mask defined in probe
++		 * functionis lost
++		 * ault irq mask (probe) must be activated
++		 */
++		writel(MCI_IRQENABLE | host->variant->start_err,
++		       host->base + MMCIMASK0);
++
++		/*
++		 * After a power-cycle state, we must set the SDMMC in
++		 * Power-off. The SDMMC_D[7:0], SDMMC_CMD and SDMMC_CK are
++		 * driven high. Then we can set the SDMMC to Power-on state
++		 */
++		mmci_write_pwrreg(host, MCI_PWR_OFF | pwr);
++		mdelay(1);
++		mmci_write_pwrreg(host, MCI_PWR_ON | pwr);
++	}
++}
++
++static struct mmci_host_ops sdmmc_variant_ops = {
++	.validate_data = sdmmc_idma_validate_data,
++	.prep_data = sdmmc_idma_prep_data,
++	.unprep_data = sdmmc_idma_unprep_data,
++	.dma_setup = sdmmc_idma_setup,
++	.dma_start = sdmmc_idma_start,
++	.dma_finalize = sdmmc_idma_finalize,
++	.set_clkreg = mmci_sdmmc_set_clkreg,
++	.set_pwrreg = mmci_sdmmc_set_pwrreg,
++};
++
++void sdmmc_variant_init(struct mmci_host *host)
++{
++	host->ops = &sdmmc_variant_ops;
++}
+diff --git a/drivers/mtd/nand/raw/Kconfig b/drivers/mtd/nand/raw/Kconfig
+index 5fc9a1b..70f26c2 100644
+--- a/drivers/mtd/nand/raw/Kconfig
++++ b/drivers/mtd/nand/raw/Kconfig
+@@ -561,4 +561,13 @@ config MTD_NAND_TEGRA
+ 	  is supported. Extra OOB bytes when using HW ECC are currently
+ 	  not supported.
+ 
++config MTD_NAND_STM32_FMC2
++	tristate "Support for NAND controller on STM32MP SoCs"
++	depends on MACH_STM32MP157 || COMPILE_TEST
++	help
++	  Enables support for NAND Flash chips on SoCs containing the FMC2
++	  NAND controller. This controller is found on STM32MP SoCs.
++	  The controller supports a maximum 8k page size and supports
++	  a maximum 8-bit correction error per sector of 512 bytes.
++
+ endif # MTD_NAND
+diff --git a/drivers/mtd/nand/raw/Makefile b/drivers/mtd/nand/raw/Makefile
+index d5a5f98..4ef7559 100644
+--- a/drivers/mtd/nand/raw/Makefile
++++ b/drivers/mtd/nand/raw/Makefile
+@@ -57,6 +57,7 @@ obj-$(CONFIG_MTD_NAND_BRCMNAND)		+= brcmnand/
+ obj-$(CONFIG_MTD_NAND_QCOM)		+= qcom_nandc.o
+ obj-$(CONFIG_MTD_NAND_MTK)		+= mtk_ecc.o mtk_nand.o
+ obj-$(CONFIG_MTD_NAND_TEGRA)		+= tegra_nand.o
++obj-$(CONFIG_MTD_NAND_STM32_FMC2)	+= stm32_fmc2_nand.o
+ 
+ nand-objs := nand_base.o nand_bbt.o nand_timings.o nand_ids.o
+ nand-objs += nand_amd.o
+diff --git a/drivers/mtd/nand/raw/stm32_fmc2_nand.c b/drivers/mtd/nand/raw/stm32_fmc2_nand.c
+new file mode 100644
+index 0000000..a6d60c2
+--- /dev/null
++++ b/drivers/mtd/nand/raw/stm32_fmc2_nand.c
+@@ -0,0 +1,2031 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) STMicroelectronics 2018
++ * Author: Christophe Kerello <christophe.kerello@st.com>
++ */
++
++#include <linux/clk.h>
++#include <linux/dmaengine.h>
++#include <linux/dma-mapping.h>
++#include <linux/errno.h>
++#include <linux/interrupt.h>
++#include <linux/iopoll.h>
++#include <linux/module.h>
++#include <linux/mtd/rawnand.h>
++#include <linux/pinctrl/consumer.h>
++#include <linux/platform_device.h>
++#include <linux/reset.h>
++
++/* Bad block marker length */
++#define FMC2_BBM_LEN			2
++
++/* ECC step size */
++#define FMC2_ECC_STEP_SIZE		512
++
++/* BCHDSRx registers length */
++#define FMC2_BCHDSRS_LEN		20
++
++/* HECCR length */
++#define FMC2_HECCR_LEN			4
++
++/* Max requests done for a 8k nand page size */
++#define FMC2_MAX_SG			16
++
++/* Max chip enable */
++#define FMC2_MAX_CE			2
++
++/* Max ecc buffer length */
++#define FMC2_MAX_ECC_BUF_LEN		(FMC2_BCHDSRS_LEN * FMC2_MAX_SG)
++
++/* Timings */
++#define FMC2_THIZ			1
++#define FMC2_TIO			8000
++#define FMC2_TSYNC			3000
++#define FMC2_PCR_TIMING_MASK		0xf
++#define FMC2_PMEM_PATT_TIMING_MASK	0xff
++
++/* FMC2 Controller Registers */
++#define FMC2_BCR1			0x0
++#define FMC2_PCR			0x80
++#define FMC2_SR				0x84
++#define FMC2_PMEM			0x88
++#define FMC2_PATT			0x8c
++#define FMC2_HECCR			0x94
++#define FMC2_CSQCR			0x200
++#define FMC2_CSQCFGR1			0x204
++#define FMC2_CSQCFGR2			0x208
++#define FMC2_CSQCFGR3			0x20c
++#define FMC2_CSQAR1			0x210
++#define FMC2_CSQAR2			0x214
++#define FMC2_CSQIER			0x220
++#define FMC2_CSQISR			0x224
++#define FMC2_CSQICR			0x228
++#define FMC2_CSQEMSR			0x230
++#define FMC2_BCHIER			0x250
++#define FMC2_BCHISR			0x254
++#define FMC2_BCHICR			0x258
++#define FMC2_BCHPBR1			0x260
++#define FMC2_BCHPBR2			0x264
++#define FMC2_BCHPBR3			0x268
++#define FMC2_BCHPBR4			0x26c
++#define FMC2_BCHDSR0			0x27c
++#define FMC2_BCHDSR1			0x280
++#define FMC2_BCHDSR2			0x284
++#define FMC2_BCHDSR3			0x288
++#define FMC2_BCHDSR4			0x28c
++
++/* Register: FMC2_BCR1 */
++#define FMC2_BCR1_FMC2EN		BIT(31)
++
++/* Register: FMC2_PCR */
++#define FMC2_PCR_PWAITEN		BIT(1)
++#define FMC2_PCR_PBKEN			BIT(2)
++#define FMC2_PCR_PWID_MASK		GENMASK(5, 4)
++#define FMC2_PCR_PWID(x)		(((x) & 0x3) << 4)
++#define FMC2_PCR_PWID_BUSWIDTH_8	0
++#define FMC2_PCR_PWID_BUSWIDTH_16	1
++#define FMC2_PCR_ECCEN			BIT(6)
++#define FMC2_PCR_ECCALG			BIT(8)
++#define FMC2_PCR_TCLR_MASK		GENMASK(12, 9)
++#define FMC2_PCR_TCLR(x)		(((x) & 0xf) << 9)
++#define FMC2_PCR_TCLR_DEFAULT		0xf
++#define FMC2_PCR_TAR_MASK		GENMASK(16, 13)
++#define FMC2_PCR_TAR(x)			(((x) & 0xf) << 13)
++#define FMC2_PCR_TAR_DEFAULT		0xf
++#define FMC2_PCR_ECCSS_MASK		GENMASK(19, 17)
++#define FMC2_PCR_ECCSS(x)		(((x) & 0x7) << 17)
++#define FMC2_PCR_ECCSS_512		1
++#define FMC2_PCR_ECCSS_2048		3
++#define FMC2_PCR_BCHECC			BIT(24)
++#define FMC2_PCR_WEN			BIT(25)
++
++/* Register: FMC2_SR */
++#define FMC2_SR_NWRF			BIT(6)
++
++/* Register: FMC2_PMEM */
++#define FMC2_PMEM_MEMSET(x)		(((x) & 0xff) << 0)
++#define FMC2_PMEM_MEMWAIT(x)		(((x) & 0xff) << 8)
++#define FMC2_PMEM_MEMHOLD(x)		(((x) & 0xff) << 16)
++#define FMC2_PMEM_MEMHIZ(x)		(((x) & 0xff) << 24)
++#define FMC2_PMEM_DEFAULT		0x0a0a0a0a
++
++/* Register: FMC2_PATT */
++#define FMC2_PATT_ATTSET(x)		(((x) & 0xff) << 0)
++#define FMC2_PATT_ATTWAIT(x)		(((x) & 0xff) << 8)
++#define FMC2_PATT_ATTHOLD(x)		(((x) & 0xff) << 16)
++#define FMC2_PATT_ATTHIZ(x)		(((x) & 0xff) << 24)
++#define FMC2_PATT_DEFAULT		0x0a0a0a0a
++
++/* Register: FMC2_CSQCR */
++#define FMC2_CSQCR_CSQSTART		BIT(0)
++
++/* Register: FMC2_CSQCFGR1 */
++#define FMC2_CSQCFGR1_CMD2EN		BIT(1)
++#define FMC2_CSQCFGR1_DMADEN		BIT(2)
++#define FMC2_CSQCFGR1_ACYNBR(x)		(((x) & 0x7) << 4)
++#define FMC2_CSQCFGR1_CMD1(x)		(((x) & 0xff) << 8)
++#define FMC2_CSQCFGR1_CMD2(x)		(((x) & 0xff) << 16)
++#define FMC2_CSQCFGR1_CMD1T		BIT(24)
++#define FMC2_CSQCFGR1_CMD2T		BIT(25)
++
++/* Register: FMC2_CSQCFGR2 */
++#define FMC2_CSQCFGR2_SQSDTEN		BIT(0)
++#define FMC2_CSQCFGR2_RCMD2EN		BIT(1)
++#define FMC2_CSQCFGR2_DMASEN		BIT(2)
++#define FMC2_CSQCFGR2_RCMD1(x)		(((x) & 0xff) << 8)
++#define FMC2_CSQCFGR2_RCMD2(x)		(((x) & 0xff) << 16)
++#define FMC2_CSQCFGR2_RCMD1T		BIT(24)
++#define FMC2_CSQCFGR2_RCMD2T		BIT(25)
++
++/* Register: FMC2_CSQCFGR3 */
++#define FMC2_CSQCFGR3_SNBR(x)		(((x) & 0x1f) << 8)
++#define FMC2_CSQCFGR3_AC1T		BIT(16)
++#define FMC2_CSQCFGR3_AC2T		BIT(17)
++#define FMC2_CSQCFGR3_AC3T		BIT(18)
++#define FMC2_CSQCFGR3_AC4T		BIT(19)
++#define FMC2_CSQCFGR3_AC5T		BIT(20)
++#define FMC2_CSQCFGR3_SDT		BIT(21)
++#define FMC2_CSQCFGR3_RAC1T		BIT(22)
++#define FMC2_CSQCFGR3_RAC2T		BIT(23)
++
++/* Register: FMC2_CSQCAR1 */
++#define FMC2_CSQCAR1_ADDC1(x)		(((x) & 0xff) << 0)
++#define FMC2_CSQCAR1_ADDC2(x)		(((x) & 0xff) << 8)
++#define FMC2_CSQCAR1_ADDC3(x)		(((x) & 0xff) << 16)
++#define FMC2_CSQCAR1_ADDC4(x)		(((x) & 0xff) << 24)
++
++/* Register: FMC2_CSQCAR2 */
++#define FMC2_CSQCAR2_ADDC5(x)		(((x) & 0xff) << 0)
++#define FMC2_CSQCAR2_NANDCEN(x)		(((x) & 0x3) << 10)
++#define FMC2_CSQCAR2_SAO(x)		(((x) & 0xffff) << 16)
++
++/* Register: FMC2_CSQIER */
++#define FMC2_CSQIER_TCIE		BIT(0)
++
++/* Register: FMC2_CSQICR */
++#define FMC2_CSQICR_CLEAR_IRQ		GENMASK(4, 0)
++
++/* Register: FMC2_CSQEMSR */
++#define FMC2_CSQEMSR_SEM		GENMASK(15, 0)
++
++/* Register: FMC2_BCHIER */
++#define FMC2_BCHIER_DERIE		BIT(1)
++#define FMC2_BCHIER_EPBRIE		BIT(4)
++
++/* Register: FMC2_BCHICR */
++#define FMC2_BCHICR_CLEAR_IRQ		GENMASK(4, 0)
++
++/* Register: FMC2_BCHDSR0 */
++#define FMC2_BCHDSR0_DUE		BIT(0)
++#define FMC2_BCHDSR0_DEF		BIT(1)
++#define FMC2_BCHDSR0_DEN_MASK		GENMASK(7, 4)
++#define FMC2_BCHDSR0_DEN_SHIFT		4
++
++/* Register: FMC2_BCHDSR1 */
++#define FMC2_BCHDSR1_EBP1_MASK		GENMASK(12, 0)
++#define FMC2_BCHDSR1_EBP2_MASK		GENMASK(28, 16)
++#define FMC2_BCHDSR1_EBP2_SHIFT		16
++
++/* Register: FMC2_BCHDSR2 */
++#define FMC2_BCHDSR2_EBP3_MASK		GENMASK(12, 0)
++#define FMC2_BCHDSR2_EBP4_MASK		GENMASK(28, 16)
++#define FMC2_BCHDSR2_EBP4_SHIFT		16
++
++/* Register: FMC2_BCHDSR3 */
++#define FMC2_BCHDSR3_EBP5_MASK		GENMASK(12, 0)
++#define FMC2_BCHDSR3_EBP6_MASK		GENMASK(28, 16)
++#define FMC2_BCHDSR3_EBP6_SHIFT		16
++
++/* Register: FMC2_BCHDSR4 */
++#define FMC2_BCHDSR4_EBP7_MASK		GENMASK(12, 0)
++#define FMC2_BCHDSR4_EBP8_MASK		GENMASK(28, 16)
++#define FMC2_BCHDSR4_EBP8_SHIFT		16
++
++enum stm32_fmc2_ecc {
++	FMC2_ECC_HAM = 1,
++	FMC2_ECC_BCH4 = 4,
++	FMC2_ECC_BCH8 = 8
++};
++
++enum stm32_fmc2_irq_state {
++	FMC2_IRQ_UNKNOWN = 0,
++	FMC2_IRQ_BCH,
++	FMC2_IRQ_SEQ
++};
++
++struct stm32_fmc2_timings {
++	u8 tclr;
++	u8 tar;
++	u8 thiz;
++	u8 twait;
++	u8 thold_mem;
++	u8 tset_mem;
++	u8 thold_att;
++	u8 tset_att;
++};
++
++struct stm32_fmc2_nand {
++	struct nand_chip chip;
++	struct stm32_fmc2_timings timings;
++	int ncs;
++	int cs_used[FMC2_MAX_CE];
++};
++
++static inline struct stm32_fmc2_nand *to_fmc2_nand(struct nand_chip *chip)
++{
++	return container_of(chip, struct stm32_fmc2_nand, chip);
++}
++
++struct stm32_fmc2_nfc {
++	struct nand_controller base;
++	struct stm32_fmc2_nand nand;
++	struct device *dev;
++	void __iomem *io_base;
++	void __iomem *data_base[FMC2_MAX_CE];
++	void __iomem *cmd_base[FMC2_MAX_CE];
++	void __iomem *addr_base[FMC2_MAX_CE];
++	phys_addr_t io_phys_addr;
++	phys_addr_t data_phys_addr[FMC2_MAX_CE];
++	struct clk *clk;
++	u8 irq_state;
++
++	struct dma_chan *dma_tx_ch;
++	struct dma_chan *dma_rx_ch;
++	struct dma_chan *dma_ecc_ch;
++	struct sg_table dma_data_sg;
++	struct sg_table dma_ecc_sg;
++	u8 *ecc_buf;
++	int dma_ecc_len;
++
++	struct completion complete;
++	struct completion dma_data_complete;
++	struct completion dma_ecc_complete;
++
++	u8 cs_assigned;
++	int cs_sel;
++};
++
++static inline struct stm32_fmc2_nfc *to_stm32_nfc(struct nand_controller *base)
++{
++	return container_of(base, struct stm32_fmc2_nfc, base);
++}
++
++/* Enable irq sources in case of the sequencer is used */
++static inline void stm32_fmc2_enable_seq_irq(struct stm32_fmc2_nfc *fmc2)
++{
++	u32 csqier = readl_relaxed(fmc2->io_base + FMC2_CSQIER);
++
++	csqier |= FMC2_CSQIER_TCIE;
++
++	fmc2->irq_state = FMC2_IRQ_SEQ;
++
++	writel_relaxed(csqier, fmc2->io_base + FMC2_CSQIER);
++}
++
++/* Disable irq sources in case of the sequencer is used */
++static inline void stm32_fmc2_disable_seq_irq(struct stm32_fmc2_nfc *fmc2)
++{
++	u32 csqier = readl_relaxed(fmc2->io_base + FMC2_CSQIER);
++
++	csqier &= ~FMC2_CSQIER_TCIE;
++
++	writel_relaxed(csqier, fmc2->io_base + FMC2_CSQIER);
++
++	fmc2->irq_state = FMC2_IRQ_UNKNOWN;
++}
++
++/* Clear irq sources in case of the sequencer is used */
++static inline void stm32_fmc2_clear_seq_irq(struct stm32_fmc2_nfc *fmc2)
++{
++	writel_relaxed(FMC2_CSQICR_CLEAR_IRQ, fmc2->io_base + FMC2_CSQICR);
++}
++
++/* Enable irq sources in case of bch is used */
++static inline void stm32_fmc2_enable_bch_irq(struct stm32_fmc2_nfc *fmc2,
++					     int mode)
++{
++	u32 bchier = readl_relaxed(fmc2->io_base + FMC2_BCHIER);
++
++	if (mode == NAND_ECC_WRITE)
++		bchier |= FMC2_BCHIER_EPBRIE;
++	else
++		bchier |= FMC2_BCHIER_DERIE;
++
++	fmc2->irq_state = FMC2_IRQ_BCH;
++
++	writel_relaxed(bchier, fmc2->io_base + FMC2_BCHIER);
++}
++
++/* Disable irq sources in case of bch is used */
++static inline void stm32_fmc2_disable_bch_irq(struct stm32_fmc2_nfc *fmc2)
++{
++	u32 bchier = readl_relaxed(fmc2->io_base + FMC2_BCHIER);
++
++	bchier &= ~FMC2_BCHIER_DERIE;
++	bchier &= ~FMC2_BCHIER_EPBRIE;
++
++	writel_relaxed(bchier, fmc2->io_base + FMC2_BCHIER);
++
++	fmc2->irq_state = FMC2_IRQ_UNKNOWN;
++}
++
++/* Clear irq sources in case of bch is used */
++static inline void stm32_fmc2_clear_bch_irq(struct stm32_fmc2_nfc *fmc2)
++{
++	writel_relaxed(FMC2_BCHICR_CLEAR_IRQ, fmc2->io_base + FMC2_BCHICR);
++}
++
++/*
++ * Enable ecc logic and reset syndrome/parity bits previously calculated
++ * Syndrome/parity bits is cleared by setting the ECCEN bit to 0
++ */
++static void stm32_fmc2_hwctl(struct mtd_info *mtd, int mode)
++{
++	struct nand_chip *chip = mtd_to_nand(mtd);
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	u32 pcr = readl_relaxed(fmc2->io_base + FMC2_PCR);
++
++	pcr &= ~FMC2_PCR_ECCEN;
++	writel_relaxed(pcr, fmc2->io_base + FMC2_PCR);
++
++	if (chip->ecc.strength != FMC2_ECC_HAM) {
++		if (mode == NAND_ECC_WRITE)
++			pcr |= FMC2_PCR_WEN;
++		else
++			pcr &= ~FMC2_PCR_WEN;
++		writel_relaxed(pcr, fmc2->io_base + FMC2_PCR);
++
++		reinit_completion(&fmc2->complete);
++		stm32_fmc2_clear_bch_irq(fmc2);
++		stm32_fmc2_enable_bch_irq(fmc2, mode);
++	}
++
++	pcr = readl_relaxed(fmc2->io_base + FMC2_PCR);
++	pcr |= FMC2_PCR_ECCEN;
++	writel_relaxed(pcr, fmc2->io_base + FMC2_PCR);
++}
++
++/*
++ * ECC Hamming calculation
++ * ECC is 3 bytes for 512 bytes of data (supports error correction up to
++ * max of 1-bit)
++ */
++static inline void stm32_fmc2_ham_set_ecc(const u32 ecc_sta, u8 *ecc)
++{
++	ecc[0] = ecc_sta;
++	ecc[1] = ecc_sta >> 8;
++	ecc[2] = ecc_sta >> 16;
++}
++
++static int stm32_fmc2_ham_calculate(struct mtd_info *mtd, const u8 *data,
++				    u8 *ecc)
++{
++	struct nand_chip *chip = mtd_to_nand(mtd);
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	u32 sr, heccr, pcr;
++	int ret;
++
++	ret = readl_relaxed_poll_timeout(fmc2->io_base + FMC2_SR,
++					 sr, sr & FMC2_SR_NWRF, 10, 1000);
++	if (ret) {
++		dev_err(fmc2->dev, "ham timeout\n");
++		return ret;
++	}
++
++	heccr = readl_relaxed(fmc2->io_base + FMC2_HECCR);
++
++	stm32_fmc2_ham_set_ecc(heccr, ecc);
++
++	/* Disable ecc */
++	pcr = readl_relaxed(fmc2->io_base + FMC2_PCR);
++	pcr &= ~FMC2_PCR_ECCEN;
++	writel_relaxed(pcr, fmc2->io_base + FMC2_PCR);
++
++	return 0;
++}
++
++static int stm32_fmc2_ham_correct(struct mtd_info *mtd, u8 *dat,
++				  u8 *read_ecc, u8 *calc_ecc)
++{
++	u8 bit_position = 0, b0, b1, b2;
++	u32 byte_addr = 0, b;
++	u32 i, shifting = 1;
++
++	/* Indicate which bit and byte is faulty (if any) */
++	b0 = read_ecc[0] ^ calc_ecc[0];
++	b1 = read_ecc[1] ^ calc_ecc[1];
++	b2 = read_ecc[2] ^ calc_ecc[2];
++	b = b0 | (b1 << 8) | (b2 << 16);
++
++	/* No errors */
++	if (likely(!b))
++		return 0;
++
++	/* Calculate bit position */
++	for (i = 0; i < 3; i++) {
++		switch (b % 4) {
++		case 2:
++			bit_position += shifting;
++		case 1:
++			break;
++		default:
++			return -EBADMSG;
++		}
++		shifting <<= 1;
++		b >>= 2;
++	}
++
++	/* Calculate byte position */
++	shifting = 1;
++	for (i = 0; i < 9; i++) {
++		switch (b % 4) {
++		case 2:
++			byte_addr += shifting;
++		case 1:
++			break;
++		default:
++			return -EBADMSG;
++		}
++		shifting <<= 1;
++		b >>= 2;
++	}
++
++	/* Flip the bit */
++	dat[byte_addr] ^= (1 << bit_position);
++
++	return 1;
++}
++
++/*
++ * ECC BCH calculation and correction
++ * ECC is 7/13 bytes for 512 bytes of data (supports error correction up to
++ * max of 4-bit/8-bit)
++ */
++static int stm32_fmc2_bch_calculate(struct mtd_info *mtd, const u8 *data,
++				    u8 *ecc)
++{
++	struct nand_chip *chip = mtd_to_nand(mtd);
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	u32 bchpbr, pcr;
++
++	/* Wait until the BCH code is ready */
++	if (!wait_for_completion_timeout(&fmc2->complete,
++					 msecs_to_jiffies(1000))) {
++		dev_err(fmc2->dev, "bch timeout\n");
++		stm32_fmc2_disable_bch_irq(fmc2);
++		return -ETIMEDOUT;
++	}
++
++	/* Read parity bits */
++	bchpbr = readl_relaxed(fmc2->io_base + FMC2_BCHPBR1);
++	ecc[0] = bchpbr;
++	ecc[1] = bchpbr >> 8;
++	ecc[2] = bchpbr >> 16;
++	ecc[3] = bchpbr >> 24;
++
++	bchpbr = readl_relaxed(fmc2->io_base + FMC2_BCHPBR2);
++	ecc[4] = bchpbr;
++	ecc[5] = bchpbr >> 8;
++	ecc[6] = bchpbr >> 16;
++
++	if (chip->ecc.strength == FMC2_ECC_BCH8) {
++		ecc[7] = bchpbr >> 24;
++
++		bchpbr = readl_relaxed(fmc2->io_base + FMC2_BCHPBR3);
++		ecc[8] = bchpbr;
++		ecc[9] = bchpbr >> 8;
++		ecc[10] = bchpbr >> 16;
++		ecc[11] = bchpbr >> 24;
++
++		bchpbr = readl_relaxed(fmc2->io_base + FMC2_BCHPBR4);
++		ecc[12] = bchpbr;
++	}
++
++	/* Disable ecc */
++	pcr = readl_relaxed(fmc2->io_base + FMC2_PCR);
++	pcr &= ~FMC2_PCR_ECCEN;
++	writel_relaxed(pcr, fmc2->io_base + FMC2_PCR);
++
++	return 0;
++}
++
++/* BCH algorithm correction */
++static int stm32_fmc2_bch_decode(int eccsize, u8 *dat, u32 *ecc_sta)
++{
++	u32 bchdsr0 = ecc_sta[0];
++	u32 bchdsr1 = ecc_sta[1];
++	u32 bchdsr2 = ecc_sta[2];
++	u32 bchdsr3 = ecc_sta[3];
++	u32 bchdsr4 = ecc_sta[4];
++	u16 pos[8];
++	int i, den;
++	unsigned int nb_errs = 0;
++
++	/* No errors found */
++	if (likely(!(bchdsr0 & FMC2_BCHDSR0_DEF)))
++		return 0;
++
++	/* Too many errors detected */
++	if (unlikely(bchdsr0 & FMC2_BCHDSR0_DUE))
++		return -EBADMSG;
++
++	pos[0] = bchdsr1 & FMC2_BCHDSR1_EBP1_MASK;
++	pos[1] = (bchdsr1 & FMC2_BCHDSR1_EBP2_MASK) >> FMC2_BCHDSR1_EBP2_SHIFT;
++	pos[2] = bchdsr2 & FMC2_BCHDSR2_EBP3_MASK;
++	pos[3] = (bchdsr2 & FMC2_BCHDSR2_EBP4_MASK) >> FMC2_BCHDSR2_EBP4_SHIFT;
++	pos[4] = bchdsr3 & FMC2_BCHDSR3_EBP5_MASK;
++	pos[5] = (bchdsr3 & FMC2_BCHDSR3_EBP6_MASK) >> FMC2_BCHDSR3_EBP6_SHIFT;
++	pos[6] = bchdsr4 & FMC2_BCHDSR4_EBP7_MASK;
++	pos[7] = (bchdsr4 & FMC2_BCHDSR4_EBP8_MASK) >> FMC2_BCHDSR4_EBP8_SHIFT;
++
++	den = (bchdsr0 & FMC2_BCHDSR0_DEN_MASK) >> FMC2_BCHDSR0_DEN_SHIFT;
++	for (i = 0; i < den; i++) {
++		if (pos[i] < eccsize * 8) {
++			change_bit(pos[i], (unsigned long *)dat);
++			nb_errs++;
++		}
++	}
++
++	return nb_errs;
++}
++
++static int stm32_fmc2_bch_correct(struct mtd_info *mtd, u8 *dat,
++				  u8 *read_ecc, u8 *calc_ecc)
++{
++	struct nand_chip *chip = mtd_to_nand(mtd);
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	u32 ecc_sta[5], pcr;
++
++	/* Wait until the decoding error is ready */
++	if (!wait_for_completion_timeout(&fmc2->complete,
++					 msecs_to_jiffies(1000))) {
++		dev_err(fmc2->dev, "bch timeout\n");
++		stm32_fmc2_disable_bch_irq(fmc2);
++		return -ETIMEDOUT;
++	}
++
++	ecc_sta[0] = readl_relaxed(fmc2->io_base + FMC2_BCHDSR0);
++	ecc_sta[1] = readl_relaxed(fmc2->io_base + FMC2_BCHDSR1);
++	ecc_sta[2] = readl_relaxed(fmc2->io_base + FMC2_BCHDSR2);
++	ecc_sta[3] = readl_relaxed(fmc2->io_base + FMC2_BCHDSR3);
++	ecc_sta[4] = readl_relaxed(fmc2->io_base + FMC2_BCHDSR4);
++
++	/* Disable ecc */
++	pcr = readl_relaxed(fmc2->io_base + FMC2_PCR);
++	pcr &= ~FMC2_PCR_ECCEN;
++	writel_relaxed(pcr, fmc2->io_base + FMC2_PCR);
++
++	return stm32_fmc2_bch_decode(chip->ecc.size, dat, ecc_sta);
++}
++
++static int stm32_fmc2_read_page(struct mtd_info *mtd,
++				struct nand_chip *chip, u8 *buf,
++				int oob_required, int page)
++{
++	int ret, i, s, stat, eccsize = chip->ecc.size;
++	int eccbytes = chip->ecc.bytes;
++	int eccsteps = chip->ecc.steps;
++	int eccstrength = chip->ecc.strength;
++	u8 *p = buf;
++	u8 *ecc_calc = chip->ecc.calc_buf;
++	u8 *ecc_code = chip->ecc.code_buf;
++	unsigned int max_bitflips = 0;
++
++	ret = nand_read_page_op(chip, page, 0, NULL, 0);
++	if (ret)
++		return ret;
++
++	for (i = mtd->writesize + FMC2_BBM_LEN, s = 0; s < eccsteps;
++	     s++, i += eccbytes, p += eccsize) {
++		chip->ecc.hwctl(mtd, NAND_ECC_READ);
++
++		/* Read the nand page sector (512 bytes) */
++		ret = nand_change_read_column_op(chip, s * eccsize, p,
++						 eccsize, false);
++		if (ret)
++			return ret;
++
++		/* Read the corresponding ecc bytes */
++		ret = nand_change_read_column_op(chip, i, ecc_code,
++						 eccbytes, false);
++		if (ret)
++			return ret;
++
++		/* Correct the data */
++		stat = chip->ecc.correct(mtd, p, ecc_code, ecc_calc);
++		if (stat == -EBADMSG)
++			/* Check for empty pages with bitflips */
++			stat = nand_check_erased_ecc_chunk(p, eccsize,
++							   ecc_code, eccbytes,
++							   NULL, 0,
++							   eccstrength);
++
++		if (stat < 0) {
++			mtd->ecc_stats.failed++;
++		} else {
++			mtd->ecc_stats.corrected += stat;
++			max_bitflips = max_t(unsigned int, max_bitflips, stat);
++		}
++	}
++
++	/* Read oob */
++	if (oob_required) {
++		ret = nand_change_read_column_op(chip, mtd->writesize,
++						 chip->oob_poi, mtd->oobsize,
++						 false);
++		if (ret)
++			return ret;
++	}
++
++	return max_bitflips;
++}
++
++/* Sequencer read/write configuration */
++static void stm32_fmc2_rw_page_init(struct nand_chip *chip, int page,
++				    int raw, bool write_data)
++{
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	struct mtd_info *mtd = nand_to_mtd(chip);
++	u32 csqcfgr1, csqcfgr2, csqcfgr3;
++	u32 csqar1, csqar2;
++	u32 ecc_offset = mtd->writesize + FMC2_BBM_LEN;
++	u32 pcr = readl_relaxed(fmc2->io_base + FMC2_PCR);
++
++	if (write_data)
++		pcr |= FMC2_PCR_WEN;
++	else
++		pcr &= ~FMC2_PCR_WEN;
++	writel_relaxed(pcr, fmc2->io_base + FMC2_PCR);
++
++	/*
++	 * - Set Program Page/Page Read command
++	 * - Enable DMA request data
++	 * - Set timings
++	 */
++	csqcfgr1 = FMC2_CSQCFGR1_DMADEN | FMC2_CSQCFGR1_CMD1T;
++	if (write_data)
++		csqcfgr1 |= FMC2_CSQCFGR1_CMD1(NAND_CMD_SEQIN);
++	else
++		csqcfgr1 |= FMC2_CSQCFGR1_CMD1(NAND_CMD_READ0) |
++			    FMC2_CSQCFGR1_CMD2EN |
++			    FMC2_CSQCFGR1_CMD2(NAND_CMD_READSTART) |
++			    FMC2_CSQCFGR1_CMD2T;
++
++	/*
++	 * - Set Random Data Input/Random Data Read command
++	 * - Enable the sequencer to access the Spare data area
++	 * - Enable  DMA request status decoding for read
++	 * - Set timings
++	 */
++	if (write_data)
++		csqcfgr2 = FMC2_CSQCFGR2_RCMD1(NAND_CMD_RNDIN);
++	else
++		csqcfgr2 = FMC2_CSQCFGR2_RCMD1(NAND_CMD_RNDOUT) |
++			   FMC2_CSQCFGR2_RCMD2EN |
++			   FMC2_CSQCFGR2_RCMD2(NAND_CMD_RNDOUTSTART) |
++			   FMC2_CSQCFGR2_RCMD1T |
++			   FMC2_CSQCFGR2_RCMD2T;
++	if (!raw) {
++		csqcfgr2 |= write_data ? 0 : FMC2_CSQCFGR2_DMASEN;
++		csqcfgr2 |= FMC2_CSQCFGR2_SQSDTEN;
++	}
++
++	/*
++	 * - Set the number of sectors to be written
++	 * - Set timings
++	 */
++	csqcfgr3 = FMC2_CSQCFGR3_SNBR(chip->ecc.steps - 1);
++	if (write_data) {
++		csqcfgr3 |= FMC2_CSQCFGR3_RAC2T;
++		if (chip->options & NAND_ROW_ADDR_3)
++			csqcfgr3 |= FMC2_CSQCFGR3_AC5T;
++		else
++			csqcfgr3 |= FMC2_CSQCFGR3_AC4T;
++	}
++
++	/*
++	 * Set the fourth first address cycles
++	 * Byte 1 and byte 2 => column, we start at 0x0
++	 * Byte 3 and byte 4 => page
++	 */
++	csqar1 = FMC2_CSQCAR1_ADDC3(page);
++	csqar1 |= FMC2_CSQCAR1_ADDC4(page >> 8);
++
++	/*
++	 * - Set chip enable number
++	 * - Set ecc byte offset in the spare area
++	 * - Calculate the number of address cycles to be issued
++	 * - Set byte 5 of address cycle if needed
++	 */
++	csqar2 = FMC2_CSQCAR2_NANDCEN(fmc2->cs_sel);
++	if (chip->options & NAND_BUSWIDTH_16)
++		csqar2 |= FMC2_CSQCAR2_SAO(ecc_offset >> 1);
++	else
++		csqar2 |= FMC2_CSQCAR2_SAO(ecc_offset);
++	if (chip->options & NAND_ROW_ADDR_3) {
++		csqcfgr1 |= FMC2_CSQCFGR1_ACYNBR(5);
++		csqar2 |= FMC2_CSQCAR2_ADDC5(page >> 16);
++	} else {
++		csqcfgr1 |= FMC2_CSQCFGR1_ACYNBR(4);
++	}
++
++	writel_relaxed(csqcfgr1, fmc2->io_base + FMC2_CSQCFGR1);
++	writel_relaxed(csqcfgr2, fmc2->io_base + FMC2_CSQCFGR2);
++	writel_relaxed(csqcfgr3, fmc2->io_base + FMC2_CSQCFGR3);
++	writel_relaxed(csqar1, fmc2->io_base + FMC2_CSQAR1);
++	writel_relaxed(csqar2, fmc2->io_base + FMC2_CSQAR2);
++}
++
++static void stm32_fmc2_dma_callback(void *arg)
++{
++	complete((struct completion *)arg);
++}
++
++/* Read/write data from/to a page */
++static int stm32_fmc2_xfer(struct nand_chip *chip, const u8 *buf,
++			   int raw, bool write_data)
++{
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	struct dma_async_tx_descriptor *desc_data, *desc_ecc;
++	struct scatterlist *sg;
++	struct dma_chan *dma_ch = fmc2->dma_rx_ch;
++	enum dma_data_direction dma_data_dir = DMA_FROM_DEVICE;
++	enum dma_transfer_direction dma_transfer_dir = DMA_DEV_TO_MEM;
++	u32 csqcr = readl_relaxed(fmc2->io_base + FMC2_CSQCR);
++	int eccsteps = chip->ecc.steps;
++	int eccsize = chip->ecc.size;
++	const u8 *p = buf;
++	int s, ret;
++
++	/* Configure DMA data */
++	if (write_data) {
++		dma_data_dir = DMA_TO_DEVICE;
++		dma_transfer_dir = DMA_MEM_TO_DEV;
++		dma_ch = fmc2->dma_tx_ch;
++	}
++
++	for_each_sg(fmc2->dma_data_sg.sgl, sg, eccsteps, s) {
++		sg_set_buf(sg, p, eccsize);
++		p += eccsize;
++	}
++
++	ret = dma_map_sg(fmc2->dev, fmc2->dma_data_sg.sgl,
++			 eccsteps, dma_data_dir);
++	if (ret < 0)
++		return ret;
++
++	desc_data = dmaengine_prep_slave_sg(dma_ch, fmc2->dma_data_sg.sgl,
++					    eccsteps, dma_transfer_dir,
++					    DMA_PREP_INTERRUPT);
++	if (!desc_data) {
++		ret = -ENOMEM;
++		goto err_unmap_data;
++	}
++
++	reinit_completion(&fmc2->dma_data_complete);
++	reinit_completion(&fmc2->complete);
++	desc_data->callback = stm32_fmc2_dma_callback;
++	desc_data->callback_param = &fmc2->dma_data_complete;
++	ret = dma_submit_error(dmaengine_submit(desc_data));
++	if (ret)
++		goto err_unmap_data;
++
++	dma_async_issue_pending(dma_ch);
++
++	if (!write_data && !raw) {
++		/* Configure DMA ecc status */
++		p = fmc2->ecc_buf;
++		for_each_sg(fmc2->dma_ecc_sg.sgl, sg, eccsteps, s) {
++			sg_set_buf(sg, p, fmc2->dma_ecc_len);
++			p += fmc2->dma_ecc_len;
++		}
++
++		ret = dma_map_sg(fmc2->dev, fmc2->dma_ecc_sg.sgl,
++				 eccsteps, dma_data_dir);
++		if (ret < 0)
++			goto err_unmap_data;
++
++		desc_ecc = dmaengine_prep_slave_sg(fmc2->dma_ecc_ch,
++						   fmc2->dma_ecc_sg.sgl,
++						   eccsteps, dma_transfer_dir,
++						   DMA_PREP_INTERRUPT);
++		if (!desc_ecc) {
++			ret = -ENOMEM;
++			goto err_unmap_ecc;
++		}
++
++		reinit_completion(&fmc2->dma_ecc_complete);
++		desc_ecc->callback = stm32_fmc2_dma_callback;
++		desc_ecc->callback_param = &fmc2->dma_ecc_complete;
++		ret = dma_submit_error(dmaengine_submit(desc_ecc));
++		if (ret)
++			goto err_unmap_ecc;
++
++		dma_async_issue_pending(fmc2->dma_ecc_ch);
++	}
++
++	stm32_fmc2_clear_seq_irq(fmc2);
++	stm32_fmc2_enable_seq_irq(fmc2);
++
++	/* Start the transfer */
++	csqcr |= FMC2_CSQCR_CSQSTART;
++	writel_relaxed(csqcr, fmc2->io_base + FMC2_CSQCR);
++
++	/* Wait end of sequencer transfer */
++	if (!wait_for_completion_timeout(&fmc2->complete,
++					 msecs_to_jiffies(1000))) {
++		dev_err(fmc2->dev, "seq timeout\n");
++		stm32_fmc2_disable_seq_irq(fmc2);
++		dmaengine_terminate_all(dma_ch);
++		if (!write_data && !raw)
++			dmaengine_terminate_all(fmc2->dma_ecc_ch);
++		ret = -ETIMEDOUT;
++		goto err_unmap_ecc;
++	}
++
++	/* Wait DMA data transfer completion */
++	if (!wait_for_completion_timeout(&fmc2->dma_data_complete,
++					 msecs_to_jiffies(100))) {
++		dev_err(fmc2->dev, "data DMA timeout\n");
++		dmaengine_terminate_all(dma_ch);
++		ret = -ETIMEDOUT;
++	}
++
++	/* Wait DMA ecc transfer completion */
++	if (!write_data && !raw) {
++		if (!wait_for_completion_timeout(&fmc2->dma_ecc_complete,
++						 msecs_to_jiffies(100))) {
++			dev_err(fmc2->dev, "ecc DMA timeout\n");
++			dmaengine_terminate_all(fmc2->dma_ecc_ch);
++			ret = -ETIMEDOUT;
++		}
++	}
++
++err_unmap_ecc:
++	if (!write_data && !raw)
++		dma_unmap_sg(fmc2->dev, fmc2->dma_ecc_sg.sgl,
++			     eccsteps, dma_data_dir);
++
++err_unmap_data:
++	dma_unmap_sg(fmc2->dev, fmc2->dma_data_sg.sgl, eccsteps, dma_data_dir);
++
++	return ret;
++}
++
++static int stm32_fmc2_sequencer_write(struct nand_chip *chip,
++				      const u8 *buf, int oob_required,
++				      int page, int raw)
++{
++	struct mtd_info *mtd = nand_to_mtd(chip);
++	int ret;
++
++	/* Configure the sequencer */
++	stm32_fmc2_rw_page_init(chip, page, raw, true);
++
++	/* Write the page */
++	ret = stm32_fmc2_xfer(chip, buf, raw, true);
++	if (ret)
++		return ret;
++
++	/* Write oob */
++	if (oob_required) {
++		ret = nand_change_write_column_op(chip, mtd->writesize,
++						  chip->oob_poi, mtd->oobsize,
++						  false);
++		if (ret)
++			return ret;
++	}
++
++	return nand_prog_page_end_op(chip);
++}
++
++static int stm32_fmc2_sequencer_write_page(struct mtd_info *mtd,
++					   struct nand_chip *chip,
++					   const u8 *buf,
++					   int oob_required,
++					   int page)
++{
++	return stm32_fmc2_sequencer_write(chip, buf, oob_required, page, false);
++}
++
++static int stm32_fmc2_sequencer_write_page_raw(struct mtd_info *mtd,
++					       struct nand_chip *chip,
++					       const u8 *buf,
++					       int oob_required,
++					       int page)
++{
++	return stm32_fmc2_sequencer_write(chip, buf, oob_required, page, true);
++}
++
++/* Get a status indicating which sectors have errors */
++static inline u16 stm32_fmc2_get_mapping_status(struct stm32_fmc2_nfc *fmc2)
++{
++	u32 csqemsr = readl_relaxed(fmc2->io_base + FMC2_CSQEMSR);
++
++	return csqemsr & FMC2_CSQEMSR_SEM;
++}
++
++static int stm32_fmc2_sequencer_correct(struct mtd_info *mtd, u8 *dat,
++					u8 *read_ecc, u8 *calc_ecc)
++{
++	struct nand_chip *chip = mtd_to_nand(mtd);
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	int eccbytes = chip->ecc.bytes;
++	int eccsteps = chip->ecc.steps;
++	int eccstrength = chip->ecc.strength;
++	int i, s, eccsize = chip->ecc.size;
++	u32 *ecc_sta = (u32 *)fmc2->ecc_buf;
++	u16 sta_map = stm32_fmc2_get_mapping_status(fmc2);
++	unsigned int max_bitflips = 0;
++
++	for (i = 0, s = 0; s < eccsteps; s++, i += eccbytes, dat += eccsize) {
++		int stat = 0;
++
++		if (eccstrength == FMC2_ECC_HAM) {
++			/* Ecc_sta = FMC2_HECCR */
++			if (sta_map & BIT(s)) {
++				stm32_fmc2_ham_set_ecc(*ecc_sta, &calc_ecc[i]);
++				stat = stm32_fmc2_ham_correct(mtd, dat,
++							      &read_ecc[i],
++							      &calc_ecc[i]);
++			}
++			ecc_sta++;
++		} else {
++			/*
++			 * Ecc_sta[0] = FMC2_BCHDSR0
++			 * Ecc_sta[1] = FMC2_BCHDSR1
++			 * Ecc_sta[2] = FMC2_BCHDSR2
++			 * Ecc_sta[3] = FMC2_BCHDSR3
++			 * Ecc_sta[4] = FMC2_BCHDSR4
++			 */
++			if (sta_map & BIT(s))
++				stat = stm32_fmc2_bch_decode(eccsize, dat,
++							     ecc_sta);
++			ecc_sta += 5;
++		}
++
++		if (stat == -EBADMSG)
++			/* Check for empty pages with bitflips */
++			stat = nand_check_erased_ecc_chunk(dat, eccsize,
++							   &read_ecc[i],
++							   eccbytes,
++							   NULL, 0,
++							   eccstrength);
++
++		if (stat < 0) {
++			mtd->ecc_stats.failed++;
++		} else {
++			mtd->ecc_stats.corrected += stat;
++			max_bitflips = max_t(unsigned int, max_bitflips, stat);
++		}
++	}
++
++	return max_bitflips;
++}
++
++static int stm32_fmc2_sequencer_read_page(struct mtd_info *mtd,
++					  struct nand_chip *chip, u8 *buf,
++					  int oob_required, int page)
++{
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	u8 *ecc_calc = chip->ecc.calc_buf;
++	u8 *ecc_code = chip->ecc.code_buf;
++	u16 sta_map;
++	int ret;
++
++	/* Configure the sequencer */
++	stm32_fmc2_rw_page_init(chip, page, 0, false);
++
++	/* Read the page */
++	ret = stm32_fmc2_xfer(chip, buf, 0, false);
++	if (ret)
++		return ret;
++
++	sta_map = stm32_fmc2_get_mapping_status(fmc2);
++
++	/* Check if errors happen */
++	if (likely(!sta_map)) {
++		if (oob_required)
++			return nand_change_read_column_op(chip, mtd->writesize,
++							  chip->oob_poi,
++							  mtd->oobsize, false);
++
++		return 0;
++	}
++
++	/* Read oob */
++	ret = nand_change_read_column_op(chip, mtd->writesize,
++					 chip->oob_poi, mtd->oobsize, false);
++	if (ret)
++		return ret;
++
++	ret = mtd_ooblayout_get_eccbytes(mtd, ecc_code, chip->oob_poi, 0,
++					 chip->ecc.total);
++	if (ret)
++		return ret;
++
++	/* Correct data */
++	return chip->ecc.correct(mtd, buf, ecc_code, ecc_calc);
++}
++
++static int stm32_fmc2_sequencer_read_page_raw(struct mtd_info *mtd,
++					      struct nand_chip *chip, u8 *buf,
++					      int oob_required, int page)
++{
++	int ret;
++
++	/* Configure the sequencer */
++	stm32_fmc2_rw_page_init(chip, page, 1, false);
++
++	/* Read the page */
++	ret = stm32_fmc2_xfer(chip, buf, 1, false);
++	if (ret)
++		return ret;
++
++	/* Read oob */
++	if (oob_required)
++		return nand_change_read_column_op(chip, mtd->writesize,
++						  chip->oob_poi, mtd->oobsize,
++						  false);
++
++	return 0;
++}
++
++static irqreturn_t stm32_fmc2_irq(int irq, void *dev_id)
++{
++	struct stm32_fmc2_nfc *fmc2 = (struct stm32_fmc2_nfc *)dev_id;
++
++	if (fmc2->irq_state == FMC2_IRQ_SEQ)
++		/* Sequencer is used */
++		stm32_fmc2_disable_seq_irq(fmc2);
++	else if (fmc2->irq_state == FMC2_IRQ_BCH)
++		/* BCH is used */
++		stm32_fmc2_disable_bch_irq(fmc2);
++
++	complete(&fmc2->complete);
++
++	return IRQ_HANDLED;
++}
++
++static void stm32_fmc2_set_buswidth_16(struct stm32_fmc2_nfc *fmc2, bool set)
++{
++	u32 pcr = readl_relaxed(fmc2->io_base + FMC2_PCR);
++
++	pcr &= ~FMC2_PCR_PWID_MASK;
++	if (set)
++		pcr |= FMC2_PCR_PWID(FMC2_PCR_PWID_BUSWIDTH_16);
++	writel_relaxed(pcr, fmc2->io_base + FMC2_PCR);
++}
++
++static void stm32_fmc2_read_data(struct nand_chip *chip, void *buf,
++				 unsigned int len, bool force_8bit)
++{
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	void __iomem *io_addr_r = fmc2->data_base[fmc2->cs_sel];
++	u8 *p = buf;
++	unsigned int i;
++
++	if (force_8bit)
++		goto read_8bit;
++
++	if (IS_ALIGNED(len, sizeof(u32))) {
++		u32 *p = buf;
++
++		len /= sizeof(u32);
++		for (i = 0; i < len; i++)
++			p[i] = readl_relaxed(io_addr_r);
++		return;
++	}
++
++	if (chip->options & NAND_BUSWIDTH_16) {
++		u16 *p = buf;
++
++		len /= sizeof(u16);
++		for (i = 0; i < len; i++)
++			p[i] = readw_relaxed(io_addr_r);
++		return;
++	}
++
++read_8bit:
++	if (chip->options & NAND_BUSWIDTH_16)
++		/* Reconfigure bus width to 8-bit */
++		stm32_fmc2_set_buswidth_16(fmc2, false);
++
++	for (i = 0; i < len; i++)
++		p[i] = readb_relaxed(io_addr_r);
++
++	if (chip->options & NAND_BUSWIDTH_16)
++		/* Reconfigure bus width to 16-bit */
++		stm32_fmc2_set_buswidth_16(fmc2, true);
++}
++
++static void stm32_fmc2_write_data(struct nand_chip *chip, const void *buf,
++				  unsigned int len, bool force_8bit)
++{
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	void __iomem *io_addr_w = fmc2->data_base[fmc2->cs_sel];
++	const u8 *p = buf;
++	unsigned int i;
++
++	if (force_8bit)
++		goto write_8bit;
++
++	if (IS_ALIGNED(len, sizeof(u32))) {
++		const u32 *p = buf;
++
++		len /= sizeof(u32);
++		for (i = 0; i < len; i++)
++			writel_relaxed(p[i], io_addr_w);
++		return;
++	}
++
++	if (chip->options & NAND_BUSWIDTH_16) {
++		const u16 *p = buf;
++
++		len /= sizeof(u16);
++		for (i = 0; i < len; i++)
++			writew_relaxed(p[i], io_addr_w);
++		return;
++	}
++
++write_8bit:
++	if (chip->options & NAND_BUSWIDTH_16)
++		/* Reconfigure bus width to 8-bit */
++		stm32_fmc2_set_buswidth_16(fmc2, false);
++
++	for (i = 0; i < len; i++)
++		writeb_relaxed(p[i], io_addr_w);
++
++	if (chip->options & NAND_BUSWIDTH_16)
++		/* Reconfigure bus width to 16-bit */
++		stm32_fmc2_set_buswidth_16(fmc2, true);
++}
++
++static int stm32_fmc2_exec_op(struct nand_chip *chip,
++			      const struct nand_operation *op,
++			      bool check_only)
++{
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	const struct nand_op_instr *instr = NULL;
++	unsigned int op_id, i;
++	int ret = 0;
++
++	if (check_only)
++		return ret;
++
++	for (op_id = 0; op_id < op->ninstrs; op_id++) {
++		instr = &op->instrs[op_id];
++
++		switch (instr->type) {
++		case NAND_OP_CMD_INSTR:
++			writeb_relaxed(instr->ctx.cmd.opcode,
++				       fmc2->cmd_base[fmc2->cs_sel]);
++			break;
++
++		case NAND_OP_ADDR_INSTR:
++			for (i = 0; i < instr->ctx.addr.naddrs; i++)
++				writeb_relaxed(instr->ctx.addr.addrs[i],
++					       fmc2->addr_base[fmc2->cs_sel]);
++			break;
++
++		case NAND_OP_DATA_IN_INSTR:
++			stm32_fmc2_read_data(chip, instr->ctx.data.buf.in,
++					     instr->ctx.data.len,
++					     instr->ctx.data.force_8bit);
++			break;
++
++		case NAND_OP_DATA_OUT_INSTR:
++			stm32_fmc2_write_data(chip, instr->ctx.data.buf.out,
++					      instr->ctx.data.len,
++					      instr->ctx.data.force_8bit);
++			break;
++
++		case NAND_OP_WAITRDY_INSTR:
++			ret = nand_soft_waitrdy(chip,
++						instr->ctx.waitrdy.timeout_ms);
++			break;
++		}
++	}
++
++	return ret;
++}
++
++/* Timings configuration */
++static void stm32_fmc2_timings_init(struct nand_chip *chip)
++{
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	struct stm32_fmc2_nand *nand = to_fmc2_nand(chip);
++	struct stm32_fmc2_timings *timings = &nand->timings;
++	u32 pcr = readl_relaxed(fmc2->io_base + FMC2_PCR);
++	u32 pmem, patt;
++
++	/* Set tclr/tar timings */
++	pcr &= ~FMC2_PCR_TCLR_MASK;
++	pcr |= FMC2_PCR_TCLR(timings->tclr);
++	pcr &= ~FMC2_PCR_TAR_MASK;
++	pcr |= FMC2_PCR_TAR(timings->tar);
++
++	/* Set tset/twait/thold/thiz timings in common bank */
++	pmem = FMC2_PMEM_MEMSET(timings->tset_mem);
++	pmem |= FMC2_PMEM_MEMWAIT(timings->twait);
++	pmem |= FMC2_PMEM_MEMHOLD(timings->thold_mem);
++	pmem |= FMC2_PMEM_MEMHIZ(timings->thiz);
++
++	/* Set tset/twait/thold/thiz timings in attribut bank */
++	patt = FMC2_PATT_ATTSET(timings->tset_att);
++	patt |= FMC2_PATT_ATTWAIT(timings->twait);
++	patt |= FMC2_PATT_ATTHOLD(timings->thold_att);
++	patt |= FMC2_PATT_ATTHIZ(timings->thiz);
++
++	writel_relaxed(pcr, fmc2->io_base + FMC2_PCR);
++	writel_relaxed(pmem, fmc2->io_base + FMC2_PMEM);
++	writel_relaxed(patt, fmc2->io_base + FMC2_PATT);
++}
++
++/* Controller initialization */
++static void stm32_fmc2_init(struct stm32_fmc2_nfc *fmc2)
++{
++	u32 pcr = readl_relaxed(fmc2->io_base + FMC2_PCR);
++	u32 bcr1 = readl_relaxed(fmc2->io_base + FMC2_BCR1);
++
++	/* Set CS used to undefined */
++	fmc2->cs_sel = -1;
++
++	/* Enable wait feature and nand flash memory bank */
++	pcr |= FMC2_PCR_PWAITEN;
++	pcr |= FMC2_PCR_PBKEN;
++
++	/* Set buswidth to 8 bits mode for identification */
++	pcr &= ~FMC2_PCR_PWID_MASK;
++
++	/* Ecc logic is disabled */
++	pcr &= ~FMC2_PCR_ECCEN;
++
++	/* Default mode */
++	pcr &= ~FMC2_PCR_ECCALG;
++	pcr &= ~FMC2_PCR_BCHECC;
++	pcr &= ~FMC2_PCR_WEN;
++
++	/* Set default ecc sector size */
++	pcr &= ~FMC2_PCR_ECCSS_MASK;
++	pcr |= FMC2_PCR_ECCSS(FMC2_PCR_ECCSS_2048);
++
++	/* Set default tclr/tar timings */
++	pcr &= ~FMC2_PCR_TCLR_MASK;
++	pcr |= FMC2_PCR_TCLR(FMC2_PCR_TCLR_DEFAULT);
++	pcr &= ~FMC2_PCR_TAR_MASK;
++	pcr |= FMC2_PCR_TAR(FMC2_PCR_TAR_DEFAULT);
++
++	/* Enable FMC2 controller */
++	bcr1 |= FMC2_BCR1_FMC2EN;
++
++	writel_relaxed(bcr1, fmc2->io_base + FMC2_BCR1);
++	writel_relaxed(pcr, fmc2->io_base + FMC2_PCR);
++	writel_relaxed(FMC2_PMEM_DEFAULT, fmc2->io_base + FMC2_PMEM);
++	writel_relaxed(FMC2_PATT_DEFAULT, fmc2->io_base + FMC2_PATT);
++}
++
++/* Controller configuration */
++static void stm32_fmc2_setup(struct nand_chip *chip)
++{
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	u32 pcr = readl_relaxed(fmc2->io_base + FMC2_PCR);
++
++	/* Configure ecc algorithm (default configuration is Hamming) */
++	pcr &= ~FMC2_PCR_ECCALG;
++	pcr &= ~FMC2_PCR_BCHECC;
++	if (chip->ecc.strength == FMC2_ECC_BCH8) {
++		pcr |= FMC2_PCR_ECCALG;
++		pcr |= FMC2_PCR_BCHECC;
++	} else if (chip->ecc.strength == FMC2_ECC_BCH4) {
++		pcr |= FMC2_PCR_ECCALG;
++	}
++
++	/* Set buswidth */
++	pcr &= ~FMC2_PCR_PWID_MASK;
++	if (chip->options & NAND_BUSWIDTH_16)
++		pcr |= FMC2_PCR_PWID(FMC2_PCR_PWID_BUSWIDTH_16);
++
++	/* Set ecc sector size */
++	pcr &= ~FMC2_PCR_ECCSS_MASK;
++	pcr |= FMC2_PCR_ECCSS(FMC2_PCR_ECCSS_512);
++
++	writel_relaxed(pcr, fmc2->io_base + FMC2_PCR);
++}
++
++/* Select function */
++static void stm32_fmc2_select_chip(struct mtd_info *mtd, int chipnr)
++{
++	struct nand_chip *chip = mtd_to_nand(mtd);
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	struct stm32_fmc2_nand *nand = to_fmc2_nand(chip);
++	struct dma_slave_config dma_cfg;
++
++	if (chipnr < 0 || chipnr >= nand->ncs)
++		return;
++
++	if (nand->cs_used[chipnr] == fmc2->cs_sel)
++		return;
++
++	fmc2->cs_sel = nand->cs_used[chipnr];
++
++	/* FMC2 setup routine */
++	stm32_fmc2_setup(chip);
++
++	/* Apply timings */
++	stm32_fmc2_timings_init(chip);
++
++	if (fmc2->dma_tx_ch && fmc2->dma_rx_ch) {
++		memset(&dma_cfg, 0, sizeof(dma_cfg));
++		dma_cfg.src_addr = fmc2->data_phys_addr[fmc2->cs_sel];
++		dma_cfg.dst_addr = fmc2->data_phys_addr[fmc2->cs_sel];
++		dma_cfg.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
++		dma_cfg.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
++		dma_cfg.src_maxburst = 32;
++		dma_cfg.dst_maxburst = 32;
++
++		if (dmaengine_slave_config(fmc2->dma_tx_ch, &dma_cfg))
++			dev_warn(fmc2->dev, "tx DMA engine slave config failed\n");
++
++		if (dmaengine_slave_config(fmc2->dma_rx_ch, &dma_cfg))
++			dev_warn(fmc2->dev, "rx DMA engine slave config failed\n");
++	}
++
++	if (fmc2->dma_ecc_ch) {
++		/*
++		 * Hamming: we read HECCR register
++		 * BCH4/BCH8: we read BCHDSRSx registers
++		 */
++		memset(&dma_cfg, 0, sizeof(dma_cfg));
++		dma_cfg.src_addr = fmc2->io_phys_addr;
++		dma_cfg.src_addr += chip->ecc.strength == FMC2_ECC_HAM ?
++				    FMC2_HECCR : FMC2_BCHDSR0;
++		dma_cfg.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
++
++		if (dmaengine_slave_config(fmc2->dma_ecc_ch, &dma_cfg))
++			dev_warn(fmc2->dev, "ecc DMA engine slave config failed\n");
++
++		/* Calculate ecc length needed for one sector */
++		fmc2->dma_ecc_len = chip->ecc.strength == FMC2_ECC_HAM ?
++				    FMC2_HECCR_LEN : FMC2_BCHDSRS_LEN;
++	}
++}
++
++/* Controller timings */
++static void stm32_fmc2_calc_timings(struct nand_chip *chip,
++				    const struct nand_sdr_timings *sdrt)
++{
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	struct stm32_fmc2_nand *nand = to_fmc2_nand(chip);
++	struct stm32_fmc2_timings *tims = &nand->timings;
++	unsigned long hclk = clk_get_rate(fmc2->clk);
++	unsigned long hclkp = NSEC_PER_SEC / (hclk / 1000);
++	int tar, tclr, thiz, twait, tset_mem, tset_att, thold_mem, thold_att;
++
++	tar = hclkp;
++	if (tar < sdrt->tAR_min)
++		tar = sdrt->tAR_min;
++	tims->tar = DIV_ROUND_UP(tar, hclkp) - 1;
++	if (tims->tar > FMC2_PCR_TIMING_MASK)
++		tims->tar = FMC2_PCR_TIMING_MASK;
++
++	tclr = hclkp;
++	if (tclr < sdrt->tCLR_min)
++		tclr = sdrt->tCLR_min;
++	tims->tclr = DIV_ROUND_UP(tclr, hclkp) - 1;
++	if (tims->tclr > FMC2_PCR_TIMING_MASK)
++		tims->tclr = FMC2_PCR_TIMING_MASK;
++
++	tims->thiz = FMC2_THIZ;
++	thiz = (tims->thiz + 1) * hclkp;
++
++	/*
++	 * tWAIT > tRP
++	 * tWAIT > tWP
++	 * tWAIT > tREA + tIO
++	 */
++	twait = hclkp;
++	if (twait < sdrt->tRP_min)
++		twait = sdrt->tRP_min;
++	if (twait < sdrt->tWP_min)
++		twait = sdrt->tWP_min;
++	if (twait < sdrt->tREA_max + FMC2_TIO)
++		twait = sdrt->tREA_max + FMC2_TIO;
++	tims->twait = DIV_ROUND_UP(twait, hclkp);
++	if (tims->twait == 0)
++		tims->twait = 1;
++	else if (tims->twait > FMC2_PMEM_PATT_TIMING_MASK)
++		tims->twait = FMC2_PMEM_PATT_TIMING_MASK;
++
++	/*
++	 * tSETUP_MEM > tCS - tWAIT
++	 * tSETUP_MEM > tALS - tWAIT
++	 * tSETUP_MEM > tDS - (tWAIT - tHIZ)
++	 */
++	tset_mem = hclkp;
++	if (sdrt->tCS_min > twait && (tset_mem < sdrt->tCS_min - twait))
++		tset_mem = sdrt->tCS_min - twait;
++	if (sdrt->tALS_min > twait && (tset_mem < sdrt->tALS_min - twait))
++		tset_mem = sdrt->tALS_min - twait;
++	if (twait > thiz && (sdrt->tDS_min > twait - thiz) &&
++	    (tset_mem < sdrt->tDS_min - (twait - thiz)))
++		tset_mem = sdrt->tDS_min - (twait - thiz);
++	tims->tset_mem = DIV_ROUND_UP(tset_mem, hclkp);
++	if (tims->tset_mem == 0)
++		tims->tset_mem = 1;
++	else if (tims->tset_mem > FMC2_PMEM_PATT_TIMING_MASK)
++		tims->tset_mem = FMC2_PMEM_PATT_TIMING_MASK;
++
++	/*
++	 * tHOLD_MEM > tCH
++	 * tHOLD_MEM > tREH - tSETUP_MEM
++	 * tHOLD_MEM > max(tRC, tWC) - (tSETUP_MEM + tWAIT)
++	 */
++	thold_mem = hclkp;
++	if (thold_mem < sdrt->tCH_min)
++		thold_mem = sdrt->tCH_min;
++	if (sdrt->tREH_min > tset_mem &&
++	    (thold_mem < sdrt->tREH_min - tset_mem))
++		thold_mem = sdrt->tREH_min - tset_mem;
++	if ((sdrt->tRC_min > tset_mem + twait) &&
++	    (thold_mem < sdrt->tRC_min - (tset_mem + twait)))
++		thold_mem = sdrt->tRC_min - (tset_mem + twait);
++	if ((sdrt->tWC_min > tset_mem + twait) &&
++	    (thold_mem < sdrt->tWC_min - (tset_mem + twait)))
++		thold_mem = sdrt->tWC_min - (tset_mem + twait);
++	tims->thold_mem = DIV_ROUND_UP(thold_mem, hclkp);
++	if (tims->thold_mem == 0)
++		tims->thold_mem = 1;
++	else if (tims->thold_mem > FMC2_PMEM_PATT_TIMING_MASK)
++		tims->thold_mem = FMC2_PMEM_PATT_TIMING_MASK;
++
++	/*
++	 * tSETUP_ATT > tCS - tWAIT
++	 * tSETUP_ATT > tCLS - tWAIT
++	 * tSETUP_ATT > tALS - tWAIT
++	 * tSETUP_ATT > tRHW - tHOLD_MEM
++	 * tSETUP_ATT > tDS - (tWAIT - tHIZ)
++	 */
++	tset_att = hclkp;
++	if (sdrt->tCS_min > twait && (tset_att < sdrt->tCS_min - twait))
++		tset_att = sdrt->tCS_min - twait;
++	if (sdrt->tCLS_min > twait && (tset_att < sdrt->tCLS_min - twait))
++		tset_att = sdrt->tCLS_min - twait;
++	if (sdrt->tALS_min > twait && (tset_att < sdrt->tALS_min - twait))
++		tset_att = sdrt->tALS_min - twait;
++	if (sdrt->tRHW_min > thold_mem &&
++	    (tset_att < sdrt->tRHW_min - thold_mem))
++		tset_att = sdrt->tRHW_min - thold_mem;
++	if (twait > thiz && (sdrt->tDS_min > twait - thiz) &&
++	    (tset_att < sdrt->tDS_min - (twait - thiz)))
++		tset_att = sdrt->tDS_min - (twait - thiz);
++	tims->tset_att = DIV_ROUND_UP(tset_att, hclkp);
++	if (tims->tset_att == 0)
++		tims->tset_att = 1;
++	else if (tims->tset_att > FMC2_PMEM_PATT_TIMING_MASK)
++		tims->tset_att = FMC2_PMEM_PATT_TIMING_MASK;
++
++	/*
++	 * tHOLD_ATT > tALH
++	 * tHOLD_ATT > tCH
++	 * tHOLD_ATT > tCLH
++	 * tHOLD_ATT > tCOH
++	 * tHOLD_ATT > tDH
++	 * tHOLD_ATT > tWB + tIO + tSYNC - tSETUP_MEM
++	 * tHOLD_ATT > tADL - tSETUP_MEM
++	 * tHOLD_ATT > tWH - tSETUP_MEM
++	 * tHOLD_ATT > tWHR - tSETUP_MEM
++	 * tHOLD_ATT > tRC - (tSETUP_ATT + tWAIT)
++	 * tHOLD_ATT > tWC - (tSETUP_ATT + tWAIT)
++	 */
++	thold_att = hclkp;
++	if (thold_att < sdrt->tALH_min)
++		thold_att = sdrt->tALH_min;
++	if (thold_att < sdrt->tCH_min)
++		thold_att = sdrt->tCH_min;
++	if (thold_att < sdrt->tCLH_min)
++		thold_att = sdrt->tCLH_min;
++	if (thold_att < sdrt->tCOH_min)
++		thold_att = sdrt->tCOH_min;
++	if (thold_att < sdrt->tDH_min)
++		thold_att = sdrt->tDH_min;
++	if ((sdrt->tWB_max + FMC2_TIO + FMC2_TSYNC > tset_mem) &&
++	    (thold_att < sdrt->tWB_max + FMC2_TIO + FMC2_TSYNC - tset_mem))
++		thold_att = sdrt->tWB_max + FMC2_TIO + FMC2_TSYNC - tset_mem;
++	if (sdrt->tADL_min > tset_mem &&
++	    (thold_att < sdrt->tADL_min - tset_mem))
++		thold_att = sdrt->tADL_min - tset_mem;
++	if (sdrt->tWH_min > tset_mem &&
++	    (thold_att < sdrt->tWH_min - tset_mem))
++		thold_att = sdrt->tWH_min - tset_mem;
++	if (sdrt->tWHR_min > tset_mem &&
++	    (thold_att < sdrt->tWHR_min - tset_mem))
++		thold_att = sdrt->tWHR_min - tset_mem;
++	if ((sdrt->tRC_min > tset_att + twait) &&
++	    (thold_att < sdrt->tRC_min - (tset_att + twait)))
++		thold_att = sdrt->tRC_min - (tset_att + twait);
++	if ((sdrt->tWC_min > tset_att + twait) &&
++	    (thold_att < sdrt->tWC_min - (tset_att + twait)))
++		thold_att = sdrt->tWC_min - (tset_att + twait);
++	tims->thold_att = DIV_ROUND_UP(thold_att, hclkp);
++	if (tims->thold_att == 0)
++		tims->thold_att = 1;
++	else if (tims->thold_att > FMC2_PMEM_PATT_TIMING_MASK)
++		tims->thold_att = FMC2_PMEM_PATT_TIMING_MASK;
++}
++
++static int stm32_fmc2_setup_interface(struct mtd_info *mtd, int chipnr,
++				      const struct nand_data_interface *conf)
++{
++	struct nand_chip *chip = mtd_to_nand(mtd);
++	const struct nand_sdr_timings *sdrt;
++
++	sdrt = nand_get_sdr_timings(conf);
++	if (IS_ERR(sdrt))
++		return PTR_ERR(sdrt);
++
++	if (chipnr == NAND_DATA_IFACE_CHECK_ONLY)
++		return 0;
++
++	stm32_fmc2_calc_timings(chip, sdrt);
++
++	/* Apply timings */
++	stm32_fmc2_timings_init(chip);
++
++	return 0;
++}
++
++/* DMA configuration */
++static int stm32_fmc2_dma_setup(struct stm32_fmc2_nfc *fmc2)
++{
++	int ret;
++
++	fmc2->dma_tx_ch = dma_request_slave_channel(fmc2->dev, "tx");
++	fmc2->dma_rx_ch = dma_request_slave_channel(fmc2->dev, "rx");
++	fmc2->dma_ecc_ch = dma_request_slave_channel(fmc2->dev, "ecc");
++
++	if (!fmc2->dma_tx_ch || !fmc2->dma_rx_ch || !fmc2->dma_ecc_ch) {
++		dev_warn(fmc2->dev, "DMAs not defined in the device tree, manual mode is used\n");
++		return 0;
++	}
++
++	ret = sg_alloc_table(&fmc2->dma_ecc_sg, FMC2_MAX_SG, GFP_KERNEL);
++	if (ret)
++		return ret;
++
++	/* Allocate a buffer to store ecc status registers */
++	fmc2->ecc_buf = devm_kzalloc(fmc2->dev, FMC2_MAX_ECC_BUF_LEN,
++				     GFP_KERNEL);
++	if (!fmc2->ecc_buf)
++		return -ENOMEM;
++
++	ret = sg_alloc_table(&fmc2->dma_data_sg, FMC2_MAX_SG, GFP_KERNEL);
++	if (ret)
++		return ret;
++
++	init_completion(&fmc2->dma_data_complete);
++	init_completion(&fmc2->dma_ecc_complete);
++
++	return 0;
++}
++
++/* NAND callbacks setup */
++static void stm32_fmc2_nand_callbacks_setup(struct nand_chip *chip)
++{
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++
++	/*
++	 * Specific callbacks to read/write a page depending on
++	 * the mode (manual/sequencer) and the algo used (Hamming, BCH).
++	 */
++	if (fmc2->dma_tx_ch && fmc2->dma_rx_ch && fmc2->dma_ecc_ch) {
++		/* DMA => use sequencer mode callbacks */
++		chip->ecc.correct = stm32_fmc2_sequencer_correct;
++		chip->ecc.write_page = stm32_fmc2_sequencer_write_page;
++		chip->ecc.read_page = stm32_fmc2_sequencer_read_page;
++		chip->ecc.write_page_raw = stm32_fmc2_sequencer_write_page_raw;
++		chip->ecc.read_page_raw = stm32_fmc2_sequencer_read_page_raw;
++	} else {
++		/* No DMA => use manual mode callbacks */
++		chip->ecc.hwctl = stm32_fmc2_hwctl;
++		if (chip->ecc.strength == FMC2_ECC_HAM) {
++			/* Hamming is used */
++			chip->ecc.calculate = stm32_fmc2_ham_calculate;
++			chip->ecc.correct = stm32_fmc2_ham_correct;
++			chip->ecc.options |= NAND_ECC_GENERIC_ERASED_CHECK;
++		} else {
++			/* BCH is used */
++			chip->ecc.calculate = stm32_fmc2_bch_calculate;
++			chip->ecc.correct = stm32_fmc2_bch_correct;
++			chip->ecc.read_page = stm32_fmc2_read_page;
++		}
++	}
++
++	/* Specific configurations depending on the algo used */
++	if (chip->ecc.strength == FMC2_ECC_HAM)
++		chip->ecc.bytes = chip->options & NAND_BUSWIDTH_16 ? 4 : 3;
++	else if (chip->ecc.strength == FMC2_ECC_BCH8)
++		chip->ecc.bytes = chip->options & NAND_BUSWIDTH_16 ? 14 : 13;
++	else
++		chip->ecc.bytes = chip->options & NAND_BUSWIDTH_16 ? 8 : 7;
++}
++
++/* FMC2 layout */
++static int stm32_fmc2_nand_ooblayout_ecc(struct mtd_info *mtd, int section,
++					 struct mtd_oob_region *oobregion)
++{
++	struct nand_chip *chip = mtd_to_nand(mtd);
++	struct nand_ecc_ctrl *ecc = &chip->ecc;
++
++	if (section)
++		return -ERANGE;
++
++	oobregion->length = ecc->total;
++	oobregion->offset = FMC2_BBM_LEN;
++
++	return 0;
++}
++
++static int stm32_fmc2_nand_ooblayout_free(struct mtd_info *mtd, int section,
++					  struct mtd_oob_region *oobregion)
++{
++	struct nand_chip *chip = mtd_to_nand(mtd);
++	struct nand_ecc_ctrl *ecc = &chip->ecc;
++
++	if (section)
++		return -ERANGE;
++
++	oobregion->length = mtd->oobsize - ecc->total - FMC2_BBM_LEN;
++	oobregion->offset = ecc->total + FMC2_BBM_LEN;
++
++	return 0;
++}
++
++const struct mtd_ooblayout_ops stm32_fmc2_nand_ooblayout_ops = {
++	.ecc = stm32_fmc2_nand_ooblayout_ecc,
++	.free = stm32_fmc2_nand_ooblayout_free,
++};
++
++/* FMC2 caps */
++static int stm32_fmc2_calc_ecc_bytes(int step_size, int strength)
++{
++	/* Hamming */
++	if (strength == FMC2_ECC_HAM)
++		return 4;
++
++	/* BCH8 */
++	if (strength == FMC2_ECC_BCH8)
++		return 14;
++
++	/* BCH4 */
++	return 8;
++}
++
++NAND_ECC_CAPS_SINGLE(stm32_fmc2_ecc_caps, stm32_fmc2_calc_ecc_bytes,
++		     FMC2_ECC_STEP_SIZE,
++		     FMC2_ECC_HAM, FMC2_ECC_BCH4, FMC2_ECC_BCH8);
++
++/* FMC2 controller ops */
++static int stm32_fmc2_attach_chip(struct nand_chip *chip)
++{
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	struct mtd_info *mtd = nand_to_mtd(chip);
++	int ret;
++
++	/*
++	 * Only NAND_ECC_HW mode is actually supported
++	 * Hamming => ecc.strength = 1
++	 * BCH4 => ecc.strength = 4
++	 * BCH8 => ecc.strength = 8
++	 * ecc sector size = 512
++	 */
++	if (chip->ecc.mode != NAND_ECC_HW) {
++		dev_err(fmc2->dev, "nand_ecc_mode is not well defined in the DT\n");
++		return -EINVAL;
++	}
++
++	ret = nand_ecc_choose_conf(chip, &stm32_fmc2_ecc_caps,
++				   mtd->oobsize - FMC2_BBM_LEN);
++	if (ret) {
++		dev_err(fmc2->dev, "no valid ECC settings set\n");
++		return ret;
++	}
++
++	if (mtd->writesize / chip->ecc.size > FMC2_MAX_SG) {
++		dev_err(fmc2->dev, "nand page size is not supported\n");
++		return -EINVAL;
++	}
++
++	if (chip->bbt_options & NAND_BBT_USE_FLASH)
++		chip->bbt_options |= NAND_BBT_NO_OOB;
++
++	/* NAND callbacks setup */
++	stm32_fmc2_nand_callbacks_setup(chip);
++
++	/* Define ECC layout */
++	mtd_set_ooblayout(mtd, &stm32_fmc2_nand_ooblayout_ops);
++
++	/* Configure bus width to 16-bit */
++	if (chip->options & NAND_BUSWIDTH_16)
++		stm32_fmc2_set_buswidth_16(fmc2, true);
++
++	return 0;
++}
++
++static const struct nand_controller_ops stm32_fmc2_nand_controller_ops = {
++	.attach_chip = stm32_fmc2_attach_chip,
++};
++
++/* FMC2 probe */
++static int stm32_fmc2_parse_child(struct stm32_fmc2_nfc *fmc2,
++				  struct device_node *dn)
++{
++	struct stm32_fmc2_nand *nand = &fmc2->nand;
++	u32 cs;
++	int ret, i;
++
++	if (!of_get_property(dn, "reg", &nand->ncs))
++		return -EINVAL;
++
++	nand->ncs /= sizeof(u32);
++	if (!nand->ncs) {
++		dev_err(fmc2->dev, "invalid reg property size\n");
++		return -EINVAL;
++	}
++
++	for (i = 0; i < nand->ncs; i++) {
++		ret = of_property_read_u32_index(dn, "reg", i, &cs);
++		if (ret) {
++			dev_err(fmc2->dev, "could not retrieve reg property: %d\n",
++				ret);
++			return ret;
++		}
++
++		if (cs > FMC2_MAX_CE) {
++			dev_err(fmc2->dev, "invalid reg value: %d\n", cs);
++			return -EINVAL;
++		}
++
++		if (fmc2->cs_assigned & BIT(cs)) {
++			dev_err(fmc2->dev, "cs already assigned: %d\n", cs);
++			return -EINVAL;
++		}
++
++		fmc2->cs_assigned |= BIT(cs);
++		nand->cs_used[i] = cs;
++	}
++
++	nand_set_flash_node(&nand->chip, dn);
++
++	return 0;
++}
++
++static int stm32_fmc2_parse_dt(struct stm32_fmc2_nfc *fmc2)
++{
++	struct device_node *dn = fmc2->dev->of_node;
++	struct device_node *child;
++	int nchips = of_get_child_count(dn);
++	int ret = 0;
++
++	if (!nchips) {
++		dev_err(fmc2->dev, "NAND chip not defined\n");
++		return -EINVAL;
++	}
++
++	if (nchips > 1) {
++		dev_err(fmc2->dev, "too many NAND chips defined\n");
++		return -EINVAL;
++	}
++
++	for_each_child_of_node(dn, child) {
++		ret = stm32_fmc2_parse_child(fmc2, child);
++		if (ret < 0) {
++			of_node_put(child);
++			return ret;
++		}
++	}
++
++	return ret;
++}
++
++static int stm32_fmc2_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct reset_control *rstc;
++	struct stm32_fmc2_nfc *fmc2;
++	struct stm32_fmc2_nand *nand;
++	struct resource *res;
++	struct mtd_info *mtd;
++	struct nand_chip *chip;
++	int chip_cs, mem_region, ret, irq;
++
++	fmc2 = devm_kzalloc(dev, sizeof(*fmc2), GFP_KERNEL);
++	if (!fmc2)
++		return -ENOMEM;
++
++	fmc2->dev = dev;
++	nand_controller_init(&fmc2->base);
++	fmc2->base.ops = &stm32_fmc2_nand_controller_ops;
++
++	ret = stm32_fmc2_parse_dt(fmc2);
++	if (ret)
++		return ret;
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	fmc2->io_base = devm_ioremap_resource(dev, res);
++	if (IS_ERR(fmc2->io_base))
++		return PTR_ERR(fmc2->io_base);
++
++	fmc2->io_phys_addr = res->start;
++
++	for (chip_cs = 0, mem_region = 1; chip_cs < FMC2_MAX_CE;
++	     chip_cs++, mem_region += 3) {
++		if (!(fmc2->cs_assigned & BIT(chip_cs)))
++			continue;
++
++		res = platform_get_resource(pdev, IORESOURCE_MEM, mem_region);
++		fmc2->data_base[chip_cs] = devm_ioremap_resource(dev, res);
++		if (IS_ERR(fmc2->data_base[chip_cs]))
++			return PTR_ERR(fmc2->data_base[chip_cs]);
++
++		fmc2->data_phys_addr[chip_cs] = res->start;
++
++		res = platform_get_resource(pdev, IORESOURCE_MEM,
++					    mem_region + 1);
++		fmc2->cmd_base[chip_cs] = devm_ioremap_resource(dev, res);
++		if (IS_ERR(fmc2->cmd_base[chip_cs]))
++			return PTR_ERR(fmc2->cmd_base[chip_cs]);
++
++		res = platform_get_resource(pdev, IORESOURCE_MEM,
++					    mem_region + 2);
++		fmc2->addr_base[chip_cs] = devm_ioremap_resource(dev, res);
++		if (IS_ERR(fmc2->addr_base[chip_cs]))
++			return PTR_ERR(fmc2->addr_base[chip_cs]);
++	}
++
++	irq = platform_get_irq(pdev, 0);
++	ret = devm_request_irq(dev, irq, stm32_fmc2_irq, 0,
++			       dev_name(dev), fmc2);
++	if (ret) {
++		dev_err(dev, "failed to request irq\n");
++		return ret;
++	}
++
++	init_completion(&fmc2->complete);
++
++	fmc2->clk = devm_clk_get(dev, NULL);
++	if (IS_ERR(fmc2->clk))
++		return PTR_ERR(fmc2->clk);
++
++	ret = clk_prepare_enable(fmc2->clk);
++	if (ret) {
++		dev_err(dev, "can not enable the clock\n");
++		return ret;
++	}
++
++	rstc = devm_reset_control_get(dev, NULL);
++	if (!IS_ERR(rstc)) {
++		reset_control_assert(rstc);
++		reset_control_deassert(rstc);
++	}
++
++	/* DMA setup */
++	ret = stm32_fmc2_dma_setup(fmc2);
++	if (ret)
++		return ret;
++
++	/* FMC2 init routine */
++	stm32_fmc2_init(fmc2);
++
++	nand = &fmc2->nand;
++	chip = &nand->chip;
++	mtd = nand_to_mtd(chip);
++	mtd->dev.parent = dev;
++
++	chip->controller = &fmc2->base;
++	chip->exec_op = stm32_fmc2_exec_op;
++	chip->select_chip = stm32_fmc2_select_chip;
++	chip->setup_data_interface = stm32_fmc2_setup_interface;
++	chip->options |= NAND_BUSWIDTH_AUTO | NAND_NO_SUBPAGE_WRITE |
++			 NAND_USE_BOUNCE_BUFFER;
++
++	/* Default settings */
++	chip->ecc.mode = NAND_ECC_HW;
++	chip->ecc.size = FMC2_ECC_STEP_SIZE;
++	chip->ecc.strength = FMC2_ECC_BCH8;
++
++	/* Scan to find existence of the device */
++	ret = nand_scan(mtd, nand->ncs);
++	if (ret)
++		goto err_scan;
++
++	ret = mtd_device_register(mtd, NULL, 0);
++	if (ret)
++		goto err_device_register;
++
++	platform_set_drvdata(pdev, fmc2);
++
++	return 0;
++
++err_device_register:
++	nand_cleanup(chip);
++
++err_scan:
++	if (fmc2->dma_ecc_ch)
++		dma_release_channel(fmc2->dma_ecc_ch);
++	if (fmc2->dma_tx_ch)
++		dma_release_channel(fmc2->dma_tx_ch);
++	if (fmc2->dma_rx_ch)
++		dma_release_channel(fmc2->dma_rx_ch);
++
++	sg_free_table(&fmc2->dma_data_sg);
++	sg_free_table(&fmc2->dma_ecc_sg);
++
++	clk_disable_unprepare(fmc2->clk);
++
++	return ret;
++}
++
++static int stm32_fmc2_remove(struct platform_device *pdev)
++{
++	struct stm32_fmc2_nfc *fmc2 = platform_get_drvdata(pdev);
++	struct stm32_fmc2_nand *nand = &fmc2->nand;
++
++	nand_release(nand_to_mtd(&nand->chip));
++
++	if (fmc2->dma_ecc_ch)
++		dma_release_channel(fmc2->dma_ecc_ch);
++	if (fmc2->dma_tx_ch)
++		dma_release_channel(fmc2->dma_tx_ch);
++	if (fmc2->dma_rx_ch)
++		dma_release_channel(fmc2->dma_rx_ch);
++
++	sg_free_table(&fmc2->dma_data_sg);
++	sg_free_table(&fmc2->dma_ecc_sg);
++
++	clk_disable_unprepare(fmc2->clk);
++
++	return 0;
++}
++
++static int __maybe_unused stm32_fmc2_suspend(struct device *dev)
++{
++	struct stm32_fmc2_nfc *fmc2 = dev_get_drvdata(dev);
++
++	clk_disable_unprepare(fmc2->clk);
++
++	pinctrl_pm_select_sleep_state(dev);
++
++	return 0;
++}
++
++static int __maybe_unused stm32_fmc2_resume(struct device *dev)
++{
++	struct stm32_fmc2_nfc *fmc2 = dev_get_drvdata(dev);
++	struct stm32_fmc2_nand *nand = &fmc2->nand;
++	int chip_cs, ret;
++
++	pinctrl_pm_select_default_state(dev);
++
++	ret = clk_prepare_enable(fmc2->clk);
++	if (ret) {
++		dev_err(dev, "can not enable the clock\n");
++		return ret;
++	}
++
++	stm32_fmc2_init(fmc2);
++
++	for (chip_cs = 0; chip_cs < FMC2_MAX_CE; chip_cs++) {
++		if (!(fmc2->cs_assigned & BIT(chip_cs)))
++			continue;
++
++		nand_reset(&nand->chip, chip_cs);
++	}
++
++	return 0;
++}
++
++static SIMPLE_DEV_PM_OPS(stm32_fmc2_pm_ops, stm32_fmc2_suspend,
++			 stm32_fmc2_resume);
++
++static const struct of_device_id stm32_fmc2_match[] = {
++	{.compatible = "st,stm32mp15-fmc2"},
++	{}
++};
++MODULE_DEVICE_TABLE(of, stm32_fmc2_match);
++
++static struct platform_driver stm32_fmc2_driver = {
++	.probe	= stm32_fmc2_probe,
++	.remove	= stm32_fmc2_remove,
++	.driver	= {
++		.name = "stm32_fmc2_nand",
++		.of_match_table = stm32_fmc2_match,
++		.pm = &stm32_fmc2_pm_ops,
++	},
++};
++module_platform_driver(stm32_fmc2_driver);
++
++MODULE_ALIAS("platform:stm32_fmc2_nand");
++MODULE_AUTHOR("Christophe Kerello <christophe.kerello@st.com>");
++MODULE_DESCRIPTION("STMicroelectronics STM32 FMC2 nand driver");
++MODULE_LICENSE("GPL v2");
+diff --git a/include/linux/amba/mmci.h b/include/linux/amba/mmci.h
+index da8357b..c92ebc3 100644
+--- a/include/linux/amba/mmci.h
++++ b/include/linux/amba/mmci.h
+@@ -18,20 +18,13 @@
+  * mask into a value to be binary (or set some other custom bits
+  * in MMCIPWR) or:ed and written into the MMCIPWR register of the
+  * block.  May also control external power based on the power_mode.
+- * @status: if no GPIO read function was given to the block in
+- * gpio_wp (below) this function will be called to determine
+- * whether a card is present in the MMC slot or not
+- * @gpio_wp: read this GPIO pin to see if the card is write protected
+- * @gpio_cd: read this GPIO pin to detect card insertion
+- * @cd_invert: true if the gpio_cd pin value is active low
++ * @status: if no GPIO line was given to the block in this function will
++ * be called to determine whether a card is present in the MMC slot or not
+  */
+ struct mmci_platform_data {
+ 	unsigned int ocr_mask;
+ 	int (*ios_handler)(struct device *, struct mmc_ios *);
+ 	unsigned int (*status)(struct device *);
+-	int	gpio_wp;
+-	int	gpio_cd;
+-	bool	cd_invert;
+ };
+ 
+ #endif
+-- 
+2.7.4
+

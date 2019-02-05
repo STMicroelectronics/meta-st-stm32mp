@@ -1,0 +1,478 @@
+From 0affc90bd300ecd2c60aee7fd97251a8d2aad01f Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Mon, 10 Dec 2018 15:38:59 +0100
+Subject: [PATCH 39/52] ARM: stm32mp1-r0-rc3: MMC MTD
+
+---
+ Documentation/devicetree/bindings/mmc/mmci.txt |   2 +
+ drivers/mmc/host/mmci.c                        |  61 +++++++++-
+ drivers/mmc/host/mmci.h                        |   8 +-
+ drivers/mmc/host/mmci_stm32_sdmmc.c            | 162 ++++++++++++++++++++++++-
+ 4 files changed, 219 insertions(+), 14 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/mmc/mmci.txt b/Documentation/devicetree/bindings/mmc/mmci.txt
+index 6d3c626..da6d59e 100644
+--- a/Documentation/devicetree/bindings/mmc/mmci.txt
++++ b/Documentation/devicetree/bindings/mmc/mmci.txt
+@@ -15,6 +15,8 @@ Required properties:
+ Optional properties:
+ - arm,primecell-periphid : contains the PrimeCell Peripheral ID, it overrides
+                            the ID provided by the HW
++- reg			 : sdmmc variant could have a second base register for
++                           delay block.
+ - resets                 : phandle to internal reset line.
+ 			   Should be defined for sdmmc variant.
+ - vqmmc-supply           : phandle to the regulator device tree node, mentioned
+diff --git a/drivers/mmc/host/mmci.c b/drivers/mmc/host/mmci.c
+index 02b631f..6c2b1a0 100644
+--- a/drivers/mmc/host/mmci.c
++++ b/drivers/mmc/host/mmci.c
+@@ -14,6 +14,7 @@
+ #include <linux/ioport.h>
+ #include <linux/device.h>
+ #include <linux/io.h>
++#include <linux/iopoll.h>
+ #include <linux/interrupt.h>
+ #include <linux/kernel.h>
+ #include <linux/slab.h>
+@@ -25,6 +26,7 @@
+ #include <linux/mmc/pm.h>
+ #include <linux/mmc/host.h>
+ #include <linux/mmc/card.h>
++#include <linux/mmc/sd.h>
+ #include <linux/mmc/slot-gpio.h>
+ #include <linux/amba/bus.h>
+ #include <linux/clk.h>
+@@ -291,7 +293,8 @@ static struct variant_data variant_stm32_sdmmc = {
+ 	.busy_detect_flag	= MCI_STM32_BUSYD0,
+ 	.busy_detect_mask	= MCI_STM32_BUSYD0ENDMASK,
+ 	.init			= sdmmc_variant_init,
+-	.quirks			= MMCI_QUIRK_STM32_DTMODE,
++	.quirks			= MMCI_QUIRK_STM32_DTMODE |
++				  MMCI_QUIRK_STM32_VSWITCH,
+ };
+ 
+ static struct variant_data variant_stm32_sdmmcv2 = {
+@@ -318,7 +321,8 @@ static struct variant_data variant_stm32_sdmmcv2 = {
+ 	.busy_detect_flag	= MCI_STM32_BUSYD0,
+ 	.busy_detect_mask	= MCI_STM32_BUSYD0ENDMASK,
+ 	.init			= sdmmc_variant_init,
+-	.quirks			= MMCI_QUIRK_STM32_DTMODE,
++	.quirks			= MMCI_QUIRK_STM32_DTMODE |
++				  MMCI_QUIRK_STM32_VSWITCH,
+ };
+ 
+ static struct variant_data variant_qcom = {
+@@ -1191,6 +1195,10 @@ mmci_start_command(struct mmci_host *host, struct mmc_command *cmd, u32 c)
+ 		writel_relaxed(clks, host->base + MMCIDATATIMER);
+ 	}
+ 
++	if (host->variant->quirks & MMCI_QUIRK_STM32_VSWITCH &&
++	    cmd->opcode == SD_SWITCH_VOLTAGE)
++		mmci_write_pwrreg(host, host->pwr_reg | MCI_STM32_VSWITCHEN);
++
+ 	if (/*interrupt*/0)
+ 		c |= MCI_CPSM_INTERRUPT;
+ 
+@@ -1284,13 +1292,13 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
+ 	     unsigned int status)
+ {
+ 	void __iomem *base = host->base;
+-	bool busy_resp = !!(cmd->flags & MMC_RSP_BUSY);
+-	bool sbc;
++	bool busy_resp, sbc;
+ 	u32 err_msk;
+ 
+ 	if (!cmd)
+ 		return;
+ 
++	busy_resp = !!(cmd->flags & MMC_RSP_BUSY);
+ 	sbc = (cmd == host->mrq->sbc);
+ 
+ 	/*
+@@ -1575,11 +1583,14 @@ static irqreturn_t mmci_pio_irq(int irq, void *dev_id)
+ static irqreturn_t mmci_irq(int irq, void *dev_id)
+ {
+ 	struct mmci_host *host = dev_id;
++	bool busy_resp;
+ 	u32 status;
+ 	int ret = 0;
+ 
+ 	spin_lock(&host->lock);
+ 
++	busy_resp = host->cmd ? !!(host->cmd->flags & MMC_RSP_BUSY) : false;
++
+ 	do {
+ 		status = readl(host->base + MMCISTATUS);
+ 
+@@ -1619,9 +1630,12 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
+ 		}
+ 
+ 		/*
+-		 * Don't poll for busy completion in irq context.
++		 * Don't poll for:
++		 * -busy completion in irq context.
++		 * -cmd without busy response check like cmd11
+ 		 */
+-		if (host->variant->busy_detect && host->busy_status)
++		if (host->variant->busy_detect &&
++		    (!busy_resp || host->busy_status))
+ 			status &= ~host->variant->busy_detect_flag;
+ 
+ 		ret = 1;
+@@ -1796,6 +1810,8 @@ static int mmci_get_cd(struct mmc_host *mmc)
+ 
+ static int mmci_sig_volt_switch(struct mmc_host *mmc, struct mmc_ios *ios)
+ {
++	struct mmci_host *host = mmc_priv(mmc);
++	unsigned long flags;
+ 	int ret = 0;
+ 
+ 	if (!IS_ERR(mmc->supply.vqmmc)) {
+@@ -1808,6 +1824,28 @@ static int mmci_sig_volt_switch(struct mmc_host *mmc, struct mmc_ios *ios)
+ 		case MMC_SIGNAL_VOLTAGE_180:
+ 			ret = regulator_set_voltage(mmc->supply.vqmmc,
+ 						1700000, 1950000);
++
++			if (ret)
++				break;
++
++			if (host->variant->quirks & MMCI_QUIRK_STM32_VSWITCH) {
++				u32 status;
++
++				spin_lock_irqsave(&host->lock, flags);
++
++				mmci_write_pwrreg(host, host->pwr_reg |
++						  MCI_STM32_VSWITCH);
++
++				spin_unlock_irqrestore(&host->lock, flags);
++
++				/* wait voltage switch completion while 10ms */
++				ret = readl_relaxed_poll_timeout(
++						 host->base + MMCISTATUS,
++						 status,
++						 (status & MCI_STM32_VSWEND),
++						 10, 10000);
++			}
++
+ 			break;
+ 		case MMC_SIGNAL_VOLTAGE_120:
+ 			ret = regulator_set_voltage(mmc->supply.vqmmc,
+@@ -1822,6 +1860,16 @@ static int mmci_sig_volt_switch(struct mmc_host *mmc, struct mmc_ios *ios)
+ 	return ret;
+ }
+ 
++static int mmci_execute_tuning(struct mmc_host *mmc, u32 opcode)
++{
++	struct mmci_host *host = mmc_priv(mmc);
++
++	if (host->ops && host->ops->execute_tuning)
++		return host->ops->execute_tuning(mmc, opcode);
++
++	return -EINVAL;
++}
++
+ static struct mmc_host_ops mmci_ops = {
+ 	.request	= mmci_request,
+ 	.pre_req	= mmci_pre_request,
+@@ -1830,6 +1878,7 @@ static struct mmc_host_ops mmci_ops = {
+ 	.get_ro		= mmc_gpio_get_ro,
+ 	.get_cd		= mmci_get_cd,
+ 	.start_signal_voltage_switch = mmci_sig_volt_switch,
++	.execute_tuning = mmci_execute_tuning,
+ };
+ 
+ static int mmci_of_parse(struct device_node *np, struct mmc_host *mmc)
+diff --git a/drivers/mmc/host/mmci.h b/drivers/mmc/host/mmci.h
+index 55867fc..e10093e 100644
+--- a/drivers/mmc/host/mmci.h
++++ b/drivers/mmc/host/mmci.h
+@@ -170,6 +170,7 @@
+ #define MCI_STM32_DPSMACTIVE	BIT(12)
+ #define MCI_STM32_BUSYD0	BIT(20)
+ #define MCI_STM32_BUSYD0END	BIT(21)
++#define MCI_STM32_VSWEND	BIT(25)
+ 
+ #define MMCICLEAR		0x038
+ #define MCI_CMDCRCFAILCLR	(1 << 0)
+@@ -364,8 +365,9 @@ struct variant_data {
+ 	void (*init)(struct mmci_host *host);
+ };
+ 
+-#define MMCI_QUIRK_STM32_DTMODE	BIT(0)
+-#define MMCI_QUIRK_ST_SDIO	BIT(2) /* enable ST specific SDIO logic */
++#define MMCI_QUIRK_STM32_DTMODE	 BIT(0)
++#define MMCI_QUIRK_ST_SDIO	 BIT(2) /* enable ST specific SDIO logic */
++#define MMCI_QUIRK_STM32_VSWITCH BIT(3)
+ 
+ /* mmci variant callbacks */
+ struct mmci_host_ops {
+@@ -382,6 +384,7 @@ struct mmci_host_ops {
+ 	void (*dma_error)(struct mmci_host *host);
+ 	void (*set_clkreg)(struct mmci_host *host, unsigned int desired);
+ 	void (*set_pwrreg)(struct mmci_host *host, unsigned int pwr);
++	int (*execute_tuning)(struct mmc_host *mmc, u32 opcode);
+ };
+ 
+ struct mmci_host {
+@@ -414,6 +417,7 @@ struct mmci_host {
+ 	struct mmci_platform_data *plat;
+ 	struct mmci_host_ops	*ops;
+ 	struct variant_data	*variant;
++	void			*variant_priv;
+ 	struct pinctrl		*pinctrl;
+ 	struct pinctrl_state	*pins_default;
+ 	struct pinctrl_state	*pins_opendrain;
+diff --git a/drivers/mmc/host/mmci_stm32_sdmmc.c b/drivers/mmc/host/mmci_stm32_sdmmc.c
+index cfbfc6f..e5ccc68 100644
+--- a/drivers/mmc/host/mmci_stm32_sdmmc.c
++++ b/drivers/mmc/host/mmci_stm32_sdmmc.c
+@@ -3,14 +3,31 @@
+  * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
+  * Author: Ludovic.barre@st.com for STMicroelectronics.
+  */
++#include <linux/bitfield.h>
+ #include <linux/delay.h>
+ #include <linux/dma-mapping.h>
++#include <linux/iopoll.h>
+ #include <linux/mmc/host.h>
+ #include <linux/mmc/card.h>
++#include <linux/of_address.h>
+ #include <linux/reset.h>
+ #include <linux/scatterlist.h>
+ #include "mmci.h"
+ 
++#define DLYB_CR			0x0
++#define DLYB_CR_DEN		BIT(0)
++#define DLYB_CR_SEN		BIT(1)
++
++#define DLYB_CFGR		0x4
++#define DLYB_CFGR_SEL_MASK	GENMASK(3, 0)
++#define DLYB_CFGR_UNIT_MASK	GENMASK(14, 8)
++#define DLYB_CFGR_LNG_MASK	GENMASK(27, 16)
++#define DLYB_CFGR_LNGF		BIT(31)
++
++#define DLYB_NB_DELAY		11
++#define DLYB_CFGR_SEL_MAX	(DLYB_NB_DELAY + 1)
++#define DLYB_CFGR_UNIT_MAX	127
++
+ #define SDMMC_LLI_BUF_LEN	PAGE_SIZE
+ #define SDMMC_IDMA_BURST	BIT(MMCI_STM32_IDMABNDT_SHIFT)
+ 
+@@ -20,11 +37,17 @@ struct sdmmc_lli_desc {
+ 	u32 idmasize;
+ };
+ 
+-struct sdmmc_priv {
++struct sdmmc_idma {
+ 	dma_addr_t sg_dma;
+ 	void *sg_cpu;
+ };
+ 
++struct sdmmc_dlyb {
++	void __iomem *base;
++	u32 unit;
++	u32 max;
++};
++
+ int sdmmc_idma_validate_data(struct mmci_host *host,
+ 			     struct mmc_data *data)
+ {
+@@ -36,8 +59,8 @@ int sdmmc_idma_validate_data(struct mmci_host *host,
+ 	 * excepted the last element which has no constraint on idmasize
+ 	 */
+ 	for_each_sg(data->sg, sg, data->sg_len - 1, i) {
+-		if (!IS_ALIGNED(sg_dma_address(data->sg), sizeof(u32)) ||
+-		    !IS_ALIGNED(sg_dma_len(data->sg), SDMMC_IDMA_BURST)) {
++		if (!IS_ALIGNED(data->sg->offset, sizeof(u32)) ||
++		    !IS_ALIGNED(data->sg->length, SDMMC_IDMA_BURST)) {
+ 			dev_err(mmc_dev(host->mmc),
+ 				"unaligned scatterlist: ofst:%x length:%d\n",
+ 				data->sg->offset, data->sg->length);
+@@ -45,7 +68,7 @@ int sdmmc_idma_validate_data(struct mmci_host *host,
+ 		}
+ 	}
+ 
+-	if (!IS_ALIGNED(sg_dma_address(data->sg), sizeof(u32))) {
++	if (!IS_ALIGNED(data->sg->offset, sizeof(u32))) {
+ 		dev_err(mmc_dev(host->mmc),
+ 			"unaligned last scatterlist: ofst:%x length:%d\n",
+ 			data->sg->offset, data->sg->length);
+@@ -92,7 +115,7 @@ static void sdmmc_idma_unprep_data(struct mmci_host *host,
+ 
+ static int sdmmc_idma_setup(struct mmci_host *host)
+ {
+-	struct sdmmc_priv *idma;
++	struct sdmmc_idma *idma;
+ 
+ 	idma = devm_kzalloc(mmc_dev(host->mmc), sizeof(*idma), GFP_KERNEL);
+ 	if (!idma)
+@@ -123,7 +146,7 @@ static int sdmmc_idma_setup(struct mmci_host *host)
+ static int sdmmc_idma_start(struct mmci_host *host, unsigned int *datactrl)
+ 
+ {
+-	struct sdmmc_priv *idma = host->dma_priv;
++	struct sdmmc_idma *idma = host->dma_priv;
+ 	struct sdmmc_lli_desc *desc = (struct sdmmc_lli_desc *)idma->sg_cpu;
+ 	struct mmc_data *data = host->data;
+ 	struct scatterlist *sg;
+@@ -226,12 +249,24 @@ static void mmci_sdmmc_set_clkreg(struct mmci_host *host, unsigned int desired)
+ 	mmci_write_clkreg(host, clk);
+ }
+ 
++static void sdmmc_dlyb_input_ck(struct sdmmc_dlyb *dlyb)
++{
++	if (!dlyb || !dlyb->base)
++		return;
++
++	/* Output clock = Input clock */
++	writel_relaxed(0, dlyb->base + DLYB_CR);
++}
++
+ static void mmci_sdmmc_set_pwrreg(struct mmci_host *host, unsigned int pwr)
+ {
+ 	struct mmc_ios ios = host->mmc->ios;
++	struct sdmmc_dlyb *dlyb = host->variant_priv;
+ 
+ 	pwr = host->pwr_reg_add;
+ 
++	sdmmc_dlyb_input_ck(dlyb);
++
+ 	if (ios.power_mode == MMC_POWER_OFF) {
+ 		/* Only a reset could power-off sdmmc */
+ 		reset_control_assert(host->rst);
+@@ -265,6 +300,105 @@ static void mmci_sdmmc_set_pwrreg(struct mmci_host *host, unsigned int pwr)
+ 	}
+ }
+ 
++static void sdmmc_dlyb_set_cfgr(struct sdmmc_dlyb *dlyb,
++				int unit, int phase, bool sampler)
++{
++	u32 cr, cfgr;
++
++	writel_relaxed(DLYB_CR_SEN, dlyb->base + DLYB_CR);
++
++	cfgr = FIELD_PREP(DLYB_CFGR_UNIT_MASK, unit) |
++	       FIELD_PREP(DLYB_CFGR_SEL_MASK, phase);
++	writel_relaxed(cfgr, dlyb->base + DLYB_CFGR);
++
++	cr = DLYB_CR_DEN;
++	if (sampler)
++		cr |= DLYB_CR_SEN;
++
++	writel_relaxed(cr, dlyb->base + DLYB_CR);
++}
++
++static int sdmmc_dlyb_lng_tuning(struct mmci_host *host)
++{
++	struct sdmmc_dlyb *dlyb = host->variant_priv;
++	u32 cfgr;
++	int i, lng, ret;
++
++	for (i = 0; i <= DLYB_CFGR_UNIT_MAX; i++) {
++		sdmmc_dlyb_set_cfgr(dlyb, i, DLYB_CFGR_SEL_MAX, true);
++
++		ret = readl_relaxed_poll_timeout(dlyb->base + DLYB_CFGR, cfgr,
++						 (cfgr & DLYB_CFGR_LNGF),
++						 1, 1000);
++		if (ret) {
++			dev_warn(mmc_dev(host->mmc),
++				 "delay line cfg timeout unit:%d cfgr:%d\n",
++				 i, cfgr);
++			continue;
++		}
++
++		lng = FIELD_GET(DLYB_CFGR_LNG_MASK, cfgr);
++		if (lng < BIT(DLYB_NB_DELAY) && lng > 0)
++			break;
++	}
++
++	if (i > DLYB_CFGR_UNIT_MAX)
++		return -EINVAL;
++
++	dlyb->unit = i;
++	dlyb->max = __fls(lng);
++
++	return 0;
++}
++
++static int sdmmc_dlyb_phase_tuning(struct mmci_host *host, u32 opcode)
++{
++	struct sdmmc_dlyb *dlyb = host->variant_priv;
++	int cur_len = 0, max_len = 0, end_of_len = 0;
++	int phase;
++
++	for (phase = 0; phase <= dlyb->max; phase++) {
++		sdmmc_dlyb_set_cfgr(dlyb, dlyb->unit, phase, false);
++
++		if (mmc_send_tuning(host->mmc, opcode, NULL)) {
++			cur_len = 0;
++		} else {
++			cur_len++;
++			if (cur_len > max_len) {
++				max_len = cur_len;
++				end_of_len = phase;
++			}
++		}
++	}
++
++	if (!max_len) {
++		dev_err(mmc_dev(host->mmc), "no tuning point found\n");
++		return -EINVAL;
++	}
++
++	phase = end_of_len - max_len / 2;
++	sdmmc_dlyb_set_cfgr(dlyb, dlyb->unit, phase, false);
++
++	dev_dbg(mmc_dev(host->mmc), "unit:%d max_dly:%d phase:%d\n",
++		dlyb->unit, dlyb->max, phase);
++
++	return 0;
++}
++
++static int sdmmc_execute_tuning(struct mmc_host *mmc, u32 opcode)
++{
++	struct mmci_host *host = mmc_priv(mmc);
++	struct sdmmc_dlyb *dlyb = host->variant_priv;
++
++	if (!dlyb || !dlyb->base)
++		return -EINVAL;
++
++	if (sdmmc_dlyb_lng_tuning(host))
++		return -EINVAL;
++
++	return sdmmc_dlyb_phase_tuning(host, opcode);
++}
++
+ static struct mmci_host_ops sdmmc_variant_ops = {
+ 	.validate_data = sdmmc_idma_validate_data,
+ 	.prep_data = sdmmc_idma_prep_data,
+@@ -274,9 +408,25 @@ static struct mmci_host_ops sdmmc_variant_ops = {
+ 	.dma_finalize = sdmmc_idma_finalize,
+ 	.set_clkreg = mmci_sdmmc_set_clkreg,
+ 	.set_pwrreg = mmci_sdmmc_set_pwrreg,
++	.execute_tuning = sdmmc_execute_tuning,
+ };
+ 
+ void sdmmc_variant_init(struct mmci_host *host)
+ {
++	struct device_node *np = host->mmc->parent->of_node;
++	void __iomem *base_dlyb;
++	struct sdmmc_dlyb *dlyb;
++
+ 	host->ops = &sdmmc_variant_ops;
++
++	base_dlyb = devm_of_iomap(mmc_dev(host->mmc), np, 1, NULL);
++	if (IS_ERR(base_dlyb))
++		return;
++
++	dlyb = devm_kzalloc(mmc_dev(host->mmc), sizeof(*dlyb), GFP_KERNEL);
++	if (!dlyb)
++		return;
++
++	dlyb->base = base_dlyb;
++	host->variant_priv = dlyb;
+ }
+-- 
+2.7.4
+

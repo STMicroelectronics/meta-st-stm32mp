@@ -1,0 +1,188 @@
+From 67b204258838dd2c940d5b1508318b4890324a06 Mon Sep 17 00:00:00 2001
+From: christophe montaud <christophe.montaud@st.com>
+Date: Tue, 29 Jan 2019 17:31:19 +0100
+Subject: [PATCH 63/64] ARM stm32mp1 r0 rc4 hotfix w905.2 DRIVERS
+
+---
+ drivers/dma/stm32-dma.c     | 70 ++++++++++++++++++++++++++++++++++++---------
+ drivers/usb/dwc2/platform.c | 38 ++++++++++++++++++------
+ 2 files changed, 87 insertions(+), 21 deletions(-)
+
+diff --git a/drivers/dma/stm32-dma.c b/drivers/dma/stm32-dma.c
+index 5abfa4f..dc3ba91 100644
+--- a/drivers/dma/stm32-dma.c
++++ b/drivers/dma/stm32-dma.c
+@@ -1675,37 +1675,81 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_dma_memcpy(
+ 	return vchan_tx_prep(&chan->vchan, &desc->vdesc, flags);
+ }
+ 
++static bool stm32_dma_is_current_sg(struct stm32_dma_chan *chan)
++{
++	struct stm32_dma_device *dmadev = stm32_dma_get_dev(chan);
++	struct stm32_dma_sg_req *sg_req;
++	u32 dma_scr, dma_smar, id;
++
++	id = chan->id;
++	dma_scr = stm32_dma_read(dmadev, STM32_DMA_SCR(id));
++
++	if (!(dma_scr & STM32_DMA_SCR_DBM))
++		return true;
++
++	sg_req = &chan->desc->sg_req[chan->next_sg];
++
++	if (dma_scr & STM32_DMA_SCR_CT) {
++		dma_smar = stm32_dma_read(dmadev, STM32_DMA_SM0AR(id));
++		return (dma_smar == sg_req->chan_reg.dma_sm0ar);
++	}
++
++	dma_smar = stm32_dma_read(dmadev, STM32_DMA_SM1AR(id));
++
++	return (dma_smar == sg_req->chan_reg.dma_sm1ar);
++}
++
+ static size_t stm32_dma_desc_residue(struct stm32_dma_chan *chan,
+ 				     struct stm32_dma_desc *desc,
+ 				     u32 next_sg)
+ {
+ 	u32 modulo, burst_size;
+-	u32 residue = 0;
++	u32 residue;
++	u32 n_sg = next_sg;
++	struct stm32_dma_sg_req *sg_req = &chan->desc->sg_req[chan->next_sg];
+ 	int i;
+ 
+ 	/* Drain case */
+ 	if (chan->residue_after_drain)
+ 		return chan->residue_after_drain;
+ 
++	residue = stm32_dma_get_remaining_bytes(chan);
++
+ 	/*
+-	 * In cyclic mode, for the last period, residue = remaining bytes from
+-	 * NDTR
++	 * Calculate the residue means compute the descriptors
++	 * information:
++	 * - the sg currently transferred
++	 * - the remaining position in this sg (NDTR).
++	 *
++	 * The issue is that a race condition can occur if DMA is
++	 * running. DMA can have started to transfer the next sg before
++	 * the position in sg is read. In this case the remaing position
++	 * can correspond to the new sg position.
++	 * The strategy implemented in the stm32 driver is to check the
++	 * sg transition. If detected we can not trust the SxNDTR register value
++	 * this register can not be up to date during the transition.
++	 * in this case we can assume that the dma is at the beginning of next
++	 * sg so we calculate the residue in consequence.
+ 	 */
+-	if (chan->desc->cyclic && next_sg == 0) {
+-		residue = stm32_dma_get_remaining_bytes(chan);
+-		goto end;
++
++	if (!stm32_dma_is_current_sg(chan)) {
++		n_sg++;
++		if (n_sg == chan->desc->num_sgs)
++			n_sg = 0;
++		residue = sg_dma_len(&sg_req->stm32_sgl_req);
+ 	}
+ 
+ 	/*
+-	 * For all other periods in cyclic mode, and in sg mode,
+-	 * residue = remaining bytes from NDTR + remaining periods/sg to be
+-	 * transferred
++	 * In cyclic mode, for the last period, residue = remaining bytes
++	 * from NDTR
++	 * else for all other periods in cyclic mode, and in sg mode,
++	 * residue = remaining bytes from NDTR + remaining
++	 * periods/sg to be transferred
+ 	 */
+-	for (i = next_sg; i < desc->num_sgs; i++)
+-		residue += sg_dma_len(&desc->sg_req[i].stm32_sgl_req);
+-	residue += stm32_dma_get_remaining_bytes(chan);
++	if (!chan->desc->cyclic || n_sg != 0)
++		for (i = n_sg; i < desc->num_sgs; i++)
++			residue += sg_dma_len(&desc->sg_req[i].stm32_sgl_req);
+ 
+-end:
+ 	if (!chan->mem_burst)
+ 		return residue;
+ 
+diff --git a/drivers/usb/dwc2/platform.c b/drivers/usb/dwc2/platform.c
+index b80d046..7e6960c 100644
+--- a/drivers/usb/dwc2/platform.c
++++ b/drivers/usb/dwc2/platform.c
+@@ -568,16 +568,35 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
+ 	struct dwc2_hsotg *dwc2 = dev_get_drvdata(dev);
+ 	int ret = 0;
+ 
++	if (dwc2_is_device_mode(dwc2))
++		dwc2_hsotg_suspend(dwc2);
++
+ 	if (dwc2->params.activate_stm_id_vb_detection &&
+ 	    !dwc2->params.force_b_session_valid) {
+-		u32 ggpio;
++		u32 ggpio, gotgctl;
++		int is_host = dwc2_is_host_mode(dwc2);
+ 
+ 		/*
+ 		 * Need to force the mode to the current mode to avoid Mode
+-		 * Mismatch Interrupt when ID and VBUS detection will be
+-		 * disabled
++		 * Mismatch Interrupt when ID detection will be disabled.
+ 		 */
+-		dwc2_force_mode(dwc2, dwc2_is_host_mode(dwc2));
++		dwc2_force_mode(dwc2, is_host);
++
++		if (!is_host) {
++			gotgctl = dwc2_readl(dwc2, GOTGCTL);
++			/*
++			 * We're about to disable Vbus detection hw before low
++			 * power mode entry. Then an undesired disconnect
++			 * interrupt may occur which is racy with low power
++			 * (low-level hw disable). Then check valid session
++			 * to force B-peripheral session value.
++			 */
++			if (gotgctl & GOTGCTL_BSESVLD) {
++				gotgctl |= GOTGCTL_BVALOVAL;
++				gotgctl |= GOTGCTL_BVALOEN;
++				dwc2_writel(dwc2, gotgctl, GOTGCTL);
++			}
++		}
+ 
+ 		ggpio = dwc2_readl(dwc2, GGPIO);
+ 		ggpio &= ~GGPIO_STM32_OTG_GCCFG_IDEN;
+@@ -587,9 +606,6 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
+ 		regulator_disable(dwc2->usb33d);
+ 	}
+ 
+-	if (dwc2_is_device_mode(dwc2))
+-		dwc2_hsotg_suspend(dwc2);
+-
+ 	if (dwc2->ll_hw_enabled)
+ 		ret = __dwc2_lowlevel_hw_disable(dwc2);
+ 
+@@ -612,7 +628,7 @@ static int __maybe_unused dwc2_resume(struct device *dev)
+ 
+ 	if (dwc2->params.activate_stm_id_vb_detection &&
+ 	    !dwc2->params.force_b_session_valid) {
+-		u32 ggpio;
++		u32 ggpio, gotgctl;
+ 
+ 		ret = regulator_enable(dwc2->usb33d);
+ 		if (ret)
+@@ -625,6 +641,12 @@ static int __maybe_unused dwc2_resume(struct device *dev)
+ 
+ 		/* ID/VBUS detection startup time */
+ 		usleep_range(5000, 7000);
++
++		/* Unconditionally clear B-Session Valid override */
++		gotgctl = dwc2_readl(dwc2, GOTGCTL);
++		gotgctl &= ~GOTGCTL_BVALOVAL;
++		gotgctl &= ~GOTGCTL_BVALOEN;
++		dwc2_writel(dwc2, gotgctl, GOTGCTL);
+ 	}
+ 
+ 	if (dwc2->params.force_b_session_valid) {
+-- 
+2.7.4
+

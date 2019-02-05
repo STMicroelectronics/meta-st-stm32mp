@@ -1,0 +1,927 @@
+From dbfd12db19506dc6d598c11d72aa0fb81c41aa82 Mon Sep 17 00:00:00 2001
+From: christophe montaud <christophe.montaud@st.com>
+Date: Thu, 24 Jan 2019 10:51:36 +0100
+Subject: [PATCH 59/60] ARM stm32mp1 r0 rc4 hotfix w904.3 DRIVERS
+
+---
+ drivers/dma/stm32-dma.c                          |   4 +
+ drivers/gpu/drm/panel/panel-orisetech-otm8009a.c |  64 +++++------
+ drivers/gpu/drm/stm/dw_mipi_dsi-stm.c            |  51 ++++++---
+ drivers/remoteproc/stm32_rproc.c                 |  21 ++--
+ drivers/tty/serial/stm32-usart.c                 |   8 ++
+ drivers/tty/serial/stm32-usart.h                 |   2 +-
+ drivers/usb/dwc2/core.h                          |  29 +++++
+ drivers/usb/dwc2/debugfs.c                       |   1 +
+ drivers/usb/dwc2/gadget.c                        | 133 +++++++++++++++++++++--
+ drivers/usb/dwc2/hcd.c                           |   3 -
+ drivers/usb/dwc2/hcd.h                           |   2 +-
+ drivers/usb/dwc2/hcd_queue.c                     |  19 ++--
+ drivers/usb/dwc2/hw.h                            |  17 +++
+ drivers/usb/dwc2/params.c                        |  18 ++-
+ 14 files changed, 294 insertions(+), 78 deletions(-)
+
+diff --git a/drivers/dma/stm32-dma.c b/drivers/dma/stm32-dma.c
+index 1f9d606..5abfa4f 100644
+--- a/drivers/dma/stm32-dma.c
++++ b/drivers/dma/stm32-dma.c
+@@ -1242,6 +1242,7 @@ static int stm32_dma_mdma_prep_slave_sg(struct stm32_dma_chan *chan,
+ 				dev_err(chan2dev(chan),
+ 					"max buf size = %d bytes\n",
+ 					chan->sram_size);
++				ret = -EINVAL;
+ 				goto free_alloc;
+ 			}
+ 		} else {
+@@ -1939,6 +1940,8 @@ static int stm32_dma_probe(struct platform_device *pdev)
+ 		dev_dbg(&pdev->dev, "SRAM pool: %zu KiB\n",
+ 			gen_pool_size(dmadev->sram_pool) / 1024);
+ 
++	dma_set_max_seg_size(&pdev->dev, STM32_DMA_ALIGNED_MAX_DATA_ITEMS);
++
+ 	dma_cap_set(DMA_SLAVE, dd->cap_mask);
+ 	dma_cap_set(DMA_PRIVATE, dd->cap_mask);
+ 	dma_cap_set(DMA_CYCLIC, dd->cap_mask);
+@@ -1959,6 +1962,7 @@ static int stm32_dma_probe(struct platform_device *pdev)
+ 		BIT(DMA_SLAVE_BUSWIDTH_4_BYTES);
+ 	dd->directions = BIT(DMA_DEV_TO_MEM) | BIT(DMA_MEM_TO_DEV);
+ 	dd->residue_granularity = DMA_RESIDUE_GRANULARITY_BURST;
++	dd->copy_align = DMAENGINE_ALIGN_32_BYTES;
+ 	dd->max_burst = STM32_DMA_MAX_BURST;
+ 	dd->descriptor_reuse = true;
+ 	dd->dev = &pdev->dev;
+diff --git a/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c b/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c
+index a76d03a..ee7486b 100644
+--- a/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c
++++ b/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c
+@@ -254,24 +254,12 @@ static int otm8009a_init_sequence(struct otm8009a *ctx)
+ static int otm8009a_disable(struct drm_panel *panel)
+ {
+ 	struct otm8009a *ctx = panel_to_otm8009a(panel);
+-	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
+-	int ret;
+ 
+ 	if (!ctx->enabled)
+ 		return 0; /* This is not an issue so we return 0 here */
+ 
+ 	backlight_disable(ctx->bl_dev);
+ 
+-	ret = mipi_dsi_dcs_set_display_off(dsi);
+-	if (ret)
+-		return ret;
+-
+-	ret = mipi_dsi_dcs_enter_sleep_mode(dsi);
+-	if (ret)
+-		return ret;
+-
+-	msleep(120);
+-
+ 	ctx->enabled = false;
+ 
+ 	return 0;
+@@ -280,16 +268,23 @@ static int otm8009a_disable(struct drm_panel *panel)
+ static int otm8009a_unprepare(struct drm_panel *panel)
+ {
+ 	struct otm8009a *ctx = panel_to_otm8009a(panel);
++	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
++	int ret;
+ 
+ 	if (!ctx->prepared)
+ 		return 0;
+ 
+-	if (ctx->reset_gpio) {
+-		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+-		msleep(20);
+-	}
++	ret = mipi_dsi_dcs_set_display_off(dsi);
++	if (ret)
++		return ret;
+ 
+-	regulator_disable(ctx->supply);
++	msleep(10);
++
++	ret = mipi_dsi_dcs_enter_sleep_mode(dsi);
++	if (ret)
++		return ret;
++
++	msleep(120);
+ 
+ 	ctx->prepared = false;
+ 
+@@ -304,20 +299,6 @@ static int otm8009a_prepare(struct drm_panel *panel)
+ 	if (ctx->prepared)
+ 		return 0;
+ 
+-	ret = regulator_enable(ctx->supply);
+-	if (ret < 0) {
+-		DRM_ERROR("failed to enable supply: %d\n", ret);
+-		return ret;
+-	}
+-
+-	if (ctx->reset_gpio) {
+-		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+-		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+-		msleep(20);
+-		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+-		msleep(100);
+-	}
+-
+ 	ret = otm8009a_init_sequence(ctx);
+ 	if (ret)
+ 		return ret;
+@@ -475,6 +456,20 @@ static int otm8009a_probe(struct mipi_dsi_device *dsi)
+ 		return ret;
+ 	}
+ 
++	ret = regulator_enable(ctx->supply);
++	if (ret < 0) {
++		DRM_ERROR("failed to enable supply: %d\n", ret);
++		return ret;
++	}
++
++	if (ctx->reset_gpio) {
++		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
++		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
++		msleep(20);
++		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
++		msleep(100);
++	}
++
+ 	return 0;
+ }
+ 
+@@ -485,6 +480,13 @@ static int otm8009a_remove(struct mipi_dsi_device *dsi)
+ 	mipi_dsi_detach(dsi);
+ 	drm_panel_remove(&ctx->panel);
+ 
++	if (ctx->reset_gpio) {
++		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
++		msleep(20);
++	}
++
++	regulator_disable(ctx->supply);
++
+ 	return 0;
+ }
+ 
+diff --git a/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c b/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c
+index a373651..7b37f97 100644
+--- a/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c
++++ b/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c
+@@ -305,6 +305,7 @@ static int dw_mipi_dsi_stm_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+ 	struct dw_mipi_dsi_stm *dsi;
++	struct clk *pclk;
+ 	struct resource *res;
+ 	int ret;
+ 
+@@ -335,23 +336,13 @@ static int dw_mipi_dsi_stm_probe(struct platform_device *pdev)
+ 	if (IS_ERR(dsi->pllref_clk)) {
+ 		ret = PTR_ERR(dsi->pllref_clk);
+ 		dev_err(dev, "Unable to get pll reference clock: %d\n", ret);
+-		regulator_disable(dsi->vdd_supply);
+-		return ret;
++		goto err_clk_get;
+ 	}
+ 
+ 	ret = clk_prepare_enable(dsi->pllref_clk);
+ 	if (ret) {
+ 		dev_err(dev, "%s: Failed to enable pllref_clk\n", __func__);
+-		regulator_disable(dsi->vdd_supply);
+-		return ret;
+-	}
+-
+-	dsi->hw_version = dsi_read(dsi, DSI_VERSION) & VERSION;
+-	if (dsi->hw_version != HWVER_130 && dsi->hw_version != HWVER_131) {
+-		dev_err(dev, "bad dsi hardware version\n");
+-		clk_disable_unprepare(dsi->pllref_clk);
+-		regulator_disable(dsi->vdd_supply);
+-		return -ENODEV;
++		goto err_clk_get;
+ 	}
+ 
+ 	dw_mipi_dsi_stm_plat_data.base = dsi->base;
+@@ -361,13 +352,43 @@ static int dw_mipi_dsi_stm_probe(struct platform_device *pdev)
+ 
+ 	dsi->dsi = dw_mipi_dsi_probe(pdev, &dw_mipi_dsi_stm_plat_data);
+ 	if (IS_ERR(dsi->dsi)) {
++		ret = PTR_ERR(dsi->dsi);
+ 		DRM_ERROR("Failed to initialize mipi dsi host\n");
+-		regulator_disable(dsi->vdd_supply);
+-		clk_disable_unprepare(dsi->pllref_clk);
+-		return PTR_ERR(dsi->dsi);
++		goto err_probe;
++	}
++
++	pclk = devm_clk_get(dev, "pclk");
++	if (IS_ERR(pclk)) {
++		ret = PTR_ERR(pclk);
++		dev_err(dev, "Unable to get peripheral clock: %d\n", ret);
++		goto err_probe;
++	}
++
++	ret = clk_prepare_enable(pclk);
++	if (ret) {
++		dev_err(dev, "%s: Failed to enable peripheral clk\n", __func__);
++		goto err_probe;
++	}
++
++	dsi->hw_version = dsi_read(dsi, DSI_VERSION) & VERSION;
++	clk_disable_unprepare(pclk);
++
++	if (dsi->hw_version != HWVER_130 && dsi->hw_version != HWVER_131) {
++		ret = -ENODEV;
++		dev_err(dev, "bad dsi hardware version\n");
++		goto err_probe;
+ 	}
+ 
+ 	return 0;
++
++err_probe:
++	clk_disable_unprepare(dsi->pllref_clk);
++
++err_clk_get:
++	regulator_disable(dsi->vdd_supply);
++
++	return ret;
++
+ }
+ 
+ static int dw_mipi_dsi_stm_remove(struct platform_device *pdev)
+diff --git a/drivers/remoteproc/stm32_rproc.c b/drivers/remoteproc/stm32_rproc.c
+index 1d2be11..1827c25 100644
+--- a/drivers/remoteproc/stm32_rproc.c
++++ b/drivers/remoteproc/stm32_rproc.c
+@@ -104,10 +104,12 @@ static int stm32_rproc_da_to_pa(struct rproc *rproc, u64 da, phys_addr_t *pa)
+ 		    da >= p_mem->dev_addr + p_mem->size)
+ 			continue;
+ 		*pa = da - p_mem->dev_addr + p_mem->bus_addr;
+-		dev_err(rproc->dev.parent, "da %llx to pa %#x\n", da, *pa);
++		dev_dbg(rproc->dev.parent, "da %llx to pa %#x\n", da, *pa);
+ 		return 0;
+ 	}
+ 
++	dev_err(rproc->dev.parent, "can't translate da %llx\n", da);
++
+ 	return -EINVAL;
+ }
+ 
+@@ -657,20 +659,21 @@ static int stm32_rproc_parse_dt(struct platform_device *pdev)
+ 
+ 	if (of_property_read_bool(np, "early-booted")) {
+ 		rproc->early_boot = true;
+-
+ 		err = of_property_read_u32(np, "rsc-address", &rsc_da);
+-		if (!err) {
+-			err = of_property_read_u32(np, "rsc-size",
+-						   &ddata->rsc_len);
++		if (err)
++			/* no optional rsc table found */
++			return 0;
+ 
+-			if (err) {
+-				dev_err(dev, "resource table size required as address defined\n");
+-				return err;
+-			}
++		err = of_property_read_u32(np, "rsc-size", &ddata->rsc_len);
++		if (err) {
++			dev_err(dev, "resource table size required as address defined\n");
++			return err;
+ 		}
++
+ 		err = stm32_rproc_da_to_pa(rproc, rsc_da, &rsc_pa);
+ 		if (err)
+ 			return err;
++
+ 		ddata->rsc_va = ioremap_wc(rsc_pa, ddata->rsc_len);
+ 		if (IS_ERR_OR_NULL(ddata->rsc_va)) {
+ 			dev_err(dev, "Unable to map memory region: %pa+%zx\n",
+diff --git a/drivers/tty/serial/stm32-usart.c b/drivers/tty/serial/stm32-usart.c
+index d606eb5..6fc57fc 100644
+--- a/drivers/tty/serial/stm32-usart.c
++++ b/drivers/tty/serial/stm32-usart.c
+@@ -250,8 +250,16 @@ static void stm32_receive_chars(struct uart_port *port, bool threaded)
+ 						       ofs->icr);
+ 				port->icount.overrun++;
+ 			} else if (sr & USART_SR_PE) {
++				if (ofs->icr != UNDEF_REG)
++					writel_relaxed(USART_ICR_PECF,
++						       port->membase +
++						       ofs->icr);
+ 				port->icount.parity++;
+ 			} else if (sr & USART_SR_FE) {
++				if (ofs->icr != UNDEF_REG)
++					writel_relaxed(USART_ICR_FECF,
++						       port->membase +
++						       ofs->icr);
+ 				port->icount.frame++;
+ 			}
+ 
+diff --git a/drivers/tty/serial/stm32-usart.h b/drivers/tty/serial/stm32-usart.h
+index f1f5c1c..53d7e7b 100644
+--- a/drivers/tty/serial/stm32-usart.h
++++ b/drivers/tty/serial/stm32-usart.h
+@@ -241,7 +241,7 @@ struct stm32_usart_info stm32h7_info = {
+ 
+ /* USART_ICR */
+ #define USART_ICR_PECF		BIT(0)		/* F7 */
+-#define USART_ICR_FFECF		BIT(1)		/* F7 */
++#define USART_ICR_FECF		BIT(1)		/* F7 */
+ #define USART_ICR_NCF		BIT(2)		/* F7 */
+ #define USART_ICR_ORECF		BIT(3)		/* F7 */
+ #define USART_ICR_IDLECF	BIT(4)		/* F7 */
+diff --git a/drivers/usb/dwc2/core.h b/drivers/usb/dwc2/core.h
+index 4c1736f..3d8fa58 100644
+--- a/drivers/usb/dwc2/core.h
++++ b/drivers/usb/dwc2/core.h
+@@ -393,6 +393,20 @@ enum dwc2_ep0_state {
+  *			0 - No
+  *			1 - Yes
+  * @hird_threshold:	Value of BESL or HIRD Threshold.
++ * @ref_clk_per:        Indicates in terms of pico seconds the period
++ *                      of ref_clk.
++ *			62500 - 16MHz
++ *                      58823 - 17MHz
++ *                      52083 - 19.2MHz
++ *			50000 - 20MHz
++ *			41666 - 24MHz
++ *			33333 - 30MHz (default)
++ *			25000 - 40MHz
++ * @sof_cnt_wkup_alert: Indicates in term of number of SOF's after which
++ *                      the controller should generate an interrupt if the
++ *                      device had been in L1 state until that period.
++ *                      This is used by SW to initiate Remote WakeUp in the
++ *                      controller so as to sync to the uF number from the host.
+  * @activate_stm_fs_transceiver: Activate internal transceiver using GGPIO
+  *			register.
+  *			0 - Deactivate the transceiver (default)
+@@ -426,6 +440,9 @@ enum dwc2_ep0_state {
+  *                      back to DWC2_SPEED_PARAM_HIGH while device is gone.
+  *			0 - No (default)
+  *			1 - Yes
++ * @service_interval:   Enable service interval based scheduling.
++ *                      0 - No
++ *                      1 - Yes
+  *
+  * The following parameters may be specified when starting the module. These
+  * parameters define how the DWC_otg controller should be configured. A
+@@ -471,6 +488,7 @@ struct dwc2_core_params {
+ 	bool lpm_clock_gating;
+ 	bool besl;
+ 	bool hird_threshold_en;
++	bool service_interval;
+ 	u8 hird_threshold;
+ 	bool activate_stm_fs_transceiver;
+ 	bool activate_stm_id_vb_detection;
+@@ -479,6 +497,10 @@ struct dwc2_core_params {
+ 	u32 max_transfer_size;
+ 	u32 ahbcfg;
+ 
++	/* GREFCLK parameters */
++	u32 ref_clk_per;
++	u16 sof_cnt_wkup_alert;
++
+ 	/* Host parameters */
+ 	bool host_dma;
+ 	bool dma_desc_enable;
+@@ -618,6 +640,10 @@ struct dwc2_core_params {
+  *			FIFO sizing is enabled 16 to 32768
+  *			Actual maximum value is autodetected and also
+  *			the default.
++ * @service_interval_mode: For enabling service interval based scheduling in the
++ *                         controller.
++ *                           0 - Disable
++ *                           1 - Enable
+  */
+ struct dwc2_hw_params {
+ 	unsigned op_mode:3;
+@@ -648,6 +674,7 @@ struct dwc2_hw_params {
+ 	unsigned utmi_phy_data_width:2;
+ 	unsigned lpm_mode:1;
+ 	unsigned ipg_isoc_en:1;
++	unsigned service_interval_mode:1;
+ 	u32 snpsid;
+ 	u32 dev_ep_dirs;
+ 	u32 g_tx_fifo_size[MAX_EPS_CHANNELS];
+@@ -1372,6 +1399,7 @@ int dwc2_hsotg_tx_fifo_count(struct dwc2_hsotg *hsotg);
+ int dwc2_hsotg_tx_fifo_total_depth(struct dwc2_hsotg *hsotg);
+ int dwc2_hsotg_tx_fifo_average_depth(struct dwc2_hsotg *hsotg);
+ void dwc2_gadget_init_lpm(struct dwc2_hsotg *hsotg);
++void dwc2_gadget_program_ref_clk(struct dwc2_hsotg *hsotg);
+ #else
+ static inline int dwc2_hsotg_remove(struct dwc2_hsotg *dwc2)
+ { return 0; }
+@@ -1406,6 +1434,7 @@ static inline int dwc2_hsotg_tx_fifo_total_depth(struct dwc2_hsotg *hsotg)
+ static inline int dwc2_hsotg_tx_fifo_average_depth(struct dwc2_hsotg *hsotg)
+ { return 0; }
+ static inline void dwc2_gadget_init_lpm(struct dwc2_hsotg *hsotg) {}
++static inline void dwc2_gadget_program_ref_clk(struct dwc2_hsotg *hsotg) {}
+ #endif
+ 
+ #if IS_ENABLED(CONFIG_USB_DWC2_HOST) || IS_ENABLED(CONFIG_USB_DWC2_DUAL_ROLE)
+diff --git a/drivers/usb/dwc2/debugfs.c b/drivers/usb/dwc2/debugfs.c
+index 22d015b..7f62f4c 100644
+--- a/drivers/usb/dwc2/debugfs.c
++++ b/drivers/usb/dwc2/debugfs.c
+@@ -701,6 +701,7 @@ static int params_show(struct seq_file *seq, void *v)
+ 	print_param(seq, p, besl);
+ 	print_param(seq, p, hird_threshold_en);
+ 	print_param(seq, p, hird_threshold);
++	print_param(seq, p, service_interval);
+ 	print_param(seq, p, host_dma);
+ 	print_param(seq, p, g_dma);
+ 	print_param(seq, p, g_dma_desc);
+diff --git a/drivers/usb/dwc2/gadget.c b/drivers/usb/dwc2/gadget.c
+index 220c0f9..55ef3cc 100644
+--- a/drivers/usb/dwc2/gadget.c
++++ b/drivers/usb/dwc2/gadget.c
+@@ -123,6 +123,24 @@ static inline void dwc2_gadget_incr_frame_num(struct dwc2_hsotg_ep *hs_ep)
+ }
+ 
+ /**
++ * dwc2_gadget_dec_frame_num_by_one - Decrements the targeted frame number
++ *                                    by one.
++ * @hs_ep: The endpoint.
++ *
++ * This function used in service interval based scheduling flow to calculate
++ * descriptor frame number filed value. For service interval mode frame
++ * number in descriptor should point to last (u)frame in the interval.
++ *
++ */
++static inline void dwc2_gadget_dec_frame_num_by_one(struct dwc2_hsotg_ep *hs_ep)
++{
++	if (hs_ep->target_frame)
++		hs_ep->target_frame -= 1;
++	else
++		hs_ep->target_frame = DSTS_SOFFN_LIMIT;
++}
++
++/**
+  * dwc2_hsotg_en_gsint - enable one or more of the general interrupt
+  * @hsotg: The device state
+  * @ints: A bitmask of the interrupts to enable
+@@ -228,6 +246,27 @@ int dwc2_hsotg_tx_fifo_total_depth(struct dwc2_hsotg *hsotg)
+ }
+ 
+ /**
++ * dwc2_gadget_wkup_alert_handler - Handler for WKUP_ALERT interrupt
++ *
++ * @hsotg: Programming view of the DWC_otg controller
++ *
++ */
++static void dwc2_gadget_wkup_alert_handler(struct dwc2_hsotg *hsotg)
++{
++	u32 gintsts2;
++	u32 gintmsk2;
++
++	gintsts2 = dwc2_readl(hsotg, GINTSTS2);
++	gintmsk2 = dwc2_readl(hsotg, GINTMSK2);
++
++	if (gintsts2 & GINTSTS2_WKUP_ALERT_INT) {
++		dev_dbg(hsotg->dev, "%s: Wkup_Alert_Int\n", __func__);
++		dwc2_set_bit(hsotg, GINTSTS2, GINTSTS2_WKUP_ALERT_INT);
++		dwc2_set_bit(hsotg, DCTL, DCTL_RMTWKUPSIG);
++	}
++}
++
++/**
+  * dwc2_hsotg_tx_fifo_average_depth - returns average depth of device mode
+  * TX FIFOs
+  *
+@@ -2812,6 +2851,23 @@ static void dwc2_gadget_handle_nak(struct dwc2_hsotg_ep *hs_ep)
+ 		if (using_desc_dma(hsotg)) {
+ 			hs_ep->target_frame = hsotg->frame_number;
+ 			dwc2_gadget_incr_frame_num(hs_ep);
++
++			/* In service interval mode target_frame must
++			 * be set to last (u)frame of the service interval.
++			 */
++			if (hsotg->params.service_interval) {
++				/* Set target_frame to the first (u)frame of
++				 * the service interval
++				 */
++				hs_ep->target_frame &= ~hs_ep->interval + 1;
++
++				/* Set target_frame to the last (u)frame of
++				 * the service interval
++				 */
++				dwc2_gadget_incr_frame_num(hs_ep);
++				dwc2_gadget_dec_frame_num_by_one(hs_ep);
++			}
++
+ 			dwc2_gadget_start_isoc_ddma(hs_ep);
+ 			return;
+ 		}
+@@ -3127,6 +3183,7 @@ void dwc2_hsotg_disconnect(struct dwc2_hsotg *hsotg)
+ 	hsotg->connected = 0;
+ 	hsotg->test_mode = 0;
+ 
++	/* all endpoints should be shutdown */
+ 	for (ep = 0; ep < hsotg->num_of_eps; ep++) {
+ 		if (hsotg->eps_in[ep])
+ 			kill_all_requests(hsotg, hsotg->eps_in[ep],
+@@ -3177,6 +3234,7 @@ static void dwc2_hsotg_irq_fifoempty(struct dwc2_hsotg *hsotg, bool periodic)
+ 			GINTSTS_PTXFEMP |  \
+ 			GINTSTS_RXFLVL)
+ 
++static int dwc2_hsotg_ep_disable(struct usb_ep *ep);
+ /**
+  * dwc2_hsotg_core_init - issue softreset to the core
+  * @hsotg: The device state
+@@ -3191,13 +3249,23 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
+ 	u32 val;
+ 	u32 usbcfg;
+ 	u32 dcfg = 0;
++	int ep;
+ 
+ 	/* Kill any ep0 requests as controller will be reinitialized */
+ 	kill_all_requests(hsotg, hsotg->eps_out[0], -ECONNRESET);
+ 
+-	if (!is_usb_reset)
++	if (!is_usb_reset) {
+ 		if (dwc2_core_reset(hsotg, true))
+ 			return;
++	} else {
++		/* all endpoints should be shutdown */
++		for (ep = 1; ep < hsotg->num_of_eps; ep++) {
++			if (hsotg->eps_in[ep])
++				dwc2_hsotg_ep_disable(&hsotg->eps_in[ep]->ep);
++			if (hsotg->eps_out[ep])
++				dwc2_hsotg_ep_disable(&hsotg->eps_out[ep]->ep);
++		}
++	}
+ 
+ 	/*
+ 	 * we must now enable ep0 ready for host detection and then
+@@ -3312,6 +3380,10 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
+ 		dwc2_set_bit(hsotg, DIEPMSK, DIEPMSK_BNAININTRMSK);
+ 	}
+ 
++	/* Enable Service Interval mode if supported */
++	if (using_desc_dma(hsotg) && hsotg->params.service_interval)
++		dwc2_set_bit(hsotg, DCTL, DCTL_SERVICE_INTERVAL_SUPPORTED);
++
+ 	dwc2_writel(hsotg, 0, DAINTMSK);
+ 
+ 	dev_dbg(hsotg->dev, "EP0: DIEPCTL0=0x%08x, DOEPCTL0=0x%08x\n",
+@@ -3368,6 +3440,10 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
+ 	/* configure the core to support LPM */
+ 	dwc2_gadget_init_lpm(hsotg);
+ 
++	/* program GREFCLK register if needed */
++	if (using_desc_dma(hsotg) && hsotg->params.service_interval)
++		dwc2_gadget_program_ref_clk(hsotg);
++
+ 	/* must be at-least 3ms to allow bus to see disconnect */
+ 	mdelay(3);
+ 
+@@ -3676,6 +3752,10 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
+ 	if (gintsts & IRQ_RETRY_MASK && --retry_count > 0)
+ 		goto irq_retry;
+ 
++	/* Check WKUP_ALERT interrupt*/
++	if (hsotg->params.service_interval)
++		dwc2_gadget_wkup_alert_handler(hsotg);
++
+ 	spin_unlock(&hsotg->lock);
+ 
+ 	return IRQ_HANDLED;
+@@ -3990,7 +4070,6 @@ static int dwc2_hsotg_ep_disable(struct usb_ep *ep)
+ 	struct dwc2_hsotg *hsotg = hs_ep->parent;
+ 	int dir_in = hs_ep->dir_in;
+ 	int index = hs_ep->index;
+-	unsigned long flags;
+ 	u32 epctrl_reg;
+ 	u32 ctrl;
+ 
+@@ -4008,8 +4087,6 @@ static int dwc2_hsotg_ep_disable(struct usb_ep *ep)
+ 
+ 	epctrl_reg = dir_in ? DIEPCTL(index) : DOEPCTL(index);
+ 
+-	spin_lock_irqsave(&hsotg->lock, flags);
+-
+ 	ctrl = dwc2_readl(hsotg, epctrl_reg);
+ 
+ 	if (ctrl & DXEPCTL_EPENA)
+@@ -4032,10 +4109,22 @@ static int dwc2_hsotg_ep_disable(struct usb_ep *ep)
+ 	hs_ep->fifo_index = 0;
+ 	hs_ep->fifo_size = 0;
+ 
+-	spin_unlock_irqrestore(&hsotg->lock, flags);
+ 	return 0;
+ }
+ 
++static int dwc2_hsotg_ep_disable_lock(struct usb_ep *ep)
++{
++	struct dwc2_hsotg_ep *hs_ep = our_ep(ep);
++	struct dwc2_hsotg *hsotg = hs_ep->parent;
++	unsigned long flags;
++	int ret;
++
++	spin_lock_irqsave(&hsotg->lock, flags);
++	ret = dwc2_hsotg_ep_disable(ep);
++	spin_unlock_irqrestore(&hsotg->lock, flags);
++	return ret;
++}
++
+ /**
+  * on_list - check request is on the given endpoint
+  * @ep: The endpoint to check.
+@@ -4183,7 +4272,7 @@ static int dwc2_hsotg_ep_sethalt_lock(struct usb_ep *ep, int value)
+ 
+ static const struct usb_ep_ops dwc2_hsotg_ep_ops = {
+ 	.enable		= dwc2_hsotg_ep_enable,
+-	.disable	= dwc2_hsotg_ep_disable,
++	.disable	= dwc2_hsotg_ep_disable_lock,
+ 	.alloc_request	= dwc2_hsotg_ep_alloc_request,
+ 	.free_request	= dwc2_hsotg_ep_free_request,
+ 	.queue		= dwc2_hsotg_ep_queue_lock,
+@@ -4323,9 +4412,9 @@ static int dwc2_hsotg_udc_stop(struct usb_gadget *gadget)
+ 	/* all endpoints should be shutdown */
+ 	for (ep = 1; ep < hsotg->num_of_eps; ep++) {
+ 		if (hsotg->eps_in[ep])
+-			dwc2_hsotg_ep_disable(&hsotg->eps_in[ep]->ep);
++			dwc2_hsotg_ep_disable_lock(&hsotg->eps_in[ep]->ep);
+ 		if (hsotg->eps_out[ep])
+-			dwc2_hsotg_ep_disable(&hsotg->eps_out[ep]->ep);
++			dwc2_hsotg_ep_disable_lock(&hsotg->eps_out[ep]->ep);
+ 	}
+ 
+ 	spin_lock_irqsave(&hsotg->lock, flags);
+@@ -4773,9 +4862,9 @@ int dwc2_hsotg_suspend(struct dwc2_hsotg *hsotg)
+ 
+ 		for (ep = 0; ep < hsotg->num_of_eps; ep++) {
+ 			if (hsotg->eps_in[ep])
+-				dwc2_hsotg_ep_disable(&hsotg->eps_in[ep]->ep);
++				dwc2_hsotg_ep_disable_lock(&hsotg->eps_in[ep]->ep);
+ 			if (hsotg->eps_out[ep])
+-				dwc2_hsotg_ep_disable(&hsotg->eps_out[ep]->ep);
++				dwc2_hsotg_ep_disable_lock(&hsotg->eps_out[ep]->ep);
+ 		}
+ 	}
+ 
+@@ -4942,8 +5031,32 @@ void dwc2_gadget_init_lpm(struct dwc2_hsotg *hsotg)
+ 	val |= hsotg->params.lpm_clock_gating ? GLPMCFG_ENBLSLPM : 0;
+ 	val |= hsotg->params.hird_threshold << GLPMCFG_HIRD_THRES_SHIFT;
+ 	val |= hsotg->params.besl ? GLPMCFG_ENBESL : 0;
++	val |= GLPMCFG_LPM_ACCEPT_CTRL_ISOC;
+ 	dwc2_writel(hsotg, val, GLPMCFG);
+ 	dev_dbg(hsotg->dev, "GLPMCFG=0x%08x\n", dwc2_readl(hsotg, GLPMCFG));
++
++	/* Unmask WKUP_ALERT Interrupt */
++	if (hsotg->params.service_interval)
++		dwc2_set_bit(hsotg, GINTMSK2, GINTMSK2_WKUP_ALERT_INT_MSK);
++}
++
++/**
++ * dwc2_gadget_program_ref_clk - Program GREFCLK register in device mode
++ *
++ * @hsotg: Programming view of DWC_otg controller
++ *
++ */
++void dwc2_gadget_program_ref_clk(struct dwc2_hsotg *hsotg)
++{
++	u32 val = 0;
++
++	val |= GREFCLK_REF_CLK_MODE;
++	val |= hsotg->params.ref_clk_per << GREFCLK_REFCLKPER_SHIFT;
++	val |= hsotg->params.sof_cnt_wkup_alert <<
++	       GREFCLK_SOF_CNT_WKUP_ALERT_SHIFT;
++
++	dwc2_writel(hsotg, val, GREFCLK);
++	dev_dbg(hsotg->dev, "GREFCLK=0x%08x\n", dwc2_readl(hsotg, GREFCLK));
+ }
+ 
+ /**
+diff --git a/drivers/usb/dwc2/hcd.c b/drivers/usb/dwc2/hcd.c
+index 12fa6c0..7f128b1 100644
+--- a/drivers/usb/dwc2/hcd.c
++++ b/drivers/usb/dwc2/hcd.c
+@@ -1309,14 +1309,11 @@ static void dwc2_hc_write_packet(struct dwc2_hsotg *hsotg,
+ 	u32 remaining_count;
+ 	u32 byte_count;
+ 	u32 dword_count;
+-	u32 __iomem *data_fifo;
+ 	u32 *data_buf = (u32 *)chan->xfer_buf;
+ 
+ 	if (dbg_hc(chan))
+ 		dev_vdbg(hsotg->dev, "%s()\n", __func__);
+ 
+-	data_fifo = (u32 __iomem *)(hsotg->regs + HCFIFO(chan->hc_num));
+-
+ 	remaining_count = chan->xfer_len - chan->xfer_count;
+ 	if (remaining_count > chan->max_packet)
+ 		byte_count = chan->max_packet;
+diff --git a/drivers/usb/dwc2/hcd.h b/drivers/usb/dwc2/hcd.h
+index 3f9bccc..c089ffa 100644
+--- a/drivers/usb/dwc2/hcd.h
++++ b/drivers/usb/dwc2/hcd.h
+@@ -366,7 +366,7 @@ struct dwc2_qh {
+ 	u32 desc_list_sz;
+ 	u32 *n_bytes;
+ 	struct timer_list unreserve_timer;
+-	struct timer_list wait_timer;
++	struct hrtimer wait_timer;
+ 	struct dwc2_tt *dwc_tt;
+ 	int ttport;
+ 	unsigned tt_buffer_dirty:1;
+diff --git a/drivers/usb/dwc2/hcd_queue.c b/drivers/usb/dwc2/hcd_queue.c
+index 40839591..ea3aa64 100644
+--- a/drivers/usb/dwc2/hcd_queue.c
++++ b/drivers/usb/dwc2/hcd_queue.c
+@@ -59,7 +59,7 @@
+ #define DWC2_UNRESERVE_DELAY (msecs_to_jiffies(5))
+ 
+ /* If we get a NAK, wait this long before retrying */
+-#define DWC2_RETRY_WAIT_DELAY (msecs_to_jiffies(1))
++#define DWC2_RETRY_WAIT_DELAY 1*1E6L
+ 
+ /**
+  * dwc2_periodic_channel_available() - Checks that a channel is available for a
+@@ -1464,10 +1464,12 @@ static void dwc2_deschedule_periodic(struct dwc2_hsotg *hsotg,
+  * qh back to the "inactive" list, then queues transactions.
+  *
+  * @t: Pointer to wait_timer in a qh.
++ *
++ * Return: HRTIMER_NORESTART to not automatically restart this timer.
+  */
+-static void dwc2_wait_timer_fn(struct timer_list *t)
++static enum hrtimer_restart dwc2_wait_timer_fn(struct hrtimer *t)
+ {
+-	struct dwc2_qh *qh = from_timer(qh, t, wait_timer);
++	struct dwc2_qh *qh = container_of(t, struct dwc2_qh, wait_timer);
+ 	struct dwc2_hsotg *hsotg = qh->hsotg;
+ 	unsigned long flags;
+ 
+@@ -1491,6 +1493,7 @@ static void dwc2_wait_timer_fn(struct timer_list *t)
+ 	}
+ 
+ 	spin_unlock_irqrestore(&hsotg->lock, flags);
++	return HRTIMER_NORESTART;
+ }
+ 
+ /**
+@@ -1521,7 +1524,8 @@ static void dwc2_qh_init(struct dwc2_hsotg *hsotg, struct dwc2_qh *qh,
+ 	/* Initialize QH */
+ 	qh->hsotg = hsotg;
+ 	timer_setup(&qh->unreserve_timer, dwc2_unreserve_timer_fn, 0);
+-	timer_setup(&qh->wait_timer, dwc2_wait_timer_fn, 0);
++	hrtimer_init(&qh->wait_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
++	qh->wait_timer.function = &dwc2_wait_timer_fn;
+ 	qh->ep_type = ep_type;
+ 	qh->ep_is_in = ep_is_in;
+ 
+@@ -1690,7 +1694,7 @@ void dwc2_hcd_qh_free(struct dwc2_hsotg *hsotg, struct dwc2_qh *qh)
+ 	 * won't do anything anyway, but we want it to finish before we free
+ 	 * memory.
+ 	 */
+-	del_timer_sync(&qh->wait_timer);
++	hrtimer_cancel(&qh->wait_timer);
+ 
+ 	dwc2_host_put_tt_info(hsotg, qh->dwc_tt);
+ 
+@@ -1716,6 +1720,7 @@ int dwc2_hcd_qh_add(struct dwc2_hsotg *hsotg, struct dwc2_qh *qh)
+ {
+ 	int status;
+ 	u32 intr_mask;
++	ktime_t delay;
+ 
+ 	if (dbg_qh(qh))
+ 		dev_vdbg(hsotg->dev, "%s()\n", __func__);
+@@ -1734,8 +1739,8 @@ int dwc2_hcd_qh_add(struct dwc2_hsotg *hsotg, struct dwc2_qh *qh)
+ 			list_add_tail(&qh->qh_list_entry,
+ 				      &hsotg->non_periodic_sched_waiting);
+ 			qh->wait_timer_cancel = false;
+-			mod_timer(&qh->wait_timer,
+-				  jiffies + DWC2_RETRY_WAIT_DELAY + 1);
++			delay = ktime_set(0, DWC2_RETRY_WAIT_DELAY);
++			hrtimer_start(&qh->wait_timer, delay, HRTIMER_MODE_REL);
+ 		} else {
+ 			list_add_tail(&qh->qh_list_entry,
+ 				      &hsotg->non_periodic_sched_inactive);
+diff --git a/drivers/usb/dwc2/hw.h b/drivers/usb/dwc2/hw.h
+index 31f8c60..4980ecb 100644
+--- a/drivers/usb/dwc2/hw.h
++++ b/drivers/usb/dwc2/hw.h
+@@ -316,6 +316,7 @@
+ #define GHWCFG4_UTMI_PHY_DATA_WIDTH_SHIFT	14
+ #define GHWCFG4_ACG_SUPPORTED			BIT(12)
+ #define GHWCFG4_IPG_ISOC_SUPPORTED		BIT(11)
++#define GHWCFG4_SERVICE_INTERVAL_SUPPORTED      BIT(10)
+ #define GHWCFG4_UTMI_PHY_DATA_WIDTH_8		0
+ #define GHWCFG4_UTMI_PHY_DATA_WIDTH_16		1
+ #define GHWCFG4_UTMI_PHY_DATA_WIDTH_8_OR_16	2
+@@ -336,6 +337,8 @@
+ #define GLPMCFG_SNDLPM			BIT(24)
+ #define GLPMCFG_RETRY_CNT_MASK		(0x7 << 21)
+ #define GLPMCFG_RETRY_CNT_SHIFT		21
++#define GLPMCFG_LPM_ACCEPT_CTRL_CONTROL	BIT(21)
++#define GLPMCFG_LPM_ACCEPT_CTRL_ISOC	BIT(22)
+ #define GLPMCFG_LPM_CHNL_INDX_MASK	(0xf << 17)
+ #define GLPMCFG_LPM_CHNL_INDX_SHIFT	17
+ #define GLPMCFG_L1RESUMEOK		BIT(16)
+@@ -408,6 +411,19 @@
+ #define ADPCTL_PRB_DSCHRG_MASK		(0x3 << 0)
+ #define ADPCTL_PRB_DSCHRG_SHIFT		0
+ 
++#define GREFCLK				    HSOTG_REG(0x0064)
++#define GREFCLK_REFCLKPER_MASK		    (0x1ffff << 15)
++#define GREFCLK_REFCLKPER_SHIFT		    15
++#define GREFCLK_REF_CLK_MODE		    BIT(14)
++#define GREFCLK_SOF_CNT_WKUP_ALERT_MASK	    (0x3ff)
++#define GREFCLK_SOF_CNT_WKUP_ALERT_SHIFT    0
++
++#define GINTMSK2			HSOTG_REG(0x0068)
++#define GINTMSK2_WKUP_ALERT_INT_MSK	BIT(0)
++
++#define GINTSTS2			HSOTG_REG(0x006c)
++#define GINTSTS2_WKUP_ALERT_INT		BIT(0)
++
+ #define HPTXFSIZ			HSOTG_REG(0x100)
+ /* Use FIFOSIZE_* constants to access this register */
+ 
+@@ -447,6 +463,7 @@
+ #define DCFG_DEVSPD_FS48		3
+ 
+ #define DCTL				HSOTG_REG(0x804)
++#define DCTL_SERVICE_INTERVAL_SUPPORTED BIT(19)
+ #define DCTL_PWRONPRGDONE		BIT(11)
+ #define DCTL_CGOUTNAK			BIT(10)
+ #define DCTL_SGOUTNAK			BIT(9)
+diff --git a/drivers/usb/dwc2/params.c b/drivers/usb/dwc2/params.c
+index 7fef905..bdcabb1 100644
+--- a/drivers/usb/dwc2/params.c
++++ b/drivers/usb/dwc2/params.c
+@@ -71,6 +71,13 @@ static void dwc2_set_his_params(struct dwc2_hsotg *hsotg)
+ 	p->power_down = false;
+ }
+ 
++static void dwc2_set_s3c6400_params(struct dwc2_hsotg *hsotg)
++{
++	struct dwc2_core_params *p = &hsotg->params;
++
++	p->power_down = 0;
++}
++
+ static void dwc2_set_rk_params(struct dwc2_hsotg *hsotg)
+ {
+ 	struct dwc2_core_params *p = &hsotg->params;
+@@ -81,6 +88,7 @@ static void dwc2_set_rk_params(struct dwc2_hsotg *hsotg)
+ 	p->host_perio_tx_fifo_size = 256;
+ 	p->ahbcfg = GAHBCFG_HBSTLEN_INCR16 <<
+ 		GAHBCFG_HBSTLEN_SHIFT;
++	p->power_down = 0;
+ }
+ 
+ static void dwc2_set_ltq_params(struct dwc2_hsotg *hsotg)
+@@ -110,6 +118,7 @@ static void dwc2_set_amlogic_params(struct dwc2_hsotg *hsotg)
+ 	p->phy_type = DWC2_PHY_TYPE_PARAM_UTMI;
+ 	p->ahbcfg = GAHBCFG_HBSTLEN_INCR8 <<
+ 		GAHBCFG_HBSTLEN_SHIFT;
++	p->power_down = DWC2_POWER_DOWN_PARAM_NONE;
+ }
+ 
+ static void dwc2_set_amcc_params(struct dwc2_hsotg *hsotg)
+@@ -177,7 +186,8 @@ const struct of_device_id dwc2_of_match_table[] = {
+ 	{ .compatible = "lantiq,arx100-usb", .data = dwc2_set_ltq_params },
+ 	{ .compatible = "lantiq,xrx200-usb", .data = dwc2_set_ltq_params },
+ 	{ .compatible = "snps,dwc2" },
+-	{ .compatible = "samsung,s3c6400-hsotg" },
++	{ .compatible = "samsung,s3c6400-hsotg",
++	  .data = dwc2_set_s3c6400_params },
+ 	{ .compatible = "amlogic,meson8-usb",
+ 	  .data = dwc2_set_amlogic_params },
+ 	{ .compatible = "amlogic,meson8b-usb",
+@@ -330,9 +340,12 @@ static void dwc2_set_default_params(struct dwc2_hsotg *hsotg)
+ 	p->hird_threshold_en = true;
+ 	p->hird_threshold = 4;
+ 	p->ipg_isoc_en = false;
++	p->service_interval = false;
+ 	p->max_packet_count = hw->max_packet_count;
+ 	p->max_transfer_size = hw->max_transfer_size;
+ 	p->ahbcfg = GAHBCFG_HBSTLEN_INCR << GAHBCFG_HBSTLEN_SHIFT;
++	p->ref_clk_per = 33333;
++	p->sof_cnt_wkup_alert = 100;
+ 
+ 	if ((hsotg->dr_mode == USB_DR_MODE_HOST) ||
+ 	    (hsotg->dr_mode == USB_DR_MODE_OTG)) {
+@@ -628,6 +641,7 @@ static void dwc2_check_params(struct dwc2_hsotg *hsotg)
+ 	CHECK_BOOL(besl, (hsotg->hw_params.snpsid >= DWC2_CORE_REV_3_00a));
+ 	CHECK_BOOL(hird_threshold_en, hsotg->params.lpm);
+ 	CHECK_RANGE(hird_threshold, 0, hsotg->params.besl ? 12 : 7, 0);
++	CHECK_BOOL(service_interval, hw->service_interval_mode);
+ 	CHECK_RANGE(max_packet_count,
+ 		    15, hw->max_packet_count,
+ 		    hw->max_packet_count);
+@@ -816,6 +830,8 @@ int dwc2_get_hwparams(struct dwc2_hsotg *hsotg)
+ 				  GHWCFG4_UTMI_PHY_DATA_WIDTH_SHIFT;
+ 	hw->acg_enable = !!(hwcfg4 & GHWCFG4_ACG_SUPPORTED);
+ 	hw->ipg_isoc_en = !!(hwcfg4 & GHWCFG4_IPG_ISOC_SUPPORTED);
++	hw->service_interval_mode = !!(hwcfg4 &
++				       GHWCFG4_SERVICE_INTERVAL_SUPPORTED);
+ 
+ 	/* fifo sizes */
+ 	hw->rx_fifo_size = (grxfsiz & GRXFSIZ_DEPTH_MASK) >>
+-- 
+2.7.4
+

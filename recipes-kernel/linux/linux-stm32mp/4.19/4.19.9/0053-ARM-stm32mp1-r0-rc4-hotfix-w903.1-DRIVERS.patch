@@ -1,0 +1,1145 @@
+From 0ab8d3145b982810bf5b1c1d2388f5c3820151a8 Mon Sep 17 00:00:00 2001
+From: christophe montaud <christophe.montaud@st.com>
+Date: Mon, 14 Jan 2019 17:18:56 +0100
+Subject: [PATCH 53/55] ARM stm32mp1 r0 rc4 hotfix-w903.1 DRIVERS
+
+---
+ .../bindings/connector/usb-connector.txt           |   2 +
+ .../devicetree/bindings/usb/st,typec-stusb.txt     |  32 ++
+ drivers/bluetooth/hci_bcm.c                        |   3 +-
+ drivers/gpu/drm/stm/dw_mipi_dsi-stm.c              |   9 +-
+ drivers/iio/adc/stm32-dfsdm-adc.c                  |   5 +-
+ drivers/media/platform/stm32/stm32-dcmi.c          |  17 +
+ drivers/mfd/stm32-pwr.c                            |  14 -
+ .../net/wireless/broadcom/brcm80211/brcmfmac/pno.c |   5 +
+ drivers/remoteproc/remoteproc_core.c               |  10 +
+ drivers/remoteproc/remoteproc_virtio.c             |   2 +
+ drivers/remoteproc/stm32_rproc.c                   |  63 ++-
+ drivers/usb/typec/Kconfig                          |   9 +
+ drivers/usb/typec/Makefile                         |   1 +
+ drivers/usb/typec/class.c                          |  15 +
+ drivers/usb/typec/typec_stusb.c                    | 589 +++++++++++++++++++++
+ include/linux/usb/typec.h                          |   1 +
+ sound/soc/stm/stm32_adfsdm.c                       |  21 +-
+ 17 files changed, 761 insertions(+), 37 deletions(-)
+ create mode 100644 Documentation/devicetree/bindings/usb/st,typec-stusb.txt
+ create mode 100644 drivers/usb/typec/typec_stusb.c
+
+diff --git a/Documentation/devicetree/bindings/connector/usb-connector.txt b/Documentation/devicetree/bindings/connector/usb-connector.txt
+index 8855bfc..bf43ee9 100644
+--- a/Documentation/devicetree/bindings/connector/usb-connector.txt
++++ b/Documentation/devicetree/bindings/connector/usb-connector.txt
+@@ -18,6 +18,8 @@ Optional properties:
+ Optional properties for usb-c-connector:
+ - power-role: should be one of "source", "sink" or "dual"(DRP) if typec
+   connector has power support.
++- power-opmode: should be one of "default", "1.5A", "3.0A" or
++  "usb_power_delivery" if typec connector has power support.
+ - try-power-role: preferred power role if "dual"(DRP) can support Try.SNK
+   or Try.SRC, should be "sink" for Try.SNK or "source" for Try.SRC.
+ - data-role: should be one of "host", "device", "dual"(DRD) if typec
+diff --git a/Documentation/devicetree/bindings/usb/st,typec-stusb.txt b/Documentation/devicetree/bindings/usb/st,typec-stusb.txt
+new file mode 100644
+index 0000000..817360d
+--- /dev/null
++++ b/Documentation/devicetree/bindings/usb/st,typec-stusb.txt
+@@ -0,0 +1,32 @@
++STMicroelectronics STUSB Type-C Controller family
++
++Required properties:
++ - compatible: should be "st,stusb1600".
++ - reg: I2C slave address of the device.
++
++Optional properties:
++ - vdd-supply: main power supply [4.1V;22V].
++ - vsys-supply: low power supply [3.0V;5.5V].
++ - vconn-supply: power supply [2.7;5.5V] used to supply VConn on CC pin in
++   source or dual power role.
++
++USB-C connector attached to STUSB Type-C port controller can be described in
++an optional connector sub-node. Refer to ../connector/usb-connector.txt.
++
++Example :
++
++	typec: stusb1600@28 {
++		compatible = "st,stusb1600";
++		reg = <0x28>;
++		vdd-supply = <&vbus_drd>;
++		vsys-supply = <&vdd_usb>;
++
++		usb_con: connector {
++			compatible = "usb-c-connector";
++			label = "USB-C";
++			power-role = "dual";
++			power-opmode = "1.5A";
++			data-role = "dual";
++		};
++	};
++
+diff --git a/drivers/bluetooth/hci_bcm.c b/drivers/bluetooth/hci_bcm.c
+index ddbd8c6..7a23fee 100644
+--- a/drivers/bluetooth/hci_bcm.c
++++ b/drivers/bluetooth/hci_bcm.c
+@@ -1295,7 +1295,8 @@ static int bcm_serdev_probe(struct serdev_device *serdev)
+ 	if (!bcmdev->shutdown) {
+ 		dev_warn(&serdev->dev,
+ 			 "No reset resource, using default baud rate\n");
+-		bcmdev->oper_speed = bcmdev->init_speed;
++		if (!bcmdev->oper_speed)
++			bcmdev->oper_speed = bcmdev->init_speed;
+ 	}
+ 
+ 	err = bcm_gpio_set_power(bcmdev, false);
+diff --git a/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c b/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c
+index a6edd86..a373651 100644
+--- a/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c
++++ b/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c
+@@ -227,7 +227,6 @@ dw_mipi_dsi_get_lane_mbps(void *priv_data, struct drm_display_mode *mode,
+ 	u32 val;
+ 
+ 	/* Update lane capabilities according to hw version */
+-	dsi->hw_version = dsi_read(dsi, DSI_VERSION) & VERSION;
+ 	dsi->lane_min_kbps = LANE_MIN_KBPS;
+ 	dsi->lane_max_kbps = LANE_MAX_KBPS;
+ 	if (dsi->hw_version == HWVER_131) {
+@@ -347,6 +346,14 @@ static int dw_mipi_dsi_stm_probe(struct platform_device *pdev)
+ 		return ret;
+ 	}
+ 
++	dsi->hw_version = dsi_read(dsi, DSI_VERSION) & VERSION;
++	if (dsi->hw_version != HWVER_130 && dsi->hw_version != HWVER_131) {
++		dev_err(dev, "bad dsi hardware version\n");
++		clk_disable_unprepare(dsi->pllref_clk);
++		regulator_disable(dsi->vdd_supply);
++		return -ENODEV;
++	}
++
+ 	dw_mipi_dsi_stm_plat_data.base = dsi->base;
+ 	dw_mipi_dsi_stm_plat_data.priv_data = dsi;
+ 
+diff --git a/drivers/iio/adc/stm32-dfsdm-adc.c b/drivers/iio/adc/stm32-dfsdm-adc.c
+index c97d9ee..13854b7 100644
+--- a/drivers/iio/adc/stm32-dfsdm-adc.c
++++ b/drivers/iio/adc/stm32-dfsdm-adc.c
+@@ -569,8 +569,9 @@ static int dfsdm_adc_set_samp_freq(struct iio_dev *indio_dev,
+ 
+ 	oversamp = DIV_ROUND_CLOSEST(spi_freq, sample_freq);
+ 	if (spi_freq % sample_freq)
+-		dev_warn(&indio_dev->dev, "Sampling rate not accurate (%d)\n",
+-			 spi_freq / oversamp);
++		dev_dbg(&indio_dev->dev,
++			"Rate not accurate. requested (%u), actual (%u)\n",
++			sample_freq, spi_freq / oversamp);
+ 
+ 	ret = stm32_dfsdm_set_osrs(fl, 0, oversamp);
+ 	if (ret < 0) {
+diff --git a/drivers/media/platform/stm32/stm32-dcmi.c b/drivers/media/platform/stm32/stm32-dcmi.c
+index 49849e6..6f6dc66 100644
+--- a/drivers/media/platform/stm32/stm32-dcmi.c
++++ b/drivers/media/platform/stm32/stm32-dcmi.c
+@@ -167,6 +167,9 @@ struct stm32_dcmi {
+ 	int				errors_count;
+ 	int				overrun_count;
+ 	int				buffers_count;
++
++	/* Ensure DMA operations atomicity */
++	struct mutex			dma_lock;
+ };
+ 
+ static inline struct stm32_dcmi *notifier_to_dcmi(struct v4l2_async_notifier *n)
+@@ -317,6 +320,13 @@ static int dcmi_start_dma(struct stm32_dcmi *dcmi,
+ 		return ret;
+ 	}
+ 
++	/*
++	 * Avoid call of dmaengine_terminate_all() between
++	 * dmaengine_prep_slave_single() and dmaengine_submit()
++	 * by locking the whole DMA submission sequence
++	 */
++	mutex_lock(&dcmi->dma_lock);
++
+ 	/* Prepare a DMA transaction */
+ 	desc = dmaengine_prep_slave_single(dcmi->dma_chan, buf->paddr,
+ 					   buf->size,
+@@ -325,6 +335,7 @@ static int dcmi_start_dma(struct stm32_dcmi *dcmi,
+ 	if (!desc) {
+ 		dev_err(dcmi->dev, "%s: DMA dmaengine_prep_slave_single failed for buffer phy=%pad size=%zu\n",
+ 			__func__, &buf->paddr, buf->size);
++		mutex_unlock(&dcmi->dma_lock);
+ 		return -EINVAL;
+ 	}
+ 
+@@ -336,9 +347,12 @@ static int dcmi_start_dma(struct stm32_dcmi *dcmi,
+ 	dcmi->dma_cookie = dmaengine_submit(desc);
+ 	if (dma_submit_error(dcmi->dma_cookie)) {
+ 		dev_err(dcmi->dev, "%s: DMA submission failed\n", __func__);
++		mutex_unlock(&dcmi->dma_lock);
+ 		return -ENXIO;
+ 	}
+ 
++	mutex_unlock(&dcmi->dma_lock);
++
+ 	dma_async_issue_pending(dcmi->dma_chan);
+ 
+ 	return 0;
+@@ -746,7 +760,9 @@ static void dcmi_stop_streaming(struct vb2_queue *vq)
+ 	spin_unlock_irq(&dcmi->irqlock);
+ 
+ 	/* Stop all pending DMA operations */
++	mutex_lock(&dcmi->dma_lock);
+ 	dmaengine_terminate_all(dcmi->dma_chan);
++	mutex_unlock(&dcmi->dma_lock);
+ 
+ 	pm_runtime_put(dcmi->dev);
+ 
+@@ -1740,6 +1756,7 @@ static int dcmi_probe(struct platform_device *pdev)
+ 
+ 	spin_lock_init(&dcmi->irqlock);
+ 	mutex_init(&dcmi->lock);
++	mutex_init(&dcmi->dma_lock);
+ 	init_completion(&dcmi->complete);
+ 	INIT_LIST_HEAD(&dcmi->buffers);
+ 
+diff --git a/drivers/mfd/stm32-pwr.c b/drivers/mfd/stm32-pwr.c
+index 206a933..088b3d6 100644
+--- a/drivers/mfd/stm32-pwr.c
++++ b/drivers/mfd/stm32-pwr.c
+@@ -70,19 +70,6 @@ static void stm32_pwr_irq_unmask(struct irq_data *d)
+ 	SMC(STM32_SVC_PWR, STM32_SET_BITS, MPUWKUPENR, BIT(d->hwirq));
+ }
+ 
+-static int stm32_pwr_irq_set_wake(struct irq_data *d, unsigned int on)
+-{
+-	struct stm32_pwr_data *priv = d->domain->host_data;
+-
+-	pr_debug("irq:%lu on:%d\n", d->hwirq, on);
+-	if (on)
+-		enable_irq_wake(priv->irq);
+-	else
+-		disable_irq_wake(priv->irq);
+-
+-	return 0;
+-}
+-
+ static int stm32_pwr_irq_set_type(struct irq_data *d, unsigned int flow_type)
+ {
+ 	struct stm32_pwr_data *priv = d->domain->host_data;
+@@ -125,7 +112,6 @@ static struct irq_chip stm32_pwr_irq_chip = {
+ 	.irq_mask = stm32_pwr_irq_mask,
+ 	.irq_unmask = stm32_pwr_irq_unmask,
+ 	.irq_set_type = stm32_pwr_irq_set_type,
+-	.irq_set_wake = stm32_pwr_irq_set_wake,
+ };
+ 
+ static int stm32_pwr_irq_set_pull_config(struct irq_domain *d, int pin_id,
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pno.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pno.c
+index ffa243e..55974a4 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pno.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pno.c
+@@ -496,6 +496,11 @@ int brcmf_pno_stop_sched_scan(struct brcmf_if *ifp, u64 reqid)
+ 	brcmf_dbg(TRACE, "reqid=%llu\n", reqid);
+ 
+ 	pi = ifp_to_pno(ifp);
++
++	/* No PNO reqeuset */
++	if (!pi->n_reqs)
++		return 0;
++
+ 	err = brcmf_pno_remove_request(pi, reqid);
+ 	if (err)
+ 		return err;
+diff --git a/drivers/remoteproc/remoteproc_core.c b/drivers/remoteproc/remoteproc_core.c
+index dd7e348..6430747 100644
+--- a/drivers/remoteproc/remoteproc_core.c
++++ b/drivers/remoteproc/remoteproc_core.c
+@@ -1456,6 +1456,9 @@ static int rproc_stop(struct rproc *rproc, bool crashed)
+ 	struct device *dev = &rproc->dev;
+ 	int ret;
+ 
++	if (rproc->state == RPROC_OFFLINE)
++		return 0;
++
+ 	/* Stop any subdevices for the remote processor */
+ 	rproc_stop_subdevices(rproc, crashed);
+ 
+@@ -1614,6 +1617,13 @@ int rproc_trigger_recovery(struct rproc *rproc)
+ 	/* generate coredump */
+ 	rproc_coredump(rproc);
+ 
++	if (!rproc->firmware) {
++		/* we don't know how to recover it, so try to shutdown it*/
++		mutex_unlock(&rproc->lock);
++		rproc_shutdown(rproc);
++		return 0;
++	}
++
+ 	/* load firmware */
+ 	ret = request_firmware(&firmware_p, rproc->firmware, dev);
+ 	if (ret < 0) {
+diff --git a/drivers/remoteproc/remoteproc_virtio.c b/drivers/remoteproc/remoteproc_virtio.c
+index 9ee63c0..78462f5 100644
+--- a/drivers/remoteproc/remoteproc_virtio.c
++++ b/drivers/remoteproc/remoteproc_virtio.c
+@@ -359,6 +359,8 @@ int rproc_add_virtio_dev(struct rproc_vdev *rvdev, int id)
+ 		}
+ 	}
+ 
++	/* Reset vdev struct as you don't know how it has been previously allocated */
++	memset(vdev, 0, sizeof(struct virtio_device));
+ 	vdev->id.device	= id,
+ 	vdev->config = &rproc_virtio_config_ops,
+ 	vdev->dev.parent = dev;
+diff --git a/drivers/remoteproc/stm32_rproc.c b/drivers/remoteproc/stm32_rproc.c
+index 70b7e55c..1d2be11 100644
+--- a/drivers/remoteproc/stm32_rproc.c
++++ b/drivers/remoteproc/stm32_rproc.c
+@@ -67,7 +67,7 @@ struct stm32_rproc {
+ 	struct stm32_rproc_mem *rmems;
+ 	struct stm32_mbox mb[MBOX_NB_MBX];
+ 	bool secured_soc;
+-	u32 rsc_addr;
++	void __iomem *rsc_va;
+ 	u32 rsc_len;
+ };
+ 
+@@ -84,7 +84,27 @@ static int stm32_rproc_pa_to_da(struct rproc *rproc, phys_addr_t pa, u64 *da)
+ 		    pa >= p_mem->bus_addr + p_mem->size)
+ 			continue;
+ 		*da = pa - p_mem->bus_addr + p_mem->dev_addr;
+-		dev_dbg(rproc->dev.parent, "da %llx to pa %#x\n", *da, pa);
++		dev_dbg(rproc->dev.parent, "pa %#x to da %llx\n", pa, *da);
++		return 0;
++	}
++
++	return -EINVAL;
++}
++
++static int stm32_rproc_da_to_pa(struct rproc *rproc, u64 da, phys_addr_t *pa)
++{
++	unsigned int i;
++	struct stm32_rproc *ddata = rproc->priv;
++	struct stm32_rproc_mem *p_mem;
++
++	for (i = 0; i < ddata->nb_rmems; i++) {
++		p_mem = &ddata->rmems[i];
++
++		if (da < p_mem->dev_addr ||
++		    da >= p_mem->dev_addr + p_mem->size)
++			continue;
++		*pa = da - p_mem->dev_addr + p_mem->bus_addr;
++		dev_err(rproc->dev.parent, "da %llx to pa %#x\n", da, *pa);
+ 		return 0;
+ 	}
+ 
+@@ -209,11 +229,9 @@ static int stm32_rproc_elf_load_rsc_table(struct rproc *rproc,
+ 		return 0;
+ 	}
+ 
+-	if (ddata->rsc_addr) {
++	if (ddata->rsc_va) {
+ 		tablesz = ddata->rsc_len;
+-		table = (struct resource_table *)
+-				rproc_da_to_va(rproc, (u64)ddata->rsc_addr,
+-					       ddata->rsc_len);
++		table = (struct resource_table *)ddata->rsc_va;
+ 		rproc->cached_table = kmemdup(table, tablesz, GFP_KERNEL);
+ 		if (!rproc->cached_table)
+ 			return -ENOMEM;
+@@ -297,12 +315,7 @@ stm32_rproc_elf_find_loaded_rsc_table(struct rproc *rproc,
+ 	if (!rproc->early_boot)
+ 		return rproc_elf_find_loaded_rsc_table(rproc, fw);
+ 
+-	if (ddata->rsc_addr)
+-		return (struct resource_table *)
+-				rproc_da_to_va(rproc, (u64)ddata->rsc_addr,
+-					       ddata->rsc_len);
+-
+-	return NULL;
++	return (struct resource_table *)ddata->rsc_va;
+ }
+ 
+ static int stm32_rproc_elf_sanity_check(struct rproc *rproc,
+@@ -582,6 +595,8 @@ static int stm32_rproc_parse_dt(struct platform_device *pdev)
+ 	struct rproc *rproc = platform_get_drvdata(pdev);
+ 	struct stm32_rproc *ddata = rproc->priv;
+ 	struct stm32_syscon tz;
++	phys_addr_t rsc_pa;
++	u32 rsc_da;
+ 	unsigned int tzen;
+ 	int err, irq;
+ 
+@@ -636,10 +651,14 @@ static int stm32_rproc_parse_dt(struct platform_device *pdev)
+ 	rproc->auto_boot = of_property_read_bool(np, "auto_boot");
+ 	rproc->recovery_disabled = !of_property_read_bool(np, "recovery");
+ 
++	err = stm32_rproc_of_memory_translations(rproc);
++	if (err)
++		return err;
++
+ 	if (of_property_read_bool(np, "early-booted")) {
+ 		rproc->early_boot = true;
+ 
+-		err = of_property_read_u32(np, "rsc-address", &ddata->rsc_addr);
++		err = of_property_read_u32(np, "rsc-address", &rsc_da);
+ 		if (!err) {
+ 			err = of_property_read_u32(np, "rsc-size",
+ 						   &ddata->rsc_len);
+@@ -649,9 +668,19 @@ static int stm32_rproc_parse_dt(struct platform_device *pdev)
+ 				return err;
+ 			}
+ 		}
++		err = stm32_rproc_da_to_pa(rproc, rsc_da, &rsc_pa);
++		if (err)
++			return err;
++		ddata->rsc_va = ioremap_wc(rsc_pa, ddata->rsc_len);
++		if (IS_ERR_OR_NULL(ddata->rsc_va)) {
++			dev_err(dev, "Unable to map memory region: %pa+%zx\n",
++				&rsc_pa,  ddata->rsc_len);
++			ddata->rsc_va = NULL;
++			return -ENOMEM;
++		}
+ 	}
+ 
+-	return stm32_rproc_of_memory_translations(rproc);
++	return 0;
+ }
+ 
+ static int stm32_rproc_probe(struct platform_device *pdev)
+@@ -699,13 +728,15 @@ static int stm32_rproc_probe(struct platform_device *pdev)
+ static int stm32_rproc_remove(struct platform_device *pdev)
+ {
+ 	struct rproc *rproc = platform_get_drvdata(pdev);
+-	struct device *dev = &pdev->dev;
++	struct stm32_rproc *ddata = rproc->priv;
+ 
+ 	if (atomic_read(&rproc->power) > 0)
+-		dev_warn(dev, "Releasing rproc while firmware running!\n");
++		rproc_shutdown(rproc);
+ 
+ 	rproc_del(rproc);
+ 	stm32_rproc_free_mbox(rproc);
++	if (ddata->rsc_va)
++		iounmap(ddata->rsc_va);
+ 	rproc_free(rproc);
+ 
+ 	return 0;
+diff --git a/drivers/usb/typec/Kconfig b/drivers/usb/typec/Kconfig
+index 00878c3..1dbbf16 100644
+--- a/drivers/usb/typec/Kconfig
++++ b/drivers/usb/typec/Kconfig
+@@ -102,6 +102,15 @@ config TYPEC_TPS6598X
+ 	  If you choose to build this driver as a dynamically linked module, the
+ 	  module will be called tps6598x.ko.
+ 
++config TYPEC_STUSB
++	tristate "STMicroelectronics STUSB Type-C controller driver"
++	depends on I2C
++	select EXTCON
++	help
++	  The STMicroelectronics STUSB Type-C controller driver that works
++	  with Type-C Port Controller Manager to provide USB Type-C
++	  functionalities.
++
+ source "drivers/usb/typec/mux/Kconfig"
+ 
+ source "drivers/usb/typec/altmodes/Kconfig"
+diff --git a/drivers/usb/typec/Makefile b/drivers/usb/typec/Makefile
+index 45b0aef..aedb153 100644
+--- a/drivers/usb/typec/Makefile
++++ b/drivers/usb/typec/Makefile
+@@ -7,6 +7,7 @@ obj-y				+= fusb302/
+ obj-$(CONFIG_TYPEC_WCOVE)	+= typec_wcove.o
+ obj-$(CONFIG_TYPEC_UCSI)	+= ucsi/
+ obj-$(CONFIG_TYPEC_TPS6598X)	+= tps6598x.o
++obj-$(CONFIG_TYPEC_STUSB) += typec_stusb.o
+ obj-$(CONFIG_TYPEC)		+= mux/
+ obj-$(CONFIG_TYPEC_TCPCI)	+= tcpci.o
+ obj-$(CONFIG_TYPEC_RT1711H)	+= tcpci_rt1711h.o
+diff --git a/drivers/usb/typec/class.c b/drivers/usb/typec/class.c
+index e61dffb..b518360 100644
+--- a/drivers/usb/typec/class.c
++++ b/drivers/usb/typec/class.c
+@@ -1382,6 +1382,21 @@ void typec_set_pwr_opmode(struct typec_port *port,
+ EXPORT_SYMBOL_GPL(typec_set_pwr_opmode);
+ 
+ /**
++ * typec_find_power_opmode - Get the typec port power operation mode
++ * @name: port power operation mode string
++ *
++ * This routine is used to find the typec_pwr_opmodes by its string name.
++ *
++ * Returns typec_pwr_opmodes if success, otherwise negative error code.
++ */
++int typec_find_port_power_opmode(const char *name)
++{
++	return match_string(typec_pwr_opmodes,
++			    ARRAY_SIZE(typec_pwr_opmodes), name);
++}
++EXPORT_SYMBOL_GPL(typec_find_port_power_opmode);
++
++/**
+  * typec_find_port_power_role - Get the typec port power capability
+  * @name: port power capability string
+  *
+diff --git a/drivers/usb/typec/typec_stusb.c b/drivers/usb/typec/typec_stusb.c
+new file mode 100644
+index 0000000..a2884fd
+--- /dev/null
++++ b/drivers/usb/typec/typec_stusb.c
+@@ -0,0 +1,589 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * STMicroelectronics STUSB Type-C controller family driver
++ *
++ * Copyright (C) 2019, STMicroelectronics
++ * Author(s): Amelie Delaunay <amelie.delaunay@st.com>
++ */
++
++#include <linux/bitfield.h>
++#include <linux/i2c.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
++#include <linux/usb/typec.h>
++
++#define STUSB_ALERT_STATUS			0x0B /* RC */
++#define STUSB_ALERT_STATUS_MASK_CTRL		0x0C /* RW */
++#define STUSB_CC_CONNECTION_STATUS_TRANS	0x0D /* RC */
++#define STUSB_CC_CONNECTION_STATUS		0x0E /* RO */
++#define STUSB_MONITORING_STATUS_TRANS		0x0F /* RC */
++#define STUSB_MONITORING_STATUS			0x10 /* RO */
++#define STUSB_CC_OPERATION_STATUS		0x11 /* RO */
++#define STUSB_HW_FAULT_STATUS_TRANS		0x12 /* RC */
++#define STUSB_HW_FAULT_STATUS			0x13 /* RO */
++#define STUSB_CC_CAPABILITY_CTRL		0x18 /* RW */
++#define STUSB_CC_VCONN_SWITCH_CTRL		0x1E /* RW */
++#define STUSB_VCONN_MONITORING_CTRL		0x20 /* RW */
++#define STUSB_VBUS_MONITORING_RANGE_CTRL	0x22 /* RW */
++#define STUSB_RESET_CTRL			0x23 /* RW */
++#define STUSB_VBUS_DISCHARGE_TIME_CTRL		0x25 /* RW */
++#define STUSB_VBUS_DISCHARGE_STATUS		0x26 /* RO */
++#define STUSB_VBUS_ENABLE_STATUS		0x27 /* RO */
++#define STUSB_CC_POWER_MODE_CTRL		0x28 /* RW */
++#define STUSB_VBUS_MONITORING_CTRL		0x2E /* RW */
++#define STUSB1600_REG_MAX			0x2F /* RO - Reserved */
++
++/* STUSB_ALERT_STATUS/STUSB_ALERT_STATUS_MASK_CTRL bitfields */
++#define STUSB_HW_FAULT				BIT(4)
++#define STUSB_MONITORING			BIT(5)
++#define STUSB_CC_CONNECTION			BIT(6)
++#define STUSB_ALL_ALERTS			GENMASK(6, 4)
++
++/* STUSB_CC_CONNECTION_STATUS_TRANS bitfields */
++#define STUSB_CC_ATTACH_TRANS			BIT(0)
++
++/* STUSB_CC_CONNECTION_STATUS bitfields */
++#define STUSB_CC_ATTACH				BIT(0)
++#define STUSB_CC_VCONN_SUPPLY			BIT(1)
++#define STUSB_CC_DATA_ROLE(s)			(!!((s) & BIT(2)))
++#define STUSB_CC_POWER_ROLE(s)			(!!((s) & BIT(3)))
++#define STUSB_CC_ATTACHED_MODE			GENMASK(7, 5)
++
++/* STUSB_MONITORING_STATUS_TRANS bitfields */
++#define STUSB_VCONN_PRESENCE_TRANS		BIT(0)
++#define STUSB_VBUS_PRESENCE_TRANS		BIT(1)
++#define STUSB_VBUS_VSAFE0V_TRANS		BIT(2)
++#define STUSB_VBUS_VALID_TRANS			BIT(3)
++
++/* STUSB_MONITORING_STATUS bitfields */
++#define STUSB_VCONN_PRESENCE			BIT(0)
++#define STUSB_VBUS_PRESENCE			BIT(1)
++#define STUSB_VBUS_VSAFE0V			BIT(2)
++#define STUSB_VBUS_VALID			BIT(3)
++
++/* STUSB_CC_OPERATION_STATUS bitfields */
++#define STUSB_TYPEC_FSM_STATE			GENMASK(4, 0)
++#define STUSB_SINK_POWER_STATE			GENMASK(6, 5)
++#define STUSB_CC_ATTACHED			BIT(7)
++
++/* STUSB_HW_FAULT_STATUS_TRANS bitfields */
++#define STUSB_VCONN_SW_OVP_FAULT_TRANS		BIT(0)
++#define STUSB_VCONN_SW_OCP_FAULT_TRANS		BIT(1)
++#define STUSB_VCONN_SW_RVP_FAULT_TRANS		BIT(2)
++#define STUSB_VPU_VALID_TRANS			BIT(4)
++#define STUSB_VPU_OVP_FAULT_TRANS		BIT(5)
++#define STUSB_THERMAL_FAULT			BIT(7)
++
++/* STUSB_HW_FAULT_STATUS bitfields */
++#define STUSB_VCONN_SW_OVP_FAULT_CC2		BIT(0)
++#define STUSB_VCONN_SW_OVP_FAULT_CC1		BIT(1)
++#define STUSB_VCONN_SW_OCP_FAULT_CC2		BIT(2)
++#define STUSB_VCONN_SW_OCP_FAULT_CC1		BIT(3)
++#define STUSB_VCONN_SW_RVP_FAULT_CC2		BIT(4)
++#define STUSB_VCONN_SW_RVP_FAULT_CC1		BIT(5)
++#define STUSB_VPU_VALID				BIT(6)
++#define STUSB_VPU_OVP_FAULT			BIT(7)
++
++/* STUSB_CC_CAPABILITY_CTRL bitfields */
++#define STUSB_CC_VCONN_SUPPLY_EN		BIT(0)
++#define STUSB_CC_VCONN_DISCHARGE_EN		BIT(4)
++#define STUSB_CC_CURRENT_ADVERTISED		GENMASK(7, 6)
++
++/* STUSB_VCONN_SWITCH_CTRL bitfields */
++#define STUSB_CC_VCONN_SWITCH_ILIM		GENMASK(3, 0)
++
++/* STUSB_VCONN_MONITORING_CTRL bitfields */
++#define STUSB_VCONN_UVLO_THRESHOLD		BIT(6)
++#define STUSB_VCONN_MONITORING_EN		BIT(7)
++
++/* STUSB_VBUS_MONITORING_RANGE_CTRL bitfields */
++#define STUSB_SHIFT_LOW_VBUS_LIMIT		GENMASK(3, 0)
++#define STUSB_SHIFT_HIGH_VBUS_LIMIT		GENMASK(7, 4)
++
++/* STUSB_RESET_CTRL bitfields */
++#define STUSB_SW_RESET_EN			BIT(0)
++
++/* STUSB_VBUS_DISCHARGE_TIME_CTRL bitfields */
++#define STUSBXX02_VBUS_DISCHARGE_TIME_TO_PDO	GENMASK(3, 0)
++#define STUSB_VBUS_DISCHARGE_TIME_TO_0V		GENMASK(7, 4)
++
++/* STUSB_VBUS_DISCHARGE_STATUS bitfields */
++#define STUSB_VBUS_DISCHARGE_EN			BIT(7)
++
++/* STUSB_VBUS_ENABLE_STATUS bitfields */
++#define STUSB_VBUS_SOURCE_EN			BIT(0)
++#define STUSB_VBUS_SINK_EN			BIT(1)
++
++/* STUSB_CC_POWER_MODE_CTRL bitfields */
++#define STUSB_CC_POWER_MODE			GENMASK(2, 0)
++
++/* STUSB_VBUS_MONITORING_CTRL bitfields */
++#define STUSB_VDD_UVLO_DISABLE			BIT(0)
++#define STUSB_VBUS_VSAFE0V_THRESHOLD		GENMASK(2, 1)
++#define STUSB_VBUS_RANGE_DISABLE		BIT(4)
++#define STUSB_VDD_OVLO_DISABLE			BIT(6)
++
++enum stusb_pwr_mode {
++	SOURCE_WITH_ACCESSORY,
++	SINK_WITH_ACCESSORY,
++	SINK_WITHOUT_ACCESSORY,
++	DUAL_WITH_ACCESSORY,
++	DUAL_WITH_ACCESSORY_AND_TRY_SRC,
++	DUAL_WITH_ACCESSORY_AND_TRY_SNK,
++};
++
++struct stusb {
++	struct device		*dev;
++	struct regmap		*regmap;
++	struct regulator	*vdd_supply;
++	struct regulator	*vsys_supply;
++	struct regulator	*vconn_supply;
++
++	struct typec_port	*port;
++	struct typec_capability capability;
++
++	enum typec_port_type	port_type;
++	enum typec_pwr_opmode	pwr_opmode;
++};
++
++static bool stusb_reg_writeable(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case STUSB_ALERT_STATUS_MASK_CTRL:
++	case STUSB_CC_CAPABILITY_CTRL:
++	case STUSB_CC_VCONN_SWITCH_CTRL:
++	case STUSB_VCONN_MONITORING_CTRL:
++	case STUSB_VBUS_MONITORING_RANGE_CTRL:
++	case STUSB_RESET_CTRL:
++	case STUSB_VBUS_DISCHARGE_TIME_CTRL:
++	case STUSB_CC_POWER_MODE_CTRL:
++	case STUSB_VBUS_MONITORING_CTRL:
++		return true;
++	default:
++		return false;
++	}
++}
++
++static bool stusb_reg_readable(struct device *dev, unsigned int reg)
++{
++	if ((reg >= 0x00 && reg <= 0x0A) ||
++	    (reg >= 0x14 && reg <= 0x17) ||
++	    (reg >= 0x19 && reg <= 0x1D) ||
++	    (reg >= 0x29 && reg <= 0x2D) ||
++	    (reg == 0x1F || reg == 0x21 || reg == 0x24 || reg == 0x2F))
++		return false;
++	else
++		return true;
++}
++
++static bool stusb_reg_volatile(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case STUSB_ALERT_STATUS:
++	case STUSB_CC_CONNECTION_STATUS_TRANS:
++	case STUSB_CC_CONNECTION_STATUS:
++	case STUSB_MONITORING_STATUS_TRANS:
++	case STUSB_MONITORING_STATUS:
++	case STUSB_CC_OPERATION_STATUS:
++	case STUSB_HW_FAULT_STATUS_TRANS:
++	case STUSB_HW_FAULT_STATUS:
++	case STUSB_VBUS_DISCHARGE_STATUS:
++	case STUSB_VBUS_ENABLE_STATUS:
++		return true;
++	default:
++		return false;
++	}
++}
++
++static bool stusb_reg_precious(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case STUSB_ALERT_STATUS:
++	case STUSB_CC_CONNECTION_STATUS_TRANS:
++	case STUSB_MONITORING_STATUS_TRANS:
++	case STUSB_HW_FAULT_STATUS_TRANS:
++		return true;
++	default:
++		return false;
++	}
++}
++
++static const struct regmap_config stusb1600_regmap_config = {
++	.reg_bits	= 8,
++	.reg_stride	= 1,
++	.val_bits	= 8,
++	.max_register	= STUSB1600_REG_MAX,
++	.writeable_reg	= stusb_reg_writeable,
++	.readable_reg	= stusb_reg_readable,
++	.volatile_reg	= stusb_reg_volatile,
++	.precious_reg	= stusb_reg_precious,
++	.cache_type	= REGCACHE_RBTREE,
++};
++
++static bool stusb_get_vconn(struct stusb *chip)
++{
++	u32 val;
++	int ret;
++
++	ret = regmap_read(chip->regmap, STUSB_CC_CAPABILITY_CTRL, &val);
++	if (ret) {
++		dev_err(chip->dev, "Unable to get Vconn status: %d\n", ret);
++		return false;
++	}
++
++	return !!FIELD_GET(STUSB_CC_VCONN_SUPPLY_EN, val);;
++}
++
++static int stusb_set_vconn(struct stusb *chip, bool on)
++{
++	int ret;
++
++	/* Manage VCONN input supply */
++	if (chip->vconn_supply) {
++		if (on) {
++			ret = regulator_enable(chip->vconn_supply);
++			if (ret) {
++				dev_err(chip->dev,
++					"failed to enable vconn supply: %d\n",
++					ret);
++				return ret;
++			}
++		} else {
++			regulator_disable(chip->vconn_supply);
++		}
++	}
++
++	/* Manage VCONN monitoring and power path */
++	ret = regmap_update_bits(chip->regmap, STUSB_VCONN_MONITORING_CTRL,
++				 STUSB_VCONN_MONITORING_EN,
++				 on ? STUSB_VCONN_MONITORING_EN : 0);
++	if (ret)
++		goto vconn_reg_disable;
++
++	return 0;
++
++vconn_reg_disable:
++	if (chip->vconn_supply && on)
++		regulator_disable(chip->vconn_supply);
++
++	return ret;
++}
++
++static enum typec_pwr_opmode stusb_get_pwr_opmode(struct stusb *chip)
++{
++	u32 val;
++	int ret;
++
++	ret = regmap_read(chip->regmap, STUSB_CC_CAPABILITY_CTRL, &val);
++	if (ret) {
++		dev_err(chip->dev, "Unable to get pwr opmode: %d\n", ret);
++		return TYPEC_PWR_MODE_USB;
++	}
++
++	return FIELD_GET(STUSB_CC_CURRENT_ADVERTISED, val);
++}
++
++static int stusb_init(struct stusb *chip)
++{
++	int ret;
++
++	/* Change the default Type-C power mode */
++	if (chip->port_type == TYPEC_PORT_SRC)
++		ret = regmap_update_bits(chip->regmap,
++					 STUSB_CC_POWER_MODE_CTRL,
++					 STUSB_CC_POWER_MODE,
++					 SOURCE_WITH_ACCESSORY);
++	else if (chip->port_type == TYPEC_PORT_SNK)
++		ret = regmap_update_bits(chip->regmap,
++					 STUSB_CC_POWER_MODE_CTRL,
++					 STUSB_CC_POWER_MODE,
++					 SINK_WITH_ACCESSORY);
++	else /* (capability->type == TYPEC_PORT_DRP) */
++		ret = regmap_update_bits(chip->regmap,
++					 STUSB_CC_POWER_MODE_CTRL,
++					 STUSB_CC_POWER_MODE,
++					 DUAL_WITH_ACCESSORY);
++	if (ret)
++		return ret;
++
++	if (chip->port_type == TYPEC_PORT_SNK)
++		return 0;
++
++	/* Change the default Type-C Source power operation mode capability */
++	ret = regmap_update_bits(chip->regmap, STUSB_CC_CAPABILITY_CTRL,
++				 STUSB_CC_CURRENT_ADVERTISED,
++				 FIELD_PREP(STUSB_CC_CURRENT_ADVERTISED,
++					    chip->pwr_opmode));
++	if (ret)
++		return ret;
++
++	/* Manage Type-C Source Vconn supply */
++	if (stusb_get_vconn(chip)) {
++		ret = stusb_set_vconn(chip, true);
++		if (ret)
++			return ret;
++	}
++
++	/* Mask all events interrupts - to be unmasked with interrupt support */
++	ret = regmap_update_bits(chip->regmap, STUSB_ALERT_STATUS_MASK_CTRL,
++				 STUSB_ALL_ALERTS, STUSB_ALL_ALERTS);
++
++	return ret;
++}
++
++static int stusb_fw_get_caps(struct stusb *chip)
++{
++	struct fwnode_handle *fwnode = device_get_named_child_node(chip->dev,
++								   "connector");
++	const char *cap_str;
++	int ret;
++
++	if (!fwnode)
++		return -EINVAL;
++
++	chip->capability.fwnode = fwnode;
++
++	ret = fwnode_property_read_string(fwnode, "power-role", &cap_str);
++	if (!ret) {
++		chip->port_type = typec_find_port_power_role(cap_str);
++		if (chip->port_type < 0)
++			return -EINVAL;
++
++		chip->capability.type = chip->port_type;
++	}
++
++	if (chip->port_type == TYPEC_PORT_SNK)
++		goto sink;
++
++	if (chip->port_type == TYPEC_PORT_DRP)
++		chip->capability.prefer_role = TYPEC_SINK;
++
++	ret = fwnode_property_read_string(fwnode, "power-opmode", &cap_str);
++	if (!ret) {
++		chip->pwr_opmode = typec_find_port_power_opmode(cap_str);
++
++		/* Power delivery not yet supported */
++		if (chip->pwr_opmode < 0 ||
++		    chip->pwr_opmode == TYPEC_PWR_MODE_PD) {
++			dev_err(chip->dev, "bad power operation mode: %d\n",
++				chip->pwr_opmode);
++			return -EINVAL;
++		}
++
++	} else {
++		chip->pwr_opmode = stusb_get_pwr_opmode(chip);
++	}
++
++sink:
++	return 0;
++}
++
++static int stusb_get_caps(struct stusb *chip, bool *try)
++{
++	enum typec_port_type *type = &chip->capability.type;
++	enum typec_port_data *data = &chip->capability.data;
++	enum typec_accessory *accessory = chip->capability.accessory;
++	u32 val;
++	int ret;
++
++	chip->capability.revision = USB_TYPEC_REV_1_2;
++
++	ret = regmap_read(chip->regmap, STUSB_CC_POWER_MODE_CTRL, &val);
++	if (ret)
++		return ret;
++
++	*try = false;
++
++	switch (FIELD_GET(STUSB_CC_POWER_MODE, val)) {
++	case SOURCE_WITH_ACCESSORY:
++		*type = TYPEC_PORT_SRC;
++		*data = TYPEC_PORT_DFP;
++		*accessory++ = TYPEC_ACCESSORY_AUDIO;
++		*accessory++ = TYPEC_ACCESSORY_DEBUG;
++		break;
++	case SINK_WITH_ACCESSORY:
++		*type = TYPEC_PORT_SNK;
++		*data = TYPEC_PORT_UFP;
++		*accessory++ = TYPEC_ACCESSORY_AUDIO;
++		*accessory++ = TYPEC_ACCESSORY_DEBUG;
++		break;
++	case SINK_WITHOUT_ACCESSORY:
++		*type = TYPEC_PORT_SNK;
++		*data = TYPEC_PORT_UFP;
++		break;
++	case DUAL_WITH_ACCESSORY:
++		*type = TYPEC_PORT_DRP;
++		*data = TYPEC_PORT_DRD;
++		*accessory++ = TYPEC_ACCESSORY_AUDIO;
++		*accessory++ = TYPEC_ACCESSORY_DEBUG;
++		break;
++	case DUAL_WITH_ACCESSORY_AND_TRY_SRC:
++	case DUAL_WITH_ACCESSORY_AND_TRY_SNK:
++		*type = TYPEC_PORT_DRP;
++		*data = TYPEC_PORT_DRD;
++		*accessory++ = TYPEC_ACCESSORY_AUDIO;
++		*accessory++ = TYPEC_ACCESSORY_DEBUG;
++		*try = true;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	chip->port_type = *type;
++
++	return stusb_fw_get_caps(chip);
++}
++
++static const struct of_device_id stusb_of_match[] = {
++	{ .compatible = "st,stusb1600", .data = &stusb1600_regmap_config},
++	{},
++};
++
++static int stusb_probe(struct i2c_client *client,
++		       const struct i2c_device_id *id)
++{
++	struct stusb *chip;
++	const struct of_device_id *match;
++	struct regmap_config *regmap_config;
++	bool try_role;
++	int ret;
++
++	chip = devm_kzalloc(&client->dev, sizeof(struct stusb), GFP_KERNEL);
++	if (!chip)
++		return -ENOMEM;
++
++	i2c_set_clientdata(client, chip);
++
++	match = i2c_of_match_device(stusb_of_match, client);
++	regmap_config = (struct regmap_config *)match->data;
++	chip->regmap = devm_regmap_init_i2c(client, regmap_config);
++	if (IS_ERR(chip->regmap)) {
++		ret = PTR_ERR(chip->regmap);
++		dev_err(&client->dev,
++			"Failed to allocate register map:%d\n", ret);
++		return ret;
++	}
++
++	chip->dev = &client->dev;
++
++	chip->vdd_supply = devm_regulator_get_optional(chip->dev, "vdd");
++	if (IS_ERR(chip->vdd_supply)) {
++		ret = PTR_ERR(chip->vdd_supply);
++		if (ret != -ENODEV)
++			return ret;
++		chip->vdd_supply = NULL;
++	} else {
++		ret = regulator_enable(chip->vdd_supply);
++		if (ret) {
++			dev_err(chip->dev,
++				"Failed to enable vdd supply: %d\n", ret);
++			return ret;
++		}
++	}
++
++	chip->vsys_supply = devm_regulator_get_optional(chip->dev, "vsys");
++	if (IS_ERR(chip->vsys_supply)) {
++		ret = PTR_ERR(chip->vsys_supply);
++		if (ret != -ENODEV)
++			goto vdd_reg_disable;
++		chip->vsys_supply = NULL;
++	} else {
++		ret = regulator_enable(chip->vsys_supply);
++		if (ret) {
++			dev_err(chip->dev,
++				"Failed to enable vsys supply: %d\n", ret);
++			goto vdd_reg_disable;
++		}
++	}
++
++	chip->vconn_supply = devm_regulator_get_optional(chip->dev, "vconn");
++	if (IS_ERR(chip->vconn_supply)) {
++		ret = PTR_ERR(chip->vconn_supply);
++		if (ret != -ENODEV)
++			goto vsys_reg_disable;
++		chip->vconn_supply = NULL;
++	}
++
++	ret = stusb_get_caps(chip, &try_role);
++	if (ret) {
++		dev_err(chip->dev, "failed to get port caps: %d\n", ret);
++		goto vsys_reg_disable;
++	}
++
++	ret = stusb_init(chip);
++	if (ret) {
++		dev_err(chip->dev, "failed to init port: %d\n", ret);
++		goto vsys_reg_disable;
++	}
++
++	chip->port = typec_register_port(chip->dev, &chip->capability);
++	if (!chip->port) {
++		ret = -ENODEV;
++		goto all_reg_disable;
++	}
++
++	/* To be moved in attach/detach procedure with interrupt support */
++	typec_set_pwr_opmode(chip->port, chip->pwr_opmode);
++
++	dev_info(chip->dev, "STUSB driver registered\n");
++
++	return 0;
++
++all_reg_disable:
++	if (stusb_get_vconn(chip))
++		stusb_set_vconn(chip, false);
++vsys_reg_disable:
++	if (chip->vsys_supply)
++		regulator_disable(chip->vsys_supply);
++vdd_reg_disable:
++	if (chip->vdd_supply)
++		regulator_disable(chip->vdd_supply);
++
++	return ret;
++}
++
++static int stusb_remove(struct i2c_client *client)
++{
++	struct stusb *chip = i2c_get_clientdata(client);
++
++	typec_unregister_port(chip->port);
++
++  	if (stusb_get_vconn(chip))
++		stusb_set_vconn(chip, false);
++
++	if (chip->vdd_supply)
++		regulator_disable(chip->vdd_supply);
++
++	if (chip->vsys_supply)
++		regulator_disable(chip->vsys_supply);
++
++	return 0;
++}
++
++#ifdef CONFIG_PM_SLEEP
++static int stusb_resume(struct device *dev)
++{
++	struct stusb *chip = dev_get_drvdata(dev);
++
++	return stusb_init(chip);
++}
++#endif
++
++static SIMPLE_DEV_PM_OPS(stusb_pm_ops, NULL, stusb_resume);
++
++static struct i2c_driver stusb_driver = {
++	.driver = {
++		.name = "typec_stusb",
++		.pm = &stusb_pm_ops,
++		.of_match_table = stusb_of_match,
++	},
++	.probe = stusb_probe,
++	.remove = stusb_remove,
++};
++module_i2c_driver(stusb_driver);
++
++MODULE_AUTHOR("Amelie Delaunay <amelie.delaunay@st.com>");
++MODULE_DESCRIPTION("STMicroelectronics STUSB Type-C controller driver");
++MODULE_LICENSE("GPL v2");
+diff --git a/include/linux/usb/typec.h b/include/linux/usb/typec.h
+index 7df4eca..2671776 100644
+--- a/include/linux/usb/typec.h
++++ b/include/linux/usb/typec.h
+@@ -241,6 +241,7 @@ int typec_set_orientation(struct typec_port *port,
+ enum typec_orientation typec_get_orientation(struct typec_port *port);
+ int typec_set_mode(struct typec_port *port, int mode);
+ 
++int typec_find_port_power_opmode(const char *name);
+ int typec_find_port_power_role(const char *name);
+ int typec_find_power_role(const char *name);
+ int typec_find_port_data_role(const char *name);
+diff --git a/sound/soc/stm/stm32_adfsdm.c b/sound/soc/stm/stm32_adfsdm.c
+index 71d341b..24948b9 100644
+--- a/sound/soc/stm/stm32_adfsdm.c
++++ b/sound/soc/stm/stm32_adfsdm.c
+@@ -304,6 +304,7 @@ MODULE_DEVICE_TABLE(of, stm32_adfsdm_of_match);
+ static int stm32_adfsdm_probe(struct platform_device *pdev)
+ {
+ 	struct stm32_adfsdm_priv *priv;
++	struct snd_soc_component *component;
+ 	int ret;
+ 
+ 	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+@@ -331,9 +332,15 @@ static int stm32_adfsdm_probe(struct platform_device *pdev)
+ 	if (IS_ERR(priv->iio_cb))
+ 		return PTR_ERR(priv->iio_cb);
+ 
+-	ret = devm_snd_soc_register_component(&pdev->dev,
+-					      &stm32_adfsdm_soc_platform,
+-					      NULL, 0);
++	component = devm_kzalloc(&pdev->dev, sizeof(*component), GFP_KERNEL);
++	if (!component)
++		return -ENOMEM;
++#ifdef CONFIG_DEBUG_FS
++	component->debugfs_prefix = "pcm";
++#endif
++
++	ret = snd_soc_add_component(&pdev->dev, component,
++				    &stm32_adfsdm_soc_platform, NULL, 0);
+ 	if (ret < 0)
+ 		dev_err(&pdev->dev, "%s: Failed to register PCM platform\n",
+ 			__func__);
+@@ -341,12 +348,20 @@ static int stm32_adfsdm_probe(struct platform_device *pdev)
+ 	return ret;
+ }
+ 
++static int stm32_adfsdm_remove(struct platform_device *pdev)
++{
++	snd_soc_unregister_component(&pdev->dev);
++
++	return 0;
++}
++
+ static struct platform_driver stm32_adfsdm_driver = {
+ 	.driver = {
+ 		   .name = STM32_ADFSDM_DRV_NAME,
+ 		   .of_match_table = stm32_adfsdm_of_match,
+ 		   },
+ 	.probe = stm32_adfsdm_probe,
++	.remove = stm32_adfsdm_remove,
+ };
+ 
+ module_platform_driver(stm32_adfsdm_driver);
+-- 
+2.7.4
+

@@ -1,0 +1,1735 @@
+From 254a1f3c99a65578044558234a01b4fbc180b3d6 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Tue, 13 Nov 2018 12:22:30 +0100
+Subject: [PATCH 08/52] ARM: stm32mp1-r0-rc1: MFD
+
+---
+ drivers/mfd/Kconfig                  |  31 ++
+ drivers/mfd/Makefile                 |   4 +-
+ drivers/mfd/stm32-pwr.c              | 287 ++++++++++++++++
+ drivers/mfd/stmfx.c                  | 626 +++++++++++++++++++++++++++++++++++
+ drivers/mfd/stpmic1.c                | 413 +++++++++++++++++++++++
+ include/dt-bindings/mfd/st,stpmic1.h |  46 +++
+ include/linux/mfd/stmfx.h            |  27 ++
+ include/linux/mfd/stpmic1.h          | 213 ++++++++++++
+ 8 files changed, 1646 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/mfd/stm32-pwr.c
+ create mode 100644 drivers/mfd/stmfx.c
+ create mode 100644 drivers/mfd/stpmic1.c
+ create mode 100644 include/dt-bindings/mfd/st,stpmic1.h
+ create mode 100644 include/linux/mfd/stmfx.h
+ create mode 100644 include/linux/mfd/stpmic1.h
+
+diff --git a/drivers/mfd/Kconfig b/drivers/mfd/Kconfig
+index 11841f4..cc25a19 100644
+--- a/drivers/mfd/Kconfig
++++ b/drivers/mfd/Kconfig
+@@ -1855,6 +1855,37 @@ config MFD_STM32_TIMERS
+ 	  for PWM and IIO Timer. This driver allow to share the
+ 	  registers between the others drivers.
+ 
++config MFD_STM32MP1_PWR
++	bool "STM32MP1 wake-up pins"
++	depends on MACH_STM32MP157
++	default y
++
++config MFD_STMFX
++	tristate "Support for STMicroelectronics Multi-Function eXpander (STMFX)"
++	depends on I2C
++	depends on OF || COMPILE_TEST
++	select MFD_CORE
++	select REGMAP_I2C
++	help
++	  Support for the STMicroelectronics Multi-Function eXpander.
++
++	  This driver provides common support for accessing the device,
++	  additional drivers must be enabled in order to use the functionality
++	  of the device.
++
++config MFD_STPMIC1
++	tristate "Support for STPMIC1 PMIC"
++	depends on (I2C=y && OF)
++	select REGMAP_I2C
++	select REGMAP_IRQ
++	select MFD_CORE
++	help
++	  Support for ST Microelectronics STPMIC1 PMIC. STPMIC1 MFD driver is
++	  the core driver for STPMIC1 component that mainly handles interrupts.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called stpmic1.
++
+ menu "Multimedia Capabilities Port drivers"
+ 	depends on ARCH_SA1100
+ 
+diff --git a/drivers/mfd/Makefile b/drivers/mfd/Makefile
+index 5856a94..d794a2d 100644
+--- a/drivers/mfd/Makefile
++++ b/drivers/mfd/Makefile
+@@ -232,12 +232,14 @@ obj-$(CONFIG_INTEL_SOC_PMIC_CHTDC_TI)	+= intel_soc_pmic_chtdc_ti.o
+ obj-$(CONFIG_MFD_MT6397)	+= mt6397-core.o
+ 
+ obj-$(CONFIG_MFD_ALTERA_A10SR)	+= altera-a10sr.o
++obj-$(CONFIG_MFD_STPMIC1)	+= stpmic1.o
+ obj-$(CONFIG_MFD_SUN4I_GPADC)	+= sun4i-gpadc.o
+ 
+ obj-$(CONFIG_MFD_STM32_LPTIMER)	+= stm32-lptimer.o
+ obj-$(CONFIG_MFD_STM32_TIMERS) 	+= stm32-timers.o
++obj-$(CONFIG_MFD_STM32MP1_PWR)	+= stm32-pwr.o
+ obj-$(CONFIG_MFD_MXS_LRADC)     += mxs-lradc.o
+ obj-$(CONFIG_MFD_SC27XX_PMIC)	+= sprd-sc27xx-spi.o
+ obj-$(CONFIG_RAVE_SP_CORE)	+= rave-sp.o
+ obj-$(CONFIG_MFD_ROHM_BD718XX)	+= rohm-bd718x7.o
+-
++obj-$(CONFIG_MFD_STMFX) 	+= stmfx.o
+diff --git a/drivers/mfd/stm32-pwr.c b/drivers/mfd/stm32-pwr.c
+new file mode 100644
+index 0000000..377e2f5
+--- /dev/null
++++ b/drivers/mfd/stm32-pwr.c
+@@ -0,0 +1,287 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) STMicroelectronics 2017 - All Rights Reserved
++ * Author: Pascal Paillet <p.paillet@st.com> for STMicroelectronics.
++ */
++
++#include <linux/arm-smccc.h>
++#include <linux/irqchip/chained_irq.h>
++#include <linux/of_irq.h>
++#include <linux/platform_device.h>
++#include <asm/exception.h>
++
++#define NB_WAKEUPPINS 6
++
++#define STM32_SVC_PWR 0x82001001
++#define STM32_WRITE 0x1
++#define STM32_SET_BITS 0x2
++#define STM32_CLEAR_BITS 0x3
++
++#define SMC_PWR_BASE 0x50001000
++// PWR Registers
++#define WKUPCR 0x20
++#define WKUPFR 0x24
++#define MPUWKUPENR 0x28
++
++#define WKUP_FLAGS_MASK GENMASK(5, 0)
++
++// WKUPCR bits definition
++#define WKUP_EDGE_SHIFT 8
++#define WKUP_PULL_SHIFT 16
++#define WKUP_PULL_MASK GENMASK(1, 0)
++
++enum wkup_pull_setting {
++	WKUP_NO_PULL = 0,
++	WKUP_PULL_UP,
++	WKUP_PULL_DOWN,
++	WKUP_PULL_RESERVED
++};
++
++#define SMC(class, op, offset, val)				\
++{								\
++	struct arm_smccc_res res;				\
++	arm_smccc_smc(class, op, SMC_PWR_BASE + offset, val,	\
++		      0, 0, 0, 0, &res);			\
++}								\
++
++struct stm32_pwr_data {
++	struct device *dev;		/* self device */
++	void __iomem *base;		/* IO Memory base address */
++	struct irq_domain *domain;	/* Domain for this controller */
++	int irq;			/* Parent interrupt */
++};
++
++static void stm32_pwr_irq_ack(struct irq_data *d)
++{
++	struct stm32_pwr_data *priv = d->domain->host_data;
++
++	dev_dbg(priv->dev, "irq:%lu\n", d->hwirq);
++	SMC(STM32_SVC_PWR, STM32_SET_BITS, WKUPCR, BIT(d->hwirq));
++}
++
++static void stm32_pwr_irq_mask(struct irq_data *d)
++{
++	struct stm32_pwr_data *priv = d->domain->host_data;
++
++	dev_dbg(priv->dev, "irq:%lu\n", d->hwirq);
++	SMC(STM32_SVC_PWR, STM32_CLEAR_BITS, MPUWKUPENR, BIT(d->hwirq));
++}
++
++static void stm32_pwr_irq_unmask(struct irq_data *d)
++{
++	struct stm32_pwr_data *priv = d->domain->host_data;
++
++	dev_dbg(priv->dev, "irq:%lu\n", d->hwirq);
++	SMC(STM32_SVC_PWR, STM32_SET_BITS, MPUWKUPENR, BIT(d->hwirq));
++}
++
++static int stm32_pwr_irq_set_wake(struct irq_data *d, unsigned int on)
++{
++	struct stm32_pwr_data *priv = d->domain->host_data;
++
++	dev_dbg(priv->dev, "irq:%lu on:%d\n", d->hwirq, on);
++	if (on)
++		enable_irq_wake(priv->irq);
++	else
++		disable_irq_wake(priv->irq);
++
++	return 0;
++}
++
++static int stm32_pwr_irq_set_type(struct irq_data *d, unsigned int flow_type)
++{
++	struct stm32_pwr_data *priv = d->domain->host_data;
++	int pin_id = d->hwirq;
++	u32 wkupcr;
++	int en;
++
++	dev_dbg(priv->dev, "irq:%lu\n", d->hwirq);
++
++	en = readl_relaxed(priv->base + MPUWKUPENR) & BIT(pin_id);
++	/* reference manual request to disable the wakeup pin while
++	 * changing the edge detection setting
++	 */
++	if (en)
++		stm32_pwr_irq_mask(d);
++
++	wkupcr = readl_relaxed(priv->base + WKUPCR);
++	switch (flow_type & IRQ_TYPE_SENSE_MASK) {
++	case IRQF_TRIGGER_FALLING:
++		wkupcr |= (1 << (WKUP_EDGE_SHIFT + pin_id));
++		break;
++	case IRQF_TRIGGER_RISING:
++		wkupcr &= ~(1 << (WKUP_EDGE_SHIFT + pin_id));
++		break;
++	default:
++		return -EINVAL;
++	}
++	SMC(STM32_SVC_PWR, STM32_WRITE, WKUPCR, wkupcr);
++
++	if (en)
++		stm32_pwr_irq_unmask(d);
++
++	return 0;
++}
++
++static struct irq_chip stm32_pwr_irq_chip = {
++	.name = "stm32_pwr-irq",
++	.irq_ack = stm32_pwr_irq_ack,
++	.irq_mask = stm32_pwr_irq_mask,
++	.irq_unmask = stm32_pwr_irq_unmask,
++	.irq_set_type = stm32_pwr_irq_set_type,
++	.irq_set_wake = stm32_pwr_irq_set_wake,
++};
++
++static int stm32_pwr_irq_map(struct irq_domain *h, unsigned int virq,
++			     irq_hw_number_t hw)
++{
++	irq_set_chip_and_handler(virq, &stm32_pwr_irq_chip, handle_edge_irq);
++	return 0;
++}
++
++static int stm32_pwr_irq_set_pull_config(struct irq_domain *d, int pin_id,
++					 enum wkup_pull_setting config)
++{
++	struct stm32_pwr_data *priv = d->host_data;
++	u32 wkupcr;
++
++	dev_dbg(priv->dev, "irq:%d pull config:0x%x\n", pin_id, config);
++
++	if (config >= WKUP_PULL_RESERVED) {
++		dev_err(priv->dev, "%s: bad irq pull config\n", __func__);
++		return -EINVAL;
++	}
++
++	wkupcr = readl_relaxed(priv->base + WKUPCR);
++	wkupcr &= ~((WKUP_PULL_MASK) << (WKUP_PULL_SHIFT + pin_id * 2));
++	wkupcr |= (config & WKUP_PULL_MASK) << (WKUP_PULL_SHIFT + pin_id * 2);
++	SMC(STM32_SVC_PWR, STM32_WRITE, WKUPCR, wkupcr);
++
++	return 0;
++}
++
++static int stm32_pwr_xlate(struct irq_domain *d, struct device_node *ctrlr,
++			   const u32 *intspec, unsigned int intsize,
++			   irq_hw_number_t *out_hwirq, unsigned int *out_type)
++{
++	struct stm32_pwr_data *priv = d->host_data;
++
++	if (WARN_ON(intsize < 3)) {
++		dev_err(priv->dev, "%s: bad irq config parameters\n", __func__);
++		return -EINVAL;
++	}
++
++	*out_hwirq = intspec[0];
++	*out_type = intspec[1] & (IRQ_TYPE_SENSE_MASK);
++
++	return stm32_pwr_irq_set_pull_config(d, intspec[0], intspec[2]);
++}
++
++static const struct irq_domain_ops stm32_pwr_irq_domain_ops = {
++	.map = stm32_pwr_irq_map,
++	.xlate = stm32_pwr_xlate,
++};
++
++/*
++ * Handler for the cascaded IRQ.
++ */
++static void stm32_pwr_handle_irq(struct irq_desc *desc)
++{
++	struct stm32_pwr_data  *priv = irq_desc_get_handler_data(desc);
++	struct irq_chip *chip = irq_desc_get_chip(desc);
++	u32 wkupfr, wkupenr, i;
++
++	chained_irq_enter(chip, desc);
++
++	wkupfr = readl_relaxed(priv->base + WKUPFR);
++	wkupenr = readl_relaxed(priv->base + MPUWKUPENR);
++	for (i = 0; i < NB_WAKEUPPINS; i++) {
++		if ((wkupfr & BIT(i)) && (wkupenr & BIT(i))) {
++			dev_dbg(priv->dev, "handle wkup irq:%d\n", i);
++			generic_handle_irq(irq_find_mapping(priv->domain, i));
++		}
++	}
++
++	chained_irq_exit(chip, desc);
++}
++
++static int stm32_pwr_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct device_node *np = pdev->dev.of_node;
++	struct stm32_pwr_data *priv;
++
++	struct resource *res;
++	int ret;
++
++	priv = devm_kzalloc(dev, sizeof(struct stm32_pwr_data), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	platform_set_drvdata(pdev, priv);
++	priv->dev = dev;
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	priv->base = devm_ioremap_resource(&pdev->dev, res);
++	if (IS_ERR(priv->base)) {
++		dev_err(dev, "%s: Unable to map IO memory\n", __func__);
++		return PTR_ERR(priv->base);
++	}
++
++	/* Disable all wake-up pins */
++	SMC(STM32_SVC_PWR, STM32_WRITE, MPUWKUPENR, 0);
++	/* Clear all interrupts flags */
++	SMC(STM32_SVC_PWR, STM32_SET_BITS, WKUPCR, WKUP_FLAGS_MASK);
++
++	priv->domain = irq_domain_add_linear(np, NB_WAKEUPPINS,
++					     &stm32_pwr_irq_domain_ops, priv);
++	if (!priv->domain) {
++		dev_err(dev, "%s: Unable to add irq domain!\n", __func__);
++		goto out;
++	}
++
++	ret = platform_get_irq(pdev, 0);
++	if (ret < 0) {
++		dev_err(dev, "failed to get PWR IRQ\n");
++		goto err;
++	}
++	priv->irq = ret;
++
++	irq_set_chained_handler_and_data(priv->irq,
++					 stm32_pwr_handle_irq, priv);
++
++out:
++	return 0;
++err:
++	irq_domain_remove(priv->domain);
++	return ret;
++}
++
++static int stm32_pwr_remove(struct platform_device *pdev)
++{
++	struct stm32_pwr_data *priv = platform_get_drvdata(pdev);
++
++	irq_domain_remove(priv->domain);
++	return 0;
++}
++
++static const struct of_device_id stm32_pwr_match[] = {
++	{ .compatible = "st,stm32mp1-pwr" },
++	{},
++};
++
++static struct platform_driver stm32_pwr_driver = {
++	.probe = stm32_pwr_probe,
++	.remove = stm32_pwr_remove,
++	.driver = {
++		.name = "stm32-pwr",
++		.owner = THIS_MODULE,
++		.of_match_table = stm32_pwr_match,
++	},
++};
++
++static int __init stm32_pwr_init(void)
++{
++	return platform_driver_register(&stm32_pwr_driver);
++}
++arch_initcall(stm32_pwr_init);
+diff --git a/drivers/mfd/stmfx.c b/drivers/mfd/stmfx.c
+new file mode 100644
+index 0000000..cfd4fca
+--- /dev/null
++++ b/drivers/mfd/stmfx.c
+@@ -0,0 +1,626 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Driver for STMicroelectronics Multi-Function eXpander (STMFX) core
++ *
++ * Copyright (C) 2018 STMicroelectronics
++ * Author(s): Amelie Delaunay <amelie.delaunay@st.com>.
++ */
++#include <linux/bitfield.h>
++#include <linux/i2c.h>
++#include <linux/interrupt.h>
++#include <linux/irq.h>
++#include <linux/mfd/core.h>
++#include <linux/mfd/stmfx.h>
++#include <linux/module.h>
++#include <linux/regulator/consumer.h>
++
++/* General */
++#define STMFX_REG_CHIP_ID		0x00 /* R */
++#define STMFX_REG_FW_VERSION_MSB	0x01 /* R */
++#define STMFX_REG_FW_VERSION_LSB	0x02 /* R */
++#define STMFX_REG_SYS_CTRL		0x40 /* RW */
++/* IRQ output management */
++#define STMFX_REG_IRQ_OUT_PIN		0x41 /* RW */
++#define STMFX_REG_IRQ_SRC_EN		0x42 /* RW */
++#define STMFX_REG_IRQ_PENDING		0x08 /* R */
++#define STMFX_REG_IRQ_ACK		0x44 /* RW */
++/* GPIO management */
++#define STMFX_REG_IRQ_GPI_PENDING1	0x0C /* R */
++#define STMFX_REG_IRQ_GPI_PENDING2	0x0D /* R */
++#define STMFX_REG_IRQ_GPI_PENDING3	0x0E /* R */
++#define STMFX_REG_GPIO_STATE1		0x10 /* R */
++#define STMFX_REG_GPIO_STATE2		0x11 /* R */
++#define STMFX_REG_GPIO_STATE3		0x12 /* R */
++#define STMFX_REG_IRQ_GPI_SRC1		0x48 /* RW */
++#define STMFX_REG_IRQ_GPI_SRC2		0x49 /* RW */
++#define STMFX_REG_IRQ_GPI_SRC3		0x4A /* RW */
++#define STMFX_REG_GPO_SET1		0x6C /* RW */
++#define STMFX_REG_GPO_SET2		0x6D /* RW */
++#define STMFX_REG_GPO_SET3		0x6E /* RW */
++#define STMFX_REG_GPO_CLR1		0x70 /* RW */
++#define STMFX_REG_GPO_CLR2		0x71 /* RW */
++#define STMFX_REG_GPO_CLR3		0x72 /* RW */
++
++#define STMFX_REG_MAX			0xB0
++
++/* MFX boot time is around 10ms, so after reset, we have to wait this delay */
++#define STMFX_BOOT_TIME_MS 10
++
++/* STMFX_REG_CHIP_ID bitfields */
++#define STMFX_REG_CHIP_ID_MASK		GENMASK(7, 0)
++
++/* STMFX_REG_SYS_CTRL bitfields */
++#define STMFX_REG_SYS_CTRL_GPIO_EN	BIT(0)
++#define STMFX_REG_SYS_CTRL_TS_EN	BIT(1)
++#define STMFX_REG_SYS_CTRL_IDD_EN	BIT(2)
++#define STMFX_REG_SYS_CTRL_ALTGPIO_EN	BIT(3)
++#define STMFX_REG_SYS_CTRL_SWRST	BIT(7)
++
++/* STMFX_REG_IRQ_OUT_PIN bitfields */
++#define STMFX_REG_IRQ_OUT_PIN_TYPE	BIT(0) /* 0-OD 1-PP */
++#define STMFX_REG_IRQ_OUT_PIN_POL	BIT(1) /* 0-active LOW 1-active HIGH */
++
++/* STMFX_REG_IRQ_(SRC_EN/PENDING/ACK) bit shift */
++enum stmfx_irqs {
++	STMFX_REG_IRQ_SRC_EN_GPIO = 0,
++	STMFX_REG_IRQ_SRC_EN_IDD,
++	STMFX_REG_IRQ_SRC_EN_ERROR,
++	STMFX_REG_IRQ_SRC_EN_TS_DET,
++	STMFX_REG_IRQ_SRC_EN_TS_NE,
++	STMFX_REG_IRQ_SRC_EN_TS_TH,
++	STMFX_REG_IRQ_SRC_EN_TS_FULL,
++	STMFX_REG_IRQ_SRC_EN_TS_OVF,
++	STMFX_REG_IRQ_SRC_MAX,
++};
++
++/**
++ * struct stmfx_ddata - STMFX MFD private structure
++ * @stmfx:		state holder with device for logs and register map
++ * @vdd:		STMFX power supply
++ * @irq_domain:		IRQ domain
++ * @lock:		IRQ bus lock
++ * @irq_src:		cache of IRQ_SRC_EN register for bus_lock
++ * @bkp_sysctrl:	backup of SYS_CTRL register for suspend/resume
++ * @bkp_irqoutpin:	backup of IRQ_OUT_PIN register for suspend/resume
++ */
++struct stmfx_ddata {
++	struct stmfx *stmfx;
++	struct regulator *vdd;
++	struct irq_domain *irq_domain;
++	struct mutex lock; /* IRQ bus lock */
++	u8 irq_src;
++#ifdef CONFIG_PM
++	u8 bkp_sysctrl;
++	u8 bkp_irqoutpin;
++#endif
++};
++
++static u8 stmfx_func_to_mask(u32 func)
++{
++	u8 mask = 0;
++
++	if (func & STMFX_FUNC_GPIO)
++		mask |= STMFX_REG_SYS_CTRL_GPIO_EN;
++
++	if ((func & STMFX_FUNC_ALTGPIO_LOW) || (func & STMFX_FUNC_ALTGPIO_HIGH))
++		mask |= STMFX_REG_SYS_CTRL_ALTGPIO_EN;
++
++	if (func & STMFX_FUNC_TS)
++		mask |= STMFX_REG_SYS_CTRL_TS_EN;
++
++	if (func & STMFX_FUNC_IDD)
++		mask |= STMFX_REG_SYS_CTRL_IDD_EN;
++
++	return mask;
++}
++
++int stmfx_function_enable(struct stmfx *stmfx, u32 func)
++{
++	u32 sys_ctrl;
++	u8 mask;
++	int ret;
++
++	ret = regmap_read(stmfx->map, STMFX_REG_SYS_CTRL, &sys_ctrl);
++	if (ret)
++		return ret;
++
++	/*
++	 * IDD and TS have priority in STMFX FW, so if IDD and TS are enabled,
++	 * ALTGPIO function is disabled by STMFX FW. If IDD or TS is enabled,
++	 * the number of aGPIO available decreases. To avoid GPIO management
++	 * disturbance, abort IDD or TS function enable in this case.
++	 */
++	if (((func & STMFX_FUNC_IDD) || (func & STMFX_FUNC_TS)) &&
++	    (sys_ctrl & STMFX_REG_SYS_CTRL_ALTGPIO_EN)) {
++		dev_err(stmfx->dev, "ALTGPIO function already enabled\n");
++		return -EBUSY;
++	}
++
++	/* If TS is enabled, aGPIO[3:0] cannot be used */
++	if ((func & STMFX_FUNC_ALTGPIO_LOW) &&
++	    (sys_ctrl & STMFX_REG_SYS_CTRL_TS_EN)) {
++		dev_err(stmfx->dev, "TS in use, aGPIO[3:0] unavailable\n");
++		return -EBUSY;
++	}
++
++	/* If IDD is enabled, aGPIO[7:4] cannot be used */
++	if ((func & STMFX_FUNC_ALTGPIO_HIGH) &&
++	    (sys_ctrl & STMFX_REG_SYS_CTRL_IDD_EN)) {
++		dev_err(stmfx->dev, "IDD in use, aGPIO[7:4] unavailable\n");
++		return -EBUSY;
++	}
++
++	mask = stmfx_func_to_mask(func);
++
++	return regmap_update_bits(stmfx->map, STMFX_REG_SYS_CTRL, mask, mask);
++}
++EXPORT_SYMBOL_GPL(stmfx_function_enable);
++
++int stmfx_function_disable(struct stmfx *stmfx, u32 func)
++{
++	u8 mask = stmfx_func_to_mask(func);
++
++	return regmap_update_bits(stmfx->map, STMFX_REG_SYS_CTRL, mask, 0);
++}
++EXPORT_SYMBOL_GPL(stmfx_function_disable);
++
++static void stmfx_irq_bus_lock(struct irq_data *data)
++{
++	struct stmfx_ddata *ddata = irq_data_get_irq_chip_data(data);
++
++	mutex_lock(&ddata->lock);
++}
++
++static void stmfx_irq_bus_sync_unlock(struct irq_data *data)
++{
++	struct stmfx_ddata *ddata = irq_data_get_irq_chip_data(data);
++
++	regmap_write(ddata->stmfx->map, STMFX_REG_IRQ_SRC_EN, ddata->irq_src);
++
++	mutex_unlock(&ddata->lock);
++}
++
++static void stmfx_irq_mask(struct irq_data *data)
++{
++	struct stmfx_ddata *ddata = irq_data_get_irq_chip_data(data);
++
++	ddata->irq_src &= ~BIT(data->hwirq % 8);
++}
++
++static void stmfx_irq_unmask(struct irq_data *data)
++{
++	struct stmfx_ddata *ddata = irq_data_get_irq_chip_data(data);
++
++	ddata->irq_src |= BIT(data->hwirq % 8);
++}
++
++static struct irq_chip stmfx_irq_chip = {
++	.name			= "stmfx-core",
++	.irq_bus_lock		= stmfx_irq_bus_lock,
++	.irq_bus_sync_unlock	= stmfx_irq_bus_sync_unlock,
++	.irq_mask		= stmfx_irq_mask,
++	.irq_unmask		= stmfx_irq_unmask,
++};
++
++static irqreturn_t stmfx_irq_handler(int irq, void *data)
++{
++	struct stmfx_ddata *ddata = data;
++	unsigned long n, pending;
++	u32 ack;
++	int ret;
++
++	ret = regmap_read(ddata->stmfx->map, STMFX_REG_IRQ_PENDING,
++			  (u32 *)&pending);
++	if (ret)
++		return IRQ_NONE;
++
++	/*
++	 * There is no ACK for GPIO, MFX_REG_IRQ_PENDING_GPIO is a logical OR
++	 * of MFX_REG_IRQ_GPI _PENDING1/_PENDING2/_PENDING3
++	 */
++	ack = pending & ~BIT(STMFX_REG_IRQ_SRC_EN_GPIO);
++	if (ack) {
++		ret = regmap_write(ddata->stmfx->map, STMFX_REG_IRQ_ACK, ack);
++		if (ret)
++			return IRQ_NONE;
++	}
++
++	for_each_set_bit(n, &pending, STMFX_REG_IRQ_SRC_MAX)
++		handle_nested_irq(irq_find_mapping(ddata->irq_domain, n));
++
++	return IRQ_HANDLED;
++}
++
++static int stmfx_irq_map(struct irq_domain *d, unsigned int virq,
++			 irq_hw_number_t hwirq)
++{
++	irq_set_chip_data(virq, d->host_data);
++	irq_set_chip_and_handler(virq, &stmfx_irq_chip, handle_simple_irq);
++	irq_set_nested_thread(virq, 1);
++	irq_set_noprobe(virq);
++
++	return 0;
++}
++
++static void stmfx_irq_unmap(struct irq_domain *d, unsigned int virq)
++{
++	irq_set_chip_and_handler(virq, NULL, NULL);
++	irq_set_chip_data(virq, NULL);
++}
++
++static const struct irq_domain_ops stmfx_irq_ops = {
++	.map	= stmfx_irq_map,
++	.unmap	= stmfx_irq_unmap,
++};
++
++static void stmfx_irq_exit(struct stmfx_ddata *ddata)
++{
++	int hwirq;
++
++	for (hwirq = 0; hwirq < STMFX_REG_IRQ_SRC_MAX; hwirq++)
++		irq_dispose_mapping(irq_find_mapping(ddata->irq_domain, hwirq));
++	irq_domain_remove(ddata->irq_domain);
++}
++
++static int stmfx_irq_init(struct stmfx_ddata *ddata, int irq)
++{
++	struct device *dev = ddata->stmfx->dev;
++	u32 irqoutpin = 0, irqtrigger;
++	int ret;
++
++	ddata->irq_domain = irq_domain_add_simple(dev->of_node,
++						  STMFX_REG_IRQ_SRC_MAX, 0,
++						  &stmfx_irq_ops, ddata);
++	if (!ddata->irq_domain) {
++		dev_err(dev, "failed to create irq domain\n");
++		return -EINVAL;
++	}
++
++	if (!of_property_read_bool(dev->of_node, "drive-open-drain"))
++		irqoutpin |= STMFX_REG_IRQ_OUT_PIN_TYPE;
++
++	irqtrigger = irq_get_trigger_type(irq);
++	if ((irqtrigger & IRQ_TYPE_EDGE_RISING) ||
++	    (irqtrigger & IRQ_TYPE_LEVEL_HIGH))
++		irqoutpin |= STMFX_REG_IRQ_OUT_PIN_POL;
++
++	ret = regmap_write(ddata->stmfx->map, STMFX_REG_IRQ_OUT_PIN, irqoutpin);
++	if (ret)
++		return ret;
++
++	ret = devm_request_threaded_irq(dev, irq, NULL, stmfx_irq_handler,
++					irqtrigger | IRQF_ONESHOT,
++					"stmfx", ddata);
++	if (ret)
++		stmfx_irq_exit(ddata);
++
++	return ret;
++}
++
++static int stmfx_chip_reset(struct stmfx_ddata *ddata)
++{
++	int ret;
++
++	ret = regmap_write(ddata->stmfx->map, STMFX_REG_SYS_CTRL,
++			   STMFX_REG_SYS_CTRL_SWRST);
++	if (ret)
++		return ret;
++
++	msleep(STMFX_BOOT_TIME_MS);
++
++	return ret;
++}
++
++static int stmfx_chip_init(struct stmfx_ddata *ddata, struct i2c_client *client)
++{
++	u32 id;
++	u8 version[2];
++	int ret;
++
++	ddata->vdd = devm_regulator_get_optional(&client->dev, "vdd");
++	if (IS_ERR(ddata->vdd)) {
++		ret = PTR_ERR(ddata->vdd);
++		if (ret != -ENODEV) {
++			if (ret != -EPROBE_DEFER)
++				dev_err(&client->dev,
++					"no vdd regulator found:%d\n", ret);
++			return ret;
++		}
++	}
++
++	if (!IS_ERR(ddata->vdd)) {
++		ret = regulator_enable(ddata->vdd);
++		if (ret) {
++			dev_err(&client->dev, "vdd enable failed: %d\n", ret);
++			return ret;
++		}
++	}
++
++	ret = regmap_read(ddata->stmfx->map, STMFX_REG_CHIP_ID, &id);
++	if (ret) {
++		dev_err(&client->dev, "error reading chip id: %d\n", ret);
++		goto err;
++	}
++
++	/*
++	 * Check that ID is the complement of the I2C address:
++	 * STMFX I2C address follows the 7-bit format (MSB), that's why
++	 * client->addr is shifted.
++	 *
++	 * STMFX_I2C_ADDR|       STMFX         |        Linux
++	 *   input pin   | I2C device address  | I2C device address
++	 *---------------------------------------------------------
++	 *       0       | b: 1000 010x h:0x84 |       0x42
++	 *       1       | b: 1000 011x h:0x86 |       0x43
++	 */
++	if (FIELD_GET(STMFX_REG_CHIP_ID_MASK, ~id) != (client->addr << 1)) {
++		dev_err(&client->dev, "unknown chip id: %#x\n", id);
++		ret = -EINVAL;
++		goto err;
++	}
++
++	ret = regmap_bulk_read(ddata->stmfx->map, STMFX_REG_FW_VERSION_MSB,
++			       version, ARRAY_SIZE(version));
++	if (ret) {
++		dev_err(&client->dev, "error reading fw version: %d\n", ret);
++		goto err;
++	}
++
++	dev_info(&client->dev, "STMFX id: %#x, fw version: %x.%02x\n",
++		 id, version[0], version[1]);
++
++	return stmfx_chip_reset(ddata);
++
++err:
++	if (!IS_ERR(ddata->vdd))
++		return regulator_disable(ddata->vdd);
++
++	return ret;
++}
++
++static int stmfx_chip_exit(struct stmfx_ddata *ddata)
++{
++	regmap_write(ddata->stmfx->map, STMFX_REG_IRQ_SRC_EN, 0);
++	regmap_write(ddata->stmfx->map, STMFX_REG_SYS_CTRL, 0);
++
++	if (!IS_ERR(ddata->vdd))
++		return regulator_disable(ddata->vdd);
++
++	return 0;
++}
++
++static const struct resource stmfx_pinctrl_resources[] = {
++	DEFINE_RES_IRQ(STMFX_REG_IRQ_SRC_EN_GPIO),
++};
++
++static struct mfd_cell stmfx_cells[] = {
++	{
++		.of_compatible = "st,stmfx-0300-pinctrl",
++		.name = "stmfx-pinctrl",
++		.resources = stmfx_pinctrl_resources,
++		.num_resources = ARRAY_SIZE(stmfx_pinctrl_resources),
++	}
++};
++
++static bool stmfx_reg_volatile(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case STMFX_REG_SYS_CTRL:
++	case STMFX_REG_IRQ_SRC_EN:
++	case STMFX_REG_IRQ_PENDING:
++	case STMFX_REG_IRQ_GPI_PENDING1:
++	case STMFX_REG_IRQ_GPI_PENDING2:
++	case STMFX_REG_IRQ_GPI_PENDING3:
++	case STMFX_REG_GPIO_STATE1:
++	case STMFX_REG_GPIO_STATE2:
++	case STMFX_REG_GPIO_STATE3:
++	case STMFX_REG_IRQ_GPI_SRC1:
++	case STMFX_REG_IRQ_GPI_SRC2:
++	case STMFX_REG_IRQ_GPI_SRC3:
++	case STMFX_REG_GPO_SET1:
++	case STMFX_REG_GPO_SET2:
++	case STMFX_REG_GPO_SET3:
++	case STMFX_REG_GPO_CLR1:
++	case STMFX_REG_GPO_CLR2:
++	case STMFX_REG_GPO_CLR3:
++		return true;
++	default:
++		return false;
++	}
++}
++
++static bool stmfx_reg_writeable(struct device *dev, unsigned int reg)
++{
++	return (reg >= STMFX_REG_SYS_CTRL);
++}
++
++static const struct regmap_config stmfx_regmap_config = {
++	.reg_bits	= 8,
++	.reg_stride	= 1,
++	.val_bits	= 8,
++	.max_register	= STMFX_REG_MAX,
++	.volatile_reg	= stmfx_reg_volatile,
++	.writeable_reg	= stmfx_reg_writeable,
++	.cache_type	= REGCACHE_RBTREE,
++};
++
++static int stmfx_probe(struct i2c_client *client,
++		       const struct i2c_device_id *id)
++{
++	struct device *dev = &client->dev;
++	struct stmfx_ddata *ddata;
++	int i, ret;
++
++	ddata = devm_kzalloc(dev, sizeof(*ddata), GFP_KERNEL);
++	if (!ddata)
++		return -ENOMEM;
++	/* State holder */
++	ddata->stmfx = devm_kzalloc(dev, sizeof(*ddata->stmfx), GFP_KERNEL);
++	if (!ddata->stmfx)
++		return -ENOMEM;
++
++	i2c_set_clientdata(client, ddata);
++
++	ddata->stmfx->dev = dev;
++
++	ddata->stmfx->map = devm_regmap_init_i2c(client, &stmfx_regmap_config);
++	if (IS_ERR(ddata->stmfx->map)) {
++		ret = PTR_ERR(ddata->stmfx->map);
++		dev_err(dev, "failed to allocate register map: %d\n", ret);
++		return ret;
++	}
++
++	mutex_init(&ddata->lock);
++
++	ret = stmfx_chip_init(ddata, client);
++	if (ret) {
++		if (ret == -ETIMEDOUT)
++			return -EPROBE_DEFER;
++		return ret;
++	}
++
++	if (client->irq < 0) {
++		dev_err(dev, "failed to get irq: %d\n", client->irq);
++		ret = client->irq;
++		goto err_chip_exit;
++	}
++
++	ret = stmfx_irq_init(ddata, client->irq);
++	if (ret)
++		goto err_chip_exit;
++
++	for (i = 0; i < ARRAY_SIZE(stmfx_cells); i++) {
++		stmfx_cells[i].platform_data = ddata->stmfx;
++		stmfx_cells[i].pdata_size = sizeof(struct stmfx);
++	}
++
++	ret = devm_mfd_add_devices(dev, PLATFORM_DEVID_NONE,
++				   stmfx_cells, ARRAY_SIZE(stmfx_cells), NULL,
++				   0, ddata->irq_domain);
++	if (ret)
++		goto err_irq_exit;
++
++	return 0;
++
++err_irq_exit:
++	stmfx_irq_exit(ddata);
++err_chip_exit:
++	stmfx_chip_exit(ddata);
++
++	return ret;
++}
++
++static int stmfx_remove(struct i2c_client *client)
++{
++	struct stmfx_ddata *ddata = i2c_get_clientdata(client);
++
++	stmfx_irq_exit(ddata);
++
++	return stmfx_chip_exit(ddata);
++}
++
++#ifdef CONFIG_PM_SLEEP
++static int stmfx_backup_regs(struct stmfx_ddata *ddata)
++{
++	int ret;
++
++	ret = regmap_raw_read(ddata->stmfx->map, STMFX_REG_SYS_CTRL,
++			      &ddata->bkp_sysctrl, sizeof(ddata->bkp_sysctrl));
++	if (ret)
++		return ret;
++	ret = regmap_raw_read(ddata->stmfx->map, STMFX_REG_IRQ_OUT_PIN,
++			      &ddata->bkp_irqoutpin,
++			      sizeof(ddata->bkp_irqoutpin));
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
++static int stmfx_restore_regs(struct stmfx_ddata *ddata)
++{
++	int ret;
++
++	ret = regmap_raw_write(ddata->stmfx->map, STMFX_REG_SYS_CTRL,
++			       &ddata->bkp_sysctrl, sizeof(ddata->bkp_sysctrl));
++	if (ret)
++		return ret;
++	ret = regmap_raw_write(ddata->stmfx->map, STMFX_REG_IRQ_OUT_PIN,
++			       &ddata->bkp_irqoutpin,
++			       sizeof(ddata->bkp_irqoutpin));
++	if (ret)
++		return ret;
++	ret = regmap_raw_write(ddata->stmfx->map, STMFX_REG_IRQ_SRC_EN,
++			       &ddata->irq_src, sizeof(ddata->irq_src));
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
++static int stmfx_suspend(struct device *dev)
++{
++	struct stmfx_ddata *ddata = dev_get_drvdata(dev);
++	int ret;
++
++	ret = stmfx_backup_regs(ddata);
++	if (ret) {
++		dev_err(ddata->stmfx->dev, "registers backup failure\n");
++		return ret;
++	}
++
++	if (!IS_ERR(ddata->vdd)) {
++		ret = regulator_disable(ddata->vdd);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
++static int stmfx_resume(struct device *dev)
++{
++	struct stmfx_ddata *ddata = dev_get_drvdata(dev);
++	int ret;
++
++	if (!IS_ERR(ddata->vdd)) {
++		ret = regulator_enable(ddata->vdd);
++		if (ret) {
++			dev_err(ddata->stmfx->dev,
++				"vdd enable failed: %d\n", ret);
++			return ret;
++		}
++	}
++
++	ret = stmfx_restore_regs(ddata);
++	if (ret) {
++		dev_err(ddata->stmfx->dev, "registers restoration failure\n");
++		return ret;
++	}
++
++	return 0;
++}
++#endif
++
++static SIMPLE_DEV_PM_OPS(stmfx_dev_pm_ops, stmfx_suspend, stmfx_resume);
++
++static const struct of_device_id stmfx_of_match[] = {
++	{ .compatible = "st,stmfx-0300", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, stmfx_of_match);
++
++static struct i2c_driver stmfx_driver = {
++	.driver = {
++		.name = "stmfx-core",
++		.of_match_table = of_match_ptr(stmfx_of_match),
++		.pm = &stmfx_dev_pm_ops,
++	},
++	.probe = stmfx_probe,
++	.remove = stmfx_remove,
++};
++module_i2c_driver(stmfx_driver);
++
++MODULE_DESCRIPTION("STMFX core driver");
++MODULE_AUTHOR("Amelie Delaunay <amelie.delaunay@st.com>");
++MODULE_LICENSE("GPL v2");
+diff --git a/drivers/mfd/stpmic1.c b/drivers/mfd/stpmic1.c
+new file mode 100644
+index 0000000..5bf6328
+--- /dev/null
++++ b/drivers/mfd/stpmic1.c
+@@ -0,0 +1,413 @@
++// SPDX-License-Identifier: GPL-2.0
++// Copyright (C) STMicroelectronics 2018
++// Author: Pascal Paillet <p.paillet@st.com>
++
++#include <linux/i2c.h>
++#include <linux/interrupt.h>
++#include <linux/mfd/core.h>
++#include <linux/mfd/stpmic1.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_irq.h>
++#include <linux/of_platform.h>
++#include <linux/pm_wakeirq.h>
++#include <linux/regmap.h>
++
++#include <dt-bindings/mfd/st,stpmic1.h>
++
++#define STPMIC1_MAIN_IRQ 0
++#define STPMIC1_WAKEUP_IRQ 1
++
++static bool stpmic1_reg_readable(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case TURN_ON_SR:
++	case TURN_OFF_SR:
++	case ICC_LDO_TURN_OFF_SR:
++	case ICC_BUCK_TURN_OFF_SR:
++	case RREQ_STATE_SR:
++	case VERSION_SR:
++	case SWOFF_PWRCTRL_CR:
++	case PADS_PULL_CR:
++	case BUCKS_PD_CR:
++	case LDO14_PD_CR:
++	case LDO56_VREF_PD_CR:
++	case VBUS_DET_VIN_CR:
++	case PKEY_TURNOFF_CR:
++	case BUCKS_MASK_RANK_CR:
++	case BUCKS_MASK_RESET_CR:
++	case LDOS_MASK_RANK_CR:
++	case LDOS_MASK_RESET_CR:
++	case WCHDG_CR:
++	case WCHDG_TIMER_CR:
++	case BUCKS_ICCTO_CR:
++	case LDOS_ICCTO_CR:
++	case BUCK1_ACTIVE_CR:
++	case BUCK2_ACTIVE_CR:
++	case BUCK3_ACTIVE_CR:
++	case BUCK4_ACTIVE_CR:
++	case VREF_DDR_ACTIVE_CR:
++	case LDO1_ACTIVE_CR:
++	case LDO2_ACTIVE_CR:
++	case LDO3_ACTIVE_CR:
++	case LDO4_ACTIVE_CR:
++	case LDO5_ACTIVE_CR:
++	case LDO6_ACTIVE_CR:
++	case BUCK1_STDBY_CR:
++	case BUCK2_STDBY_CR:
++	case BUCK3_STDBY_CR:
++	case BUCK4_STDBY_CR:
++	case VREF_DDR_STDBY_CR:
++	case LDO1_STDBY_CR:
++	case LDO2_STDBY_CR:
++	case LDO3_STDBY_CR:
++	case LDO4_STDBY_CR:
++	case LDO5_STDBY_CR:
++	case LDO6_STDBY_CR:
++	case BST_SW_CR:
++	case INT_PENDING_R1:
++	case INT_PENDING_R2:
++	case INT_PENDING_R3:
++	case INT_PENDING_R4:
++	case INT_DBG_LATCH_R1:
++	case INT_DBG_LATCH_R2:
++	case INT_DBG_LATCH_R3:
++	case INT_DBG_LATCH_R4:
++	case INT_CLEAR_R1:
++	case INT_CLEAR_R2:
++	case INT_CLEAR_R3:
++	case INT_CLEAR_R4:
++	case INT_MASK_R1:
++	case INT_MASK_R2:
++	case INT_MASK_R3:
++	case INT_MASK_R4:
++	case INT_SET_MASK_R1:
++	case INT_SET_MASK_R2:
++	case INT_SET_MASK_R3:
++	case INT_SET_MASK_R4:
++	case INT_CLEAR_MASK_R1:
++	case INT_CLEAR_MASK_R2:
++	case INT_CLEAR_MASK_R3:
++	case INT_CLEAR_MASK_R4:
++	case INT_SRC_R1:
++	case INT_SRC_R2:
++	case INT_SRC_R3:
++	case INT_SRC_R4:
++		return true;
++	default:
++		return false;
++	}
++}
++
++static bool stpmic1_reg_writeable(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case SWOFF_PWRCTRL_CR:
++	case PADS_PULL_CR:
++	case BUCKS_PD_CR:
++	case LDO14_PD_CR:
++	case LDO56_VREF_PD_CR:
++	case VBUS_DET_VIN_CR:
++	case PKEY_TURNOFF_CR:
++	case BUCKS_MASK_RANK_CR:
++	case BUCKS_MASK_RESET_CR:
++	case LDOS_MASK_RANK_CR:
++	case LDOS_MASK_RESET_CR:
++	case WCHDG_CR:
++	case WCHDG_TIMER_CR:
++	case BUCKS_ICCTO_CR:
++	case LDOS_ICCTO_CR:
++	case BUCK1_ACTIVE_CR:
++	case BUCK2_ACTIVE_CR:
++	case BUCK3_ACTIVE_CR:
++	case BUCK4_ACTIVE_CR:
++	case VREF_DDR_ACTIVE_CR:
++	case LDO1_ACTIVE_CR:
++	case LDO2_ACTIVE_CR:
++	case LDO3_ACTIVE_CR:
++	case LDO4_ACTIVE_CR:
++	case LDO5_ACTIVE_CR:
++	case LDO6_ACTIVE_CR:
++	case BUCK1_STDBY_CR:
++	case BUCK2_STDBY_CR:
++	case BUCK3_STDBY_CR:
++	case BUCK4_STDBY_CR:
++	case VREF_DDR_STDBY_CR:
++	case LDO1_STDBY_CR:
++	case LDO2_STDBY_CR:
++	case LDO3_STDBY_CR:
++	case LDO4_STDBY_CR:
++	case LDO5_STDBY_CR:
++	case LDO6_STDBY_CR:
++	case BST_SW_CR:
++	case INT_DBG_LATCH_R1:
++	case INT_DBG_LATCH_R2:
++	case INT_DBG_LATCH_R3:
++	case INT_DBG_LATCH_R4:
++	case INT_CLEAR_R1:
++	case INT_CLEAR_R2:
++	case INT_CLEAR_R3:
++	case INT_CLEAR_R4:
++	case INT_SET_MASK_R1:
++	case INT_SET_MASK_R2:
++	case INT_SET_MASK_R3:
++	case INT_SET_MASK_R4:
++	case INT_CLEAR_MASK_R1:
++	case INT_CLEAR_MASK_R2:
++	case INT_CLEAR_MASK_R3:
++	case INT_CLEAR_MASK_R4:
++		return true;
++	default:
++		return false;
++	}
++}
++
++static bool stpmic1_reg_volatile(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case TURN_ON_SR:
++	case TURN_OFF_SR:
++	case ICC_LDO_TURN_OFF_SR:
++	case ICC_BUCK_TURN_OFF_SR:
++	case RREQ_STATE_SR:
++	case INT_PENDING_R1:
++	case INT_PENDING_R2:
++	case INT_PENDING_R3:
++	case INT_PENDING_R4:
++	case INT_SRC_R1:
++	case INT_SRC_R2:
++	case INT_SRC_R3:
++	case INT_SRC_R4:
++	case WCHDG_CR:
++		return true;
++	default:
++		return false;
++	}
++}
++
++const struct regmap_config stpmic1_regmap_config = {
++	.reg_bits = 8,
++	.val_bits = 8,
++	.cache_type = REGCACHE_RBTREE,
++	.max_register = PMIC_MAX_REGISTER_ADDRESS,
++	.readable_reg = stpmic1_reg_readable,
++	.writeable_reg = stpmic1_reg_writeable,
++	.volatile_reg = stpmic1_reg_volatile,
++};
++
++static const struct regmap_irq stpmic1_irqs[] = {
++	[IT_PONKEY_F]		= { .mask = 0x01 },
++	[IT_PONKEY_R]		= { .mask = 0x02 },
++	[IT_WAKEUP_F]		= { .mask = 0x04 },
++	[IT_WAKEUP_R]		= { .mask = 0x08 },
++	[IT_VBUS_OTG_F]		= { .mask = 0x10 },
++	[IT_VBUS_OTG_R]		= { .mask = 0x20 },
++	[IT_SWOUT_F]		= { .mask = 0x40 },
++	[IT_SWOUT_R]		= { .mask = 0x80 },
++
++	[IT_CURLIM_BUCK1]	= { .reg_offset = 1, .mask = 0x01 },
++	[IT_CURLIM_BUCK2]	= { .reg_offset = 1, .mask = 0x02 },
++	[IT_CURLIM_BUCK3]	= { .reg_offset = 1, .mask = 0x04 },
++	[IT_CURLIM_BUCK4]	= { .reg_offset = 1, .mask = 0x08 },
++	[IT_OCP_OTG]		= { .reg_offset = 1, .mask = 0x10 },
++	[IT_OCP_SWOUT]		= { .reg_offset = 1, .mask = 0x20 },
++	[IT_OCP_BOOST]		= { .reg_offset = 1, .mask = 0x40 },
++	[IT_OVP_BOOST]		= { .reg_offset = 1, .mask = 0x80 },
++
++	[IT_CURLIM_LDO1]	= { .reg_offset = 2, .mask = 0x01 },
++	[IT_CURLIM_LDO2]	= { .reg_offset = 2, .mask = 0x02 },
++	[IT_CURLIM_LDO3]	= { .reg_offset = 2, .mask = 0x04 },
++	[IT_CURLIM_LDO4]	= { .reg_offset = 2, .mask = 0x08 },
++	[IT_CURLIM_LDO5]	= { .reg_offset = 2, .mask = 0x10 },
++	[IT_CURLIM_LDO6]	= { .reg_offset = 2, .mask = 0x20 },
++	[IT_SHORT_SWOTG]	= { .reg_offset = 2, .mask = 0x40 },
++	[IT_SHORT_SWOUT]	= { .reg_offset = 2, .mask = 0x80 },
++
++	[IT_TWARN_F]		= { .reg_offset = 3, .mask = 0x01 },
++	[IT_TWARN_R]		= { .reg_offset = 3, .mask = 0x02 },
++	[IT_VINLOW_F]		= { .reg_offset = 3, .mask = 0x04 },
++	[IT_VINLOW_R]		= { .reg_offset = 3, .mask = 0x08 },
++	[IT_SWIN_F]		= { .reg_offset = 3, .mask = 0x40 },
++	[IT_SWIN_R]		= { .reg_offset = 3, .mask = 0x80 },
++};
++
++static const struct regmap_irq_chip stpmic1_regmap_irq_chip = {
++	.name = "pmic_irq",
++	.status_base = INT_PENDING_R1,
++	.mask_base = INT_CLEAR_MASK_R1,
++	.unmask_base = INT_SET_MASK_R1,
++	.ack_base = INT_CLEAR_R1,
++	.num_regs = STPMIC1_PMIC_NUM_IRQ_REGS,
++	.irqs = stpmic1_irqs,
++	.num_irqs = ARRAY_SIZE(stpmic1_irqs),
++};
++
++static int stpmic1_probe(struct i2c_client *i2c,
++			 const struct i2c_device_id *id)
++{
++	struct stpmic1 *ddata;
++	struct device *dev = &i2c->dev;
++	int ret;
++	struct device_node *np = dev->of_node;
++	u32 reg;
++
++	ddata = devm_kzalloc(dev, sizeof(struct stpmic1), GFP_KERNEL);
++	if (!ddata)
++		return -ENOMEM;
++
++	i2c_set_clientdata(i2c, ddata);
++	ddata->dev = dev;
++
++	ddata->regmap = devm_regmap_init_i2c(i2c, &stpmic1_regmap_config);
++	if (IS_ERR(ddata->regmap))
++		return PTR_ERR(ddata->regmap);
++
++	ddata->irq = of_irq_get(np, STPMIC1_MAIN_IRQ);
++	if (ddata->irq < 0) {
++		dev_err(dev, "Failed to get main IRQ: %d\n", ddata->irq);
++		return ddata->irq;
++	}
++
++	ddata->irq_wake = of_irq_get(np, STPMIC1_WAKEUP_IRQ);
++	if (ddata->irq_wake > 0) {
++		device_init_wakeup(dev, true);
++		ret = dev_pm_set_dedicated_wake_irq(dev, ddata->irq_wake);
++		if (ret)
++			dev_warn(dev, "failed to set up wakeup irq");
++	}
++
++	if (!of_property_read_u32(np, "st,main-control-register", &reg)) {
++		ret = regmap_update_bits(ddata->regmap,
++					 SWOFF_PWRCTRL_CR,
++					 PWRCTRL_POLARITY_HIGH |
++					 PWRCTRL_PIN_VALID |
++					 RESTART_REQUEST_ENABLED,
++					 reg);
++		if (ret) {
++			dev_err(dev,
++				"Failed to update main control register: %d\n",
++				ret);
++			return ret;
++		}
++	}
++
++	/* Read Version ID */
++	ret = regmap_read(ddata->regmap, VERSION_SR, &reg);
++	if (ret) {
++		dev_err(dev, "Unable to read pmic version\n");
++		return ret;
++	}
++	dev_info(dev, "PMIC Chip Version: 0x%x\n", reg);
++
++	if (!of_property_read_u32(np, "st,pads-pull-register", &reg)) {
++		ret = regmap_update_bits(ddata->regmap,
++					 PADS_PULL_CR,
++					 WAKEUP_DETECTOR_DISABLED |
++					 PWRCTRL_PD_ACTIVE |
++					 PWRCTRL_PU_ACTIVE |
++					 WAKEUP_PD_ACTIVE,
++					 reg);
++		if (ret) {
++			dev_err(dev,
++				"Failed to update pads control register: %d\n",
++				ret);
++			return ret;
++		}
++	}
++
++	if (!of_property_read_u32(np, "st,vin-control-register", &reg)) {
++		ret = regmap_update_bits(ddata->regmap,
++					 VBUS_DET_VIN_CR,
++					 VINLOW_CTRL_REG_MASK,
++					 reg);
++		if (ret) {
++			dev_err(dev,
++				"Failed to update vin control register: %d\n",
++				ret);
++			return ret;
++		}
++	}
++
++	if (!of_property_read_u32(np, "st,usb-control-register", &reg)) {
++		ret = regmap_update_bits(ddata->regmap, BST_SW_CR,
++					 BOOST_OVP_DISABLED |
++					 VBUS_OTG_DETECTION_DISABLED |
++					 SW_OUT_DISCHARGE |
++					 VBUS_OTG_DISCHARGE |
++					 OCP_LIMIT_HIGH,
++					 reg);
++		if (ret) {
++			dev_err(dev,
++				"Failed to update usb control register: %d\n",
++				ret);
++			return ret;
++		}
++	}
++
++	/* Initialize PMIC IRQ Chip & IRQ domains associated */
++	ret = devm_regmap_add_irq_chip(dev, ddata->regmap, ddata->irq,
++				       IRQF_ONESHOT | IRQF_SHARED,
++				       0, &stpmic1_regmap_irq_chip,
++				       &ddata->irq_data);
++	if (ret) {
++		dev_err(dev, "IRQ Chip registration failed: %d\n", ret);
++		return ret;
++	}
++
++	return devm_of_platform_populate(dev);
++}
++
++static const struct i2c_device_id stpmic1_id[] = {
++	{ "stpmic1"},
++	{}
++};
++
++MODULE_DEVICE_TABLE(i2c, stpmic1_id);
++
++#ifdef CONFIG_PM_SLEEP
++static int stpmic1_suspend(struct device *dev)
++{
++	struct i2c_client *i2c = to_i2c_client(dev);
++	struct stpmic1 *pmic_dev = i2c_get_clientdata(i2c);
++
++	disable_irq(pmic_dev->irq);
++	if ((pmic_dev->irq_wake > 0) && device_may_wakeup(dev))
++		enable_irq_wake(pmic_dev->irq_wake);
++
++	return 0;
++}
++
++static int stpmic1_resume(struct device *dev)
++{
++	struct i2c_client *i2c = to_i2c_client(dev);
++	struct stpmic1 *pmic_dev = i2c_get_clientdata(i2c);
++	int ret;
++
++	ret = regcache_sync(pmic_dev->regmap);
++	if (ret)
++		return ret;
++
++	enable_irq(pmic_dev->irq);
++	if ((pmic_dev->irq_wake > 0) && device_may_wakeup(dev))
++		disable_irq_wake(pmic_dev->irq_wake);
++
++	return 0;
++}
++#endif
++
++static SIMPLE_DEV_PM_OPS(stpmic1_pm, stpmic1_suspend, stpmic1_resume);
++
++static struct i2c_driver stpmic1_driver = {
++	.driver = {
++		.name = "stpmic1",
++		.pm = &stpmic1_pm,
++	},
++	.probe = stpmic1_probe,
++	.id_table = stpmic1_id,
++};
++
++module_i2c_driver(stpmic1_driver);
++
++MODULE_DESCRIPTION("STPMIC1 PMIC Driver");
++MODULE_AUTHOR("Pascal Paillet <p.paillet@st.com>");
++MODULE_LICENSE("GPL v2");
+diff --git a/include/dt-bindings/mfd/st,stpmic1.h b/include/dt-bindings/mfd/st,stpmic1.h
+new file mode 100644
+index 0000000..b2d6c83
+--- /dev/null
++++ b/include/dt-bindings/mfd/st,stpmic1.h
+@@ -0,0 +1,46 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
++ * Author: Philippe Peurichard <philippe.peurichard@st.com>,
++ * Pascal Paillet <p.paillet@st.com> for STMicroelectronics.
++ */
++
++#ifndef __DT_BINDINGS_STPMIC1_H__
++#define __DT_BINDINGS_STPMIC1_H__
++
++/* IRQ definitions */
++#define IT_PONKEY_F	0
++#define IT_PONKEY_R	1
++#define IT_WAKEUP_F	2
++#define IT_WAKEUP_R	3
++#define IT_VBUS_OTG_F	4
++#define IT_VBUS_OTG_R	5
++#define IT_SWOUT_F	6
++#define IT_SWOUT_R	7
++
++#define IT_CURLIM_BUCK1	8
++#define IT_CURLIM_BUCK2	9
++#define IT_CURLIM_BUCK3	10
++#define IT_CURLIM_BUCK4	11
++#define IT_OCP_OTG	12
++#define IT_OCP_SWOUT	13
++#define IT_OCP_BOOST	14
++#define IT_OVP_BOOST	15
++
++#define IT_CURLIM_LDO1	16
++#define IT_CURLIM_LDO2	17
++#define IT_CURLIM_LDO3	18
++#define IT_CURLIM_LDO4	19
++#define IT_CURLIM_LDO5	20
++#define IT_CURLIM_LDO6	21
++#define IT_SHORT_SWOTG	22
++#define IT_SHORT_SWOUT	23
++
++#define IT_TWARN_F	24
++#define IT_TWARN_R	25
++#define IT_VINLOW_F	26
++#define IT_VINLOW_R	27
++#define IT_SWIN_F	30
++#define IT_SWIN_R	31
++
++#endif /* __DT_BINDINGS_STPMIC1_H__ */
+diff --git a/include/linux/mfd/stmfx.h b/include/linux/mfd/stmfx.h
+new file mode 100644
+index 0000000..35c3d42
+--- /dev/null
++++ b/include/linux/mfd/stmfx.h
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Copyright (C) 2018 STMicroelectronics
++ * Author(s): Amelie Delaunay <amelie.delaunay@st.com>.
++ */
++
++#ifndef MFD_STMFX_H
++#define MFX_STMFX_H
++
++#include <linux/regmap.h>
++
++enum stmfx_functions {
++	STMFX_FUNC_GPIO		= BIT(0), /* GPIO[15:0] */
++	STMFX_FUNC_ALTGPIO_LOW	= BIT(1), /* aGPIO[3:0] */
++	STMFX_FUNC_ALTGPIO_HIGH = BIT(2), /* aGPIO[7:4] */
++	STMFX_FUNC_TS		= BIT(3),
++	STMFX_FUNC_IDD		= BIT(4),
++};
++
++struct stmfx {
++	struct device *dev;
++	struct regmap *map;
++};
++
++int stmfx_function_enable(struct stmfx *stmfx, u32 func);
++int stmfx_function_disable(struct stmfx *stmfx, u32 func);
++#endif
+diff --git a/include/linux/mfd/stpmic1.h b/include/linux/mfd/stpmic1.h
+new file mode 100644
+index 0000000..4abe5f1
+--- /dev/null
++++ b/include/linux/mfd/stpmic1.h
+@@ -0,0 +1,213 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
++ * Author: Philippe Peurichard <philippe.peurichard@st.com>,
++ * Pascal Paillet <p.paillet@st.com> for STMicroelectronics.
++ */
++
++#ifndef __LINUX_MFD_STPMIC1_H
++#define __LINUX_MFD_STPMIC1_H
++
++#define TURN_ON_SR		0x1
++#define TURN_OFF_SR		0x2
++#define ICC_LDO_TURN_OFF_SR	0x3
++#define ICC_BUCK_TURN_OFF_SR	0x4
++#define RREQ_STATE_SR		0x5
++#define VERSION_SR		0x6
++
++#define SWOFF_PWRCTRL_CR	0x10
++#define PADS_PULL_CR		0x11
++#define BUCKS_PD_CR		0x12
++#define LDO14_PD_CR		0x13
++#define LDO56_VREF_PD_CR	0x14
++#define VBUS_DET_VIN_CR		0x15
++#define PKEY_TURNOFF_CR		0x16
++#define BUCKS_MASK_RANK_CR	0x17
++#define BUCKS_MASK_RESET_CR	0x18
++#define LDOS_MASK_RANK_CR	0x19
++#define LDOS_MASK_RESET_CR	0x1A
++#define WCHDG_CR		0x1B
++#define WCHDG_TIMER_CR		0x1C
++#define BUCKS_ICCTO_CR		0x1D
++#define LDOS_ICCTO_CR		0x1E
++
++#define BUCK1_ACTIVE_CR		0x20
++#define BUCK2_ACTIVE_CR		0x21
++#define BUCK3_ACTIVE_CR		0x22
++#define BUCK4_ACTIVE_CR		0x23
++#define VREF_DDR_ACTIVE_CR	0x24
++#define LDO1_ACTIVE_CR		0x25
++#define LDO2_ACTIVE_CR		0x26
++#define LDO3_ACTIVE_CR		0x27
++#define LDO4_ACTIVE_CR		0x28
++#define LDO5_ACTIVE_CR		0x29
++#define LDO6_ACTIVE_CR		0x2A
++
++#define BUCK1_STDBY_CR		0x30
++#define BUCK2_STDBY_CR		0x31
++#define BUCK3_STDBY_CR		0x32
++#define BUCK4_STDBY_CR		0x33
++#define VREF_DDR_STDBY_CR	0x34
++#define LDO1_STDBY_CR		0x35
++#define LDO2_STDBY_CR		0x36
++#define LDO3_STDBY_CR		0x37
++#define LDO4_STDBY_CR		0x38
++#define LDO5_STDBY_CR		0x39
++#define LDO6_STDBY_CR		0x3A
++
++#define BST_SW_CR		0x40
++
++#define INT_PENDING_R1		0x50
++#define INT_PENDING_R2		0x51
++#define INT_PENDING_R3		0x52
++#define INT_PENDING_R4		0x53
++
++#define INT_DBG_LATCH_R1	0x60
++#define INT_DBG_LATCH_R2	0x61
++#define INT_DBG_LATCH_R3	0x62
++#define INT_DBG_LATCH_R4	0x63
++
++#define INT_CLEAR_R1		0x70
++#define INT_CLEAR_R2		0x71
++#define INT_CLEAR_R3		0x72
++#define INT_CLEAR_R4		0x73
++
++#define INT_MASK_R1		0x80
++#define INT_MASK_R2		0x81
++#define INT_MASK_R3		0x82
++#define INT_MASK_R4		0x83
++
++#define INT_SET_MASK_R1		0x90
++#define INT_SET_MASK_R2		0x91
++#define INT_SET_MASK_R3		0x92
++#define INT_SET_MASK_R4		0x93
++
++#define INT_CLEAR_MASK_R1	0xA0
++#define INT_CLEAR_MASK_R2	0xA1
++#define INT_CLEAR_MASK_R3	0xA2
++#define INT_CLEAR_MASK_R4	0xA3
++
++#define INT_SRC_R1		0xB0
++#define INT_SRC_R2		0xB1
++#define INT_SRC_R3		0xB2
++#define INT_SRC_R4		0xB3
++
++#define PMIC_MAX_REGISTER_ADDRESS INT_SRC_R4
++
++#define STPMIC1_PMIC_NUM_IRQ_REGS 4
++
++#define TURN_OFF_SR_ICC_EVENT	0x08
++
++#define LDO_VOLTAGE_MASK		GENMASK(6, 2)
++#define BUCK_VOLTAGE_MASK		GENMASK(7, 2)
++#define LDO_BUCK_VOLTAGE_SHIFT		2
++
++#define LDO_ENABLE_MASK			BIT(0)
++#define BUCK_ENABLE_MASK		BIT(0)
++
++#define BUCK_HPLP_ENABLE_MASK		BIT(1)
++#define BUCK_HPLP_SHIFT			1
++
++#define STDBY_ENABLE_MASK  BIT(0)
++
++#define BUCKS_PD_CR_REG_MASK	GENMASK(7, 0)
++#define BUCK_MASK_RANK_REGISTER_MASK	GENMASK(3, 0)
++#define BUCK_MASK_RESET_REGISTER_MASK	GENMASK(3, 0)
++#define LDO1234_PULL_DOWN_REGISTER_MASK	GENMASK(7, 0)
++#define LDO56_VREF_PD_CR_REG_MASK	GENMASK(5, 0)
++#define LDO_MASK_RANK_REGISTER_MASK	GENMASK(5, 0)
++#define LDO_MASK_RESET_REGISTER_MASK	GENMASK(5, 0)
++
++#define BUCK1_PULL_DOWN_REG		BUCKS_PD_CR
++#define BUCK1_PULL_DOWN_MASK		BIT(0)
++#define BUCK2_PULL_DOWN_REG		BUCKS_PD_CR
++#define BUCK2_PULL_DOWN_MASK		BIT(2)
++#define BUCK3_PULL_DOWN_REG		BUCKS_PD_CR
++#define BUCK3_PULL_DOWN_MASK		BIT(4)
++#define BUCK4_PULL_DOWN_REG		BUCKS_PD_CR
++#define BUCK4_PULL_DOWN_MASK		BIT(6)
++
++#define LDO1_PULL_DOWN_REG		LDO14_PD_CR
++#define LDO1_PULL_DOWN_MASK		BIT(0)
++#define LDO2_PULL_DOWN_REG		LDO14_PD_CR
++#define LDO2_PULL_DOWN_MASK		BIT(2)
++#define LDO3_PULL_DOWN_REG		LDO14_PD_CR
++#define LDO3_PULL_DOWN_MASK		BIT(4)
++#define LDO4_PULL_DOWN_REG		LDO14_PD_CR
++#define LDO4_PULL_DOWN_MASK		BIT(6)
++#define LDO5_PULL_DOWN_REG		LDO56_VREF_PD_CR
++#define LDO5_PULL_DOWN_MASK		BIT(0)
++#define LDO6_PULL_DOWN_REG		LDO56_VREF_PD_CR
++#define LDO6_PULL_DOWN_MASK		BIT(2)
++#define VREF_DDR_PULL_DOWN_REG		LDO56_VREF_PD_CR
++#define VREF_DDR_PULL_DOWN_MASK		BIT(4)
++
++#define BUCKS_ICCTO_CR_REG_MASK	GENMASK(6, 0)
++#define LDOS_ICCTO_CR_REG_MASK	GENMASK(5, 0)
++
++#define LDO_BYPASS_MASK			BIT(7)
++
++/* Main PMIC Control Register
++ * SWOFF_PWRCTRL_CR
++ * Address : 0x10
++ */
++#define ICC_EVENT_ENABLED		BIT(4)
++#define PWRCTRL_POLARITY_HIGH		BIT(3)
++#define PWRCTRL_PIN_VALID		BIT(2)
++#define RESTART_REQUEST_ENABLED		BIT(1)
++#define SOFTWARE_SWITCH_OFF_ENABLED	BIT(0)
++
++/* Main PMIC PADS Control Register
++ * PADS_PULL_CR
++ * Address : 0x11
++ */
++#define WAKEUP_DETECTOR_DISABLED	BIT(4)
++#define PWRCTRL_PD_ACTIVE		BIT(3)
++#define PWRCTRL_PU_ACTIVE		BIT(2)
++#define WAKEUP_PD_ACTIVE		BIT(1)
++#define PONKEY_PU_INACTIVE		BIT(0)
++
++/* Main PMIC VINLOW Control Register
++ * VBUS_DET_VIN_CRC DMSC
++ * Address : 0x15
++ */
++#define SWIN_DETECTOR_ENABLED		BIT(7)
++#define SWOUT_DETECTOR_ENABLED		BIT(6)
++#define VINLOW_ENABLED			BIT(0)
++#define VINLOW_CTRL_REG_MASK		GENMASK(7, 0)
++
++/* USB Control Register
++ * Address : 0x40
++ */
++#define BOOST_OVP_DISABLED		BIT(7)
++#define VBUS_OTG_DETECTION_DISABLED	BIT(6)
++#define SW_OUT_DISCHARGE		BIT(5)
++#define VBUS_OTG_DISCHARGE		BIT(4)
++#define OCP_LIMIT_HIGH			BIT(3)
++#define SWIN_SWOUT_ENABLED		BIT(2)
++#define USBSW_OTG_SWITCH_ENABLED	BIT(1)
++#define BOOST_ENABLED			BIT(0)
++
++/* PKEY_TURNOFF_CR
++ * Address : 0x16
++ */
++#define PONKEY_PWR_OFF			BIT(7)
++#define PONKEY_CC_FLAG_CLEAR		BIT(6)
++#define PONKEY_TURNOFF_TIMER_MASK	GENMASK(3, 0)
++#define PONKEY_TURNOFF_MASK		GENMASK(7, 0)
++
++/*
++ * struct stpmic1 - stpmic1 master device for sub-drivers
++ * @dev: master device of the chip (can be used to access platform data)
++ * @irq: main IRQ number
++ * @regmap_irq_chip_data: irq chip data
++ */
++struct stpmic1 {
++	struct device *dev;
++	struct regmap *regmap;
++	int irq;
++	int irq_wake;
++	struct regmap_irq_chip_data *irq_data;
++};
++
++#endif /*  __LINUX_MFD_STPMIC1_H */
+-- 
+2.7.4
+

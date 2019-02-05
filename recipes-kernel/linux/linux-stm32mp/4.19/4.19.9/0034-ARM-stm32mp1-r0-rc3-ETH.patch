@@ -1,0 +1,169 @@
+From f7da805ac84601d1dbbaf51e8f080844e1e5ae4e Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Mon, 10 Dec 2018 15:40:00 +0100
+Subject: [PATCH 34/52] ARM: stm32mp1-r0-rc3: ETH
+
+---
+ .../devicetree/bindings/net/stm32-dwmac.txt        |  4 +--
+ drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c  | 36 ++++++++++++++--------
+ drivers/net/ethernet/stmicro/stmmac/stmmac_main.c  | 20 ++++++------
+ 3 files changed, 36 insertions(+), 24 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/net/stm32-dwmac.txt b/Documentation/devicetree/bindings/net/stm32-dwmac.txt
+index f42dc68..5f6a6ba 100644
+--- a/Documentation/devicetree/bindings/net/stm32-dwmac.txt
++++ b/Documentation/devicetree/bindings/net/stm32-dwmac.txt
+@@ -14,8 +14,7 @@ Required properties:
+ - clock-names: Should be "stmmaceth" for the host clock.
+ 	       Should be "mac-clk-tx" for the MAC TX clock.
+ 	       Should be "mac-clk-rx" for the MAC RX clock.
+-	       For MPU family need to add also "ethstp" for power mode clock and,
+-	                                       "syscfg-clk" for SYSCFG clock.
++	       For MPU family need to add also "ethstp" for power mode clock.
+ - interrupt-names: Should contain a list of interrupt names corresponding to
+            the interrupts in the interrupts property, if available.
+ 		   Should be "macirq" for the main MAC IRQ
+@@ -25,6 +24,7 @@ Required properties:
+ 
+ Optional properties:
+ - clock-names:     For MPU family "eth-ck" for PHY without quartz
++				   "syscfg-clk" for SYSCFG clock.
+ - st,eth_clk_sel (boolean) : set this property in RGMII PHY when you do not want use 125Mhz
+ - st,eth_ref_clk_sel (boolean) :  set this property in RMII mode when you have PHY without crystal 50MHz
+ 
+diff --git a/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c b/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
+index 545b168..8b4ca12 100644
+--- a/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
++++ b/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
+@@ -153,23 +153,32 @@ static int stm32mp1_clk_prepare(struct stm32_dwmac *dwmac, bool prepare)
+ 	int ret = 0;
+ 
+ 	if (prepare) {
+-		ret = clk_prepare_enable(dwmac->syscfg_clk);
+-		if (ret)
+-			return ret;
+-
++		if (dwmac->syscfg_clk) {
++			ret = clk_prepare_enable(dwmac->syscfg_clk);
++			if (ret)
++				return ret;
++		}
+ 		if (dwmac->clk_eth_ck) {
+ 			ret = clk_prepare_enable(dwmac->clk_eth_ck);
+ 			if (ret) {
+-				clk_disable_unprepare(dwmac->syscfg_clk);
++				if (dwmac->syscfg_clk)
++					goto unprepare_syscfg;
+ 				return ret;
+ 			}
+ 		}
+ 	} else {
+-		clk_disable_unprepare(dwmac->syscfg_clk);
++		if (dwmac->syscfg_clk)
++			clk_disable_unprepare(dwmac->syscfg_clk);
++
+ 		if (dwmac->clk_eth_ck)
+ 			clk_disable_unprepare(dwmac->clk_eth_ck);
+ 	}
+ 	return ret;
++
++unprepare_syscfg:
++	clk_disable_unprepare(dwmac->syscfg_clk);
++
++	return ret;
+ }
+ 
+ static int stm32mp1_set_mode(struct plat_stmmacenet_data *plat_dat)
+@@ -209,8 +218,8 @@ static int stm32mp1_set_mode(struct plat_stmmacenet_data *plat_dat)
+ 	}
+ 
+ 	/* Need to update PMCCLRR (clear register) */
+-	ret = regmap_update_bits(dwmac->regmap, reg + SYSCFG_PMCCLRR_OFFSET,
+-				 dwmac->ops->syscfg_eth_mask, ~val);
++	ret = regmap_write(dwmac->regmap, reg + SYSCFG_PMCCLRR_OFFSET,
++			   dwmac->ops->syscfg_eth_mask);
+ 
+ 	/* Update PMCSETR (set register) */
+ 	return regmap_update_bits(dwmac->regmap, reg,
+@@ -318,11 +327,13 @@ static int stm32mp1_parse_data(struct stm32_dwmac *dwmac,
+ 		return PTR_ERR(dwmac->clk_ethstp);
+ 	}
+ 
+-	/*  Clock for sysconfig */
++	/*  Optional Clock for sysconfig */
+ 	dwmac->syscfg_clk = devm_clk_get(dev, "syscfg-clk");
+ 	if (IS_ERR(dwmac->syscfg_clk)) {
+-		dev_err(dev, "No syscfg clock provided...\n");
+-		return PTR_ERR(dwmac->syscfg_clk);
++		err = PTR_ERR(dwmac->syscfg_clk);
++		if (err != -ENOENT)
++			return err;
++		dwmac->syscfg_clk = NULL;
+ 	}
+ 
+ 	/* Get IRQ information early to have an ability to ask for deferred
+@@ -431,7 +442,8 @@ static int stm32mp1_suspend(struct stm32_dwmac *dwmac)
+ 		return ret;
+ 
+ 	clk_disable_unprepare(dwmac->clk_tx);
+-	clk_disable_unprepare(dwmac->syscfg_clk);
++	if (dwmac->syscfg_clk)
++		clk_disable_unprepare(dwmac->syscfg_clk);
+ 	if (dwmac->clk_eth_ck)
+ 		clk_disable_unprepare(dwmac->clk_eth_ck);
+ 
+diff --git a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
+index 75896d6..281d9c7 100644
+--- a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
++++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
+@@ -2547,12 +2547,6 @@ static int stmmac_hw_setup(struct net_device *dev, bool init_ptp)
+ 			netdev_warn(priv->dev, "PTP init failed\n");
+ 	}
+ 
+-#ifdef CONFIG_DEBUG_FS
+-	ret = stmmac_init_fs(dev);
+-	if (ret < 0)
+-		netdev_warn(priv->dev, "%s: failed debugFS registration\n",
+-			    __func__);
+-#endif
+ 	priv->tx_lpi_timer = STMMAC_DEFAULT_TWT_LS;
+ 
+ 	if (priv->use_riwt) {
+@@ -2753,10 +2747,6 @@ static int stmmac_release(struct net_device *dev)
+ 
+ 	netif_carrier_off(dev);
+ 
+-#ifdef CONFIG_DEBUG_FS
+-	stmmac_exit_fs(dev);
+-#endif
+-
+ 	stmmac_release_ptp(priv);
+ 
+ 	return 0;
+@@ -4394,6 +4384,13 @@ int stmmac_dvr_probe(struct device *device,
+ 		goto error_netdev_register;
+ 	}
+ 
++#ifdef CONFIG_DEBUG_FS
++	ret = stmmac_init_fs(ndev);
++	if (ret < 0)
++		netdev_warn(priv->dev, "%s: failed debugFS registration\n",
++			    __func__);
++#endif
++
+ 	return ret;
+ 
+ error_netdev_register:
+@@ -4429,6 +4426,9 @@ int stmmac_dvr_remove(struct device *dev)
+ 
+ 	netdev_info(priv->dev, "%s: removing driver", __func__);
+ 
++#ifdef CONFIG_DEBUG_FS
++	stmmac_exit_fs(ndev);
++#endif
+ 	stmmac_stop_all_dma(priv);
+ 
+ 	stmmac_mac_set(priv, priv->ioaddr, false);
+-- 
+2.7.4
+

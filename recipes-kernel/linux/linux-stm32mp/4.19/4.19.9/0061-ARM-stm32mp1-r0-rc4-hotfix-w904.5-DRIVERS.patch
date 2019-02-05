@@ -1,0 +1,111 @@
+From 5f558583046192d07b1718d6db15cef522fa0bce Mon Sep 17 00:00:00 2001
+From: christophe montaud <christophe.montaud@st.com>
+Date: Mon, 28 Jan 2019 10:49:20 +0100
+Subject: [PATCH 61/62] ARM stm32mp1 r0 rc4 hotfix w904.5 DRIVERS
+
+---
+ drivers/gpu/drm/panel/panel-orisetech-otm8009a.c | 38 ++++++++++++++----------
+ drivers/usb/dwc2/platform.c                      | 13 ++++++--
+ 2 files changed, 33 insertions(+), 18 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c b/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c
+index ee7486b..78a7e62 100644
+--- a/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c
++++ b/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c
+@@ -284,7 +284,9 @@ static int otm8009a_unprepare(struct drm_panel *panel)
+ 	if (ret)
+ 		return ret;
+ 
+-	msleep(120);
++	msleep(10);
++
++	regulator_disable(ctx->supply);
+ 
+ 	ctx->prepared = false;
+ 
+@@ -299,6 +301,26 @@ static int otm8009a_prepare(struct drm_panel *panel)
+ 	if (ctx->prepared)
+ 		return 0;
+ 
++	if (ctx->reset_gpio) {
++		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
++		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
++	}
++
++	msleep(20);
++
++	ret = regulator_enable(ctx->supply);
++	if (ret < 0) {
++		DRM_ERROR("failed to enable supply: %d\n", ret);
++		return ret;
++	}
++
++	msleep(120);
++
++	if (ctx->reset_gpio) {
++		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
++		msleep(20);
++	}
++
+ 	ret = otm8009a_init_sequence(ctx);
+ 	if (ret)
+ 		return ret;
+@@ -456,20 +478,6 @@ static int otm8009a_probe(struct mipi_dsi_device *dsi)
+ 		return ret;
+ 	}
+ 
+-	ret = regulator_enable(ctx->supply);
+-	if (ret < 0) {
+-		DRM_ERROR("failed to enable supply: %d\n", ret);
+-		return ret;
+-	}
+-
+-	if (ctx->reset_gpio) {
+-		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+-		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+-		msleep(20);
+-		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+-		msleep(100);
+-	}
+-
+ 	return 0;
+ }
+ 
+diff --git a/drivers/usb/dwc2/platform.c b/drivers/usb/dwc2/platform.c
+index b2e5ddc..b80d046 100644
+--- a/drivers/usb/dwc2/platform.c
++++ b/drivers/usb/dwc2/platform.c
+@@ -568,13 +568,17 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
+ 	struct dwc2_hsotg *dwc2 = dev_get_drvdata(dev);
+ 	int ret = 0;
+ 
+-	if (dwc2_is_device_mode(dwc2))
+-		dwc2_hsotg_suspend(dwc2);
+-
+ 	if (dwc2->params.activate_stm_id_vb_detection &&
+ 	    !dwc2->params.force_b_session_valid) {
+ 		u32 ggpio;
+ 
++		/*
++		 * Need to force the mode to the current mode to avoid Mode
++		 * Mismatch Interrupt when ID and VBUS detection will be
++		 * disabled
++		 */
++		dwc2_force_mode(dwc2, dwc2_is_host_mode(dwc2));
++
+ 		ggpio = dwc2_readl(dwc2, GGPIO);
+ 		ggpio &= ~GGPIO_STM32_OTG_GCCFG_IDEN;
+ 		ggpio &= ~GGPIO_STM32_OTG_GCCFG_VBDEN;
+@@ -583,6 +587,9 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
+ 		regulator_disable(dwc2->usb33d);
+ 	}
+ 
++	if (dwc2_is_device_mode(dwc2))
++		dwc2_hsotg_suspend(dwc2);
++
+ 	if (dwc2->ll_hw_enabled)
+ 		ret = __dwc2_lowlevel_hw_disable(dwc2);
+ 
+-- 
+2.7.4
+
