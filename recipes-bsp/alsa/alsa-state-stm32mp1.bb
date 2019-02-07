@@ -10,10 +10,8 @@ LIC_FILES_CHKSUM = "file://${COREBASE}/meta/COPYING.MIT;md5=3da9cfbcb788c80a0384
 
 PV = "1.0"
 
-SRC_URI = ""
-
 # Machine generic
-SRC_URI_append_stm32mp1 = " \
+SRC_URI = " \
     file://asound-stm32mp157c-ev.conf   \
     file://asound-stm32mp157c-dk.conf   \
     \
@@ -22,16 +20,6 @@ SRC_URI_append_stm32mp1 = " \
     \
     file://system-generator-alsa-states \
     file://system-generator-alsa-conf   \
-    "
-
-# Machine board specific
-SRC_URI_append_stm32mp1-eval = " \
-    file://asound-stm32mp157c-ev.conf   \
-    file://asound-stm32mp157c-ev.state  \
-    "
-SRC_URI_append_stm32mp1-disco = " \
-    file://asound-stm32mp157c-dk.conf   \
-    file://asound-stm32mp157c-dk.state  \
     "
 
 S = "${WORKDIR}"
@@ -53,25 +41,6 @@ do_install() {
         fi
         if [ -f ${WORKDIR}/system-generator-alsa-conf ]; then
             install -m 0755 ${WORKDIR}/system-generator-alsa-conf ${D}${systemd_unitdir}/system-generators/
-        fi
-    fi
-}
-
-pkg_postinst_${PN}_stm32mp1-eval() {
-    if test -z "$D"
-    then
-        if test -x ${sbindir}/alsactl
-        then
-            ${sbindir}/alsactl -f ${localstatedir}/lib/alsa/asound-stm32mp157c-ev.state restore
-        fi
-    fi
-}
-pkg_postinst_${PN}_stm32mp1-disco() {
-    if test -z "$D"
-    then
-        if test -x ${sbindir}/alsactl
-        then
-            ${sbindir}/alsactl -f ${localstatedir}/lib/alsa/asound-stm32mp157c-dk.state restore
         fi
     fi
 }
