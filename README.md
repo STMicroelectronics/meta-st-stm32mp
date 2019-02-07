@@ -24,3 +24,10 @@ branch: same dedicated branch as meta-st-stm32mp
 revision: HEAD
 ```
 
+```
+URI: git://github.com/openembedded/meta-openembedded.git
+layers: meta-openembedded/meta-python meta-openembedded/meta-oe
+branch: same dedicated branch as meta-st-stm32mp
+revision: HEAD
+```
+
