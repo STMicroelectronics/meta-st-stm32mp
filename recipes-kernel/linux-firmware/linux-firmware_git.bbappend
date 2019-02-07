@@ -20,21 +20,3 @@ FILES_${PN}-bcm43430_append_stm32mpcommon = " \
   ${nonarch_base_libdir}/firmware/brcm/brcmfmac43430-sdio.clm_blob \
 "
 RDEPENDS_${PN}-bcm43430_remove_stm32mpcommon = " ${PN}-cypress-license "
-
-
-do_install_append() {
-    # If user confiugres recipe in externalsrc, then we need to remove symlinks
-    # oe-logs and oe-workdir to avoid QA Error
-    if [ -n "${EXTERNALSRC}" ]; then
-        for item in ${EXTERNALSRC_SYMLINKS}; do
-            # Get symlink name
-            symlink=$(echo ${item} | cut -d':' -f1)
-            if [ -L ${D}${nonarch_base_libdir}/firmware/${symlink} ]; then
-                bbnote "Remove ${symlink} from ${D}${nonarch_base_libdir}/firmware/"
-                rm -rf ${D}${nonarch_base_libdir}/firmware/${symlink}
-            else
-                bbwarn "From externalsrc class, the ${symlink} is not a symlink"
-            fi
-        done
-    fi
-}
