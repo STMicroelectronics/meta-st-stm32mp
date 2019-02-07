@@ -116,9 +116,9 @@ SRC_URI += "file://4.19/fragment-03-systemd.config;subdir=fragments"
 SRC_URI += "file://4.19/fragment-04-optee.config;subdir=fragments"
 SRC_URI += "file://4.19/fragment-05-modules.config;subdir=fragments"
 # Don't forget to add/del for devupstream
-SRC_URI_append_class-devupstream = " file://4.19/fragment-03-systemd.config;subdir=fragments "
-SRC_URI_append_class-devupstream = " file://4.19/fragment-04-optee.config;subdir=fragments "
-SRC_URI_append_class-devupstream = " file://4.19/fragment-05-modules.config;subdir=fragments "
+SRC_URI_class-devupstream += " file://4.19/fragment-03-systemd.config;subdir=fragments "
+SRC_URI_class-devupstream += " file://4.19/fragment-04-optee.config;subdir=fragments "
+SRC_URI_class-devupstream += " file://4.19/fragment-05-modules.config;subdir=fragments "
 
 # -------------------------------------------------------------
 # Kernel Args
