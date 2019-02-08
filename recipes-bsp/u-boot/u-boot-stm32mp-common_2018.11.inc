@@ -26,7 +26,8 @@ SRC_URI += " \
     file://0008-ARM-v2018.11-stm32mp-r2-MISC.patch \
     "
 
-PV = "2018.11"
+U_BOOT_VERSION = "2018.11"
+PV = "${U_BOOT_VERSION}"
 
 S = "${WORKDIR}/u-boot-${PV}"
 
@@ -35,8 +36,10 @@ S = "${WORKDIR}/u-boot-${PV}"
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
-SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/u-boot.git;protocol=https;branch=v2018.11-stm32mp"
+SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/u-boot.git;name=uboot;protocol=https;branch=v2018.11-stm32mp"
 SRCREV_class-devupstream = "a120b9bdb3e656bb2f0485924d77d58e2281311a"
+SRCREV_FORMAT_class-devupstream = "uboot"
+PV_class-devupstream = "${U_BOOT_VERSION}+github+${SRCPV}"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

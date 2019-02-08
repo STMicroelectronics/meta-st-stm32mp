@@ -22,7 +22,7 @@ If you have never configured you git configuration:
 2. Initialise cross-compilation via SDK:
 ---------------------------------------
 Source SDK environment:
-    $> source <path to SDK>/environment-setup-cortexa9hf-neon-openstlinux_weston-linux-gnueabi
+    $> source <path to SDK>/environment-setup-cortexa7t2hf-neon-vfpv4-openstlinux_weston-linux-gnueabi
 
 To verify if your cross-compilation environment have put in place:
     $> set | grep CROSS
@@ -40,6 +40,7 @@ and apply the patch.
     $> tar xfj <tf-a source>.tar.bz2
     or
     $> tar xfJ <tf-a source>.tar.xz
+A new directory containing tf-a standard source code will be created, go into it:
     $> cd <directory to tf-a source code>
 
 NB: if there is no git management on source code and you would like to have a

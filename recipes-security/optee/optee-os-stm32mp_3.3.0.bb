@@ -14,7 +14,8 @@ SRC_URI += " \
 
 require optee-os-stm32mp.inc
 
-PV = "3.3.0"
+OPTEE_VERSION = "3.3.0"
+PV = "${OPTEE_VERSION}"
 
 S = "${WORKDIR}/optee_os-${PV}"
 
@@ -29,8 +30,10 @@ do_configure_prepend(){
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
-SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/optee_os.git;protocol=https;branch=3.3.0-stm32mp"
+SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/optee_os.git;protocol=https;name=opteeos;branch=3.3.0-stm32mp"
 SRCREV_class-devupstream = "5f5cc70dfd04419be2ba66b87f41584b6136118c"
+SRCREV_FORMAT_class-devupstream = "opteeos"
+PV_class-devupstream = "${OPTEE_VERSION}+github+${SRCPV}"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

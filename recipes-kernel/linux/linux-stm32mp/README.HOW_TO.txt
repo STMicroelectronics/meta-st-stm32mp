@@ -32,7 +32,7 @@ If you have never configured your git configuration, run the following commands:
 2. Initialise cross-compilation via SDK:
 ----------------------------------------
 Source SDK environment:
-    $> source <path to SDK>/environment-setup-cortexa9hf-neon-openstlinux_weston-linux-gnueabi
+    $> source <path to SDK>/environment-setup-cortexa7t2hf-neon-vfpv4-openstlinux_weston-linux-gnueabi
 
 To verify if your cross-compilation environment has been put in place correctly,
 run the following command:
@@ -51,8 +51,9 @@ tarball and apply the patches.
     $> tar xfj <kernel source>.tar.bz2
     or
     $> tar xfJ <kernel source>.tar.xz
-
+A new directory containing kernel standard source code will be created, go into it:
     $> cd <directory to kernel source code>
+
 NB: if you like to have a git management of the code, see section 4 [Manage the
 kernel source code]
     if there is some patch, please apply it on source code

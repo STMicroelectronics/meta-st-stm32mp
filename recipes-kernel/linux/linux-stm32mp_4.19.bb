@@ -92,8 +92,10 @@ S = "${WORKDIR}/linux-4.19.9"
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
-SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/linux.git;protocol=https;branch=v${LINUX_VERSION}-stm32mp"
+SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/linux.git;protocol=https;branch=v${LINUX_VERSION}-stm32mp;name=linux"
 SRCREV_class-devupstream = "196201973b7048ccf75aa63ac3c3673f8b6ee1c1"
+SRCREV_FORMAT_class-devupstream = "linux"
+PV_class-devupstream = "${LINUX_VERSION}+github+${SRCPV}"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

@@ -43,7 +43,9 @@ tarball and apply the patch.
     $> tar xfj <optee-os source>.tar.bz2
     or
     $> tar xfJ <optee-os source>.tar.xz
+A new directory containing optee standard source code will be created, go into it:
     $> cd <directory to optee-os source code>
+
 NB: if there is no git management on source code and you would like to have a git management
 on the code see section 4 [Management of optee-os source code]
     if there is some patch, please apply it on source code

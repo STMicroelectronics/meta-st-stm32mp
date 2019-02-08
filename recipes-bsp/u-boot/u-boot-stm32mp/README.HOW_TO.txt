@@ -22,10 +22,10 @@ If you have never configured you git configuration:
     $> git config --global user.name "your_name"
     $> git config --global user.email "your_email@example.com"
 
-2. Initialise cross-compilation via SDK:
+2. Initialize cross-compilation via SDK:
 ---------------------------------------
 * Source SDK environment:
-    $> source <path to SDK>/environment-setup-cortexa9hf-neon-openstlinux_weston-linux-gnueabi
+    $> source <path to SDK>/environment-setup-cortexa7t2hf-neon-vfpv4-openstlinux_weston-linux-gnueabi
 
 * To verify if you cross-compilation environment are put in place:
     $> set | grep CROSS
@@ -36,46 +36,88 @@ Warning: the environment are valid only on the shell session where you have
 
 3. Prepare U-Boot source:
 ------------------------
-If you have the tarball and the list of patch then you must extract the
-tarball and apply the patch.
-    $> tar xfz <U-Boot source>.tar.gz
-    or
-    $> tar xfj <U-Boot source>.tar.bz2
-    or
-    $> tar xfJ <U-Boot source>.tar.xz
-    $> cd <directory to U-Boot source code>
 
-NB: if there is no git management on source code and you would like to have a
-git management on the code see section 4 [Management of U-Boot source code]
-    if there is some patch, please apply it on source code
-    $> for p in `ls -1 <path to patch>/*.patch`; do patch -p1 < $p; done
+Extract the sources from tarball, for example:
+$> tar xfJ SOURCES-st-image-weston-openstlinux-weston-stm32mp1-*.tar.xz
 
-4. Management of U-Boot source code:
------------------------------------
-If you like to have a better management of change made on U-Boot source, you
-can use git:
-    $> tar xfz <U-Boot source>.tar.gz
-    $> cd <directory of U-Boot source code>
+In the U-Boot source directory (sources/*/u-boot-stm32mp-2018.11-r0),
+you have one U-Boot source tarball, the patches and one Makefile:
+   - v2018.11.tar.gz
+   - 000*.patch
+   - Makefile.sdk
+
+NB: if you would like to have a git management on the code see
+    section 4 [Management of U-Boot source code with GIT]
+
+Then you must extract the tarball and apply the patch:
+
+    $> tar xfz v2018.11.tar.gz
+    $> cd u-boot-2018.11
+    $> for p in `ls -1 ../*.patch`; do patch -p1 < $p; done
+
+4. Management of U-Boot source code with GIT
+--------------------------------------------
+If you like to have a better management of change made on U-Boot source,
+you have 3 solutions to use git
+
+4.1 Get STMicroelectronics U-Boot source from GitHub
+
+    URL: https://github.com/STMicroelectronics/u-boot.git
+    Branch: v2018.11-stm32mp
+    Revision: v2018.11-stm32mp-r2
+
+    $> git clone https://github.com/STMicroelectronics/u-boot.git
+    $> git checkout -b WORKING v2018.11-stm32mp-r2
+
+4.2 Create Git from tarball
+
+    $> tar xvf v2018.11.tar.gz
+    $> cd u-boot-2018.11
     $> test -d .git || git init . && git add . && git commit -m "U-Boot source code" && git gc
     $> git checkout -b WORKING
-    $> for p in `ls -1 <path to patch>/*.patch`; do git am $p; done
+    $> for p in `ls -1 ../*.patch`; do git am $p; done
 
-NB: you can use directly the source from the community:
+4.3 Get Git from community and apply STMicroelectronics patches
+
     URL: git://git.denx.de/u-boot.git
-    Branch: ##GIT_BRANCH##
-    Revision: ##GIT_SRCREV##
+    Branch: master
+    Revision: v2018.11
 
     $> git clone git://git.denx.de/u-boot.git
-    $> cd <directory of U-Boot source code>
-    $> git checkout -b WORKING ##GIT_SRCREV##
-    $> for p in `ls -1 <path to patch>/*.patch`; do git am $p; done
+or
+    $> git clone http://git.denx.de/u-boot.git
+
+    $> cd u-boot
+    $> git checkout -b WORKING v2018.11
+    $> for p in `ls -1 ../*.patch`; do git am $p; done
 
 5. Compilation U-Boot source code:
---------------------------------
+----------------------------------
 To compile U-Boot source code, first move to U-Boot source:
-    $> cd <directory to U-Boot source code>
+    $> cd u-boot-2018.11
+    or
+    $> cd u-boot
 
-You can call the specific 'Makefile.sdk' provided to compile U-Boot:
+5.1 Compilation for one target (one defconfig, one device tree)
+
+    see <U-Boot source>/board/st/stm32mp1/README for details
+
+    # make stm32mp15_<config>_defconfig
+    # make DEVICE_TREE=<device tree> all
+
+    example:
+
+    a) trusted boot on ev1
+	# make stm32mp15_trusted_defconfig
+	# make DEVICE_TREE=stm32mp157c-ev1 all
+
+    b) basic boot on dk2
+	# make stm32mp15_basic_defconfig
+	# make DEVICE_TREE=stm32mp157c-dk2 all
+
+5.2 Compilation for several targets: use Makefile.sdk
+
+Calls the specific 'Makefile.sdk' provided to compile U-Boot:
   - Display 'Makefile.sdk' file default configuration and targets:
     $> make -f $PWD/../Makefile.sdk help
   - Compile default U-Boot configuration:
@@ -90,6 +132,32 @@ variables 'DEVICE_TREE' and 'UBOOT_CONFIGS':
         <type> is the name append to u-boot binaries (ex: 'trusted', 'basic', etc)
         <binary> is the u-boot binary to export (ex: 'u-boot.bin', 'u-boot.stm32', etc)
     ex: UBOOT_CONFIGS="<defconfig1>,basic,u-boot.bin <defconfig1>,trusted,u-boot.stm32"
+
+The generated binary files are available in ../build-${config}.
+
+by default we define 3 configs: basic, trusted, optee
+for the 4 board : stm32mp157a-dk1 stm32mp157c-dk2 stm32mp157c-ed1 stm32mp157c-ev1
+
+The generated files are:
+
+../build-trusted
+	u-boot-stm32mp157a-dk1-trusted.stm32
+	u-boot-stm32mp157c-dk2-trusted.stm32
+	u-boot-stm32mp157c-ed1-trusted.stm32
+	u-boot-stm32mp157c-ev1-trusted.stm32
+
+../build-optee
+	u-boot-stm32mp157a-dk1-optee.stm32
+	u-boot-stm32mp157c-dk2-optee.stm32
+	u-boot-stm32mp157c-ed1-optee.stm32
+	u-boot-stm32mp157c-ev1-optee.stm32
+
+../build-basic
+	u-boot-stm32mp157a-dk1-basic.img & u-boot-spl.stm32-stm32mp157a-dk1-basic
+	u-boot-stm32mp157c-dk2-basic.img & u-boot-spl.stm32-stm32mp157c-dk2-basic
+	u-boot-stm32mp157c-ed1-basic.img & u-boot-spl.stm32-stm32mp157c-ed1-basic
+	u-boot-stm32mp157c-ev1-basic.img & u-boot-spl.stm32-stm32mp157c-ev1-basic
+
 You can override the default U-Boot configuration if you specify these variables:
   - Compile default U-Boot configuration but applying specific devicetree(s):
     $> make -f $PWD/../Makefile.sdk all DEVICE_TREE="<devicetree1> <devicetree2>"
@@ -100,23 +168,27 @@ You can override the default U-Boot configuration if you specify these variables
 
 6. Update software on board:
 ----------------------------
+
+see also <U-Boot source>/board/st/stm32mp1/README
+
 6.1. partitioning of binaries:
------------------------------
-There are two possible configurations available:
-- Basic configuration
-- Trusted configuration
+------------------------------
+
+There are two possible boot chains available:
+- Basic boot chain (for basic configuration)
+- Trusted boot chain (for trusted and optee configuration)
 
 U-Boot build provides binaries for each configuration:
-- Basic configuration: U-Boot SPL and U-Boot imgage (for FSBL and SSBL)
-- Trusted configuration: U-Boot binary with ".stm32" extension (for SSBL)
+- Basic boot chain: U-Boot SPL and U-Boot imgage (for FSBL and SSBL)
+- Trusted boot chain: U-Boot binary with ".stm32" extension (for SSBL, FSBL is provided by TF-A)
 
-Basic configuration:
+6.1.1. Basic boot chain:
 On this configuration, we use U-Boot SPL as First Stage Boot Loader (FSBL) and
 U-Boot as Second Stage Boot Loader (SSBL).
-U-Boot SPL (u-boot-spl*.stm32) MUST be copied on a dedicated partition named "fsbl1"
+U-Boot SPL (u-boot-spl.stm32-*) MUST be copied on a dedicated partition named "fsbl1"
 U-Boot image (u-boot*.img) MUST be copied on a dedicated partition named "ssbl"
 
-Trusted configuration:
+6.1.2. Trusted boot chain:
 On this configuration, U-Boot is associated to Trusted Firmware (TF-A) and only
 U-Boot image is used as Second Stage Boot Loader (SSBL).
 TF-A binary (tf-a-*.stm32) MUST be copied on a dedicated partition named "fsbl1"
@@ -124,8 +196,9 @@ U-boot binary (u-boot*.stm32) MUST be copied on a dedicated partition named "ssb
 
 6.2. Update via SDCARD:
 -----------------------
-Basic configuration
-* u-boot-spl*.stm32
+
+6.2.1. Basic boot chain
+* u-boot-spl.stm32-*
   Copy the binary on the dedicated partition, on SDCARD/USB disk the partition
   "fsbl1" is the partition 1:
   - SDCARD: /dev/mmcblkXp1 (where X is the instance number)
@@ -139,7 +212,7 @@ Basic configuration
   - SDCARD via USB reader: /dev/sdX3 (where X is the instance number)
   dd if=<U-Boot image file> of=/dev/<device partition> bs=1M conv=fdatasync
 
-Trusted configuration
+6.2.2. Trusted boot chain
 * tf-a-*.stm32
   Copy the binary on the dedicated partition, on SDCARD/USB disk the partition
   "fsbl1" is the partition 1:
@@ -154,7 +227,8 @@ Trusted configuration
   - SDCARD via USB reader: /dev/sdX3 (where X is the instance number)
   dd if=<U-Boot stm32 binary file> of=/dev/<device partition> bs=1M conv=fdatasync
 
-FAQ: to found the partition associated to a specific label, just plug the
+6.2.3. FAQ
+to found the partition associated to a specific label, just plug the
 SDCARD/USB disk on your PC and call the following command:
   $> ls -l /dev/disk/by-partlabel/
 total 0
@@ -167,6 +241,19 @@ lrwxrwxrwx 1 root root 10 Jan 17 17:38 userfs -> ../../mmcblk0p6
 
 6.3. Update via USB mass storage on U-Boot:
 -------------------------------------------
+
+We are using the U-Boot command ums
+
+STM32MP> help ums
+ ums - Use the UMS [USB Mass Storage]
+ 
+ Usage:
+ ums <USB_controller> [<devtype>] <dev[:part]>  e.g. ums 0 mmc 0
+     devtype defaults to mmc
+ ums <USB controller> <dev type: mmc|usb> <dev[:part]>
+
+By default on STMicroelectronics board, "mmc 0" is SD card on SDMMC1.
+
 * Plug the SDCARD on Board.
 * Start the board and stop on U-Boot shell:
  Hit any key to stop autoboot: 0
@@ -174,10 +261,8 @@ lrwxrwxrwx 1 root root 10 Jan 17 17:38 userfs -> ../../mmcblk0p6
 * plug an USB cable between the PC and the board via USB OTG port.
 * On U-Boot shell, call the usb mass storage functionality:
  STM32MP> ums 0 mmc 0
- ums <USB controller> <dev type: mmc|usb> <dev[:part]>
-  ex.:
-    ums 0 mmc 0
-    ums 0 usb 0
+* After a delay (of up to 15 seconds), the host sees the exported block device.
+* Follow section 6.2 to put U-Boot SPL binary and U-Boot binary
+  (*.img or *.stm32) on SDCARD/USB disk.
 
-* Follow section 6.2 to put U-Boot SPL binary and U-Boot binary (*.img or *.stm32)
-  on SDCARD/USB disk.
+PS: A Ctrl-C is needed to stop the command.

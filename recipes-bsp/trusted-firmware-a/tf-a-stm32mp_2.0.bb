@@ -11,7 +11,8 @@ SRC_URI += " \
     file://0001-st-update-r1.patch \
     "
 
-PV = "2.0"
+TF_VERSION = "2.0"
+PV = "${TF_VERSION}"
 
 S = "${WORKDIR}/arm-trusted-firmware-${PV}"
 
@@ -22,9 +23,10 @@ require tf-a-stm32mp-common.inc
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
-SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/arm-trusted-firmware.git;protocol=https;branch=v2.0-stm32mp"
+SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/arm-trusted-firmware.git;protocol=https;name=tfa;branch=v2.0-stm32mp"
 SRCREV_class-devupstream = "d0233623681124a85b069f97a447d7edb1cc1c02"
-
+SRCREV_FORMAT_class-devupstream = "tfa"
+PV_class-devupstream = "${TF_VERSION}+github+${SRCPV}"
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github
 # ---------------------------------
