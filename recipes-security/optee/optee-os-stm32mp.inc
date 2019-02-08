@@ -60,6 +60,10 @@ OPTEE_HEADER    = "tee-header_v2"
 OPTEE_PAGEABLE  = "tee-pageable_v2"
 OPTEE_PAGER     = "tee-pager_v2"
 OPTEE_SUFFIX    = "stm32"
+# Output the ELF generated
+ELF_DEBUG_ENABLE ?= ""
+OPTEE_ELF = "tee"
+OPTEE_ELF_SUFFIX = "elf"
 
 do_deploy() {
     install -d ${DEPLOYDIR}
@@ -68,11 +72,17 @@ do_deploy() {
             install -m 644 ${B}/${conf}/core/${OPTEE_HEADER}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_HEADER}-${conf}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX}
             install -m 644 ${B}/${conf}/core/${OPTEE_PAGER}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_PAGER}-${conf}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX}
             install -m 644 ${B}/${conf}/core/${OPTEE_PAGEABLE}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_PAGEABLE}-${conf}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX}
+            if [ -n "${ELF_DEBUG_ENABLE}" ]; then
+		install -m 644 ${B}/${conf}/core/${OPTEE_ELF}.${OPTEE_ELF_SUFFIX} ${DEPLOYDIR}/${OPTEE_ELF}-${conf}-${OPTEE_BOOTCHAIN}.${OPTEE_ELF_SUFFIX}
+            fi
         done
     else
         install -m 644 ${B}/core/${OPTEE_HEADER}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_HEADER}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX}
         install -m 644 ${B}/core/${OPTEE_PAGER}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_PAGER}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX}
         install -m 644 ${B}/core/${OPTEE_PAGEABLE}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_PAGEABLE}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX}
+	if [ -n "${ELF_DEBUG_ENABLE}" ]; then
+		install -m 644 ${B}/core/${OPTEE_ELF}.${OPTEE_ELF_SUFFIX} ${DEPLOYDIR}/${OPTEE_ELF}-${OPTEE_BOOTCHAIN}.${OPTEE_ELF_SUFFIX}
+        fi
     fi
 }
 addtask deploy before do_build after do_compile
