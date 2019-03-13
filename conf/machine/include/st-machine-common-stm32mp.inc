@@ -133,7 +133,7 @@ UBI_VOLNAME ?= "rootfs"
 EXTRA_IMAGECMD_ext4 = "-i 4096 -L ${@d.getVar('IMAGE_NAME_SUFFIX').replace('.', '', 1)[:16]}"
 
 # Default FSTYPES requested
-IMAGE_FSTYPES = "tar.xz ext4"
+IMAGE_FSTYPES ?= "tar.xz ext4"
 
 # Allow debug on the platform with gdb and openocd tools
 EXTRA_IMAGEDEPENDS_append = " \
