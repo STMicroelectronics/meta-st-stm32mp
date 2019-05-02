@@ -23,6 +23,7 @@ BOOTSCHEME_LABELS ??= "basic trusted optee"
 # Default machine feature
 MACHINE_FEATURES = "usbhost usbgadget alsa screen ext2"
 MACHINE_FEATURES_append = " ${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'optee', '', d)} "
+MACHINE_FEATURES_append = " watchdog "
 MACHINE_FEATURES_append = " tpm2 "
 
 # Default serial consoles (TTYs) to enable using getty
@@ -157,6 +158,10 @@ ST_TOOLS_FOR_SDK = " \
 ST_TOOLS_FOR_SDK_append = " \
     nativesdk-glibc-gconv-utf-16 \
     nativesdk-glibc-gconv-utf-32 \
+    "
+# For support wayland-scanner in SDK
+ST_TOOLS_FOR_SDK_append = " \
+    nativesdk-wayland \
     "
 
 # for populate_sdk, we will have all the tools
