@@ -1,5 +1,7 @@
-FILESEXTRAPATHS_prepend_stm32mpcommon := "${THISDIR}/${PN}:"
-
-SRC_URI_append_stm32mpcommon = " \
-    file://0001-Enable-hardware-watchdog-inside-systemd.patch \
-    "
+do_install_append_stm32mpcommon() {
+    # enable watchdog on systemd configuration
+    if ${@bb.utils.contains('MACHINE_FEATURES','watchdog','true','false',d)}; then
+        sed -e 's|^[#]*RuntimeWatchdogSec.*|RuntimeWatchdogSec=30|g' -i ${D}${sysconfdir}/systemd/system.conf
+        sed -e 's|^[#]*ShutdownWatchdogSec.*|ShutdownWatchdogSec=5min|g' -i ${D}${sysconfdir}/systemd/system.conf
+    fi
+}
