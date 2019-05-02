@@ -402,9 +402,17 @@ function generate_gpt_partition_table_from_flash_layout() {
 						exit 1
 					fi
 				fi
+				if [ "$partType" == "Binary" ];
+				then
+					# Linux reserved: 0x8301
+					gpt_code="8301"
+				else
+					# Linux File system: 0x8300
+					gpt_code="8300"
+				fi
 
 				printf "part %d: %8s ..." $j "$partName"
-				exec_print "sgdisk -a 1 -n $j:$offset:$next_offset -c $j:$partName -t $j:8300 $bootfs_param $FLASHLAYOUT_rawname"
+				exec_print "sgdisk -a 1 -n $j:$offset:$next_offset -c $j:$partName -t $j:$gpt_code $bootfs_param $FLASHLAYOUT_rawname"
 				partition_size=$(sgdisk -p $FLASHLAYOUT_rawname | grep $partName | awk '{ print $4}')
 				partition_size_type=$(sgdisk -p $FLASHLAYOUT_rawname | grep $partName | awk '{ print $5}')
 				printf "\r[CREATED] part %d: %8s [partition size %s %s]\n" $j "$partName"  "$partition_size" "$partition_size_type"
