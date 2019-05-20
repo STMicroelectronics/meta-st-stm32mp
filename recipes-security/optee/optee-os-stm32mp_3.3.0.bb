@@ -1,5 +1,5 @@
 SUMMARY = "OPTEE TA development kit for stm32mp"
-LICENSE = "BSD-2-Clause"
+LICENSE = "BSD-2-Clause & BSD-3-Clause"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=69663ab153298557a59c67a60a743e5b"
 
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
