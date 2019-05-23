@@ -6,7 +6,7 @@ GPU_USERLAND_LIBRARIES_EGLFS   ?= "gcnano-userland-multi-binary-stm32mp"
 GPU_USERLAND_LIBRARIES_X11     ?= "mesa"
 
 # Helper function for overloading the default EGL/GLES implementation.
-# The Vivnate libraries are compatible with the Mesa headers
+# The Vivante libraries are compatible with the Mesa headers
 # but we can have several backend available following the distro configuration:
 #  - wayland
 #  - x11
