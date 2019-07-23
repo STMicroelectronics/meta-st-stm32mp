@@ -18,9 +18,10 @@ IMAGE_BASENAME_append = "${@'' if 'openstlinuxcommon' in OVERRIDES.split(':') el
 IMAGE_FEATURE = ""
 
 # Set ROOTFS_MAXSIZE to expected ROOTFS_SIZE to use the whole disk partition and leave extra space to user
-IMAGE_ROOTFS_SIZE     = "${VENDORFS_PARTITION_SIZE}"
-IMAGE_ROOTFS_MAXSIZE  = "${VENDORFS_PARTITION_SIZE}"
-IMAGE_OVERHEAD_FACTOR = "1"
+IMAGE_ROOTFS_SIZE        = "${VENDORFS_PARTITION_SIZE}"
+IMAGE_ROOTFS_MAXSIZE     = "${VENDORFS_PARTITION_SIZE}"
+IMAGE_OVERHEAD_FACTOR    = "1"
+IMAGE_ROOTFS_EXTRA_SPACE = "0"
 
 # Reset PACKAGE_INSTALL to avoid getting installed packages added in machine through IMAGE_INSTALL_append:
 PACKAGE_INSTALL = ""
