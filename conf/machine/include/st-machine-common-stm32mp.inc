@@ -209,6 +209,12 @@ STM32MP_KERNEL_DEVICETREE += "${@' '.join('%s.dtb' % d for d in '${STM32MP_DEVIC
 STM32MP_KERNEL_DEVICETREE += "${@' '.join('%s.dtb' % d for d in '${CUBE_M4_EXAMPLES_DT}'.split())}"
 STM32MP_KERNEL_DEVICETREE += "${@' '.join('%s.dtb' % d for d in '${LINUX_A7_EXAMPLES_DT}'.split())}"
 
+# Set LOADADDR
+# Set this address to 0xC2000040, which is 0xC2000000 + 0x40.
+# 0xC2000000 is the memory address where U-Boot will copy from flash the file uImage and 0x40 is uImage header size (64Bytes).
+# With this value, U-Boot will be able to execute in place the zImage contained in uImage.
+ST_KERNEL_LOADADDR ?= "0xC2000040"
+
 # Define the devicetree for Linux A7 examples
 LINUX_A7_EXAMPLES_DT ?= ""
 
