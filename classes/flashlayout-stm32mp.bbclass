@@ -19,7 +19,7 @@
 #
 # Configuration example (machine file or local.conf):
 #   ENABLE_FLASHLAYOUT_DEFAULT = "1"
-#   FLASHLAYOUT_DEFAULT_SRC = "${STM32MP_BASE}/files/flashlayouts/FlashLayout_sdcard_stm32mp157c-ev1_sample.tsv"
+#   FLASHLAYOUT_DEFAULT_SRC = "files/flashlayouts/FlashLayout_sdcard_stm32mp157c-ev1_sample.tsv"
 #
 # ---------------------
 # Dynamic configuration
@@ -280,6 +280,14 @@ def get_binaryname(labeltype, bootscheme, config, partition, d):
     # Return binary_name value
     return binary_name
 
+def flashlayout_search(d, files):
+    search_path = d.getVar("BBPATH").split(":")
+    for file in files.split():
+        for p in search_path:
+            file_path = p + "/" + file
+            if os.path.isfile(file_path):
+                return (True, file_path)
+    return (False, "")
 
 python do_create_flashlayout_config() {
     import re
@@ -302,15 +310,15 @@ python do_create_flashlayout_config() {
             bb.fatal("FLASHLAYOUT_DEFAULT_SRC not defined, please set a proper value")
         if not flashlayout_src.strip():
             bb.fatal("No static flashlayout file configured, nothing to do")
-        for f in flashlayout_src.split():
-            if os.path.isfile(f):
-                flashlayout_staticname=os.path.basename(f)
-                flashlayout_file = d.expand("${FLASHLAYOUT_DESTDIR}/%s" % flashlayout_staticname)
-                shutil.copy2(flashlayout_src, flashlayout_file)
-                bb.note('Copy %s to output file %s' % (f, flashlayout_file))
-                return
-            else:
-                bb.fatal("Configure static file: %s is not pointing to an existing file" % f)
+        found, f = flashlayout_search(d, flashlayout_src)
+        if found:
+            flashlayout_staticname=os.path.basename(f)
+            flashlayout_file = d.expand("${FLASHLAYOUT_DESTDIR}/%s" % flashlayout_staticname)
+            shutil.copy2(f, flashlayout_file)
+            bb.note('Copy %s to output file %s' % (f, flashlayout_file))
+            return
+        else:
+            bb.fatal("Configure static file: %s not found" % flashlayout_src)
 
     # Set bootschemes for partition var override configuration
     bootschemes = d.getVar('FLASHLAYOUT_BOOTSCHEME_LABELS')
