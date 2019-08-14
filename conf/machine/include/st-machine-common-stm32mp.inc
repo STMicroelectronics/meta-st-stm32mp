@@ -4,6 +4,7 @@ require conf/machine/include/st-machine-extlinux-config-stm32mp.inc
 require conf/machine/include/st-machine-features-stm32mp.inc
 require conf/machine/include/st-machine-flashlayout-stm32mp.inc
 require conf/machine/include/st-machine-flashlayout-deleteall-stm32mp.inc
+require conf/machine/include/st-machine-flashlayout-extensible-stm32mp.inc
 
 # Define specific common machine name
 MACHINEOVERRIDES .= ":stcommon"
@@ -318,6 +319,10 @@ OPTEE_CONF = "${STM32MP_DEVICETREE}"
 FLASHLAYOUT_BOOTSCHEME_LABELS += "${BOOTSCHEME_LABELS}"
 # Add specific scheme to provide flashlayout that will erase all storage devices
 FLASHLAYOUT_BOOTSCHEME_LABELS += "deleteall"
+# Add specific scheme to provide flashlayout that will make rootfs extensible to
+# remaining device free space
+#   NOTE: this scheme is ONLY compatible with disco board and trusted bootscheme
+FLASHLAYOUT_BOOTSCHEME_LABELS += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'trusted', 'extensible', '', d)}"
 
 # Default config labels supported
 FLASHLAYOUT_CONFIG_LABELS ??= ""

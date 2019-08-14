@@ -60,7 +60,7 @@ FLASHLAYOUT_PARTITION_OFFSET_deleteall_emmcfsbl1 = "${FLASHLAYOUT_PARTITION_OFFS
 FLASHLAYOUT_PARTITION_OFFSET_deleteall_emmcfsbl2 = "${FLASHLAYOUT_PARTITION_OFFSET_emmc_fsbl2}"
 
 # -----------------------------------------------------------------------------
-# The 'deletall' bootscheme is a trick to generate flashlayout files to clean
+# The 'deleteall' bootscheme is a trick to generate flashlayout files to clean
 # all memory devices on board. There are no specific 'deleteall' bootloader
 # binaries so use the 'trusted' or 'optee' one.
 BIN2BOOT_REPLACE_PATTERNS_fsbl1-boot_append = " deleteall;trusted"
