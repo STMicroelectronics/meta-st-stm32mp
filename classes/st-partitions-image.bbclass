@@ -32,7 +32,7 @@ python __anonymous () {
                 # We need to append partition images generation only to image
                 # that are not one of the defined partitions and not the InitRAMFS image.
                 # Without this check we would create circular dependency
-                if current_image_name not in image_partitions and current_image_name not in initramfs:
+                if current_image_name not in image_partitions and current_image_name != initramfs:
                     for partition in image_partitions:
                         d.appendVarFlag('do_image_complete', 'depends', ' %s:do_image_complete' % partition)
 }
