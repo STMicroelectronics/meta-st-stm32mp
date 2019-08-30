@@ -135,7 +135,7 @@ python __anonymous () {
                 # Init partition list from PARTITIONS_IMAGE
                 image_partitions = (d.getVar('PARTITIONS_IMAGE') or "").split()
                 # We need to clearly identify ROOTFS build, not InitRAMFS one (if any)
-                if current_image_name not in image_partitions and current_image_name not in initramfs and current_image_name not in initrd:
+                if current_image_name not in image_partitions and current_image_name != initramfs and current_image_name != initrd:
                     # We need to make sure to add all extra dependencies as 'depends'
                     # for image_complete task
                     if d.getVar('FLASHLAYOUT_DEPEND_TASKS'):
