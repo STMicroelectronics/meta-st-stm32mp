@@ -1,5 +1,5 @@
-SUMMARY="CoreSight Trace Decode library"
-DESCRIPTION="An open source CoreSight Trace Decode library"
+SUMMARY = "CoreSight Trace Decode library"
+DESCRIPTION = "An open source CoreSight Trace Decode library"
 LICENSE = "BSD-3-Clause"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=ad8cb685eb324d2fa2530b985a43f3e5"
 
