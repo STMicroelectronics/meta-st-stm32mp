@@ -27,13 +27,13 @@ EXTLINUX_BOOTDEVICE_NOREMMC   = "nor0-mmc1"
 EXTLINUX_BOOTDEVICE_NAND      = "nand0"
 
 # Set generic extlinux root variable to ease definition
-EXTLINUX_ROOT_EMMC         = "root=/dev/mmcblk1p4"
-EXTLINUX_ROOT_EMMC_OPTEE   = "root=/dev/mmcblk1p7"
+EXTLINUX_ROOT_EMMC         = "${@bb.utils.contains('ST_VENDORFS','1','root=/dev/mmcblk1p4','root=/dev/mmcblk1p3',d)}"
+EXTLINUX_ROOT_EMMC_OPTEE   = "${@bb.utils.contains('ST_VENDORFS','1','root=/dev/mmcblk1p7','root=/dev/mmcblk1p6',d)}"
 EXTLINUX_ROOT_NAND         = "ubi.mtd=UBI rootfstype=ubifs root=ubi0:rootfs"
-EXTLINUX_ROOT_NOREMMC      = "root=/dev/mmcblk1p3"
-EXTLINUX_ROOT_NORSDCARD    = "root=/dev/mmcblk0p3"
-EXTLINUX_ROOT_SDCARD       = "root=/dev/mmcblk0p6"
-EXTLINUX_ROOT_SDCARD_OPTEE = "root=/dev/mmcblk0p9"
+EXTLINUX_ROOT_NOREMMC      = "${@bb.utils.contains('ST_VENDORFS','1','root=/dev/mmcblk1p3','root=/dev/mmcblk1p2',d)}"
+EXTLINUX_ROOT_NORSDCARD    = "${@bb.utils.contains('ST_VENDORFS','1','root=/dev/mmcblk0p3','root=/dev/mmcblk0p2',d)}"
+EXTLINUX_ROOT_SDCARD       = "${@bb.utils.contains('ST_VENDORFS','1','root=/dev/mmcblk0p6','root=/dev/mmcblk0p5',d)}"
+EXTLINUX_ROOT_SDCARD_OPTEE = "${@bb.utils.contains('ST_VENDORFS','1','root=/dev/mmcblk0p9','root=/dev/mmcblk0p8',d)}"
 
 # -----------------------------------------------------------------------------
 # REMINDER: how 'exlinux.conf' files are built
