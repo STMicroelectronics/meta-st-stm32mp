@@ -1,21 +1,8 @@
-SUMMARY = "STM32MP1 Firmware examples for CM4"
-LICENSE = " \
-    Apache-2.0 \
-    & MIT \
-    & BSD-3-Clause \
-    "
-LIC_FILES_CHKSUM = "file://License.md;md5=6b267c73760fea024ffbc6049db473ba"
+FILESEXTRAPATHS_prepend := "${THISDIR}/files:"
 
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 
 PACKAGE_ARCH = "${MACHINE_ARCH}"
-
-SRC_URI = "git://github.com/STMicroelectronics/STM32CubeMP1;protocol=https;branch=master"
-SRCREV  = "66ec26f6422283fe5cd25a32babf925836df9399"
-
-PV = "1.0.0"
-
-S = "${WORKDIR}/git"
 
 B = "${WORKDIR}/build"
 # for external source support with devtools
@@ -30,7 +17,10 @@ inherit systemd update-rc.d
 SRC_URI += "file://st-m4firmware-load-default.sh"
 SRC_URI += "file://st-m4firmware-load.service"
 
+PACKAGES += "${PN}-userfs"
+
 DEPENDS += " gcc-arm-none-eabi-native "
+RDEPENDS_${PN}-userfs += "busybox"
 
 # Define default board reference for M4
 M4_BOARDS ?= "STM32MP157C-EV1 STM32MP157C-DK2"
@@ -38,16 +28,12 @@ M4_BOARDS ?= "STM32MP157C-EV1 STM32MP157C-DK2"
 # Init default copro example to load/execute
 DEFAULT_COPRO_FIRMWARE ?= ""
 
+USERFS_ROOTPATH = "/local/Cube-M4-examples"
+
 # Use gcc bare toolchain
 export CROSS_COMPILE = "${RECIPE_SYSROOT_NATIVE}/${datadir}/gcc-arm-none-eabi/bin/arm-none-eabi-"
 export CPU_TYPE = "M4"
 export BUILD_CONFIG = "Debug"
-
-RDEPENDS_${PN}-userfs += "busybox"
-PACKAGES += "${PN}-userfs"
-
-USERFS_ROOTPATH = "/local/Cube-M4-examples"
-FILES_${PN}-userfs = "${prefix}${USERFS_ROOTPATH}"
 
 do_compile() {
     # Compile M4 firmwares listed in bb file. They can be for eval or disco board as specified in bb file
@@ -146,15 +132,16 @@ do_install() {
 
 # -----------------------------------------------------------
 # specific for service: start copro m4 firwmare at boot time
-
 SYSTEMD_PACKAGES += " m4projects-stm32mp1 "
 SYSTEMD_SERVICE_${PN} = "st-m4firmware-load.service"
 SYSTEMD_AUTO_ENABLE_${PN} = "disable"
 
 INITSCRIPT_NAME = "st-m4firmware-load-default.sh"
 INITSCRIPT_PARAMS = "stop 22 5 3 ."
+# -----------------------------------------------------------
 
 INHIBIT_PACKAGE_STRIP = "1"
 INHIBIT_SYSROOT_STRIP = "1"
 
 FILES_${PN} += "${nonarch_base_libdir}/firmware ${sysconfdir}/init.d ${systemd_unitdir}/system"
+FILES_${PN}-userfs = "${prefix}${USERFS_ROOTPATH}"
