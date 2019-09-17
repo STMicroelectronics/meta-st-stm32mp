@@ -9,6 +9,7 @@ SRC_URI[sha256sum] = "7d699a1683bb7a5909de37b6eb91b6e38db32cd6fc5ae48a08eb0718d6
 
 SRC_URI += " \
     file://0001-st-update-r1.patch \
+    file://0002-st-update-r1.1.0.patch \
     "
 
 TF_VERSION = "2.0"
@@ -17,6 +18,11 @@ PV = "${TF_VERSION}"
 S = "${WORKDIR}/arm-trusted-firmware-${PV}"
 
 require tf-a-stm32mp-common.inc
+
+# ---------------------------------
+# Configure archiver use
+# ---------------------------------
+include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'tf-a-stm32mp-archiver.inc','')}
 
 # ---------------------------------
 # Configure devupstream class usage
