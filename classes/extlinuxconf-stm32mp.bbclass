@@ -177,11 +177,11 @@ python do_create_multiextlinux_config() {
                 if len(labels.split()) > 1:
                     cfgfile.write('menu title Select the boot mode\n')
 
-                spashscreen_name = localdata.getVar('UBOOT_SPLASH_IMAGE')
-                if not spashscreen_name:
+                splashscreen_name = localdata.getVar('UBOOT_SPLASH_IMAGE')
+                if not splashscreen_name:
                     bb.warn('UBOOT_SPLASH_IMAGE not defined')
                 else:
-                    cfgfile.write('MENU BACKGROUND ../%s.bmp\n' % (spashscreen_name))
+                    cfgfile.write('MENU BACKGROUND /%s.bmp\n' % (splashscreen_name))
 
                 timeout =  localdata.getVar('UBOOT_EXTLINUX_TIMEOUT')
                 if timeout:
