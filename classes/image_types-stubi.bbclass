@@ -9,6 +9,7 @@ python stmultiub_environment () {
             for build in d.getVar('MULTIUBI_BUILD').split():
                 f.write( "export MKUBIFS_ARGS_%s=\"%s\"\n" % (build, d.getVar(('MKUBIFS_ARGS_' + build))) )
                 f.write( "export UBINIZE_ARGS_%s=\"%s\"\n" % (build, d.getVar(('UBINIZE_ARGS_' + build))) )
+                f.write( "export EXTRA_UBIFS_SIZE_%s=\"%s\"\n" % (build, d.getVar(('EXTRA_UBIFS_SIZE_' + build))) )
             f.close()
         except:
             pass
@@ -51,10 +52,11 @@ st_multivolume_ubifs() {
     # -----------------------------------------------------------------------------
     # Define the list of volumes for the multi UBIFS with 'STM32MP_UBI_VOLUME' var.
     # The format to follow is:
-    #   STM32MP_UBI_VOLUME = "<VOL_NAME_1>:<VOL_SIZE_1> <VOL_NAME_2>:<VOL_SIZE_2>"
+    #   STM32MP_UBI_VOLUME = "<VOL_NAME_1>:<VOL_SIZE_1>:<VOL_TYPE_1> <VOL_NAME_2>:<VOL_SIZE_2>"
     # Note that:
     #   - 'VOL_NAME' should follow 'IMAGE_LINK_NAME' format
     #   - 'VOL_SIZE' is set in KiB
+    #   - 'VOL_TYPE' is optional part and could be 'empty' to add empty UBI with name 'VOL_NAME'
     # -----------------------------------------------------------------------------
 
     # We check that user as explicitly provided multi volume UBIFS var
@@ -69,7 +71,12 @@ st_multivolume_ubifs() {
 
         . ${T}/stmultiubi_environment
 
+        # Get total volume number to handle
+        volume_nbr="$(echo ${STM32MP_UBI_VOLUME} | wc -w)"
+
         for name in ${MULTIUBI_BUILD}; do
+            # Init extra_size for UBIFS volume size
+            eval local extra_size=\"\$EXTRA_UBIFS_SIZE_${name}\"
             # Init var to populate 'vol_id' incrementally
             volume_id=0
             for ubivolume in ${STM32MP_UBI_VOLUME}; do
@@ -79,6 +86,28 @@ st_multivolume_ubifs() {
                 fi
                 volume_name=$(echo ${ubivolume} | cut -d':' -f1)
                 volume_size=$(echo ${ubivolume} | cut -d':' -f2)
+                volume_type=$(echo ${ubivolume} | cut -d':' -f3)
+                bbnote "Original UBI volume size: ${volume_size}"
+                # Manage specific UBI volume type
+                if [ "${volume_type}" = "empty" ]; then
+                    bbnote "The UBI volume type is set to 'empty' for ${volume_name}. Generate ubinize cfg file for empty UBI volume."
+                    cfg_filename=${IMGDEPLOYDIR}/${volume_name}_${name}.ubinize.cfg.ubi
+                    echo \[${volume_name}\] > ${cfg_filename}
+                    echo mode=ubi >> ${cfg_filename}
+                    echo vol_id=0 >> ${cfg_filename}
+                    echo vol_type=dynamic >> ${cfg_filename}
+                    echo vol_name=${volume_name} >> ${cfg_filename}
+                    echo vol_flags=autoresize >> ${cfg_filename}
+                else
+                    if [ -z "${volume_type}" ]; then
+                        bbnote "The UBI volume type is not set. Use default configuration for ${volume_name}"
+                        bbnote "Append ${extra_size}KiB extra space to UBIFS volume size"
+                        volume_size=$(echo "${volume_size} + ${extra_size}" | bc)
+                    else
+                        bbwarn "The UBI volume type '${volume_type}' is not recognized. No specific action done for ${volume_name}"
+                    fi
+                fi
+                bbnote "Computed UBI volume size: ${volume_size}"
                 # Set ubinize config file for current volume
                 if [ -e ${IMGDEPLOYDIR}/${volume_name}_${name}.ubinize.cfg.ubi ]; then
                     ubinize_cfg=${IMGDEPLOYDIR}/${volume_name}_${name}.ubinize.cfg.ubi
@@ -98,15 +127,18 @@ st_multivolume_ubifs() {
                 # Update volume id in cfg file
                 sed 's|vol_id=0|vol_id='"${volume_id}"'|' -i ${WORKDIR}/$(basename ${ubinize_cfg})
                 volume_id=$(expr ${volume_id} + 1)
-                # Replace 'vol_flags' entry with 'vol_size' one in cfg file
-                sed 's|vol_flags=.*|vol_size='"${volume_size}KiB"'|' -i ${WORKDIR}/$(basename ${ubinize_cfg})
+                # Replace 'vol_flags' entry with 'vol_size' one in cfg file except for last volume to allow proper autoresize
+                if [ "${volume_id}" -lt "${volume_nbr}" ]; then
+                    sed 's|vol_flags=.*|vol_size='"${volume_size}KiB"'|' -i ${WORKDIR}/$(basename ${ubinize_cfg})
+                fi
+                # Increment volume id for next loop
                 # Append ubinize config file to multivolume one
                 cat ${WORKDIR}/$(basename ${ubinize_cfg}) >> ${IMGDEPLOYDIR}/${IMAGE_NAME}_${name}_multivolume.ubinize.cfg.ubi
                 # Clean temporary file
                 rm -f ${WORKDIR}/$(basename ${ubinize_cfg})
+                # Clean also temporary ubinize cfg file for empty UBI volume
+                [ "${volume_type}" = "empty" ] && rm -f ${cfg_filename}
             done
-            # Add 'vol_flags' entry in ubinize multivolume config file
-            echo "vol_flags=autoresize" >> ${IMGDEPLOYDIR}/${IMAGE_NAME}_${name}_multivolume.ubinize.cfg.ubi
 
             # Generate multivolume UBI
             eval local ubinize_args=\"\$UBINIZE_ARGS_${name}\"
