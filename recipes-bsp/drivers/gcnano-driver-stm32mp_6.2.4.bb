@@ -3,10 +3,10 @@ LICENSE = "GPLv1 & MIT"
 # Note get md5sum with: $ head -n 53 Makefile | md5sum
 LIC_FILES_CHKSUM = "file://Makefile;endline=53;md5=d77ff5896dbbf8a8bc3f7c5e8f905fcc"
 
-SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries;protocol=https;branch=gcnano-6.2.4_p3-binaries"
-SRCREV = "271f87d816a957bf196f6328c34110cab1224d4d"
+SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries.git;protocol=https;branch=gcnano-6.2.4_p4-binaries"
+SRCREV = "c01642ed5e18cf09ecd905af193e935cb3be95ed"
 
-PV = "6.2.4.p3"
+PV = "6.2.4.p4"
 PR = "tar${SRCPV}"
 
 S = "${WORKDIR}/gcnano-driver-${PV}"
