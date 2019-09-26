@@ -30,7 +30,7 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'tf-a-stm32mp-
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/arm-trusted-firmware.git;protocol=https;name=tfa;branch=v2.0-stm32mp"
-SRCREV_class-devupstream = "d0233623681124a85b069f97a447d7edb1cc1c02"
+SRCREV_class-devupstream = "69cc28c5a1b877cf67def7f94dece087f3917b1c"
 SRCREV_FORMAT_class-devupstream = "tfa"
 PV_class-devupstream = "${TF_VERSION}+github+${SRCPV}"
 # ---------------------------------
