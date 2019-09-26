@@ -54,7 +54,7 @@ S = "${WORKDIR}/linux-4.19.49"
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/linux.git;protocol=https;branch=v${LINUX_VERSION}-stm32mp;name=linux"
-SRCREV_class-devupstream = "196201973b7048ccf75aa63ac3c3673f8b6ee1c1"
+SRCREV_class-devupstream = "9cc80ff80f5ea5f1ff35122f61afaa7b11ad22ae"
 SRCREV_FORMAT_class-devupstream = "linux"
 PV_class-devupstream = "${LINUX_VERSION}+github+${SRCPV}"
 
