@@ -10,8 +10,8 @@ PROVIDES += "gcnano-userland virtual/libgles1 virtual/libgles2 virtual/egl virtu
 
 TAR_FILENAME = "gcnano-userland-${BACKEND}-${PV}-${GCNANO_USERLAND_FB_TARBALL_DATE}"
 
-SRC_URI = "git://gerrit.st.com:29418/oeivi/oe/st/gcnano-binaries;protocol=ssh;branch=gcnano-6.2.4.p4-binaries"
-SRCREV = "4e0c5d966694336f4477915754b87bb29abd74d8"
+SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries.git;protocol=https;branch=gcnano-6.2.4_p4-binaries"
+SRCREV = "c01642ed5e18cf09ecd905af193e935cb3be95ed"
 
 # service to create link at first boot
 SRC_URI += "file://gcnano-userland-make-link.service"
