@@ -33,7 +33,7 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'optee-os-stm3
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/optee_os.git;protocol=https;name=opteeos;branch=3.3.0-stm32mp"
-SRCREV_class-devupstream = "5f5cc70dfd04419be2ba66b87f41584b6136118c"
+SRCREV_class-devupstream = "2d2ec9752d49db633b4295ee509629642dfd8748"
 SRCREV_FORMAT_class-devupstream = "opteeos"
 PV_class-devupstream = "${OPTEE_VERSION}+github+${SRCPV}"
 
