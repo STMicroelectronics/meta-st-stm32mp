@@ -6,8 +6,8 @@ LICENSE = " \
     "
 LIC_FILES_CHKSUM = "file://License.md;md5=5272d12bc1c2e29908b787134d73dae9"
 
-SRC_URI = "git://gitolite@codex.cro.st.com/stm32cube/stm32cube/stm32cube_fw_mp1.git;protocol=ssh;branch=master"
-SRCREV  = "0b1062b1c55ca0e369846bee3bb53b3b8f1dc413"
+SRC_URI = "git://github.com/STMicroelectronics/STM32CubeMP1.git;protocol=https;branch=master"
+SRCREV  = "3739122ec3281ffe18356774ffc06a7fbcf6df98"
 
 PV = "1.1.0"
 
