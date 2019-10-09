@@ -1,0 +1,251 @@
+From b411d805477bd67856403c73bad41534bcf2aa31 Mon Sep 17 00:00:00 2001
+From: Antonio Borneo <antonio.borneo@st.com>
+Date: Mon, 20 May 2019 17:25:18 +0200
+Subject: [PATCH] Support single-core, align access with mmu off, plus fixes
+
+---
+ src/target/adi_v5_stlink.c | 12 --------
+ src/target/cortex_a.c      | 43 ++++++++++++++++++++++++++---
+ src/target/cortex_m.c      |  8 +++---
+ tcl/target/stm32mp15x.cfg  | 56 ++++++++++++++++++++++++++++----------
+ 4 files changed, 84 insertions(+), 35 deletions(-)
+
+diff --git a/src/target/adi_v5_stlink.c b/src/target/adi_v5_stlink.c
+index 9e7ab0f64..fd4a4e28a 100644
+--- a/src/target/adi_v5_stlink.c
++++ b/src/target/adi_v5_stlink.c
+@@ -120,18 +120,6 @@ static int stlink_connect(struct adiv5_dap *dap)
+ 
+ 	LOG_INFO("stlink_connect(%sconnect)", dap->do_reconnect ? "re" : "");
+ 
+-	/* Check if we should reset srst already when connecting, but not if reconnecting. */
+-	if (!dap->do_reconnect) {
+-		enum reset_types jtag_reset_config = jtag_get_reset_config();
+-
+-		if (jtag_reset_config & RESET_CNCT_UNDER_SRST) {
+-			if (jtag_reset_config & RESET_SRST_NO_GATING)
+-				adapter_assert_reset();
+-			else
+-				LOG_WARNING("\'srst_nogate\' reset_config option is required");
+-		}
+-	}
+-
+ 	dap->do_reconnect = false;
+ 	dap_invalidate_cache(dap);
+ 
+diff --git a/src/target/cortex_a.c b/src/target/cortex_a.c
+index 499dacc9b..9f6f3d5d2 100644
+--- a/src/target/cortex_a.c
++++ b/src/target/cortex_a.c
+@@ -1220,6 +1220,8 @@ static int cortex_a_step(struct target *target, int current, target_addr_t addre
+ 		retval = cortex_a_poll(target);
+ 		if (retval != ERROR_OK)
+ 			return retval;
++		if (target->state == TARGET_HALTED)
++			break;
+ 		if (timeval_ms() > then + 1000) {
+ 			LOG_ERROR("timeout waiting for target halt");
+ 			return ERROR_FAIL;
+@@ -2017,7 +2019,8 @@ static int cortex_a_write_cpu_memory_slow(struct target *target,
+ {
+ 	/* Writes count objects of size size from *buffer. Old value of DSCR must
+ 	 * be in *dscr; updated to new value. This is slow because it works for
+-	 * non-word-sized objects and (maybe) unaligned accesses. If size == 4 and
++	 * non-word-sized objects. Avoid unaligned accesses as they do not work
++	 * on memory address space without "Normal" attribute. If size == 4 and
+ 	 * the address is aligned, cortex_a_write_cpu_memory_fast should be
+ 	 * preferred.
+ 	 * Preconditions:
+@@ -2174,7 +2177,22 @@ static int cortex_a_write_cpu_memory(struct target *target,
+ 		/* We are doing a word-aligned transfer, so use fast mode. */
+ 		retval = cortex_a_write_cpu_memory_fast(target, count, buffer, &dscr);
+ 	} else {
+-		/* Use slow path. */
++		/* Use slow path. Adjust size for aligned accesses */
++		switch (address % 4) {
++			case 1:
++			case 3:
++				count *= size;
++				size = 1;
++				break;
++			case 2:
++				if (size == 4) {
++					count *= 2;
++					size = 2;
++				}
++			case 0:
++			default:
++				break;
++		}
+ 		retval = cortex_a_write_cpu_memory_slow(target, size, count, buffer, &dscr);
+ 	}
+ 
+@@ -2260,7 +2278,8 @@ static int cortex_a_read_cpu_memory_slow(struct target *target,
+ {
+ 	/* Reads count objects of size size into *buffer. Old value of DSCR must be
+ 	 * in *dscr; updated to new value. This is slow because it works for
+-	 * non-word-sized objects and (maybe) unaligned accesses. If size == 4 and
++	 * non-word-sized objects. Avoid unaligned accesses as they do not work
++	 * on memory address space without "Normal" attribute. If size == 4 and
+ 	 * the address is aligned, cortex_a_read_cpu_memory_fast should be
+ 	 * preferred.
+ 	 * Preconditions:
+@@ -2476,7 +2495,23 @@ static int cortex_a_read_cpu_memory(struct target *target,
+ 		/* We are doing a word-aligned transfer, so use fast mode. */
+ 		retval = cortex_a_read_cpu_memory_fast(target, count, buffer, &dscr);
+ 	} else {
+-		/* Use slow path. */
++		/* Use slow path. Adjust size for aligned accesses */
++		switch (address % 4) {
++			case 1:
++			case 3:
++				count *= size;
++				size = 1;
++				break;
++			case 2:
++				if (size == 4) {
++					count *= 2;
++					size = 2;
++				}
++				break;
++			case 0:
++			default:
++				break;
++		}
+ 		retval = cortex_a_read_cpu_memory_slow(target, size, count, buffer, &dscr);
+ 	}
+ 
+diff --git a/src/target/cortex_m.c b/src/target/cortex_m.c
+index 79975aa89..9b962192f 100644
+--- a/src/target/cortex_m.c
++++ b/src/target/cortex_m.c
+@@ -532,21 +532,21 @@ static int cortex_m_poll(struct target *target)
+ 	if (cortex_m->dcb_dhcsr & S_HALT) {
+ 		target->state = TARGET_HALTED;
+ 
+-		if ((prev_target_state == TARGET_RUNNING) || (prev_target_state == TARGET_RESET)) {
++		if (prev_target_state != TARGET_HALTED) {
+ 			retval = cortex_m_debug_entry(target);
+ 			if (retval != ERROR_OK)
+ 				return retval;
++		}
+ 
++		if (prev_target_state == TARGET_RUNNING || prev_target_state == TARGET_RESET) {
+ 			if (arm_semihosting(target, &retval) != 0)
+ 				return retval;
+ 
+ 			target_call_event_callbacks(target, TARGET_EVENT_HALTED);
+ 		}
++
+ 		if (prev_target_state == TARGET_DEBUG_RUNNING) {
+ 			LOG_DEBUG(" ");
+-			retval = cortex_m_debug_entry(target);
+-			if (retval != ERROR_OK)
+-				return retval;
+ 
+ 			target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
+ 		}
+diff --git a/tcl/target/stm32mp15x.cfg b/tcl/target/stm32mp15x.cfg
+index 992975f87..f95070c3c 100644
+--- a/tcl/target/stm32mp15x.cfg
++++ b/tcl/target/stm32mp15x.cfg
+@@ -54,8 +54,10 @@ proc cti_prepare_restart_all {} {
+ 	global _CHIPNAME
+ 
+ 	cti_prepare_restart cti0
+-	cti_prepare_restart cti1
+-	if { [$_CHIPNAME.cpu2 curstate] ne "examine deferred" } {
++	if { [$_CHIPNAME.cpu1 was_examined] } {
++		cti_prepare_restart cti1
++	}
++	if { [$_CHIPNAME.cpu2 was_examined] } {
+ 		cti_prepare_restart cti2
+ 	}
+ }
+@@ -71,22 +73,22 @@ proc cti_prepare_restart {cti} {
+ proc cti_start {} {
+ 	global _CHIPNAME
+ 
+-	# Configure both Cortex-A CTIs to halt each other
++	# Configure CTIs to halt the other cores
+ 	# TRIGIN0 (DBGTRIGGER) and TRIGOUT0 (EDBGRQ) at CTM_CHANNEL_0
+ 	$_CHIPNAME.cti0 write INEN0 0x1
+-	$_CHIPNAME.cti1 write INEN0 0x1
+ 	$_CHIPNAME.cti0 write OUTEN0 0x1
+-	$_CHIPNAME.cti1 write OUTEN0 0x1
+-
+-        $_CHIPNAME.cpu0 configure -event halted { cti_prepare_restart_all }
+-        $_CHIPNAME.cpu1 configure -event halted { cti_prepare_restart_all }
+-
+-	# enable CTIs
++	$_CHIPNAME.cpu0 configure -event halted { cti_prepare_restart_all }
+ 	$_CHIPNAME.cti0 enable on
+-	$_CHIPNAME.cti1 enable on
++
++	if { [$_CHIPNAME.cpu1 was_examined] } {
++		$_CHIPNAME.cti1 write INEN0 0x1
++		$_CHIPNAME.cti1 write OUTEN0 0x1
++		$_CHIPNAME.cpu1 configure -event halted { cti_prepare_restart_all }
++		$_CHIPNAME.cti1 enable on
++	}
+ 
+ 	# Cortex-M4 CTI configuration (enable CM4.CTI and join same CTM channels)
+-	if { [$_CHIPNAME.cpu2 curstate] ne "examine deferred" } {
++	if { [$_CHIPNAME.cpu2 was_examined] } {
+ 		$_CHIPNAME.cti2 write INEN0 0x1
+ 		$_CHIPNAME.cti2 write OUTEN0 0x1
+ 		$_CHIPNAME.cpu2 configure -event halted { cti_prepare_restart_all }
+@@ -98,8 +100,9 @@ proc cti_stop {} {
+ 	global _CHIPNAME
+ 
+ 	$_CHIPNAME.cti0 enable off
+-	$_CHIPNAME.cti1 enable off
+-
++	if { [$_CHIPNAME.cpu1 was_examined] } {
++		$_CHIPNAME.cti1 enable off
++	}
+ 	if { [$_CHIPNAME.cpu2 curstate] ne "examine deferred" } {
+ 		$_CHIPNAME.cti2 enable off
+ 	}
+@@ -111,7 +114,7 @@ cti create $_CHIPNAME.cti1 -dap $_CHIPNAME.dap -ap-num 1 -ctibase 0xE00D9000
+ cti create $_CHIPNAME.cti2 -dap $_CHIPNAME.dap -ap-num 2 -ctibase 0xE0043000
+ 
+ target create $_CHIPNAME.cpu0 cortex_a -dap $_CHIPNAME.dap -coreid 0 -dbgbase 0xE00D0000
+-target create $_CHIPNAME.cpu1 cortex_a -dap $_CHIPNAME.dap -coreid 1 -dbgbase 0xE00D2000
++target create $_CHIPNAME.cpu1 cortex_a -dap $_CHIPNAME.dap -coreid 1 -dbgbase 0xE00D2000 -defer-examine
+ target create $_CHIPNAME.axi mem_ap -dap $_CHIPNAME.dap -ap-num 0
+ target create $_CHIPNAME.ap1 mem_ap -dap $_CHIPNAME.dap -ap-num 1
+ 
+@@ -228,6 +231,29 @@ adapter_khz $_CLOCK_FREQ
+ adapter_nsrst_assert_width 200
+ adapter_nsrst_delay 200
+ 
++$_CHIPNAME.ap1 configure -event examine-end {
++	global _CHIPNAME
++
++	# only on dual-cores chips, examine the second core
++	$_CHIPNAME.ap1 mem2array cpu1_prsr 32 0xE00D2314 1
++	if {$cpu1_prsr(0) & 1} {
++		$_CHIPNAME.cpu1 invoke-event examine-start
++		set err [catch "$_CHIPNAME.cpu1 arp_examine"]
++		if { $err } {
++			$_CHIPNAME.cpu1 invoke-event examine-fail
++		} else {
++			$_CHIPNAME.cpu1 invoke-event examine-end
++		}
++	}
++}
++
++$_CHIPNAME.cpu1 configure -event examine-end {
++	global _CHIPNAME
++
++	if {[$_CHIPNAME.cpu1 was_examined] && [$_CHIPNAME.cpu0 curstate] eq "halted"} {
++		halt
++	}
++}
+ 
+ set clients_num 0
+ proc clients_inc {} {
+-- 
+2.21.0
+
