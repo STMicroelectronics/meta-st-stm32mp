@@ -24,6 +24,11 @@ SRC_URI += " \
     file://0006-ARM-v2018.11-stm32mp-r2-MACHINE.patch \
     file://0007-ARM-v2018.11-stm32mp-r2-DEVICETREE.patch \
     file://0008-ARM-v2018.11-stm32mp-r2-MISC.patch \
+    file://0009-ARM-v2018.11-stm32mp-r3-MACHINE.patch \
+    file://0010-ARM-v2018.11-stm32mp-r3-BOARD.patch \
+    file://0011-ARM-v2018.11-stm32mp-r3-DEVICETREE.patch \
+    file://0012-ARM-v2018.11-stm32mp-r3-CONFIG.patch \
+    file://0013-ARM-v2018.11-stm32mp-r3-MISC.patch \
     "
 
 U_BOOT_VERSION = "2018.11"
@@ -37,7 +42,7 @@ S = "${WORKDIR}/u-boot-${PV}"
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/u-boot.git;name=uboot;protocol=https;branch=v2018.11-stm32mp"
-SRCREV_class-devupstream = "a120b9bdb3e656bb2f0485924d77d58e2281311a"
+SRCREV_class-devupstream = "22eea618b3295cfae777aa80789eb1b46824db12"
 SRCREV_FORMAT_class-devupstream = "uboot"
 PV_class-devupstream = "${U_BOOT_VERSION}+github+${SRCPV}"
 
