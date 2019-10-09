@@ -1,0 +1,94 @@
+From 084d5600c6b8ff7189b40f5a0a844ea602e0d428 Mon Sep 17 00:00:00 2001
+From: Antonio Borneo <antonio.borneo@st.com>
+Date: Mon, 27 May 2019 17:06:33 +0200
+Subject: [PATCH] backend-drm: fix race during system suspend
+
+Depending on system loading, weston-launcher could drop the drm
+master access before compositor and all the clients receive the
+notification. In this case, some commit could be sent to the drm
+driver too late and get refused with error EACCES.
+This error condition is not properly managed and causes weston to
+hang.
+
+Only for atomic modesetting, cancel current repaint in case of
+EACCES.
+No need to wait for suspend or for any notification; in case the
+client reschedules and try a repaint, it will get EACCES again.
+At resume, damage-all guarantees a complete repaint.
+
+Non-atomic modesetting suffers from similar problems, but it is
+not fixed by this change. Since drm_pending_state_apply() never
+returns error for non-atomic modesetting, this change has no
+impact on non-atomic modesetting.
+
+Signed-off-by: Antonio Borneo <antonio.borneo@st.com>
+Fixes: https://gitlab.freedesktop.org/wayland/weston/issues/117
+---
+ libweston/compositor-drm.c | 15 +++++++++++++--
+ libweston/compositor.c     |  2 +-
+ libweston/compositor.h     |  2 ++
+ 3 files changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/libweston/compositor-drm.c b/libweston/compositor-drm.c
+index 3891176..d88bc1e 100644
+--- a/libweston/compositor-drm.c
++++ b/libweston/compositor-drm.c
+@@ -2885,7 +2885,9 @@ drm_output_start_repaint_loop(struct weston_output *output_base)
+ 	ret = drm_pending_state_apply(pending_state);
+ 	if (ret != 0) {
+ 		weston_log("applying repaint-start state failed: %m\n");
+-		goto finish_frame;
++		if (ret != -EACCES)
++			goto finish_frame;
++		weston_output_schedule_repaint_reset(output_base);
+ 	}
+ 
+ 	return;
+@@ -2987,8 +2989,17 @@ drm_repaint_flush(struct weston_compositor *compositor, void *repaint_data)
+ {
+ 	struct drm_backend *b = to_drm_backend(compositor);
+ 	struct drm_pending_state *pending_state = repaint_data;
++	struct weston_output *output;
++	int ret;
+ 
+-	drm_pending_state_apply(pending_state);
++	ret = drm_pending_state_apply(pending_state);
++	if (ret == -EACCES) {
++		weston_log("failed repaint flush: Permission denied\n");
++		wl_list_for_each(output, &compositor->output_list, link) {
++			if (output->repainted)
++				weston_output_schedule_repaint_reset(output);
++		}
++	}
+ 	b->repaint_data = NULL;
+ }
+ 
+diff --git a/libweston/compositor.c b/libweston/compositor.c
+index 9deb781..51705f7 100644
+--- a/libweston/compositor.c
++++ b/libweston/compositor.c
+@@ -2435,7 +2435,7 @@ weston_output_repaint(struct weston_output *output, void *repaint_data)
+ 	return r;
+ }
+ 
+-static void
++WL_EXPORT void
+ weston_output_schedule_repaint_reset(struct weston_output *output)
+ {
+ 	output->repaint_status = REPAINT_NOT_SCHEDULED;
+diff --git a/libweston/compositor.h b/libweston/compositor.h
+index 8b7a102..4f9b989 100644
+--- a/libweston/compositor.h
++++ b/libweston/compositor.h
+@@ -1704,6 +1704,8 @@ weston_output_finish_frame(struct weston_output *output,
+ void
+ weston_output_schedule_repaint(struct weston_output *output);
+ void
++weston_output_schedule_repaint_reset(struct weston_output *output);
++void
+ weston_output_damage(struct weston_output *output);
+ void
+ weston_compositor_schedule_repaint(struct weston_compositor *compositor);
+-- 
+2.7.4
+
