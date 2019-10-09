@@ -9,6 +9,7 @@ SRC_URI[sha256sum] = "7d699a1683bb7a5909de37b6eb91b6e38db32cd6fc5ae48a08eb0718d6
 
 SRC_URI += " \
     file://0001-st-update-r1.patch \
+    file://0002-st-update-r1.1.0.patch \
     "
 
 TF_VERSION = "2.0"
@@ -19,12 +20,17 @@ S = "${WORKDIR}/arm-trusted-firmware-${PV}"
 require tf-a-stm32mp-common.inc
 
 # ---------------------------------
+# Configure archiver use
+# ---------------------------------
+include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'tf-a-stm32mp-archiver.inc','')}
+
+# ---------------------------------
 # Configure devupstream class usage
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/arm-trusted-firmware.git;protocol=https;name=tfa;branch=v2.0-stm32mp"
-SRCREV_class-devupstream = "d0233623681124a85b069f97a447d7edb1cc1c02"
+SRCREV_class-devupstream = "69cc28c5a1b877cf67def7f94dece087f3917b1c"
 SRCREV_FORMAT_class-devupstream = "tfa"
 PV_class-devupstream = "${TF_VERSION}+github+${SRCPV}"
 # ---------------------------------
