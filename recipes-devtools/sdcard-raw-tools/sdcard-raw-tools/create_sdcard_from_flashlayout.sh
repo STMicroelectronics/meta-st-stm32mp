@@ -650,19 +650,18 @@ function print_populate_on_infofile() {
 		then
 			if [ "$selected" == "P" ] || [ "$selected" == "E" ];
 			then
-				echo "- Populate partition $partName (/dev/mmcblk0p$j)" >> $FLASHLAYOUT_infoname
-				echo "    dd if=$bin2flash of=/dev/mmcblk0p$j bs=1M conv=fdatasync status=progress" >> $FLASHLAYOUT_infoname
-				echo "" >> $FLASHLAYOUT_infoname
-				j=$(($j+1))
-			fi
-			if [ "$selected" == "E" ];
-			then
-				echo "- Populate partition $partName (/dev/mmcblk0p$j)" >> $FLASHLAYOUT_infoname
-				if [ -n "$bin2flash" ];
+				if [ "$selected" == "E" ];
 				then
-					echo "    dd if=$bin2flash of=/dev/mmcblk0p$j bs=1M conv=fdatasync status=progress" >> $FLASHLAYOUT_infoname
+					echo "- Populate partition $partName (/dev/mmcblk0p$j)" >> $FLASHLAYOUT_infoname
+					if [ -n "$bin2flash" ];
+					then
+						echo "    dd if=$bin2flash of=/dev/mmcblk0p$j bs=1M conv=fdatasync status=progress" >> $FLASHLAYOUT_infoname
+					else
+						echo "    dd if=<raw image of $partName> of=/dev/mmcblk0p$j bs=1M conv=fdatasync status=progress" >> $FLASHLAYOUT_infoname
+					fi
 				else
-					echo "    dd if=<raw image of $partName> of=/dev/mmcblk0p$j bs=1M conv=fdatasync status=progress" >> $FLASHLAYOUT_infoname
+					echo "- Populate partition $partName (/dev/mmcblk0p$j)" >> $FLASHLAYOUT_infoname
+					echo "    dd if=$bin2flash of=/dev/mmcblk0p$j bs=1M conv=fdatasync status=progress" >> $FLASHLAYOUT_infoname
 				fi
 				echo "" >> $FLASHLAYOUT_infoname
 				j=$(($j+1))
