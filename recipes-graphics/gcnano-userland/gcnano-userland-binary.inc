@@ -105,17 +105,19 @@ do_install() {
         LINK=`readlink ${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv2.so`
         ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/$LINK ${D}${libdir}/libGLESv2.so.2
 
-        # remove remove libwayland-egl which are now provided by wayland
-        if test -f ${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}/libwayland-egl.so ;
-        then
-            rm ${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}/libwayland-egl.so*
-            rm ${D}${libdir}/pkgconfig/wayland-egl.pc
-        fi
         chown -R root.root ${D}/${GCNANO_USERLAND_OUTPUT_LIBDIR} ${D}${libdir}/
     else
         install -m 755 -d ${D}/usr/
         cp -aR ${S}/${TAR_FILENAME}/usr ${D}/
     fi
+
+    # remove remove libwayland-egl which are now provided by wayland
+    if test -f ${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}/libwayland-egl.so ;
+    then
+        rm ${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}/libwayland-egl.so*
+        rm ${D}${libdir}/pkgconfig/wayland-egl.pc
+    fi
+    chown -R root.root ${D}/${GCNANO_USERLAND_OUTPUT_LIBDIR} ${D}${libdir}/
 
     install -d ${D}${systemd_unitdir}/system
     install -m 0644 ${WORKDIR}/gcnano-userland-make-link.service ${D}${systemd_unitdir}/system
