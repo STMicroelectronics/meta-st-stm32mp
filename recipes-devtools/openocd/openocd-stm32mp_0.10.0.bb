@@ -19,3 +19,4 @@ SRC_URI += "file://0003-Align-to-community-code-for-cache-coherency-and-rese.pat
 SRC_URI += "file://0004-Fix-init-command.patch"
 SRC_URI += "file://0005-Add-CTI-plus-fixes.patch"
 SRC_URI += "file://0006-Support-single-core-align-access-with-mmu-off-plus-f.patch"
+SRC_URI += "file://0007-Add-support-for-stlink-traces-and-silicon-rev.2.1-fi.patch"
