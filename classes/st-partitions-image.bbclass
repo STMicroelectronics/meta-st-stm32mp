@@ -38,6 +38,10 @@ python __anonymous () {
 }
 
 image_rootfs_image_clean_task () {
+    if [ ${ENABLE_PARTITIONS_IMAGE} -ne "1" ]; then
+        return
+    fi
+
     for name in ${PARTITIONS_IMAGE};
     do
         if `echo ${IMAGE_NAME} | grep -q $name` ;
