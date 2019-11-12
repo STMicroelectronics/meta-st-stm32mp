@@ -120,7 +120,7 @@ FLASHLAYOUT_CONFIGURE_FILES ??= ""
 # -----------------------------------------------------------------------------
 python __anonymous () {
     flashlayout_config = d.getVar('ENABLE_FLASHLAYOUT_CONFIG')
-    if flashlayout_config:
+    if flashlayout_config == "1":
         # Gather all current tasks
         tasks = filter(lambda k: d.getVarFlag(k, "task", True), d.keys())
         for task in tasks:
