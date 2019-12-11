@@ -26,25 +26,6 @@ FLASHLAYOUT_PARTITION_LABELS_deleteall_eval  = "fsbl1-boot ssbl-boot emmcfsbl1 e
 
 # -----------------------------------------------------------------------------
 # Partition configuration for each partition label
-FLASHLAYOUT_PARTITION_ENABLE_emmcfsbl1  = "PED"
-FLASHLAYOUT_PARTITION_ENABLE_emmcfsbl2  = "PED"
-FLASHLAYOUT_PARTITION_ENABLE_emmcall    = "PED"
-FLASHLAYOUT_PARTITION_ENABLE_nandall    = "PED"
-FLASHLAYOUT_PARTITION_ENABLE_norall     = "PED"
-FLASHLAYOUT_PARTITION_ENABLE_sdcardall  = "PED"
-
-FLASHLAYOUT_PARTITION_ID_emmcfsbl1  = "0x08"
-FLASHLAYOUT_PARTITION_ID_emmcfsbl2  = "0x09"
-FLASHLAYOUT_PARTITION_ID_emmcall    = "0x30"
-FLASHLAYOUT_PARTITION_ID_nandall    = "0x40"
-FLASHLAYOUT_PARTITION_ID_norall     = "0x50"
-FLASHLAYOUT_PARTITION_ID_sdcardall  = "0x60"
-
-FLASHLAYOUT_PARTITION_TYPE_emmcall      = "RawImage"
-FLASHLAYOUT_PARTITION_TYPE_nandall      = "RawImage"
-FLASHLAYOUT_PARTITION_TYPE_norall       = "RawImage"
-FLASHLAYOUT_PARTITION_TYPE_sdcardall    = "RawImage"
-
 FLASHLAYOUT_PARTITION_DEVICE_emmcfsbl1  = "${DEVICE_EMMC}"
 FLASHLAYOUT_PARTITION_DEVICE_emmcfsbl2  = "${DEVICE_EMMC}"
 FLASHLAYOUT_PARTITION_DEVICE_emmcall    = "${DEVICE_EMMC}"
