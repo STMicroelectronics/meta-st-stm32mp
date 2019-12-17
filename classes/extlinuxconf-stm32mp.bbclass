@@ -87,8 +87,6 @@ UBOOT_EXTLINUX_KERNEL_IMAGE ?= "/${KERNEL_IMAGETYPE}"
 UBOOT_EXTLINUX_KERNEL_ARGS ?= "rootwait rw"
 UBOOT_EXTLINUX_TIMEOUT ?= "20"
 
-UBOOT_EXTLINUX_CONFIGURE_FILES ??= ""
-
 python do_create_multiextlinux_config() {
     targets = d.getVar('UBOOT_EXTLINUX_TARGETS')
     if not targets:
@@ -202,4 +200,11 @@ addtask create_multiextlinux_config before do_compile
 
 do_create_multiextlinux_config[dirs] += "${B}"
 do_create_multiextlinux_config[cleandirs] += "${B}"
-do_create_multiextlinux_config[file-checksums] += "${UBOOT_EXTLINUX_CONFIGURE_FILES}"
+# Manage specific var dependency:
+# Because of local overrides within create_multiextlinux_config() function, we
+# need to make sure to add each variables to the vardeps list.
+UBOOT_EXTLINUX_TARGET_VARS = "LABELS BOOTPREFIXES TIMEOUT DEFAULT_LABEL"
+do_create_multiextlinux_config[vardeps] += "${@' '.join(['UBOOT_EXTLINUX_%s_%s' % (v, l) for v in d.getVar('UBOOT_EXTLINUX_TARGET_VARS').split() for l in d.getVar('UBOOT_EXTLINUX_TARGETS').split()])}"
+UBOOT_EXTLINUX_LABELS_VARS = "CONSOLE MENU_DESCRIPTION ROOT KERNEL_IMAGE FDTDIR FDT KERNEL_ARGS INITRD"
+UBOOT_EXTLINUX_LABELS_CONFIGURED = "${@" ".join(map(lambda t: "%s" % d.getVar("UBOOT_EXTLINUX_LABELS_%s" % t), d.getVar('UBOOT_EXTLINUX_TARGETS').split()))}"
+do_create_multiextlinux_config[vardeps] += "${@' '.join(['UBOOT_EXTLINUX_%s_%s' % (v, l) for v in d.getVar('UBOOT_EXTLINUX_LABELS_VARS').split() for l in d.getVar('UBOOT_EXTLINUX_LABELS_CONFIGURED').split()])}"

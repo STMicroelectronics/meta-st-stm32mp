@@ -1,8 +1,5 @@
 #@DESCRIPTION: STM32MP machine extlinux file configuration
 
-# Set configuration file to monitor
-UBOOT_EXTLINUX_CONFIGURE_FILES_append = " ${STM32MP_BASE}/conf/machine/include/st-machine-extlinux-config-stm32mp.inc:True "
-
 # Set generic extlinux bootdevice variable to ease definition
 EXTLINUX_BOOTDEVICE_EMMC      = "mmc1"
 EXTLINUX_BOOTDEVICE_SDCARD    = "mmc0"
