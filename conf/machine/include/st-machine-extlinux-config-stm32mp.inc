@@ -3,22 +3,6 @@
 # Set configuration file to monitor
 UBOOT_EXTLINUX_CONFIGURE_FILES_append = " ${STM32MP_BASE}/conf/machine/include/st-machine-extlinux-config-stm32mp.inc:True "
 
-# Define the config flags to use to generate all extlinux targets
-UBOOT_EXTLINUX_CONFIG_FLAGS += "${@bb.utils.contains('FLASHLAYOUT_CONFIG_LABELS', 'emmc', '%s' % bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'emmc emmc-optee', 'emmc', d), '', d)}"
-UBOOT_EXTLINUX_CONFIG_FLAGS += "${@bb.utils.contains_any('FLASHLAYOUT_CONFIG_LABELS', [ 'nand-4-256', 'nor-nand-4-256' ], 'nand', '', d)}"
-UBOOT_EXTLINUX_CONFIG_FLAGS += "${@bb.utils.contains('FLASHLAYOUT_CONFIG_LABELS', 'nor-emmc', 'nor-emmc', '', d)}"
-UBOOT_EXTLINUX_CONFIG_FLAGS += "${@bb.utils.contains('FLASHLAYOUT_CONFIG_LABELS', 'nor-sdcard', 'nor-sdcard', '', d)}"
-UBOOT_EXTLINUX_CONFIG_FLAGS += "${@bb.utils.contains('FLASHLAYOUT_CONFIG_LABELS', 'sdcard', '%s' % bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'sdcard sdcard-optee', 'sdcard', d), '', d)}"
-
-# Provide the list of supported devicetree for each config flag
-UBOOT_EXTLINUX_DEVICEFLAG_emmc          ?= "${STM32MP_DT_FILES_ED} ${STM32MP_DT_FILES_EV}"
-UBOOT_EXTLINUX_DEVICEFLAG_emmc-optee    ?= "${STM32MP_DT_FILES_ED} ${STM32MP_DT_FILES_EV}"
-UBOOT_EXTLINUX_DEVICEFLAG_nand          ?= "${STM32MP_DT_FILES_EV}"
-UBOOT_EXTLINUX_DEVICEFLAG_nor-emmc      ?= "${STM32MP_DT_FILES_EV}"
-UBOOT_EXTLINUX_DEVICEFLAG_nor-sdcard    ?= "${STM32MP_DT_FILES_EV}"
-UBOOT_EXTLINUX_DEVICEFLAG_sdcard        ?= "${STM32MP_DT_FILES_DK} ${STM32MP_DT_FILES_ED} ${STM32MP_DT_FILES_EV}"
-UBOOT_EXTLINUX_DEVICEFLAG_sdcard-optee  ?= "${STM32MP_DT_FILES_DK} ${STM32MP_DT_FILES_ED} ${STM32MP_DT_FILES_EV}"
-
 # Set generic extlinux bootdevice variable to ease definition
 EXTLINUX_BOOTDEVICE_EMMC      = "mmc1"
 EXTLINUX_BOOTDEVICE_SDCARD    = "mmc0"
@@ -70,15 +54,35 @@ EXTLINUX_ROOT_SDCARD_OPTEE = "${@bb.utils.contains('ST_VENDORFS','1','root=/dev/
 #       APPEND ${UBOOT_EXTLINUX_ROOT}       < OR OVERRIDE WITH :    ${UBOOT_EXTLINUX_ROOT_${IMAGE_UBOOT_EXTLINUX_LABELS}[1]}    >
 # -----------------------------------------------------------------------------
 
+# Init the list of targets per device config
+UBOOT_EXTLINUX_TARGETS_emmc         ?= ""
+UBOOT_EXTLINUX_TARGETS_emmc-optee   ?= ""
+UBOOT_EXTLINUX_TARGETS_nand         ?= ""
+UBOOT_EXTLINUX_TARGETS_nor-emmc     ?= ""
+UBOOT_EXTLINUX_TARGETS_nor-sdcard   ?= ""
+UBOOT_EXTLINUX_TARGETS_sdcard       ?= ""
+UBOOT_EXTLINUX_TARGETS_sdcard-optee ?= ""
+# Configure bootscheme diversity for emmc and sdcard
+EXTLINUX_TARGETS_EMMC   += "${@bb.utils.contains_any('BOOTSCHEME_LABELS', [ 'basic', 'trusted' ], '${UBOOT_EXTLINUX_TARGETS_emmc}', '', d)}"
+EXTLINUX_TARGETS_EMMC   += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', '${UBOOT_EXTLINUX_TARGETS_emmc-optee}', '', d)}"
+EXTLINUX_TARGETS_SDCARD += "${@bb.utils.contains_any('BOOTSCHEME_LABELS', [ 'basic', 'trusted' ], '${UBOOT_EXTLINUX_TARGETS_sdcard}', '', d)}"
+EXTLINUX_TARGETS_SDCARD += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', '${UBOOT_EXTLINUX_TARGETS_sdcard-optee}', '', d)}"
+# Define the extlinux targets to use
+UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains('FLASHLAYOUT_CONFIG_LABELS', 'emmc', '${EXTLINUX_TARGETS_EMMC}', '', d)}"
+UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains_any('FLASHLAYOUT_CONFIG_LABELS', [ 'nand-4-256', 'nor-nand-4-256' ], '${UBOOT_EXTLINUX_TARGETS_nand}', '', d)}"
+UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains('FLASHLAYOUT_CONFIG_LABELS', 'nor-emmc', '${UBOOT_EXTLINUX_TARGETS_nor-emmc}', '', d)}"
+UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains('FLASHLAYOUT_CONFIG_LABELS', 'nor-sdcard', '${UBOOT_EXTLINUX_TARGETS_nor-sdcard}', '', d)}"
+UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains('FLASHLAYOUT_CONFIG_LABELS', 'sdcard', '${EXTLINUX_TARGETS_SDCARD}', '', d)}"
+
 # Set extlinux console for stm32mp machine
 UBOOT_EXTLINUX_CONSOLE = "console=${@d.getVar('SERIAL_CONSOLE').split()[1]},${@d.getVar('SERIAL_CONSOLE').split()[0]}"
 
 # -----------------------------------------------------------------------------
 # DK1 configuration
 # -----------------------------------------------------------------------------
-# Define available targets to use
-UBOOT_EXTLINUX_CONFIGURED_TARGETS += "mp157a-dk1_sdcard"
-UBOOT_EXTLINUX_CONFIGURED_TARGETS += "mp157a-dk1_sdcard-optee"
+# Define additional targets to use
+UBOOT_EXTLINUX_TARGETS_sdcard       += "${@bb.utils.contains('STM32MP_DEVICETREE', 'stm32mp157a-dk1', 'mp157a-dk1_sdcard', '', d)}"
+UBOOT_EXTLINUX_TARGETS_sdcard-optee += "${@bb.utils.contains('STM32MP_DEVICETREE', 'stm32mp157a-dk1', 'mp157a-dk1_sdcard-optee', '', d)}"
 # Define bootprefix for each target
 UBOOT_EXTLINUX_BOOTPREFIXES_mp157a-dk1_sdcard       = "${EXTLINUX_BOOTDEVICE_SDCARD}_stm32mp157a-dk1_"
 UBOOT_EXTLINUX_BOOTPREFIXES_mp157a-dk1_sdcard-optee = "${EXTLINUX_BOOTDEVICE_SDCARD}_stm32mp157a-dk1-optee_"
@@ -98,9 +102,9 @@ UBOOT_EXTLINUX_ROOT_stm32mp157a-dk1-sdcard-optee = "${EXTLINUX_ROOT_SDCARD_OPTEE
 # -----------------------------------------------------------------------------
 # DK2 configuration
 # -----------------------------------------------------------------------------
-# Define available targets to use
-UBOOT_EXTLINUX_CONFIGURED_TARGETS += "mp157c-dk2_sdcard"
-UBOOT_EXTLINUX_CONFIGURED_TARGETS += "mp157c-dk2_sdcard-optee"
+# Define additional targets to use
+UBOOT_EXTLINUX_TARGETS_sdcard       += "${@bb.utils.contains('STM32MP_DEVICETREE', 'stm32mp157c-dk2', 'mp157c-dk2_sdcard', '', d)}"
+UBOOT_EXTLINUX_TARGETS_sdcard-optee += "${@bb.utils.contains('STM32MP_DEVICETREE', 'stm32mp157c-dk2', 'mp157c-dk2_sdcard-optee', '', d)}"
 # Define bootprefix for each target
 UBOOT_EXTLINUX_BOOTPREFIXES_mp157c-dk2_sdcard       = "${EXTLINUX_BOOTDEVICE_SDCARD}_stm32mp157c-dk2_"
 UBOOT_EXTLINUX_BOOTPREFIXES_mp157c-dk2_sdcard-optee = "${EXTLINUX_BOOTDEVICE_SDCARD}_stm32mp157c-dk2-optee_"
@@ -140,11 +144,11 @@ UBOOT_EXTLINUX_ROOT_stm32mp157c-dk2-m4-examples-sdcard-optee = "${EXTLINUX_ROOT_
 # -----------------------------------------------------------------------------
 # ED1 configuration
 # -----------------------------------------------------------------------------
-# Define available targets to use
-UBOOT_EXTLINUX_CONFIGURED_TARGETS += "mp157c-ed1_emmc"
-UBOOT_EXTLINUX_CONFIGURED_TARGETS += "mp157c-ed1_emmc-optee"
-UBOOT_EXTLINUX_CONFIGURED_TARGETS += "mp157c-ed1_sdcard"
-UBOOT_EXTLINUX_CONFIGURED_TARGETS += "mp157c-ed1_sdcard-optee"
+# Define additional targets to use
+UBOOT_EXTLINUX_TARGETS_emmc         += "${@bb.utils.contains('STM32MP_DEVICETREE', 'stm32mp157c-ed1', 'mp157c-ed1_emmc', '', d)}"
+UBOOT_EXTLINUX_TARGETS_emmc-optee   += "${@bb.utils.contains('STM32MP_DEVICETREE', 'stm32mp157c-ed1', 'mp157c-ed1_emmc-optee', '', d)}"
+UBOOT_EXTLINUX_TARGETS_sdcard       += "${@bb.utils.contains('STM32MP_DEVICETREE', 'stm32mp157c-ed1', 'mp157c-ed1_sdcard', '', d)}"
+UBOOT_EXTLINUX_TARGETS_sdcard-optee += "${@bb.utils.contains('STM32MP_DEVICETREE', 'stm32mp157c-ed1', 'mp157c-ed1_sdcard-optee', '', d)}"
 # Define bootprefix for each target
 UBOOT_EXTLINUX_BOOTPREFIXES_mp157c-ed1_emmc         = "${EXTLINUX_BOOTDEVICE_EMMC}_stm32mp157c-ed1_"
 UBOOT_EXTLINUX_BOOTPREFIXES_mp157c-ed1_emmc-optee   = "${EXTLINUX_BOOTDEVICE_EMMC}_stm32mp157c-ed1-optee_"
@@ -174,14 +178,14 @@ UBOOT_EXTLINUX_ROOT_stm32mp157c-ed1-sdcard-optee = "${EXTLINUX_ROOT_SDCARD_OPTEE
 # -----------------------------------------------------------------------------
 # EV1 configuration
 # -----------------------------------------------------------------------------
-# Define available targets to use
-UBOOT_EXTLINUX_CONFIGURED_TARGETS += "mp157c-ev1_emmc"
-UBOOT_EXTLINUX_CONFIGURED_TARGETS += "mp157c-ev1_emmc-optee"
-UBOOT_EXTLINUX_CONFIGURED_TARGETS += "mp157c-ev1_nand"
-UBOOT_EXTLINUX_CONFIGURED_TARGETS += "mp157c-ev1_nor-sdcard"
-UBOOT_EXTLINUX_CONFIGURED_TARGETS += "mp157c-ev1_nor-emmc"
-UBOOT_EXTLINUX_CONFIGURED_TARGETS += "mp157c-ev1_sdcard"
-UBOOT_EXTLINUX_CONFIGURED_TARGETS += "mp157c-ev1_sdcard-optee"
+# Define additional targets to use
+UBOOT_EXTLINUX_TARGETS_emmc         += "${@bb.utils.contains('STM32MP_DEVICETREE', 'stm32mp157c-ev1', 'mp157c-ev1_emmc', '', d)}"
+UBOOT_EXTLINUX_TARGETS_emmc-optee   += "${@bb.utils.contains('STM32MP_DEVICETREE', 'stm32mp157c-ev1', 'mp157c-ev1_emmc-optee', '', d)}"
+UBOOT_EXTLINUX_TARGETS_nand         += "${@bb.utils.contains('STM32MP_DEVICETREE', 'stm32mp157c-ev1', 'mp157c-ev1_nand', '', d)}"
+UBOOT_EXTLINUX_TARGETS_nor-sdcard   += "${@bb.utils.contains('STM32MP_DEVICETREE', 'stm32mp157c-ev1', 'mp157c-ev1_nor-sdcard', '', d)}"
+UBOOT_EXTLINUX_TARGETS_nor-emmc     += "${@bb.utils.contains('STM32MP_DEVICETREE', 'stm32mp157c-ev1', 'mp157c-ev1_nor-emmc', '', d)}"
+UBOOT_EXTLINUX_TARGETS_sdcard       += "${@bb.utils.contains('STM32MP_DEVICETREE', 'stm32mp157c-ev1', 'mp157c-ev1_sdcard', '', d)}"
+UBOOT_EXTLINUX_TARGETS_sdcard-optee += "${@bb.utils.contains('STM32MP_DEVICETREE', 'stm32mp157c-ev1', 'mp157c-ev1_sdcard-optee', '', d)}"
 # Define bootprefix for each target
 UBOOT_EXTLINUX_BOOTPREFIXES_mp157c-ev1_emmc         = "${EXTLINUX_BOOTDEVICE_EMMC}_stm32mp157c-ev1_"
 UBOOT_EXTLINUX_BOOTPREFIXES_mp157c-ev1_emmc-optee   = "${EXTLINUX_BOOTDEVICE_EMMC}_stm32mp157c-ev1-optee_"
