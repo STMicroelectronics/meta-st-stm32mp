@@ -43,7 +43,8 @@ DEVICE_ALIGNMENT_SIZE_mmc0  = "0x00000200"
 # -----------------------------------------------------------------------------
 # Define bootscheme labels
 # -----------------------------------------------------------------------------
-FLASHLAYOUT_BOOTSCHEME_LABELS ??= "basic optee trusted"
+# Define bootscheme label to allow specific expansion for partition vars
+FLASHLAYOUT_BOOTSCHEME_LABELS += "${BOOTSCHEME_LABELS}"
 
 # -----------------------------------------------------------------------------
 # Define config labels
@@ -53,7 +54,13 @@ FLASHLAYOUT_BOOTSCHEME_LABELS ??= "basic optee trusted"
 #           2) list
 #           3) Default 'list' to 'none' when not defined
 # -----------------------------------------------------------------------------
-FLASHLAYOUT_CONFIG_LABELS ??= "emmc nand-4-256 nor-sdcard nor-emmc nor-nand-4-256 sdcard"
+# Define supported config labels
+FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'emmc', '', d)}"
+FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', 'nand-4-256', '', d)}"
+FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emmc', 'nor-emmc', '', d)}"
+FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-nand-4-256', 'nor-nand-4-256', '', d)}"
+FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', 'nor-sdcard', '', d)}"
+FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'sdcard', '', d)}"
 
 # Set by default this variable to 0, and set to 1 only when we are using st-example-image-*
 ST_EXAMPLE_IMAGE ??= "0"

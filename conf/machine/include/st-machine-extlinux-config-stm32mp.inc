@@ -65,11 +65,11 @@ EXTLINUX_TARGETS_EMMC   += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', '
 EXTLINUX_TARGETS_SDCARD += "${@bb.utils.contains_any('BOOTSCHEME_LABELS', [ 'basic', 'trusted' ], '${UBOOT_EXTLINUX_TARGETS_sdcard}', '', d)}"
 EXTLINUX_TARGETS_SDCARD += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', '${UBOOT_EXTLINUX_TARGETS_sdcard-optee}', '', d)}"
 # Define the extlinux targets to use
-UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains('FLASHLAYOUT_CONFIG_LABELS', 'emmc', '${EXTLINUX_TARGETS_EMMC}', '', d)}"
-UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains_any('FLASHLAYOUT_CONFIG_LABELS', [ 'nand-4-256', 'nor-nand-4-256' ], '${UBOOT_EXTLINUX_TARGETS_nand}', '', d)}"
-UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains('FLASHLAYOUT_CONFIG_LABELS', 'nor-emmc', '${UBOOT_EXTLINUX_TARGETS_nor-emmc}', '', d)}"
-UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains('FLASHLAYOUT_CONFIG_LABELS', 'nor-sdcard', '${UBOOT_EXTLINUX_TARGETS_nor-sdcard}', '', d)}"
-UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains('FLASHLAYOUT_CONFIG_LABELS', 'sdcard', '${EXTLINUX_TARGETS_SDCARD}', '', d)}"
+UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', '${EXTLINUX_TARGETS_EMMC}', '', d)}"
+UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'nand-4-256', 'nor-nand-4-256' ], '${UBOOT_EXTLINUX_TARGETS_nand}', '', d)}"
+UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emmc', '${UBOOT_EXTLINUX_TARGETS_nor-emmc}', '', d)}"
+UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', '${UBOOT_EXTLINUX_TARGETS_nor-sdcard}', '', d)}"
+UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', '${EXTLINUX_TARGETS_SDCARD}', '', d)}"
 
 # Set extlinux console for stm32mp machine
 UBOOT_EXTLINUX_CONSOLE = "console=${@d.getVar('SERIAL_CONSOLE').split()[1]},${@d.getVar('SERIAL_CONSOLE').split()[0]}"

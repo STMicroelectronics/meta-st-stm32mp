@@ -19,6 +19,12 @@ MACHINEOVERRIDES .= ":stm32mpcommon"
 BOOTSCHEME_LABELS ??= "basic trusted optee"
 
 # =========================================================================
+# boot device
+# =========================================================================
+# List of supported boot devices
+BOOTDEVICE_LABELS ??= "emmc nand-4-256 nor-emmc nor-nand-4-256 nor-sdcard sdcard"
+
+# =========================================================================
 # Machine settings
 # =========================================================================
 # Default machine feature
@@ -327,17 +333,12 @@ OPTEE_CONF = "${STM32MP_DEVICETREE}"
 # =========================================================================
 # flashlayout
 # =========================================================================
-# Define bootscheme label to allow specific expansion for partition vars
-FLASHLAYOUT_BOOTSCHEME_LABELS += "${BOOTSCHEME_LABELS}"
 # Add specific scheme to provide flashlayout that will erase all storage devices
 FLASHLAYOUT_BOOTSCHEME_LABELS += "deleteall"
 # Add specific scheme to provide flashlayout that will make rootfs extensible to
 # remaining device free space
 #   NOTE: this scheme is ONLY compatible with disco board and trusted bootscheme
 FLASHLAYOUT_BOOTSCHEME_LABELS += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'trusted', 'extensible', '', d)}"
-
-# Default config labels supported
-FLASHLAYOUT_CONFIG_LABELS ??= ""
 
 # =========================================================================
 # Xserver
