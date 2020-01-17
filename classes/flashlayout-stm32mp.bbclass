@@ -247,8 +247,12 @@ def get_binaryname(labeltype, bootscheme, config, partition, d):
     binary_name = expand_var('FLASHLAYOUT_PARTITION_BIN2LOAD', bootscheme, config, partition, d)
     bb.note('>>> Selected FLASHLAYOUT_PARTITION_BIN2LOAD: %s' % binary_name)
 
+    # Get binary_name basename to then check for any rename case
+    binary_name_base = os.path.basename(binary_name)
+    bb.note('>>> Basename selected for %s: %s' % (binary_name, binary_name_base))
+
     # Treat TF-A, TEE, U-BOOT and U-BOOT-SPL binary rename case
-    if re.match('^tf-a.*$', binary_name) or re.match('^u-boot.*$', binary_name) or re.match('^tee-.*$', binary_name):
+    if re.match('^tf-a.*$', binary_name_base) or re.match('^u-boot.*$', binary_name_base) or re.match('^tee-.*$', binary_name_base):
         file_name, file_ext = os.path.splitext(binary_name)
         # Init binary_type to use from labeltype
         binary_type = labeltype + '-' + bootscheme
@@ -267,7 +271,7 @@ def get_binaryname(labeltype, bootscheme, config, partition, d):
                 binary_type = re.sub(r'-%s$' % pattern2replace, '-' + pattern2use, binary_type)
             bb.note('>>> New "binary_type" to use for binary name": %s' % binary_type)
         # Append binary_type to binary name
-        if re.match('^u-boot-spl.*$', binary_name):
+        if re.match('^u-boot-spl.*$', binary_name_base):
             binary_name = file_name + file_ext + '-' + binary_type
         else:
             binary_name = file_name + '-' + binary_type + file_ext
