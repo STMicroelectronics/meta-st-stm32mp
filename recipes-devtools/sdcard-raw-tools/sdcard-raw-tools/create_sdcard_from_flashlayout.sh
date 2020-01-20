@@ -419,8 +419,8 @@ function generate_gpt_partition_table_from_flash_layout() {
 
 			j=$(($j+1))
 			fi
-		fi
 		p=$(($p+1))
+		fi
 	done
 
 	echo ""
