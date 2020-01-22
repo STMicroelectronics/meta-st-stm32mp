@@ -14,10 +14,6 @@
 #       CREATED: 11/22/2017 15:03
 #      REVISION:  ---
 #===============================================================================
-#TODO: Pre-requisite tools
-# sgdisk
-# du
-# dd
 
 unset FLASHLAYOUT_data
 unset FLASHLAYOUT_filename
@@ -754,6 +750,11 @@ function print_warning() {
 	fi
 }
 
+function check_if_command_exists() {
+	command -v $1 >/dev/null 2>&1 \
+		|| { echo "Cannot continue. Please install $1 first."; exit 1; }
+}
+
 function usage() {
 	echo ""
 	echo "Help:"
@@ -771,6 +772,12 @@ then
 	echo ""
 	usage
 else
+	# Pre-requisite tools
+	for i in sgdisk du dd;
+	do
+		check_if_command_exists $i
+	done
+
 	FLASHLAYOUT_filename=$1
 	FLASHLAYOUT_filename_path=$(dirname $FLASHLAYOUT_filename)
 	FLASHLAYOUT_filename_name=$(basename $FLASHLAYOUT_filename)
