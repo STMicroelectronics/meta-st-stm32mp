@@ -833,6 +833,9 @@ else
 		read answer
 		if [[ "$answer" =~ ^[Yy]+[ESes]* ]]; then
 			rm -f $FLASHLAYOUT_rawname $FLASHLAYOUT_infoname
+		else
+			echo "Cannot continue."
+			exit 1
 		fi
 	fi
 
