@@ -12,11 +12,11 @@ PV = "1.0"
 
 # Machine generic
 SRC_URI = " \
-    file://asound-stm32mp157c-ev.conf   \
-    file://asound-stm32mp157c-dk.conf   \
+    file://asound-stm32mp15yx-ev.conf   \
+    file://asound-stm32mp15yx-dk.conf   \
     \
-    file://asound-stm32mp157c-ev.state  \
-    file://asound-stm32mp157c-dk.state  \
+    file://asound-stm32mp15yx-ev.state  \
+    file://asound-stm32mp15yx-dk.state  \
     \
     file://system-generator-alsa-states \
     file://system-generator-alsa-conf   \
@@ -32,6 +32,20 @@ do_install() {
     install -m 0644 ${WORKDIR}/*.conf ${D}${sysconfdir}/
     install -d ${D}/${localstatedir}/lib/alsa
     install -m 0644 ${WORKDIR}/*.state ${D}${localstatedir}/lib/alsa
+
+    # create link to support all packages configuration
+    for p in a b c;
+    do
+        for n in 1 3 7;
+        do
+            cd ${D}${sysconfdir}/
+            ln -sf asound-stm32mp15yx-ev.conf asound-stm32mp15$n$p-ev.conf
+            ln -sf asound-stm32mp15yx-dk.conf asound-stm32mp15$n$p-dk.conf
+            cd ${D}${localstatedir}/lib/alsa
+            ln -sf asound-stm32mp15yx-ev.state asound-stm32mp15$n$p-ev.state
+            ln -sf asound-stm32mp15yx-dk.state asound-stm32mp15$n$p-dk.state
+        done
+    done
 
     # Enable systemd automatic selection
     if ${@bb.utils.contains('DISTRO_FEATURES','systemd','true','false',d)}; then
