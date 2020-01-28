@@ -68,5 +68,5 @@ If you want to contribute changes, you can send Github pull requests at
 
 ## Maintainers
  - Christophe Priouzeau <christophe.priouzeau@st.com>
- - Sebastien Gandon <sebastien.gnadon@st.com>
+ - Sebastien Gandon <sebastien.gandon@st.com>
  - Bernard Puel <bernard.puel@st.com>
