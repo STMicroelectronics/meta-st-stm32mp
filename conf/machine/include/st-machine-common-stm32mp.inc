@@ -318,8 +318,12 @@ TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'basic', 'trusted', ''
 TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'trusted', '', d)}"
 
 # Define SECURE_PAYLOAD config to set for each TF_A_CONFIG
-TF_A_CONFIG_optee   = "AARCH32_SP=optee"
+TF_A_CONFIG_optee   = "AARCH32_SP=optee STM32MP_BOOT_ONLY=1"
 TF_A_CONFIG_trusted = "AARCH32_SP=sp_min"
+
+# Manage proper dependency
+tfaconfig_env[vardeps] += "${@bb.utils.contains('TF_A_CONFIG', 'optee', 'TF_A_CONFIG_optee', '', d)}"
+tfaconfig_env[vardeps] += "${@bb.utils.contains('TF_A_CONFIG', 'trusted', 'TF_A_CONFIG_trusted', '', d)}"
 
 # List of TF-A device tree to use
 TF_A_DEVICETREE = "${STM32MP_DEVICETREE}"
