@@ -1,23 +1,23 @@
-From 6c5c0debff2505c77c0d9545da09ac4b311619d4 Mon Sep 17 00:00:00 2001
+From 65b46b4c2bf2b5d86f210f337e1ca8471034019c Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Thu, 11 Jul 2019 14:12:03 +0200
-Subject: [PATCH 18/30] ARM stm32mp1 r2 PHY PINCTRL PWM
+Date: Fri, 8 Nov 2019 16:52:44 +0100
+Subject: [PATCH 19/31] ARM stm32mp1 r3 PHY PINCTRL PWM
 
 ---
  drivers/phy/st/phy-stm32-usbphyc.c          |  451 +++++++++--
- drivers/pinctrl/Kconfig                     |   12 +
+ drivers/pinctrl/Kconfig                     |   14 +
  drivers/pinctrl/Makefile                    |    1 +
  drivers/pinctrl/core.c                      |   28 +-
- drivers/pinctrl/pinctrl-stmfx.c             |  832 ++++++++++++++++++++
- drivers/pinctrl/stm32/pinctrl-stm32.c       |  452 +++++++++--
- drivers/pinctrl/stm32/pinctrl-stm32.h       |   52 +-
+ drivers/pinctrl/pinctrl-stmfx.c             |  858 +++++++++++++++++++++
+ drivers/pinctrl/stm32/pinctrl-stm32.c       |  435 +++++++++--
+ drivers/pinctrl/stm32/pinctrl-stm32.h       |   53 +-
  drivers/pinctrl/stm32/pinctrl-stm32mp157.c  | 1095 ++++++++++++++++-----------
- drivers/pwm/pwm-stm32-lp.c                  |   44 ++
+ drivers/pwm/pwm-stm32-lp.c                  |   38 +
  drivers/pwm/pwm-stm32.c                     |  105 ++-
- drivers/pwm/sysfs.c                         |   12 +-
- include/dt-bindings/pinctrl/stm32-pinfunc.h |    6 +
+ drivers/pwm/sysfs.c                         |   11 +
+ include/dt-bindings/pinctrl/stm32-pinfunc.h |    7 +
  include/linux/pinctrl/pinctrl.h             |    7 +
- 13 files changed, 2481 insertions(+), 616 deletions(-)
+ 13 files changed, 2498 insertions(+), 605 deletions(-)
  create mode 100644 drivers/pinctrl/pinctrl-stmfx.c
 
 diff --git a/drivers/phy/st/phy-stm32-usbphyc.c b/drivers/phy/st/phy-stm32-usbphyc.c
@@ -636,15 +636,17 @@ index 1255cd1..c9c3c3e 100644
  };
  module_platform_driver(stm32_usbphyc_driver);
 diff --git a/drivers/pinctrl/Kconfig b/drivers/pinctrl/Kconfig
-index e86752b..bbd3908 100644
+index e86752b..70ea304 100644
 --- a/drivers/pinctrl/Kconfig
 +++ b/drivers/pinctrl/Kconfig
-@@ -244,6 +244,18 @@ config PINCTRL_ST
+@@ -244,6 +244,20 @@ config PINCTRL_ST
  	select PINCONF
  	select GPIOLIB_IRQCHIP
  
 +config PINCTRL_STMFX
 +	tristate "STMicroelectronics STMFX GPIO expander pinctrl driver"
++	depends on I2C
++	depends on OF_GPIO
 +	select GENERIC_PINCONF
 +	select GPIOLIB_IRQCHIP
 +	select MFD_STMFX
@@ -735,15 +737,15 @@ index c6ff4d5..7e747ac 100644
  	mutex_unlock(&pinctrldev_list_mutex);
 diff --git a/drivers/pinctrl/pinctrl-stmfx.c b/drivers/pinctrl/pinctrl-stmfx.c
 new file mode 100644
-index 0000000..327c00d
+index 0000000..b4c232a
 --- /dev/null
 +++ b/drivers/pinctrl/pinctrl-stmfx.c
-@@ -0,0 +1,832 @@
+@@ -0,0 +1,858 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Driver for STMicroelectronics Multi-Function eXpander (STMFX) GPIO expander
 + *
-+ * Copyright (C) 2018 STMicroelectronics
++ * Copyright (C) 2019 STMicroelectronics
 + * Author(s): Amelie Delaunay <amelie.delaunay@st.com>.
 + */
 +#include <linux/gpio/driver.h>
@@ -759,30 +761,27 @@ index 0000000..327c00d
 +
 +/* GPIOs expander */
 +/* GPIO_STATE1 0x10, GPIO_STATE2 0x11, GPIO_STATE3 0x12 */
-+#define STMFX_REG_GPIO_STATE		0x10 /* R */
++#define STMFX_REG_GPIO_STATE		STMFX_REG_GPIO_STATE1 /* R */
 +/* GPIO_DIR1 0x60, GPIO_DIR2 0x61, GPIO_DIR3 0x63 */
-+#define STMFX_REG_GPIO_DIR		0x60 /* RW */
++#define STMFX_REG_GPIO_DIR		STMFX_REG_GPIO_DIR1 /* RW */
 +/* GPIO_TYPE1 0x64, GPIO_TYPE2 0x65, GPIO_TYPE3 0x66 */
-+#define STMFX_REG_GPIO_TYPE		0x64 /* RW */
++#define STMFX_REG_GPIO_TYPE		STMFX_REG_GPIO_TYPE1 /* RW */
 +/* GPIO_PUPD1 0x68, GPIO_PUPD2 0x69, GPIO_PUPD3 0x6A */
-+#define STMFX_REG_GPIO_PUPD		0x68 /* RW */
++#define STMFX_REG_GPIO_PUPD		STMFX_REG_GPIO_PUPD1 /* RW */
 +/* GPO_SET1 0x6C, GPO_SET2 0x6D, GPO_SET3 0x6E */
-+#define STMFX_REG_GPO_SET		0x6C /* RW */
++#define STMFX_REG_GPO_SET		STMFX_REG_GPO_SET1 /* RW */
 +/* GPO_CLR1 0x70, GPO_CLR2 0x71, GPO_CLR3 0x72 */
-+#define STMFX_REG_GPO_CLR		0x70 /* RW */
++#define STMFX_REG_GPO_CLR		STMFX_REG_GPO_CLR1 /* RW */
 +/* IRQ_GPI_SRC1 0x48, IRQ_GPI_SRC2 0x49, IRQ_GPI_SRC3 0x4A */
-+#define STMFX_REG_IRQ_GPI_SRC		0x48 /* RW */
++#define STMFX_REG_IRQ_GPI_SRC		STMFX_REG_IRQ_GPI_SRC1 /* RW */
 +/* IRQ_GPI_EVT1 0x4C, IRQ_GPI_EVT2 0x4D, IRQ_GPI_EVT3 0x4E */
-+#define STMFX_REG_IRQ_GPI_EVT		0x4C /* RW */
++#define STMFX_REG_IRQ_GPI_EVT		STMFX_REG_IRQ_GPI_EVT1 /* RW */
 +/* IRQ_GPI_TYPE1 0x50, IRQ_GPI_TYPE2 0x51, IRQ_GPI_TYPE3 0x52 */
-+#define STMFX_REG_IRQ_GPI_TYPE		0x50 /* RW */
++#define STMFX_REG_IRQ_GPI_TYPE		STMFX_REG_IRQ_GPI_TYPE1 /* RW */
 +/* IRQ_GPI_PENDING1 0x0C, IRQ_GPI_PENDING2 0x0D, IRQ_GPI_PENDING3 0x0E*/
-+#define STMFX_REG_IRQ_GPI_PENDING	0x0C /* R */
++#define STMFX_REG_IRQ_GPI_PENDING	STMFX_REG_IRQ_GPI_PENDING1 /* R */
 +/* IRQ_GPI_ACK1 0x54, IRQ_GPI_ACK2 0x55, IRQ_GPI_ACK3 0x56 */
-+#define STMFX_REG_IRQ_GPI_ACK		0x54 /* RW */
-+
-+/* STMFX_REG_IRQ_PENDING bitfields */
-+#define STMFX_REG_IRQ_PENDING_GPIO	BIT(0)
++#define STMFX_REG_IRQ_GPI_ACK		STMFX_REG_IRQ_GPI_ACK1 /* RW */
 +
 +#define NR_GPIO_REGS			3
 +#define NR_GPIOS_PER_REG		8
@@ -957,9 +956,8 @@ index 0000000..327c00d
 +	struct stmfx_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
 +	u32 param = pinconf_to_config_param(*config);
 +	struct pinctrl_gpio_range *range;
-+	int dir, type, pupd;
 +	u32 arg = 0;
-+	int ret;
++	int ret, dir, type, pupd;
 +
 +	range = pinctrl_find_gpio_range_from_pin_nolock(pctldev, pin);
 +	if (!range)
@@ -1182,7 +1180,7 @@ index 0000000..327c00d
 +	u32 reg = get_reg(data->hwirq);
 +	u32 mask = get_mask(data->hwirq);
 +
-+	if (type & IRQ_TYPE_NONE)
++	if (type == IRQ_TYPE_NONE)
 +		return -EINVAL;
 +
 +	if (type & IRQ_TYPE_EDGE_BOTH) {
@@ -1248,6 +1246,34 @@ index 0000000..327c00d
 +			  pctl->irq_gpi_src, NR_GPIO_REGS);
 +
 +	mutex_unlock(&pctl->lock);
++}
++
++static int stmfx_gpio_irq_request_resources(struct irq_data *data)
++{
++	struct gpio_chip *gpio_chip = irq_data_get_irq_chip_data(data);
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gpio_chip);
++	int ret;
++
++	ret = stmfx_gpio_direction_input(&pctl->gpio_chip, data->hwirq);
++	if (ret)
++		return ret;
++
++	ret = gpiochip_lock_as_irq(&pctl->gpio_chip, data->hwirq);
++	if (ret) {
++		dev_err(pctl->dev, "Unable to lock gpio %lu as IRQ: %d\n",
++			data->hwirq, ret);
++		return ret;
++	}
++
++	return 0;
++}
++
++static void stmfx_gpio_irq_release_resources(struct irq_data *data)
++{
++	struct gpio_chip *gpio_chip = irq_data_get_irq_chip_data(data);
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gpio_chip);
++
++	gpiochip_unlock_as_irq(&pctl->gpio_chip, data->hwirq);
 +}
 +
 +static void stmfx_pinctrl_irq_toggle_trigger(struct stmfx_pinctrl *pctl,
@@ -1332,7 +1358,7 @@ index 0000000..327c00d
 +
 +static int stmfx_pinctrl_probe(struct platform_device *pdev)
 +{
-+	struct stmfx *stmfx = dev_get_platdata(&pdev->dev);
++	struct stmfx *stmfx = dev_get_drvdata(pdev->dev.parent);
 +	struct device_node *np = pdev->dev.of_node;
 +	struct stmfx_pinctrl *pctl;
 +	u32 n;
@@ -1421,6 +1447,8 @@ index 0000000..327c00d
 +	pctl->irq_chip.irq_set_type = stmfx_pinctrl_irq_set_type;
 +	pctl->irq_chip.irq_bus_lock = stmfx_pinctrl_irq_bus_lock;
 +	pctl->irq_chip.irq_bus_sync_unlock = stmfx_pinctrl_irq_bus_sync_unlock;
++	pctl->irq_chip.irq_request_resources = stmfx_gpio_irq_request_resources;
++	pctl->irq_chip.irq_release_resources = stmfx_gpio_irq_release_resources;
 +	for_each_clear_bit(n, &pctl->gpio_valid_mask, pctl->gpio_chip.ngpio)
 +		clear_bit(n, pctl->gpio_chip.valid_mask);
 +
@@ -1450,7 +1478,7 @@ index 0000000..327c00d
 +
 +static int stmfx_pinctrl_remove(struct platform_device *pdev)
 +{
-+	struct stmfx *stmfx = dev_get_platdata(&pdev->dev);
++	struct stmfx *stmfx = dev_get_drvdata(pdev->dev.parent);
 +
 +	return stmfx_function_disable(stmfx,
 +				      STMFX_FUNC_GPIO |
@@ -1572,7 +1600,7 @@ index 0000000..327c00d
 +MODULE_AUTHOR("Amelie Delaunay <amelie.delaunay@st.com>");
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/pinctrl/stm32/pinctrl-stm32.c b/drivers/pinctrl/stm32/pinctrl-stm32.c
-index a9bec6e..5b71c97 100644
+index 14dfbbd..4f2676b 100644
 --- a/drivers/pinctrl/stm32/pinctrl-stm32.c
 +++ b/drivers/pinctrl/stm32/pinctrl-stm32.c
 @@ -7,7 +7,9 @@
@@ -1622,7 +1650,15 @@ index a9bec6e..5b71c97 100644
  static const char * const stm32_gpio_functions[] = {
  	"gpio", "af0", "af1",
  	"af2", "af3", "af4",
-@@ -76,6 +94,9 @@ struct stm32_gpio_bank {
+@@ -58,6 +76,7 @@ static const char * const stm32_gpio_functions[] = {
+ 	"af8", "af9", "af10",
+ 	"af11", "af12", "af13",
+ 	"af14", "af15", "analog",
++	"reserved",
+ };
+ 
+ struct stm32_pinctrl_group {
+@@ -76,6 +95,9 @@ struct stm32_gpio_bank {
  	struct irq_domain *domain;
  	u32 bank_nr;
  	u32 bank_ioport_nr;
@@ -1632,7 +1668,7 @@ index a9bec6e..5b71c97 100644
  };
  
  struct stm32_pinctrl {
-@@ -91,6 +112,13 @@ struct stm32_pinctrl {
+@@ -91,6 +113,13 @@ struct stm32_pinctrl {
  	struct irq_domain	*domain;
  	struct regmap		*regmap;
  	struct regmap_field	*irqmux[STM32_GPIO_PINS_PER_BANK];
@@ -1646,7 +1682,7 @@ index a9bec6e..5b71c97 100644
  };
  
  static inline int stm32_gpio_pin(int gpio)
-@@ -126,11 +154,33 @@ static inline u32 stm32_gpio_get_alt(u32 function)
+@@ -126,11 +155,33 @@ static inline u32 stm32_gpio_get_alt(u32 function)
  	return 0;
  }
  
@@ -1680,7 +1716,7 @@ index a9bec6e..5b71c97 100644
  	if (!value)
  		offset += STM32_GPIO_PINS_PER_BANK;
  
-@@ -300,9 +350,40 @@ static int stm32_gpio_domain_activate(struct irq_domain *d,
+@@ -300,9 +351,40 @@ static int stm32_gpio_domain_activate(struct irq_domain *d,
  {
  	struct stm32_gpio_bank *bank = d->host_data;
  	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
@@ -1722,7 +1758,7 @@ index a9bec6e..5b71c97 100644
  }
  
  static int stm32_gpio_domain_alloc(struct irq_domain *d,
-@@ -331,6 +412,7 @@ static const struct irq_domain_ops stm32_gpio_domain_ops = {
+@@ -331,6 +413,7 @@ static const struct irq_domain_ops stm32_gpio_domain_ops = {
  	.alloc          = stm32_gpio_domain_alloc,
  	.free           = irq_domain_free_irqs_common,
  	.activate	= stm32_gpio_domain_activate,
@@ -1730,7 +1766,7 @@ index a9bec6e..5b71c97 100644
  };
  
  /* Pinctrl functions */
-@@ -352,16 +434,16 @@ stm32_pctrl_find_group_by_pin(struct stm32_pinctrl *pctl, u32 pin)
+@@ -352,16 +435,19 @@ stm32_pctrl_find_group_by_pin(struct stm32_pinctrl *pctl, u32 pin)
  static bool stm32_pctrl_is_function_valid(struct stm32_pinctrl *pctl,
  		u32 pin_num, u32 fnum)
  {
@@ -1747,89 +1783,14 @@ index a9bec6e..5b71c97 100644
  			continue;
  
 -		while (func && func->name) {
++		if (fnum == STM32_PIN_RSVD)
++			return true;
++
 +		for (k = 0; k < STM32_CONFIG_NUM; k++) {
  			if (func->num == fnum)
  				return true;
  			func++;
-@@ -410,7 +492,7 @@ static int stm32_pctrl_dt_subnode_to_map(struct pinctrl_dev *pctldev,
- 	unsigned int num_configs;
- 	bool has_config = 0;
- 	unsigned reserve = 0;
--	int num_pins, num_funcs, maps_per_pin, i, err;
-+	int num_pins, num_funcs, maps_per_pin, i, err = 0;
- 
- 	pctl = pinctrl_dev_get_drvdata(pctldev);
- 
-@@ -437,41 +519,45 @@ static int stm32_pctrl_dt_subnode_to_map(struct pinctrl_dev *pctldev,
- 	if (has_config && num_pins >= 1)
- 		maps_per_pin++;
- 
--	if (!num_pins || !maps_per_pin)
--		return -EINVAL;
-+	if (!num_pins || !maps_per_pin) {
-+		err = -EINVAL;
-+		goto exit;
-+	}
- 
- 	reserve = num_pins * maps_per_pin;
- 
- 	err = pinctrl_utils_reserve_map(pctldev, map,
- 			reserved_maps, num_maps, reserve);
- 	if (err)
--		return err;
-+		goto exit;
- 
- 	for (i = 0; i < num_pins; i++) {
- 		err = of_property_read_u32_index(node, "pinmux",
- 				i, &pinfunc);
- 		if (err)
--			return err;
-+			goto exit;
- 
- 		pin = STM32_GET_PIN_NO(pinfunc);
- 		func = STM32_GET_PIN_FUNC(pinfunc);
- 
- 		if (!stm32_pctrl_is_function_valid(pctl, pin, func)) {
- 			dev_err(pctl->dev, "invalid function.\n");
--			return -EINVAL;
-+			err = -EINVAL;
-+			goto exit;
- 		}
- 
- 		grp = stm32_pctrl_find_group_by_pin(pctl, pin);
- 		if (!grp) {
- 			dev_err(pctl->dev, "unable to match pin %d to group\n",
- 					pin);
--			return -EINVAL;
-+			err = -EINVAL;
-+			goto exit;
- 		}
- 
- 		err = stm32_pctrl_dt_node_to_map_func(pctl, pin, func, grp, map,
- 				reserved_maps, num_maps);
- 		if (err)
--			return err;
-+			goto exit;
- 
- 		if (has_config) {
- 			err = pinctrl_utils_add_map_configs(pctldev, map,
-@@ -479,11 +565,13 @@ static int stm32_pctrl_dt_subnode_to_map(struct pinctrl_dev *pctldev,
- 					configs, num_configs,
- 					PIN_MAP_TYPE_CONFIGS_GROUP);
- 			if (err)
--				return err;
-+				goto exit;
- 		}
- 	}
- 
--	return 0;
-+exit:
-+	kfree(configs);
-+	return err;
- }
- 
- static int stm32_pctrl_dt_node_to_map(struct pinctrl_dev *pctldev,
-@@ -573,17 +661,27 @@ static int stm32_pmx_get_func_groups(struct pinctrl_dev *pctldev,
+@@ -579,17 +665,27 @@ static int stm32_pmx_get_func_groups(struct pinctrl_dev *pctldev,
  	return 0;
  }
  
@@ -1859,7 +1820,7 @@ index a9bec6e..5b71c97 100644
  	val = readl_relaxed(bank->base + alt_offset);
  	val &= ~GENMASK(alt_shift + 3, alt_shift);
  	val |= (alt << alt_shift);
-@@ -594,8 +692,15 @@ static void stm32_pmx_set_mode(struct stm32_gpio_bank *bank,
+@@ -600,8 +696,15 @@ static void stm32_pmx_set_mode(struct stm32_gpio_bank *bank,
  	val |= mode << (pin * 2);
  	writel_relaxed(val, bank->base + STM32_GPIO_MODER);
  
@@ -1875,7 +1836,18 @@ index a9bec6e..5b71c97 100644
  }
  
  void stm32_pmx_get_mode(struct stm32_gpio_bank *bank, int pin, u32 *mode,
-@@ -652,9 +757,7 @@ static int stm32_pmx_set_mux(struct pinctrl_dev *pctldev,
+@@ -652,15 +755,18 @@ static int stm32_pmx_set_mux(struct pinctrl_dev *pctldev,
+ 		return -EINVAL;
+ 	}
+ 
++	if (function == STM32_PIN_RSVD) {
++		dev_dbg(pctl->dev, "Reserved pins, skipping HW update.\n");
++		return 0;
++	}
++
+ 	bank = gpiochip_get_data(range->gc);
+ 	pin = stm32_gpio_pin(g->pin);
+ 
  	mode = stm32_gpio_get_mode(function);
  	alt = stm32_gpio_get_alt(function);
  
@@ -1886,7 +1858,7 @@ index a9bec6e..5b71c97 100644
  }
  
  static int stm32_pmx_gpio_set_direction(struct pinctrl_dev *pctldev,
-@@ -664,9 +767,7 @@ static int stm32_pmx_gpio_set_direction(struct pinctrl_dev *pctldev,
+@@ -670,9 +776,7 @@ static int stm32_pmx_gpio_set_direction(struct pinctrl_dev *pctldev,
  	struct stm32_gpio_bank *bank = gpiochip_get_data(range->gc);
  	int pin = stm32_gpio_pin(gpio);
  
@@ -1897,7 +1869,7 @@ index a9bec6e..5b71c97 100644
  }
  
  static const struct pinmux_ops stm32_pmx_ops = {
-@@ -680,22 +781,39 @@ static const struct pinmux_ops stm32_pmx_ops = {
+@@ -686,22 +790,39 @@ static const struct pinmux_ops stm32_pmx_ops = {
  
  /* Pinconf functions */
  
@@ -1939,7 +1911,7 @@ index a9bec6e..5b71c97 100644
  }
  
  static u32 stm32_pconf_get_driving(struct stm32_gpio_bank *bank,
-@@ -716,22 +834,39 @@ static u32 stm32_pconf_get_driving(struct stm32_gpio_bank *bank,
+@@ -722,22 +843,39 @@ static u32 stm32_pconf_get_driving(struct stm32_gpio_bank *bank,
  	return (val >> offset);
  }
  
@@ -1981,7 +1953,7 @@ index a9bec6e..5b71c97 100644
  }
  
  static u32 stm32_pconf_get_speed(struct stm32_gpio_bank *bank,
-@@ -752,22 +887,39 @@ static u32 stm32_pconf_get_speed(struct stm32_gpio_bank *bank,
+@@ -758,22 +896,39 @@ static u32 stm32_pconf_get_speed(struct stm32_gpio_bank *bank,
  	return (val >> (offset * 2));
  }
  
@@ -2023,7 +1995,7 @@ index a9bec6e..5b71c97 100644
  }
  
  static u32 stm32_pconf_get_bias(struct stm32_gpio_bank *bank,
-@@ -830,22 +982,22 @@ static int stm32_pconf_parse_conf(struct pinctrl_dev *pctldev,
+@@ -836,22 +991,22 @@ static int stm32_pconf_parse_conf(struct pinctrl_dev *pctldev,
  
  	switch (param) {
  	case PIN_CONFIG_DRIVE_PUSH_PULL:
@@ -2052,7 +2024,7 @@ index a9bec6e..5b71c97 100644
  		break;
  	case PIN_CONFIG_OUTPUT:
  		__stm32_gpio_set(bank, offset, arg);
-@@ -893,6 +1045,8 @@ static void stm32_pconf_dbg_show(struct pinctrl_dev *pctldev,
+@@ -899,6 +1054,8 @@ static void stm32_pconf_dbg_show(struct pinctrl_dev *pctldev,
  				 struct seq_file *s,
  				 unsigned int pin)
  {
@@ -2061,7 +2033,7 @@ index a9bec6e..5b71c97 100644
  	struct pinctrl_gpio_range *range;
  	struct stm32_gpio_bank *bank;
  	int offset;
-@@ -942,7 +1096,9 @@ static void stm32_pconf_dbg_show(struct pinctrl_dev *pctldev,
+@@ -948,7 +1105,9 @@ static void stm32_pconf_dbg_show(struct pinctrl_dev *pctldev,
  	case 2:
  		drive = stm32_pconf_get_driving(bank, offset);
  		speed = stm32_pconf_get_speed(bank, offset);
@@ -2072,7 +2044,7 @@ index a9bec6e..5b71c97 100644
  			   drive ? "open drain" : "push pull",
  			   biasing[bias],
  			   speeds[speed], "speed");
-@@ -1049,23 +1205,35 @@ static int stm32_gpiolib_register_bank(struct stm32_pinctrl *pctl,
+@@ -1055,23 +1214,35 @@ static int stm32_gpiolib_register_bank(struct stm32_pinctrl *pctl,
  	return 0;
  }
  
@@ -2117,7 +2089,7 @@ index a9bec6e..5b71c97 100644
  	pctl->regmap = syscon_regmap_lookup_by_phandle(np, "st,syscfg");
  	if (IS_ERR(pctl->regmap))
  		return PTR_ERR(pctl->regmap);
-@@ -1105,7 +1273,7 @@ static int stm32_pctrl_build_state(struct platform_device *pdev)
+@@ -1111,7 +1282,7 @@ static int stm32_pctrl_build_state(struct platform_device *pdev)
  	struct stm32_pinctrl *pctl = platform_get_drvdata(pdev);
  	int i;
  
@@ -2126,7 +2098,7 @@ index a9bec6e..5b71c97 100644
  
  	/* Allocate groups */
  	pctl->groups = devm_kcalloc(&pdev->dev, pctl->ngroups,
-@@ -1119,19 +1287,51 @@ static int stm32_pctrl_build_state(struct platform_device *pdev)
+@@ -1125,19 +1296,51 @@ static int stm32_pctrl_build_state(struct platform_device *pdev)
  	if (!pctl->grp_names)
  		return -ENOMEM;
  
@@ -2181,7 +2153,7 @@ index a9bec6e..5b71c97 100644
  int stm32_pctl_probe(struct platform_device *pdev)
  {
  	struct device_node *np = pdev->dev.of_node;
-@@ -1140,7 +1340,7 @@ int stm32_pctl_probe(struct platform_device *pdev)
+@@ -1146,7 +1349,7 @@ int stm32_pctl_probe(struct platform_device *pdev)
  	struct device *dev = &pdev->dev;
  	struct stm32_pinctrl *pctl;
  	struct pinctrl_pin_desc *pins;
@@ -2190,7 +2162,7 @@ index a9bec6e..5b71c97 100644
  
  	if (!np)
  		return -EINVAL;
-@@ -1160,36 +1360,66 @@ int stm32_pctl_probe(struct platform_device *pdev)
+@@ -1166,36 +1369,66 @@ int stm32_pctl_probe(struct platform_device *pdev)
  
  	platform_set_drvdata(pdev, pctl);
  
@@ -2262,7 +2234,7 @@ index a9bec6e..5b71c97 100644
  
  	pctl->pctl_dev = devm_pinctrl_register(&pdev->dev, &pctl->pctl_desc,
  					       pctl);
-@@ -1227,3 +1457,115 @@ int stm32_pctl_probe(struct platform_device *pdev)
+@@ -1233,3 +1466,115 @@ int stm32_pctl_probe(struct platform_device *pdev)
  	return 0;
  }
  
@@ -2379,14 +2351,15 @@ index a9bec6e..5b71c97 100644
 +}
 +#endif /*  CONFIG_PM */
 diff --git a/drivers/pinctrl/stm32/pinctrl-stm32.h b/drivers/pinctrl/stm32/pinctrl-stm32.h
-index 473a623..eb6ed85 100644
+index 473a623..bc77a58 100644
 --- a/drivers/pinctrl/stm32/pinctrl-stm32.h
 +++ b/drivers/pinctrl/stm32/pinctrl-stm32.h
-@@ -17,6 +17,15 @@
+@@ -17,6 +17,16 @@
  #define STM32_PIN_GPIO		0
  #define STM32_PIN_AF(x)		((x) + 1)
  #define STM32_PIN_ANALOG	(STM32_PIN_AF(15) + 1)
-+#define STM32_CONFIG_NUM	18
++#define STM32_PIN_RSVD		(STM32_PIN_ANALOG + 1)
++#define STM32_CONFIG_NUM	(STM32_PIN_RSVD + 1)
 +
 +/*  package information */
 +#define STM32MP157CAA		BIT(0)
@@ -2398,7 +2371,7 @@ index 473a623..eb6ed85 100644
  
  struct stm32_desc_function {
  	const char *name;
-@@ -25,7 +34,8 @@ struct stm32_desc_function {
+@@ -25,7 +35,8 @@ struct stm32_desc_function {
  
  struct stm32_desc_pin {
  	struct pinctrl_pin_desc pin;
@@ -2408,7 +2381,7 @@ index 473a623..eb6ed85 100644
  };
  
  #define STM32_PIN(_pin, ...)					\
-@@ -35,8 +45,15 @@ struct stm32_desc_pin {
+@@ -35,8 +46,15 @@ struct stm32_desc_pin {
  			__VA_ARGS__, { } },			\
  	}
  
@@ -2425,7 +2398,7 @@ index 473a623..eb6ed85 100644
  		.num = _num,					\
  		.name = _name,					\
  	}
-@@ -44,6 +61,7 @@ struct stm32_desc_pin {
+@@ -44,6 +62,7 @@ struct stm32_desc_pin {
  struct stm32_pinctrl_match_data {
  	const struct stm32_desc_pin *pins;
  	const unsigned int npins;
@@ -2433,7 +2406,7 @@ index 473a623..eb6ed85 100644
  };
  
  struct stm32_gpio_bank;
-@@ -51,5 +69,35 @@ struct stm32_gpio_bank;
+@@ -51,5 +70,35 @@ struct stm32_gpio_bank;
  int stm32_pctl_probe(struct platform_device *pdev);
  void stm32_pmx_get_mode(struct stm32_gpio_bank *bank,
  			int pin, u32 *mode, u32 *alt);
@@ -5199,7 +5172,7 @@ index 7c7d628..e1a8a89 100644
  };
  
 diff --git a/drivers/pwm/pwm-stm32-lp.c b/drivers/pwm/pwm-stm32-lp.c
-index 0059b24c..322df1f 100644
+index 28e1f64..b461412 100644
 --- a/drivers/pwm/pwm-stm32-lp.c
 +++ b/drivers/pwm/pwm-stm32-lp.c
 @@ -13,6 +13,7 @@
@@ -5219,20 +5192,7 @@ index 0059b24c..322df1f 100644
  };
  
  static inline struct stm32_pwm_lp *to_stm32_pwm_lp(struct pwm_chip *chip)
-@@ -58,6 +61,12 @@ static int stm32_pwm_lp_apply(struct pwm_chip *chip, struct pwm_device *pwm,
- 	/* Calculate the period and prescaler value */
- 	div = (unsigned long long)clk_get_rate(priv->clk) * state->period;
- 	do_div(div, NSEC_PER_SEC);
-+	if (!div) {
-+		/* Fall here in case source clock < period */
-+		dev_err(priv->chip.dev, "Can't reach expected period\n");
-+		return -EINVAL;
-+	}
-+
- 	prd = div;
- 	while (div > STM32_LPTIM_MAX_ARR) {
- 		presc++;
-@@ -223,6 +232,40 @@ static int stm32_pwm_lp_remove(struct platform_device *pdev)
+@@ -229,6 +232,40 @@ static int stm32_pwm_lp_remove(struct platform_device *pdev)
  	return pwmchip_remove(&priv->chip);
  }
  
@@ -5273,7 +5233,7 @@ index 0059b24c..322df1f 100644
  static const struct of_device_id stm32_pwm_lp_of_match[] = {
  	{ .compatible = "st,stm32-pwm-lp", },
  	{},
-@@ -235,6 +278,7 @@ static struct platform_driver stm32_pwm_lp_driver = {
+@@ -241,6 +278,7 @@ static struct platform_driver stm32_pwm_lp_driver = {
  	.driver	= {
  		.name = "stm32-pwm-lp",
  		.of_match_table = of_match_ptr(stm32_pwm_lp_of_match),
@@ -5471,7 +5431,7 @@ index 4f84255..4688425 100644
  };
  module_platform_driver(stm32_pwm_driver);
 diff --git a/drivers/pwm/sysfs.c b/drivers/pwm/sysfs.c
-index 7c71cdb..ceb233d 100644
+index 72bdda4..13d9bd5 100644
 --- a/drivers/pwm/sysfs.c
 +++ b/drivers/pwm/sysfs.c
 @@ -249,6 +249,7 @@ static void pwm_export_release(struct device *child)
@@ -5482,15 +5442,7 @@ index 7c71cdb..ceb233d 100644
  	int ret;
  
  	if (test_and_set_bit(PWMF_EXPORTED, &pwm->flags))
-@@ -263,7 +264,6 @@ static int pwm_export_child(struct device *parent, struct pwm_device *pwm)
- 	export->pwm = pwm;
- 	mutex_init(&export->lock);
- 
--	export->child.class = parent->class;
- 	export->child.release = pwm_export_release;
- 	export->child.parent = parent;
- 	export->child.devt = MKDEV(0, 0);
-@@ -277,6 +277,10 @@ static int pwm_export_child(struct device *parent, struct pwm_device *pwm)
+@@ -276,6 +277,10 @@ static int pwm_export_child(struct device *parent, struct pwm_device *pwm)
  		export = NULL;
  		return ret;
  	}
@@ -5501,7 +5453,7 @@ index 7c71cdb..ceb233d 100644
  
  	return 0;
  }
-@@ -289,6 +293,7 @@ static int pwm_unexport_match(struct device *child, void *data)
+@@ -288,6 +293,7 @@ static int pwm_unexport_match(struct device *child, void *data)
  static int pwm_unexport_child(struct device *parent, struct pwm_device *pwm)
  {
  	struct device *child;
@@ -5509,7 +5461,7 @@ index 7c71cdb..ceb233d 100644
  
  	if (!test_and_clear_bit(PWMF_EXPORTED, &pwm->flags))
  		return -ENODEV;
-@@ -297,6 +302,11 @@ static int pwm_unexport_child(struct device *parent, struct pwm_device *pwm)
+@@ -296,6 +302,11 @@ static int pwm_unexport_child(struct device *parent, struct pwm_device *pwm)
  	if (!child)
  		return -ENODEV;
  
@@ -5522,10 +5474,17 @@ index 7c71cdb..ceb233d 100644
  	put_device(child);
  	device_unregister(child);
 diff --git a/include/dt-bindings/pinctrl/stm32-pinfunc.h b/include/dt-bindings/pinctrl/stm32-pinfunc.h
-index b5a2174..e928aea 100644
+index b5a2174..e3b45a8 100644
 --- a/include/dt-bindings/pinctrl/stm32-pinfunc.h
 +++ b/include/dt-bindings/pinctrl/stm32-pinfunc.h
-@@ -32,5 +32,11 @@
+@@ -26,11 +26,18 @@
+ #define AF14	0xf
+ #define AF15	0x10
+ #define ANALOG	0x11
++#define RSVD	0x12
+ 
+ /* define Pins number*/
+ #define PIN_NO(port, line)	(((port) - 'A') * 0x10 + (line))
  
  #define STM32_PINMUX(port, line, mode) (((PIN_NO(port, line)) << 8) | (mode))
  

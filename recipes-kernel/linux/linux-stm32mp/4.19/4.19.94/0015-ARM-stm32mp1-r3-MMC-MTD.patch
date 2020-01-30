@@ -1,22 +1,22 @@
-From ae70b2603fb4622389c5b26d5214a2f6879714e9 Mon Sep 17 00:00:00 2001
+From 1549511bd55cdcfccdaded1d1e1b0e7e68adc8bb Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Thu, 11 Jul 2019 14:12:02 +0200
-Subject: [PATCH 14/30] ARM stm32mp1 r2 MMC MTD
+Date: Fri, 8 Nov 2019 16:52:42 +0100
+Subject: [PATCH 15/31] ARM stm32mp1 r3 MMC MTD
 
 ---
  drivers/mmc/host/Kconfig               |   10 +
  drivers/mmc/host/Makefile              |    1 +
- drivers/mmc/host/mmci.c                |  900 ++++++++++----
- drivers/mmc/host/mmci.h                |  195 +++-
+ drivers/mmc/host/mmci.c                |  862 ++++++++++----
+ drivers/mmc/host/mmci.h                |  189 ++-
  drivers/mmc/host/mmci_qcom_dml.c       |   17 +-
  drivers/mmc/host/mmci_stm32_sdmmc.c    |  429 +++++++
  drivers/mtd/nand/raw/Kconfig           |    9 +
  drivers/mtd/nand/raw/Makefile          |    1 +
- drivers/mtd/nand/raw/stm32_fmc2_nand.c | 2005 ++++++++++++++++++++++++++++++++
+ drivers/mtd/nand/raw/stm32_fmc2_nand.c | 2041 ++++++++++++++++++++++++++++++++
  drivers/mtd/spi-nor/Kconfig            |    7 -
  drivers/mtd/spi-nor/Makefile           |    1 -
- drivers/mtd/spi-nor/stm32-quadspi.c    |  720 ------------
- 12 files changed, 3277 insertions(+), 1018 deletions(-)
+ drivers/mtd/spi-nor/stm32-quadspi.c    |  720 -----------
+ 12 files changed, 3285 insertions(+), 1002 deletions(-)
  create mode 100644 drivers/mmc/host/mmci_stm32_sdmmc.c
  create mode 100644 drivers/mtd/nand/raw/stm32_fmc2_nand.c
  delete mode 100644 drivers/mtd/spi-nor/stm32-quadspi.c
@@ -55,7 +55,7 @@ index ce8398e..f14410f 100644
  obj-$(CONFIG_MMC_MXC)		+= mxcmmc.o
  obj-$(CONFIG_MMC_MXS)		+= mxs-mmc.o
 diff --git a/drivers/mmc/host/mmci.c b/drivers/mmc/host/mmci.c
-index 1841d250..0b7b607 100644
+index fa6268c..1c6b5d0 100644
 --- a/drivers/mmc/host/mmci.c
 +++ b/drivers/mmc/host/mmci.c
 @@ -14,6 +14,7 @@
@@ -619,17 +619,17 @@ index 1841d250..0b7b607 100644
  {
  	const char *rxname, *txname;
 +	struct mmci_dmae_priv *dmae;
- 
--	host->dma_rx_channel = dma_request_slave_channel(mmc_dev(host->mmc), "rx");
--	host->dma_tx_channel = dma_request_slave_channel(mmc_dev(host->mmc), "tx");
++
 +	dmae = devm_kzalloc(mmc_dev(host->mmc), sizeof(*dmae), GFP_KERNEL);
 +	if (!dmae)
 +		return -ENOMEM;
  
+-	host->dma_rx_channel = dma_request_slave_channel(mmc_dev(host->mmc), "rx");
+-	host->dma_tx_channel = dma_request_slave_channel(mmc_dev(host->mmc), "tx");
++	host->dma_priv = dmae;
+ 
 -	/* initialize pre request cookie */
 -	host->next_data.cookie = 1;
-+	host->dma_priv = dmae;
-+
 +	dmae->rx_channel = dma_request_slave_channel(mmc_dev(host->mmc),
 +						     "rx");
 +	dmae->tx_channel = dma_request_slave_channel(mmc_dev(host->mmc),
@@ -740,7 +740,7 @@ index 1841d250..0b7b607 100644
  
 -static void mmci_dma_finalize(struct mmci_host *host, struct mmc_data *data)
 +void mmci_dmae_error(struct mmci_host *host)
-+{
+ {
 +	struct mmci_dmae_priv *dmae = host->dma_priv;
 +
 +	if (!dma_inprogress(host))
@@ -757,7 +757,7 @@ index 1841d250..0b7b607 100644
 +}
 +
 +void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data)
- {
++{
 +	struct mmci_dmae_priv *dmae = host->dma_priv;
  	u32 status;
  	int i;
@@ -844,20 +844,20 @@ index 1841d250..0b7b607 100644
  	/* No job were prepared thus do it now. */
 -	return __mmci_dma_prep_data(host, data, &host->dma_current,
 -				    &host->dma_desc_current);
--}
--
--static inline int mmci_dma_prep_next(struct mmci_host *host,
--				     struct mmc_data *data)
--{
--	struct mmci_host_next *nd = &host->next_data;
--	return __mmci_dma_prep_data(host, data, &nd->dma_chan, &nd->dma_desc);
 +	return _mmci_dmae_prep_data(host, data, &dmae->cur,
 +				    &dmae->desc_current);
  }
  
--static int mmci_dma_start_data(struct mmci_host *host, unsigned int datactrl)
+-static inline int mmci_dma_prep_next(struct mmci_host *host,
+-				     struct mmc_data *data)
 +int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl)
  {
+-	struct mmci_host_next *nd = &host->next_data;
+-	return __mmci_dma_prep_data(host, data, &nd->dma_chan, &nd->dma_desc);
+-}
+-
+-static int mmci_dma_start_data(struct mmci_host *host, unsigned int datactrl)
+-{
 -	int ret;
 +	struct mmci_dmae_priv *dmae = host->dma_priv;
  	struct mmc_data *data = host->data;
@@ -1149,25 +1149,7 @@ index 1841d250..0b7b607 100644
  	if (/*interrupt*/0)
  		c |= MCI_CPSM_INTERRUPT;
  
-@@ -895,21 +1215,22 @@ static void
- mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
- 	      unsigned int status)
- {
-+	unsigned int status_err;
-+
- 	/* Make sure we have data to handle */
- 	if (!data)
- 		return;
- 
- 	/* First check for errors */
--	if (status & (MCI_DATACRCFAIL | MCI_DATATIMEOUT |
--		      host->variant->start_err |
--		      MCI_TXUNDERRUN | MCI_RXOVERRUN)) {
-+	status_err = status & (host->variant->start_err |
-+			       MCI_DATACRCFAIL | MCI_DATATIMEOUT |
-+			       MCI_TXUNDERRUN | MCI_RXOVERRUN);
-+
-+	if (status_err) {
+@@ -910,10 +1230,7 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
  		u32 remain, success;
  
  		/* Terminate the DMA transfer */
@@ -1179,7 +1161,7 @@ index 1841d250..0b7b607 100644
  
  		/*
  		 * Calculate how far we are into the transfer.  Note that
-@@ -918,22 +1239,26 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
+@@ -922,8 +1239,12 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
  		 * can be as much as a FIFO-worth of data ahead.  This
  		 * matters for FIFO overruns only.
  		 */
@@ -1193,28 +1175,8 @@ index 1841d250..0b7b607 100644
 +		}
  
  		dev_dbg(mmc_dev(host->mmc), "MCI ERROR IRQ, status 0x%08x at 0x%08x\n",
--			status, success);
--		if (status & MCI_DATACRCFAIL) {
-+			status_err, success);
-+		if (status_err & MCI_DATACRCFAIL) {
- 			/* Last block was not successful */
- 			success -= 1;
- 			data->error = -EILSEQ;
--		} else if (status & MCI_DATATIMEOUT) {
-+		} else if (status_err & MCI_DATATIMEOUT) {
- 			data->error = -ETIMEDOUT;
--		} else if (status & MCI_STARTBITERR) {
-+		} else if (status_err & MCI_STARTBITERR) {
- 			data->error = -ECOMM;
--		} else if (status & MCI_TXUNDERRUN) {
-+		} else if (status_err & MCI_TXUNDERRUN) {
- 			data->error = -EIO;
--		} else if (status & MCI_RXOVERRUN) {
-+		} else if (status_err & MCI_RXOVERRUN) {
- 			if (success > host->variant->fifosize)
- 				success -= host->variant->fifosize;
- 			else
-@@ -947,19 +1272,18 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
+ 			status_err, success);
+@@ -951,19 +1272,18 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
  		dev_err(mmc_dev(host->mmc), "stray MCI_DATABLOCKEND interrupt\n");
  
  	if (status & MCI_DATAEND || data->error) {
@@ -1238,7 +1200,7 @@ index 1841d250..0b7b607 100644
  	}
  }
  
-@@ -968,11 +1292,13 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
+@@ -972,11 +1292,13 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
  	     unsigned int status)
  {
  	void __iomem *base = host->base;
@@ -1253,7 +1215,7 @@ index 1841d250..0b7b607 100644
  	sbc = (cmd == host->mrq->sbc);
  
  	/*
-@@ -980,18 +1306,21 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
+@@ -984,18 +1306,21 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
  	 * handling. Note that we tag on any latent IRQs postponed
  	 * due to waiting for busy status.
  	 */
@@ -1279,7 +1241,7 @@ index 1841d250..0b7b607 100644
  		    (status & host->variant->busy_detect_flag))
  			return;
  
-@@ -1001,9 +1330,9 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
+@@ -1005,9 +1330,9 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
  		 * that the special busy status bit is still set before
  		 * proceeding.
  		 */
@@ -1292,7 +1254,7 @@ index 1841d250..0b7b607 100644
  
  			/* Clear the busy start IRQ */
  			writel(host->variant->busy_detect_mask,
-@@ -1045,6 +1374,9 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
+@@ -1049,6 +1374,9 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
  		cmd->error = -ETIMEDOUT;
  	} else if (status & MCI_CMDCRCFAIL && cmd->flags & MMC_RSP_CRC) {
  		cmd->error = -EILSEQ;
@@ -1302,7 +1264,7 @@ index 1841d250..0b7b607 100644
  	} else {
  		cmd->resp[0] = readl(base + MMCIRESPONSE0);
  		cmd->resp[1] = readl(base + MMCIRESPONSE1);
-@@ -1055,16 +1387,15 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
+@@ -1059,16 +1387,15 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
  	if ((!sbc && !cmd->data) || cmd->error) {
  		if (host->data) {
  			/* Terminate the DMA transfer */
@@ -1323,22 +1285,7 @@ index 1841d250..0b7b607 100644
  		mmci_start_data(host, cmd->data);
  	}
  }
-@@ -1252,11 +1583,14 @@ static irqreturn_t mmci_pio_irq(int irq, void *dev_id)
- static irqreturn_t mmci_irq(int irq, void *dev_id)
- {
- 	struct mmci_host *host = dev_id;
-+	bool busy_resp;
- 	u32 status;
- 	int ret = 0;
- 
- 	spin_lock(&host->lock);
- 
-+	busy_resp = host->cmd ? !!(host->cmd->flags & MMC_RSP_BUSY) : false;
-+
- 	do {
- 		status = readl(host->base + MMCISTATUS);
- 
-@@ -1264,7 +1598,7 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
+@@ -1268,7 +1595,7 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
  			if (status & host->mask1_reg)
  				mmci_pio_irq(irq, dev_id);
  
@@ -1347,7 +1294,7 @@ index 1841d250..0b7b607 100644
  		}
  
  		/*
-@@ -1277,7 +1611,8 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
+@@ -1281,7 +1608,8 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
  		 * to make sure that both start and end interrupts are always
  		 * cleared one after the other.
  		 */
@@ -1357,26 +1304,7 @@ index 1841d250..0b7b607 100644
  		if (host->variant->busy_detect)
  			writel(status & ~host->variant->busy_detect_mask,
  			       host->base + MMCICLEAR);
-@@ -1295,12 +1630,16 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
- 		}
- 
- 		/*
--		 * Don't poll for busy completion in irq context.
-+		 * Don't poll for:
-+		 * -busy completion in irq context.
-+		 * -cmd without busy response check like cmd11
- 		 */
--		if (host->variant->busy_detect && host->busy_status)
-+		if (host->variant->busy_detect &&
-+		    (!busy_resp || host->busy_status))
- 			status &= ~host->variant->busy_detect_flag;
- 
- 		ret = 1;
-+
- 	} while (status);
- 
- 	spin_unlock(&host->lock);
-@@ -1328,7 +1667,8 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
+@@ -1333,7 +1661,8 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
  	if (mrq->data)
  		mmci_get_next_data(host, mrq->data);
  
@@ -1386,7 +1314,7 @@ index 1841d250..0b7b607 100644
  		mmci_start_data(host, mrq->data);
  
  	if (mrq->sbc)
-@@ -1438,8 +1778,16 @@ static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
+@@ -1443,8 +1772,16 @@ static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
  
  	spin_lock_irqsave(&host->lock, flags);
  
@@ -1405,7 +1333,7 @@ index 1841d250..0b7b607 100644
  	mmci_reg_delay(host);
  
  	spin_unlock_irqrestore(&host->lock, flags);
-@@ -1462,6 +1810,8 @@ static int mmci_get_cd(struct mmc_host *mmc)
+@@ -1467,6 +1804,8 @@ static int mmci_get_cd(struct mmc_host *mmc)
  
  static int mmci_sig_volt_switch(struct mmc_host *mmc, struct mmc_ios *ios)
  {
@@ -1414,7 +1342,7 @@ index 1841d250..0b7b607 100644
  	int ret = 0;
  
  	if (!IS_ERR(mmc->supply.vqmmc)) {
-@@ -1474,6 +1824,28 @@ static int mmci_sig_volt_switch(struct mmc_host *mmc, struct mmc_ios *ios)
+@@ -1479,6 +1818,28 @@ static int mmci_sig_volt_switch(struct mmc_host *mmc, struct mmc_ios *ios)
  		case MMC_SIGNAL_VOLTAGE_180:
  			ret = regulator_set_voltage(mmc->supply.vqmmc,
  						1700000, 1950000);
@@ -1443,7 +1371,7 @@ index 1841d250..0b7b607 100644
  			break;
  		case MMC_SIGNAL_VOLTAGE_120:
  			ret = regulator_set_voltage(mmc->supply.vqmmc,
-@@ -1488,6 +1860,16 @@ static int mmci_sig_volt_switch(struct mmc_host *mmc, struct mmc_ios *ios)
+@@ -1493,6 +1854,16 @@ static int mmci_sig_volt_switch(struct mmc_host *mmc, struct mmc_ios *ios)
  	return ret;
  }
  
@@ -1460,7 +1388,7 @@ index 1841d250..0b7b607 100644
  static struct mmc_host_ops mmci_ops = {
  	.request	= mmci_request,
  	.pre_req	= mmci_pre_request,
-@@ -1496,6 +1878,7 @@ static struct mmc_host_ops mmci_ops = {
+@@ -1501,6 +1872,7 @@ static struct mmc_host_ops mmci_ops = {
  	.get_ro		= mmc_gpio_get_ro,
  	.get_cd		= mmci_get_cd,
  	.start_signal_voltage_switch = mmci_sig_volt_switch,
@@ -1468,7 +1396,7 @@ index 1841d250..0b7b607 100644
  };
  
  static int mmci_of_parse(struct device_node *np, struct mmc_host *mmc)
-@@ -1518,6 +1901,12 @@ static int mmci_of_parse(struct device_node *np, struct mmc_host *mmc)
+@@ -1523,6 +1895,12 @@ static int mmci_of_parse(struct device_node *np, struct mmc_host *mmc)
  		host->pwr_reg_add |= MCI_ST_CMDDIREN;
  	if (of_get_property(np, "st,sig-pin-fbclk", NULL))
  		host->pwr_reg_add |= MCI_ST_FBCLKEN;
@@ -1481,7 +1409,7 @@ index 1841d250..0b7b607 100644
  
  	if (of_get_property(np, "mmc-cap-mmc-highspeed", NULL))
  		mmc->caps |= MMC_CAP_MMC_HIGHSPEED;
-@@ -1644,6 +2033,8 @@ static int mmci_probe(struct amba_device *dev,
+@@ -1649,6 +2027,8 @@ static int mmci_probe(struct amba_device *dev,
  	 */
  	if (variant->st_clkdiv)
  		mmc->f_min = DIV_ROUND_UP(host->mclk, 257);
@@ -1490,7 +1418,7 @@ index 1841d250..0b7b607 100644
  	else if (variant->explicit_mclk_control)
  		mmc->f_min = clk_round_rate(host->clk, 100000);
  	else
-@@ -1665,6 +2056,12 @@ static int mmci_probe(struct amba_device *dev,
+@@ -1670,6 +2050,12 @@ static int mmci_probe(struct amba_device *dev,
  
  	dev_dbg(mmc_dev(mmc), "clocking block at %u Hz\n", mmc->f_max);
  
@@ -1503,7 +1431,7 @@ index 1841d250..0b7b607 100644
  	/* Get regulators and the supported OCR mask */
  	ret = mmc_regulator_get_supply(mmc);
  	if (ret)
-@@ -1675,12 +2072,7 @@ static int mmci_probe(struct amba_device *dev,
+@@ -1680,12 +2066,7 @@ static int mmci_probe(struct amba_device *dev,
  	else if (plat->ocr_mask)
  		dev_warn(mmc_dev(mmc), "Platform OCR mask is ignored\n");
  
@@ -1517,7 +1445,7 @@ index 1841d250..0b7b607 100644
  
  	/* We support these capabilities. */
  	mmc->caps |= MMC_CAP_CMD23;
-@@ -1689,6 +2081,8 @@ static int mmci_probe(struct amba_device *dev,
+@@ -1694,6 +2075,8 @@ static int mmci_probe(struct amba_device *dev,
  	 * Enable busy detection.
  	 */
  	if (variant->busy_detect) {
@@ -1526,7 +1454,7 @@ index 1841d250..0b7b607 100644
  		mmci_ops.card_busy = mmci_card_busy;
  		/*
  		 * Not all variants have a flag to enable busy detection
-@@ -1698,7 +2092,18 @@ static int mmci_probe(struct amba_device *dev,
+@@ -1703,7 +2086,18 @@ static int mmci_probe(struct amba_device *dev,
  			mmci_write_datactrlreg(host,
  					       host->variant->busy_dpsm_flag);
  		mmc->caps |= MMC_CAP_WAIT_WHILE_BUSY;
@@ -1546,7 +1474,7 @@ index 1841d250..0b7b607 100644
  	}
  
  	mmc->ops = &mmci_ops;
-@@ -1727,13 +2132,13 @@ static int mmci_probe(struct amba_device *dev,
+@@ -1732,13 +2126,13 @@ static int mmci_probe(struct amba_device *dev,
  	/*
  	 * Block size can be up to 2048 bytes, but must be a power of two.
  	 */
@@ -1562,7 +1490,7 @@ index 1841d250..0b7b607 100644
  
  	spin_lock_init(&host->lock);
  
-@@ -1749,30 +2154,16 @@ static int mmci_probe(struct amba_device *dev,
+@@ -1754,30 +2148,16 @@ static int mmci_probe(struct amba_device *dev,
  	 * - not using DT but using a descriptor table, or
  	 * - using a table of descriptors ALONGSIDE DT, or
  	 * look up these descriptors named "cd" and "wp" right here, fail
@@ -1598,26 +1526,7 @@ index 1841d250..0b7b607 100644
  	}
  
  	ret = devm_request_irq(&dev->dev, dev->irq[0], mmci_irq, IRQF_SHARED,
-@@ -1789,7 +2180,7 @@ static int mmci_probe(struct amba_device *dev,
- 			goto clk_disable;
- 	}
- 
--	writel(MCI_IRQENABLE, host->base + MMCIMASK0);
-+	writel(MCI_IRQENABLE | variant->start_err, host->base + MMCIMASK0);
- 
- 	amba_set_drvdata(dev, mmc);
- 
-@@ -1876,7 +2267,8 @@ static void mmci_restore(struct mmci_host *host)
- 		writel(host->datactrl_reg, host->base + MMCIDATACTRL);
- 		writel(host->pwr_reg, host->base + MMCIPOWER);
- 	}
--	writel(MCI_IRQENABLE, host->base + MMCIMASK0);
-+	writel(MCI_IRQENABLE | host->variant->start_err,
-+	       host->base + MMCIMASK0);
- 	mmci_reg_delay(host);
- 
- 	spin_unlock_irqrestore(&host->lock, flags);
-@@ -1971,6 +2363,16 @@ static const struct amba_id mmci_ids[] = {
+@@ -1977,6 +2357,16 @@ static const struct amba_id mmci_ids[] = {
  		.mask   = 0x00ffffff,
  		.data	= &variant_stm32,
  	},
@@ -1635,7 +1544,7 @@ index 1841d250..0b7b607 100644
  	{
  		.id     = 0x00051180,
 diff --git a/drivers/mmc/host/mmci.h b/drivers/mmc/host/mmci.h
-index 517591d..e10093e 100644
+index 613d37a..e10093e 100644
 --- a/drivers/mmc/host/mmci.h
 +++ b/drivers/mmc/host/mmci.h
 @@ -23,6 +23,14 @@
@@ -1745,12 +1654,9 @@ index 517591d..e10093e 100644
 +#define MMCI_STM32_IDMABAR	0x68
 +
  #define MCI_IRQENABLE	\
--	(MCI_CMDCRCFAILMASK|MCI_DATACRCFAILMASK|MCI_CMDTIMEOUTMASK|	\
--	MCI_DATATIMEOUTMASK|MCI_TXUNDERRUNMASK|MCI_RXOVERRUNMASK|	\
--	MCI_CMDRESPENDMASK|MCI_CMDSENTMASK|MCI_STARTBITERRMASK)
-+	(MCI_CMDCRCFAILMASK | MCI_DATACRCFAILMASK | MCI_CMDTIMEOUTMASK | \
-+	MCI_DATATIMEOUTMASK | MCI_TXUNDERRUNMASK | MCI_RXOVERRUNMASK |	\
-+	MCI_CMDRESPENDMASK | MCI_CMDSENTMASK)
+ 	(MCI_CMDCRCFAILMASK | MCI_DATACRCFAILMASK | MCI_CMDTIMEOUTMASK | \
+ 	MCI_DATATIMEOUTMASK | MCI_TXUNDERRUNMASK | MCI_RXOVERRUNMASK |	\
+ 	MCI_CMDRESPENDMASK | MCI_CMDSENTMASK)
  
  /* These interrupts are directed to IRQ1 when two IRQ lines are available */
 -#define MCI_IRQ1MASK \
@@ -2486,10 +2392,10 @@ index d5a5f98..4ef7559 100644
  nand-objs += nand_amd.o
 diff --git a/drivers/mtd/nand/raw/stm32_fmc2_nand.c b/drivers/mtd/nand/raw/stm32_fmc2_nand.c
 new file mode 100644
-index 0000000..aaaad34
+index 0000000..ce1a15a
 --- /dev/null
 +++ b/drivers/mtd/nand/raw/stm32_fmc2_nand.c
-@@ -0,0 +1,2005 @@
+@@ -0,0 +1,2041 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Copyright (C) STMicroelectronics 2018
@@ -2543,6 +2449,8 @@ index 0000000..aaaad34
 +#define FMC2_PMEM			0x88
 +#define FMC2_PATT			0x8c
 +#define FMC2_HECCR			0x94
++#define FMC2_ISR			0x184
++#define FMC2_ICR			0x188
 +#define FMC2_CSQCR			0x200
 +#define FMC2_CSQCFGR1			0x204
 +#define FMC2_CSQCFGR2			0x208
@@ -2607,6 +2515,12 @@ index 0000000..aaaad34
 +#define FMC2_PATT_ATTHOLD(x)		(((x) & 0xff) << 16)
 +#define FMC2_PATT_ATTHIZ(x)		(((x) & 0xff) << 24)
 +#define FMC2_PATT_DEFAULT		0x0a0a0a0a
++
++/* Register: FMC2_ISR */
++#define FMC2_ISR_IHLF			BIT(1)
++
++/* Register: FMC2_ICR */
++#define FMC2_ICR_CIHLF			BIT(1)
 +
 +/* Register: FMC2_CSQCR */
 +#define FMC2_CSQCR_CSQSTART		BIT(0)
@@ -3653,6 +3567,34 @@ index 0000000..aaaad34
 +		stm32_fmc2_set_buswidth_16(fmc2, true);
 +}
 +
++static int stm32_fmc2_waitrdy(struct nand_chip *chip, unsigned long timeout_ms)
++{
++	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	const struct nand_sdr_timings *timings;
++	int ret;
++	u32 isr, sr;
++
++	/* Check if there is no pending requests to the NAND flash */
++	ret = readl_relaxed_poll_timeout(fmc2->io_base + FMC2_SR,
++					 sr, sr & FMC2_SR_NWRF, 1, 1000);
++	if (ret) {
++		dev_err(fmc2->dev, "Waitrdy timeout\n");
++		return ret;
++	}
++
++	/* Wait tWB before R/B# signal is low */
++	timings = nand_get_sdr_timings(&chip->data_interface);
++	ndelay(PSEC_TO_NSEC(timings->tWB_max));
++
++	/* R/B# signal is low, clear high level flag */
++	writel_relaxed(FMC2_ICR_CIHLF, fmc2->io_base + FMC2_ICR);
++
++	/* Wait R/B# signal is high */
++	return readl_relaxed_poll_timeout(fmc2->io_base + FMC2_ISR,
++					  isr, isr & FMC2_ISR_IHLF,
++					  1, 1000 * timeout_ms);
++}
++
 +static int stm32_fmc2_exec_op(struct nand_chip *chip,
 +			      const struct nand_operation *op,
 +			      bool check_only)
@@ -3693,8 +3635,8 @@ index 0000000..aaaad34
 +			break;
 +
 +		case NAND_OP_WAITRDY_INSTR:
-+			ret = nand_soft_waitrdy(chip,
-+						instr->ctx.waitrdy.timeout_ms);
++			ret = stm32_fmc2_waitrdy(chip,
++						 instr->ctx.waitrdy.timeout_ms);
 +			break;
 +		}
 +	}

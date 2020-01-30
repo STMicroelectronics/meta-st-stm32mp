@@ -1,18 +1,18 @@
-From cbd843990c118aaf21b72565d68b852bea8cae1b Mon Sep 17 00:00:00 2001
+From 918e6c75e00bcae7481c4560ebbca237d991b2c0 Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Thu, 11 Jul 2019 14:12:06 +0200
-Subject: [PATCH 26/30] ARM stm32mp1 r2 WATCHDOG
+Date: Fri, 8 Nov 2019 16:52:48 +0100
+Subject: [PATCH 27/31] ARM stm32mp1 r3 WATCHDOG
 
 ---
  drivers/watchdog/Kconfig       |  12 ++++
  drivers/watchdog/Makefile      |   1 +
- drivers/watchdog/stm32_iwdg.c  |  65 +++++++++++--------
- drivers/watchdog/stpmic1_wdt.c | 139 +++++++++++++++++++++++++++++++++++++++++
- 4 files changed, 192 insertions(+), 25 deletions(-)
+ drivers/watchdog/stm32_iwdg.c  |  83 ++++++++++++++++--------
+ drivers/watchdog/stpmic1_wdt.c | 140 +++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 211 insertions(+), 25 deletions(-)
  create mode 100644 drivers/watchdog/stpmic1_wdt.c
 
 diff --git a/drivers/watchdog/Kconfig b/drivers/watchdog/Kconfig
-index 5ea8909..6d2ffef 100644
+index b165c46..9790eca 100644
 --- a/drivers/watchdog/Kconfig
 +++ b/drivers/watchdog/Kconfig
 @@ -806,6 +806,18 @@ config STM32_WATCHDOG
@@ -44,7 +44,7 @@ index bf92e7b..2649cf3 100644
  obj-$(CONFIG_RAVE_SP_WATCHDOG) += rave-sp-wdt.o
 +obj-$(CONFIG_STPMIC1_WATCHDOG) += stpmic1_wdt.o
 diff --git a/drivers/watchdog/stm32_iwdg.c b/drivers/watchdog/stm32_iwdg.c
-index e00e3b3..2208e8c 100644
+index e00e3b3..56a3ffd 100644
 --- a/drivers/watchdog/stm32_iwdg.c
 +++ b/drivers/watchdog/stm32_iwdg.c
 @@ -34,18 +34,10 @@
@@ -185,12 +185,37 @@ index e00e3b3..2208e8c 100644
  	wdd->parent = &pdev->dev;
  
  	watchdog_set_drvdata(wdd, wdt);
+@@ -243,6 +258,24 @@ static int stm32_iwdg_probe(struct platform_device *pdev)
+ 		dev_warn(&pdev->dev,
+ 			 "unable to set timeout value, using default\n");
+ 
++	/*
++	 * In case of CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED is set
++	 * (Means U-Boot/bootloaders leaves the watchdog running)
++	 * When we get here we should make a decision to prevent
++	 * any side effects before user space daemon will take care of it.
++	 * The best option, taking into consideration that there is no
++	 * way to read values back from hardware, is to enforce watchdog
++	 * being run with deterministic values.
++	 */
++	if (IS_ENABLED(CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED)) {
++		ret = stm32_iwdg_start(wdd);
++		if (ret)
++			return ret;
++
++		/* Make sure the watchdog is serviced */
++		set_bit(WDOG_HW_RUNNING, &wdd->status);
++	}
++
+ 	ret = watchdog_register_device(wdd);
+ 	if (ret) {
+ 		dev_err(&pdev->dev, "failed to register watchdog device\n");
 diff --git a/drivers/watchdog/stpmic1_wdt.c b/drivers/watchdog/stpmic1_wdt.c
 new file mode 100644
-index 0000000..a6cbc27
+index 0000000..45d0c54
 --- /dev/null
 +++ b/drivers/watchdog/stpmic1_wdt.c
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,140 @@
 +// SPDX-License-Identifier: GPL-2.0
 +// Copyright (C) STMicroelectronics 2018
 +// Author: Pascal Paillet <p.paillet@st.com> for STMicroelectronics.
@@ -217,9 +242,8 @@ index 0000000..a6cbc27
 +
 +static bool nowayout = WATCHDOG_NOWAYOUT;
 +module_param(nowayout, bool, 0);
-+MODULE_PARM_DESC(nowayout,
-+		"Watchdog cannot be stopped once started (default="
-+				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
++MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
++		 __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 +
 +struct stpmic1_wdt {
 +	struct stpmic1 *pmic;
@@ -275,18 +299,19 @@ index 0000000..a6cbc27
 +
 +static int pmic_wdt_probe(struct platform_device *pdev)
 +{
++	struct device *dev = &pdev->dev;
 +	int ret;
 +	struct stpmic1 *pmic;
 +	struct stpmic1_wdt *wdt;
 +
-+	if (!pdev->dev.parent)
++	if (!dev->parent)
 +		return -EINVAL;
 +
-+	pmic = dev_get_drvdata(pdev->dev.parent);
++	pmic = dev_get_drvdata(dev->parent);
 +	if (!pmic)
 +		return -EINVAL;
 +
-+	wdt = devm_kzalloc(&pdev->dev, sizeof(struct stpmic1_wdt), GFP_KERNEL);
++	wdt = devm_kzalloc(dev, sizeof(struct stpmic1_wdt), GFP_KERNEL);
 +	if (!wdt)
 +		return -ENOMEM;
 +
@@ -296,14 +321,15 @@ index 0000000..a6cbc27
 +	wdt->wdtdev.ops = &pmic_watchdog_ops;
 +	wdt->wdtdev.min_timeout = PMIC_WDT_MIN_TIMEOUT;
 +	wdt->wdtdev.max_timeout = PMIC_WDT_MAX_TIMEOUT;
++	wdt->wdtdev.parent = dev;
 +
 +	wdt->wdtdev.timeout = PMIC_WDT_DEFAULT_TIMEOUT;
-+	watchdog_init_timeout(&wdt->wdtdev, 0, &pdev->dev);
++	watchdog_init_timeout(&wdt->wdtdev, 0, dev);
 +
 +	watchdog_set_nowayout(&wdt->wdtdev, nowayout);
 +	watchdog_set_drvdata(&wdt->wdtdev, wdt);
 +
-+	ret = devm_watchdog_register_device(&pdev->dev, &wdt->wdtdev);
++	ret = devm_watchdog_register_device(dev, &wdt->wdtdev);
 +	if (ret)
 +		return ret;
 +

@@ -1,33 +1,34 @@
-From 8b909622c1d507518a617c58d5fe42470bc7f73a Mon Sep 17 00:00:00 2001
+From 6e8d34490963467552ebe1a996e0ad78b4e560ba Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Thu, 11 Jul 2019 14:12:06 +0200
-Subject: [PATCH 25/30] ARM stm32mp1 r2 TTY USB
+Date: Fri, 8 Nov 2019 16:52:47 +0100
+Subject: [PATCH 26/31] ARM stm32mp1 r3 TTY USB
 
 ---
- drivers/tty/serial/stm32-usart.c | 585 +++++++++++++++++++------
- drivers/tty/serial/stm32-usart.h |  48 +-
- drivers/usb/dwc2/Makefile        |   2 +-
- drivers/usb/dwc2/core.c          | 123 +++---
- drivers/usb/dwc2/core.h          |  50 +++
- drivers/usb/dwc2/debugfs.c       |   1 +
- drivers/usb/dwc2/drd.c           | 191 ++++++++
- drivers/usb/dwc2/gadget.c        | 140 +++++-
- drivers/usb/dwc2/hcd.c           |  63 ++-
- drivers/usb/dwc2/hw.h            |  25 ++
- drivers/usb/dwc2/params.c        |  40 ++
- drivers/usb/dwc2/platform.c      | 166 ++++++-
- drivers/usb/host/ehci-platform.c |  59 +++
- drivers/usb/typec/Kconfig        |   9 +
- drivers/usb/typec/Makefile       |   1 +
- drivers/usb/typec/class.c        |  15 +
- drivers/usb/typec/typec_stusb.c  | 918 +++++++++++++++++++++++++++++++++++++++
- include/linux/usb/typec.h        |   1 +
- 18 files changed, 2182 insertions(+), 255 deletions(-)
+ drivers/tty/serial/stm32-usart.c       | 758 ++++++++++++++++++++-------
+ drivers/tty/serial/stm32-usart.h       |  48 +-
+ drivers/usb/dwc2/Makefile              |   2 +-
+ drivers/usb/dwc2/core.c                | 123 +++--
+ drivers/usb/dwc2/core.h                |  50 ++
+ drivers/usb/dwc2/debugfs.c             |   1 +
+ drivers/usb/dwc2/drd.c                 | 191 +++++++
+ drivers/usb/dwc2/gadget.c              |  99 +++-
+ drivers/usb/dwc2/hcd.c                 |  36 +-
+ drivers/usb/dwc2/hw.h                  |  25 +
+ drivers/usb/dwc2/params.c              |  40 ++
+ drivers/usb/dwc2/platform.c            | 166 +++++-
+ drivers/usb/gadget/function/u_serial.c |  35 +-
+ drivers/usb/host/ehci-platform.c       |  59 +++
+ drivers/usb/typec/Kconfig              |   9 +
+ drivers/usb/typec/Makefile             |   1 +
+ drivers/usb/typec/class.c              |  15 +
+ drivers/usb/typec/typec_stusb.c        | 918 +++++++++++++++++++++++++++++++++
+ include/linux/usb/typec.h              |   1 +
+ 19 files changed, 2265 insertions(+), 312 deletions(-)
  create mode 100644 drivers/usb/dwc2/drd.c
  create mode 100644 drivers/usb/typec/typec_stusb.c
 
 diff --git a/drivers/tty/serial/stm32-usart.c b/drivers/tty/serial/stm32-usart.c
-index e8d7a7b..fdcc214 100644
+index e8d7a7b..c6acbcf 100644
 --- a/drivers/tty/serial/stm32-usart.c
 +++ b/drivers/tty/serial/stm32-usart.c
 @@ -24,6 +24,8 @@
@@ -57,77 +58,86 @@ index e8d7a7b..fdcc214 100644
  
  	return 0;
  }
-@@ -180,22 +179,26 @@ static int stm32_pending_rx(struct uart_port *port, u32 *sr, int *last_res,
- 	*sr = readl_relaxed(port->membase + ofs->isr);
+@@ -169,101 +168,193 @@ static int stm32_init_rs485(struct uart_port *port,
+ 	return 0;
+ }
  
- 	if (threaded && stm32_port->rx_ch) {
-+		if (stm32_port->rx_dma_cb == CALLBACK_CALLED)
+-static int stm32_pending_rx(struct uart_port *port, u32 *sr, int *last_res,
+-			    bool threaded)
++/* Returns 1 when data is pending in pio mode and 0 when no data is pending. */
++static int stm32_pending_rx_pio(struct uart_port *port, u32 *sr)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+-	enum dma_status status;
+-	struct dma_tx_state state;
+ 
+ 	*sr = readl_relaxed(port->membase + ofs->isr);
++	/* Get pending characters in RDR or FIFO */
++	if (*sr & USART_SR_RXNE) {
++		/*
++		 * Get all pending characters from the RDR or the FIFO when
++		 * using interrupts
++		 */
++		if (!stm32_port->rx_ch)
 +			return 1;
- 		status = dmaengine_tx_status(stm32_port->rx_ch,
- 					     stm32_port->rx_ch->cookie,
- 					     &state);
- 		if ((status == DMA_IN_PROGRESS) &&
+ 
+-	if (threaded && stm32_port->rx_ch) {
+-		status = dmaengine_tx_status(stm32_port->rx_ch,
+-					     stm32_port->rx_ch->cookie,
+-					     &state);
+-		if ((status == DMA_IN_PROGRESS) &&
 -		    (*last_res != state.residue))
-+		    (*last_res != state.residue)) {
-+			stm32_port->rx_dma_cb = CALLBACK_IGNORED;
++		/* Handle only RX data errors when using dma */
++		if (*sr & USART_SR_ERR_MASK)
  			return 1;
 -		else
-+		} else {
- 			return 0;
-+		}
- 	} else if (*sr & USART_SR_RXNE) {
- 		return 1;
+-			return 0;
+-	} else if (*sr & USART_SR_RXNE) {
+-		return 1;
  	}
++
  	return 0;
  }
  
 -static unsigned long
 -stm32_get_char(struct uart_port *port, u32 *sr, int *last_res)
-+static unsigned long stm32_get_char(struct uart_port *port, u32 *sr,
-+				    int *last_res)
++static unsigned long stm32_get_char_pio(struct uart_port *port)
  {
  	struct stm32_port *stm32_port = to_stm32_port(port);
  	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
-@@ -203,12 +206,18 @@ stm32_get_char(struct uart_port *port, u32 *sr, int *last_res)
+ 	unsigned long c;
  
- 	if (stm32_port->rx_ch) {
- 		c = stm32_port->rx_buf[RX_BUF_L - (*last_res)--];
+-	if (stm32_port->rx_ch) {
+-		c = stm32_port->rx_buf[RX_BUF_L - (*last_res)--];
 -		if ((*last_res) == 0)
-+		if ((*last_res) == 0) {
- 			*last_res = RX_BUF_L;
+-			*last_res = RX_BUF_L;
 -		return c;
-+			if (stm32_port->rx_dma_cb == CALLBACK_CALLED)
-+				stm32_port->rx_dma_cb = CALLBACK_NOT_CALLED;
-+		}
- 	} else {
+-	} else {
 -		return readl_relaxed(port->membase + ofs->rdr);
-+		c = readl_relaxed(port->membase + ofs->rdr);
-+		/* apply RDR data mask */
-+		c &= stm32_port->rdr_mask;
- 	}
+-	}
++	c = readl_relaxed(port->membase + ofs->rdr);
++	/* Apply RDR data mask */
++	c &= stm32_port->rdr_mask;
 +
 +	return c;
  }
  
- static void stm32_receive_chars(struct uart_port *port, bool threaded)
-@@ -216,44 +225,65 @@ static void stm32_receive_chars(struct uart_port *port, bool threaded)
- 	struct tty_port *tport = &port->state->port;
+-static void stm32_receive_chars(struct uart_port *port, bool threaded)
++static void stm32_receive_chars_pio(struct uart_port *port)
+ {
+-	struct tty_port *tport = &port->state->port;
  	struct stm32_port *stm32_port = to_stm32_port(port);
  	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
--	unsigned long c;
-+	unsigned long c, flags;
+ 	unsigned long c;
  	u32 sr;
  	char flag;
  
- 	if (irqd_is_wakeup_set(irq_get_irq_data(port->irq)))
- 		pm_wakeup_event(tport->tty->dev, 0);
- 
-+	if (threaded)
-+		spin_lock_irqsave(&port->lock, flags);
-+	else
-+		spin_lock(&port->lock);
-+
- 	while (stm32_pending_rx(port, &sr, &stm32_port->last_res, threaded)) {
+-	if (irqd_is_wakeup_set(irq_get_irq_data(port->irq)))
+-		pm_wakeup_event(tport->tty->dev, 0);
+-
+-	while (stm32_pending_rx(port, &sr, &stm32_port->last_res, threaded)) {
++	while (stm32_pending_rx_pio(port, &sr)) {
  		sr |= USART_SR_DUMMY_RX;
 -		c = stm32_get_char(port, &sr, &stm32_port->last_res);
  		flag = TTY_NORMAL;
@@ -148,7 +158,7 @@ index e8d7a7b..fdcc214 100644
 +			writel_relaxed(sr & USART_SR_ERR_MASK,
 +				       port->membase + ofs->icr);
 +
-+		c = stm32_get_char(port, &sr, &stm32_port->last_res);
++		c = stm32_get_char_pio(port);
 +		port->icount.rx++;
  		if (sr & USART_SR_ERR_MASK) {
 -			if (sr & USART_SR_LBD) {
@@ -177,7 +187,7 @@ index e8d7a7b..fdcc214 100644
  			}
  
  			sr &= port->read_status_mask;
- 
+-
 -			if (sr & USART_SR_LBD)
 -				flag = TTY_BREAK;
 -			else if (sr & USART_SR_PE)
@@ -194,22 +204,105 @@ index e8d7a7b..fdcc214 100644
  		}
  
  		if (uart_handle_sysrq_char(port, c))
-@@ -261,9 +291,12 @@ static void stm32_receive_chars(struct uart_port *port, bool threaded)
+ 			continue;
  		uart_insert_char(port, sr, USART_SR_ORE, c, flag);
  	}
++}
++
++static void stm32_push_buffer_dma(struct uart_port *port,
++				  unsigned int dma_size)
++{
++	struct stm32_port *stm32_port = to_stm32_port(port);
++	struct tty_port *ttyport = &stm32_port->port.state->port;
++	unsigned char *dma_start;
++	int dma_count;
++
++	dma_start = stm32_port->rx_buf + (RX_BUF_L - stm32_port->last_res);
++	dma_count = tty_insert_flip_string(ttyport, dma_start, dma_size);
++	port->icount.rx += dma_count;
++	stm32_port->last_res -= dma_count;
++	if (stm32_port->last_res == 0)
++		stm32_port->last_res = RX_BUF_L;
++}
++
++static void stm32_receive_chars_dma(struct uart_port *port)
++{
++	struct stm32_port *stm32_port = to_stm32_port(port);
++	unsigned int dma_size;
++
++	/*
++	 * DMA buffer is configured in cyclic mode and handles the rollback of
++	 * the buffer.
++	 */
++	if (stm32_port->state.residue > stm32_port->last_res) {
++		/* Conditional first part: from last_res to end of dma buffer */
++		dma_size = stm32_port->last_res;
++		stm32_push_buffer_dma(port, dma_size);
++	}
  
 -	spin_unlock(&port->lock);
++	dma_size = stm32_port->last_res - stm32_port->state.residue;
++	stm32_push_buffer_dma(port, dma_size);
++}
++
++static void stm32_receive_chars(struct uart_port *port, bool threaded)
++{
++	struct tty_port *tport = &port->state->port;
++	struct stm32_port *stm32_port = to_stm32_port(port);
++	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
++	unsigned long flags = 0;
++	u32 sr;
++
++	if (irqd_is_wakeup_set(irq_get_irq_data(port->irq)))
++		pm_wakeup_event(tport->tty->dev, 0);
++
++	if (threaded)
++		spin_lock_irqsave(&port->lock, flags);
++	else
++		spin_lock(&port->lock);
++
++	if (stm32_port->rx_ch) {
++		stm32_port->status =
++			dmaengine_tx_status(stm32_port->rx_ch,
++					    stm32_port->rx_ch->cookie,
++					    &stm32_port->state);
++		if (stm32_port->status == DMA_IN_PROGRESS) {
++			/* Empty DMA buffer */
++			stm32_receive_chars_dma(port);
++			sr = readl_relaxed(port->membase + ofs->isr);
++			if (sr & USART_SR_ERR_MASK) {
++				/* Disable DMA request line */
++				stm32_clr_bits(port, ofs->cr3, USART_CR3_DMAR);
++
++				/* Switch to PIO mode handle the errors */
++				stm32_receive_chars_pio(port);
++
++				/* Switch back to DMA mode */
++				stm32_set_bits(port, ofs->cr3, USART_CR3_DMAR);
++			}
++		} else {
++			/* Disable rx DMA */
++			dmaengine_terminate_async(stm32_port->rx_ch);
++			stm32_clr_bits(port, ofs->cr3, USART_CR3_DMAR);
++			/* fall back to interrupt mode */
++			dev_dbg(port->dev,
++				"DMA error, fallback to irq mode\n");
++			stm32_receive_chars_pio(port);
++		}
++	} else {
++		stm32_receive_chars_pio(port);
++	}
++
 +	if (threaded)
 +		spin_unlock_irqrestore(&port->lock, flags);
 +	else
 +		spin_unlock(&port->lock);
-+
  	tty_flip_buffer_push(tport);
 -	spin_lock(&port->lock);
  }
  
  static void stm32_tx_dma_complete(void *arg)
-@@ -271,27 +304,39 @@ static void stm32_tx_dma_complete(void *arg)
+@@ -271,27 +362,23 @@ static void stm32_tx_dma_complete(void *arg)
  	struct uart_port *port = arg;
  	struct stm32_port *stm32port = to_stm32_port(port);
  	struct stm32_usart_offsets *ofs = &stm32port->info->ofs;
@@ -243,28 +336,12 @@ index e8d7a7b..fdcc214 100644
 +static void stm32_rx_dma_complete(void *arg)
 +{
 +	struct uart_port *port = arg;
-+	struct stm32_port *stm32port = to_stm32_port(port);
-+	unsigned long flags;
 +
-+	spin_lock_irqsave(&port->lock, flags);
-+
-+	/*
-+	 * If the dma controller is sending the data on
-+	 * the fly then we have CALLBACK_IGNORED
-+	 */
-+
-+	if (stm32port->rx_dma_cb == CALLBACK_NOT_CALLED) {
-+		stm32port->rx_dma_cb = CALLBACK_CALLED;
-+		spin_unlock_irqrestore(&port->lock, flags);
-+		stm32_receive_chars(port, true);
-+		return;
-+	}
-+
-+	spin_unlock_irqrestore(&port->lock, flags);
++	stm32_receive_chars(port, true);
  }
  
  static void stm32_transmit_chars_pio(struct uart_port *port)
-@@ -299,27 +344,30 @@ static void stm32_transmit_chars_pio(struct uart_port *port)
+@@ -299,27 +386,30 @@ static void stm32_transmit_chars_pio(struct uart_port *port)
  	struct stm32_port *stm32_port = to_stm32_port(port);
  	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
  	struct circ_buf *xmit = &port->state->xmit;
@@ -309,7 +386,7 @@ index e8d7a7b..fdcc214 100644
  }
  
  static void stm32_transmit_chars_dma(struct uart_port *port)
-@@ -377,7 +425,6 @@ static void stm32_transmit_chars_dma(struct uart_port *port)
+@@ -377,7 +467,6 @@ static void stm32_transmit_chars_dma(struct uart_port *port)
  	/* Issue pending DMA TX requests */
  	dma_async_issue_pending(stm32port->tx_ch);
  
@@ -317,7 +394,7 @@ index e8d7a7b..fdcc214 100644
  	stm32_set_bits(port, ofs->cr3, USART_CR3_DMAT);
  
  	xmit->tail = (xmit->tail + count) & (UART_XMIT_SIZE - 1);
-@@ -401,15 +448,18 @@ static void stm32_transmit_chars(struct uart_port *port)
+@@ -401,15 +490,18 @@ static void stm32_transmit_chars(struct uart_port *port)
  		return;
  	}
  
@@ -342,7 +419,7 @@ index e8d7a7b..fdcc214 100644
  
  	if (stm32_port->tx_ch)
  		stm32_transmit_chars_dma(port);
-@@ -419,8 +469,12 @@ static void stm32_transmit_chars(struct uart_port *port)
+@@ -419,8 +511,12 @@ static void stm32_transmit_chars(struct uart_port *port)
  	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
  		uart_write_wakeup(port);
  
@@ -357,7 +434,7 @@ index e8d7a7b..fdcc214 100644
  }
  
  static irqreturn_t stm32_interrupt(int irq, void *ptr)
-@@ -430,10 +484,12 @@ static irqreturn_t stm32_interrupt(int irq, void *ptr)
+@@ -430,21 +526,30 @@ static irqreturn_t stm32_interrupt(int irq, void *ptr)
  	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
  	u32 sr;
  
@@ -372,8 +449,15 @@ index e8d7a7b..fdcc214 100644
  	if ((sr & USART_SR_WUF) && (ofs->icr != UNDEF_REG))
  		writel_relaxed(USART_ICR_WUCF,
  			       port->membase + ofs->icr);
-@@ -441,10 +497,11 @@ static irqreturn_t stm32_interrupt(int irq, void *ptr)
- 	if ((sr & USART_SR_RXNE) && !(stm32_port->rx_ch))
+ 
+-	if ((sr & USART_SR_RXNE) && !(stm32_port->rx_ch))
++	/*
++	 * rx errors in dma mode has to be handled ASAP to avoid overrun as the
++	 * DMA request line has been masked by HW and rx data are stacking in
++	 * FIFO.
++	 */
++	if (((sr & USART_SR_RXNE) && !stm32_port->rx_ch) ||
++	    ((sr & USART_SR_ERR_MASK) && stm32_port->rx_ch))
  		stm32_receive_chars(port, false);
  
 -	if ((sr & USART_SR_TXE) && !(stm32_port->tx_ch))
@@ -387,37 +471,24 @@ index e8d7a7b..fdcc214 100644
  
  	if (stm32_port->rx_ch)
  		return IRQ_WAKE_THREAD;
-@@ -456,13 +513,24 @@ static irqreturn_t stm32_threaded_interrupt(int irq, void *ptr)
+@@ -455,14 +560,9 @@ static irqreturn_t stm32_interrupt(int irq, void *ptr)
+ static irqreturn_t stm32_threaded_interrupt(int irq, void *ptr)
  {
  	struct uart_port *port = ptr;
- 	struct stm32_port *stm32_port = to_stm32_port(port);
-+	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
-+	unsigned long flags;
+-	struct stm32_port *stm32_port = to_stm32_port(port);
  
 -	spin_lock(&port->lock);
 -
 -	if (stm32_port->rx_ch)
-+	if (stm32_port->rx_ch) {
-+		spin_lock_irqsave(&port->lock, flags);
-+		stm32_clr_bits(port, ofs->cr3, USART_CR3_DMAR);
-+		spin_unlock_irqrestore(&port->lock, flags);
-+		dma_sync_single_for_cpu(port->dev,
-+					stm32_port->rx_dma_buf,
-+					RX_BUF_L, DMA_FROM_DEVICE);
- 		stm32_receive_chars(port, true);
+-		stm32_receive_chars(port, true);
 -
 -	spin_unlock(&port->lock);
-+		dma_sync_single_for_device(port->dev,
-+					   stm32_port->rx_dma_buf,
-+					   RX_BUF_L, DMA_FROM_DEVICE);
-+		spin_lock_irqsave(&port->lock, flags);
-+		stm32_set_bits(port, ofs->cr3, USART_CR3_DMAR);
-+		spin_unlock_irqrestore(&port->lock, flags);
-+	}
++	/* Receiver timeout irq for dma rx */
++	stm32_receive_chars(port, true);
  
  	return IRQ_HANDLED;
  }
-@@ -472,7 +540,10 @@ static unsigned int stm32_tx_empty(struct uart_port *port)
+@@ -472,7 +572,10 @@ static unsigned int stm32_tx_empty(struct uart_port *port)
  	struct stm32_port *stm32_port = to_stm32_port(port);
  	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
  
@@ -429,7 +500,7 @@ index e8d7a7b..fdcc214 100644
  }
  
  static void stm32_set_mctrl(struct uart_port *port, unsigned int mctrl)
-@@ -498,7 +569,15 @@ static void stm32_stop_tx(struct uart_port *port)
+@@ -498,7 +601,15 @@ static void stm32_stop_tx(struct uart_port *port)
  	struct stm32_port *stm32_port = to_stm32_port(port);
  	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
  
@@ -446,7 +517,7 @@ index e8d7a7b..fdcc214 100644
  }
  
  /* There are probably characters waiting to be transmitted. */
-@@ -512,6 +591,22 @@ static void stm32_start_tx(struct uart_port *port)
+@@ -512,6 +623,23 @@ static void stm32_start_tx(struct uart_port *port)
  	stm32_transmit_chars(port);
  }
  
@@ -457,9 +528,10 @@ index e8d7a7b..fdcc214 100644
 +	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
 +
 +	if (stm32_port->tx_ch) {
-+		spin_lock(&port->lock);
-+		dmaengine_terminate_async(stm32_port->tx_ch);
++		/* Avoid deadlock with the DMA engine callback */
 +		spin_unlock(&port->lock);
++		dmaengine_terminate_async(stm32_port->tx_ch);
++		spin_lock(&port->lock);
 +
 +		stm32_clr_bits(port, ofs->cr3, USART_CR3_DMAT);
 +		stm32_port->tx_dma_busy = false;
@@ -469,7 +541,7 @@ index e8d7a7b..fdcc214 100644
  /* Throttle the remote when input buffer is about to overflow. */
  static void stm32_throttle(struct uart_port *port)
  {
-@@ -520,7 +615,10 @@ static void stm32_throttle(struct uart_port *port)
+@@ -520,7 +648,10 @@ static void stm32_throttle(struct uart_port *port)
  	unsigned long flags;
  
  	spin_lock_irqsave(&port->lock, flags);
@@ -481,7 +553,7 @@ index e8d7a7b..fdcc214 100644
  	spin_unlock_irqrestore(&port->lock, flags);
  }
  
-@@ -532,7 +630,10 @@ static void stm32_unthrottle(struct uart_port *port)
+@@ -532,7 +663,10 @@ static void stm32_unthrottle(struct uart_port *port)
  	unsigned long flags;
  
  	spin_lock_irqsave(&port->lock, flags);
@@ -493,7 +565,7 @@ index e8d7a7b..fdcc214 100644
  	spin_unlock_irqrestore(&port->lock, flags);
  }
  
-@@ -542,7 +643,10 @@ static void stm32_stop_rx(struct uart_port *port)
+@@ -542,7 +676,10 @@ static void stm32_stop_rx(struct uart_port *port)
  	struct stm32_port *stm32_port = to_stm32_port(port);
  	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
  
@@ -505,15 +577,18 @@ index e8d7a7b..fdcc214 100644
  }
  
  /* Handle breaks - ignored by us */
-@@ -554,7 +658,6 @@ static int stm32_startup(struct uart_port *port)
+@@ -554,8 +691,9 @@ static int stm32_startup(struct uart_port *port)
  {
  	struct stm32_port *stm32_port = to_stm32_port(port);
  	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
 -	struct stm32_usart_config *cfg = &stm32_port->info->cfg;
  	const char *name = to_platform_device(port->dev)->name;
++	struct dma_async_tx_descriptor *desc = NULL;
++	dma_cookie_t cookie;
  	u32 val;
  	int ret;
-@@ -565,18 +668,12 @@ static int stm32_startup(struct uart_port *port)
+ 
+@@ -565,18 +703,35 @@ static int stm32_startup(struct uart_port *port)
  	if (ret)
  		return ret;
  
@@ -523,11 +598,32 @@ index e8d7a7b..fdcc214 100644
 -		if (ret) {
 -			free_irq(port->irq, port);
 -			return ret;
--		}
--	}
 +	/* RX FIFO Flush */
 +	if (ofs->rqr != UNDEF_REG)
 +		stm32_set_bits(port, ofs->rqr, USART_RQR_RXFRQ);
++
++	if (stm32_port->rx_ch) {
++		stm32_port->last_res = RX_BUF_L;
++		/* Prepare a DMA cyclic transaction */
++		desc = dmaengine_prep_dma_cyclic(stm32_port->rx_ch,
++						 stm32_port->rx_dma_buf,
++						 RX_BUF_L, RX_BUF_P,
++						 DMA_DEV_TO_MEM,
++						 DMA_PREP_INTERRUPT);
++		if (!desc) {
++			dev_err(port->dev, "rx dma prep cyclic failed\n");
++			return -ENODEV;
+ 		}
++
++		desc->callback = stm32_rx_dma_complete;
++		desc->callback_param = port;
++
++		/* Push current DMA transaction in the pending queue */
++		cookie = dmaengine_submit(desc);
++
++		/* Issue pending DMA requests */
++		dma_async_issue_pending(stm32_port->rx_ch);
+ 	}
  
 -	val = USART_CR1_RXNEIE | USART_CR1_TE | USART_CR1_RE;
 -	if (stm32_port->fifoen)
@@ -537,7 +633,7 @@ index e8d7a7b..fdcc214 100644
  	stm32_set_bits(port, ofs->cr1, val);
  
  	return 0;
-@@ -587,18 +684,62 @@ static void stm32_shutdown(struct uart_port *port)
+@@ -587,18 +742,65 @@ static void stm32_shutdown(struct uart_port *port)
  	struct stm32_port *stm32_port = to_stm32_port(port);
  	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
  	struct stm32_usart_config *cfg = &stm32_port->info->cfg;
@@ -566,6 +662,9 @@ index e8d7a7b..fdcc214 100644
 +	if (stm32_port->fifoen)
 +		stm32_clr_bits(port, ofs->cr3,
 +			       USART_CR3_TXFTIE | USART_CR3_RXFTIE);
++
++	if (stm32_port->rx_ch)
++		dmaengine_terminate_async(stm32_port->rx_ch);
 +
  	free_irq(port->irq, port);
  }
@@ -603,7 +702,7 @@ index e8d7a7b..fdcc214 100644
  static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
  			    struct ktermios *old)
  {
-@@ -606,11 +747,12 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
+@@ -606,11 +808,12 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
  	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
  	struct stm32_usart_config *cfg = &stm32_port->info->cfg;
  	struct serial_rs485 *rs485conf = &port->rs485;
@@ -618,7 +717,7 @@ index e8d7a7b..fdcc214 100644
  
  	if (!stm32_port->hw_flow_control)
  		cflag &= ~CRTSCTS;
-@@ -619,29 +761,80 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
+@@ -619,29 +822,80 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
  
  	spin_lock_irqsave(&port->lock, flags);
  
@@ -707,7 +806,7 @@ index e8d7a7b..fdcc214 100644
  	if (cflag & PARODD)
  		cr1 |= USART_CR1_PS;
  
-@@ -679,14 +872,14 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
+@@ -679,14 +933,14 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
  	if (termios->c_iflag & INPCK)
  		port->read_status_mask |= USART_SR_PE | USART_SR_FE;
  	if (termios->c_iflag & (IGNBRK | BRKINT | PARMRK))
@@ -724,7 +823,25 @@ index e8d7a7b..fdcc214 100644
  		/*
  		 * If we're ignoring parity and break indicators,
  		 * ignore overruns too (for real raw support).
-@@ -715,8 +908,10 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
+@@ -699,8 +953,16 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
+ 	if ((termios->c_cflag & CREAD) == 0)
+ 		port->ignore_status_mask |= USART_SR_DUMMY_RX;
+ 
+-	if (stm32_port->rx_ch)
++	if (stm32_port->rx_ch) {
++		/*
++		 * Setup DMA to collect only valid data and enable error irqs.
++		 * This also enables break reception when using dma.
++		 */
++		cr1 |= USART_CR1_PEIE;
++		cr3 |= USART_CR3_EIE;
+ 		cr3 |= USART_CR3_DMAR;
++		cr3 |= USART_CR3_DDRE;
++	}
+ 
+ 	if (rs485conf->flags & SER_RS485_ENABLED) {
+ 		stm32_config_reg_rs485(&cr1, &cr3,
+@@ -715,8 +977,10 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
  		}
  
  	} else {
@@ -737,7 +854,7 @@ index e8d7a7b..fdcc214 100644
  	}
  
  	writel_relaxed(cr3, port->membase + ofs->cr3);
-@@ -765,13 +960,13 @@ static void stm32_pm(struct uart_port *port, unsigned int state,
+@@ -765,13 +1029,13 @@ static void stm32_pm(struct uart_port *port, unsigned int state,
  
  	switch (state) {
  	case UART_PM_STATE_ON:
@@ -753,7 +870,7 @@ index e8d7a7b..fdcc214 100644
  		break;
  	}
  }
-@@ -788,6 +983,7 @@ static const struct uart_ops stm32_uart_ops = {
+@@ -788,6 +1052,7 @@ static const struct uart_ops stm32_uart_ops = {
  	.break_ctl	= stm32_break_ctl,
  	.startup	= stm32_startup,
  	.shutdown	= stm32_shutdown,
@@ -761,7 +878,7 @@ index e8d7a7b..fdcc214 100644
  	.set_termios	= stm32_set_termios,
  	.pm		= stm32_pm,
  	.type		= stm32_type,
-@@ -802,20 +998,60 @@ static int stm32_init_port(struct stm32_port *stm32port,
+@@ -802,20 +1067,60 @@ static int stm32_init_port(struct stm32_port *stm32port,
  {
  	struct uart_port *port = &stm32port->port;
  	struct resource *res;
@@ -825,7 +942,7 @@ index e8d7a7b..fdcc214 100644
  	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
  	port->membase = devm_ioremap_resource(&pdev->dev, res);
  	if (IS_ERR(port->membase))
-@@ -862,7 +1098,11 @@ static struct stm32_port *stm32_of_get_stm32_port(struct platform_device *pdev)
+@@ -862,7 +1167,11 @@ static struct stm32_port *stm32_of_get_stm32_port(struct platform_device *pdev)
  	stm32_ports[id].hw_flow_control = of_property_read_bool(np,
  							"st,hw-flow-ctrl");
  	stm32_ports[id].port.line = id;
@@ -837,43 +954,75 @@ index e8d7a7b..fdcc214 100644
  	return &stm32_ports[id];
  }
  
-@@ -890,10 +1130,8 @@ static int stm32_of_dma_rx_probe(struct stm32_port *stm32port,
+@@ -884,15 +1193,15 @@ static int stm32_of_dma_rx_probe(struct stm32_port *stm32port,
+ 	struct uart_port *port = &stm32port->port;
+ 	struct device *dev = &pdev->dev;
+ 	struct dma_slave_config config;
+-	struct dma_async_tx_descriptor *desc = NULL;
+-	dma_cookie_t cookie;
+ 	int ret;
  
  	/* Request DMA RX channel */
- 	stm32port->rx_ch = dma_request_slave_channel(dev, "rx");
+-	stm32port->rx_ch = dma_request_slave_channel(dev, "rx");
 -	if (!stm32port->rx_ch) {
 -		dev_info(dev, "rx dma alloc failed\n");
-+	if (!stm32port->rx_ch)
- 		return -ENODEV;
--	}
+-		return -ENODEV;
++	stm32port->rx_ch = dma_request_chan_linked(dev, "rx");
++	if (IS_ERR(stm32port->rx_ch)) {
++		ret = PTR_ERR(stm32port->rx_ch);
++		stm32port->rx_ch = NULL;
++		dev_dbg(dev, "cannot get the DMA channel.\n");
++		return ret;
+ 	}
  	stm32port->rx_buf = dma_alloc_coherent(&pdev->dev, RX_BUF_L,
  						 &stm32port->rx_dma_buf,
- 						 GFP_KERNEL);
-@@ -925,9 +1163,8 @@ static int stm32_of_dma_rx_probe(struct stm32_port *stm32port,
+@@ -914,27 +1223,6 @@ static int stm32_of_dma_rx_probe(struct stm32_port *stm32port,
  		goto config_err;
  	}
  
+-	/* Prepare a DMA cyclic transaction */
+-	desc = dmaengine_prep_dma_cyclic(stm32port->rx_ch,
+-					 stm32port->rx_dma_buf,
+-					 RX_BUF_L, RX_BUF_P, DMA_DEV_TO_MEM,
+-					 DMA_PREP_INTERRUPT);
+-	if (!desc) {
+-		dev_err(dev, "rx dma prep cyclic failed\n");
+-		ret = -ENODEV;
+-		goto config_err;
+-	}
+-
 -	/* No callback as dma buffer is drained on usart interrupt */
 -	desc->callback = NULL;
 -	desc->callback_param = NULL;
-+	desc->callback = stm32_rx_dma_complete;
-+	desc->callback_param = port;
+-
+-	/* Push current DMA transaction in the pending queue */
+-	cookie = dmaengine_submit(desc);
+-
+-	/* Issue pending DMA requests */
+-	dma_async_issue_pending(stm32port->rx_ch);
+-
+ 	return 0;
  
- 	/* Push current DMA transaction in the pending queue */
- 	cookie = dmaengine_submit(desc);
-@@ -962,10 +1199,8 @@ static int stm32_of_dma_tx_probe(struct stm32_port *stm32port,
+ config_err:
+@@ -943,7 +1231,7 @@ static int stm32_of_dma_rx_probe(struct stm32_port *stm32port,
+ 			  stm32port->rx_dma_buf);
  
+ alloc_err:
+-	dma_release_channel(stm32port->rx_ch);
++	dma_release_chan_linked(dev, stm32port->rx_ch);
+ 	stm32port->rx_ch = NULL;
+ 
+ 	return ret;
+@@ -963,7 +1251,7 @@ static int stm32_of_dma_tx_probe(struct stm32_port *stm32port,
  	/* Request DMA TX channel */
  	stm32port->tx_ch = dma_request_slave_channel(dev, "tx");
--	if (!stm32port->tx_ch) {
+ 	if (!stm32port->tx_ch) {
 -		dev_info(dev, "tx dma alloc failed\n");
-+	if (!stm32port->tx_ch)
++		dev_dbg(dev, "cannot get the DMA channel.\n");
  		return -ENODEV;
--	}
+ 	}
  	stm32port->tx_buf = dma_alloc_coherent(&pdev->dev, TX_BUF_L,
- 						 &stm32port->tx_dma_buf,
- 						 GFP_KERNEL);
-@@ -1020,15 +1255,22 @@ static int stm32_serial_probe(struct platform_device *pdev)
+@@ -1020,15 +1308,18 @@ static int stm32_serial_probe(struct platform_device *pdev)
  	if (ret)
  		return ret;
  
@@ -882,26 +1031,29 @@ index e8d7a7b..fdcc214 100644
  		ret = device_init_wakeup(&pdev->dev, true);
  		if (ret)
  			goto err_uninit;
-+
+-	}
+ 
+-	ret = uart_add_one_port(&stm32_usart_driver, &stm32port->port);
+-	if (ret)
+-		goto err_nowup;
 +		ret = dev_pm_set_dedicated_wake_irq(&pdev->dev,
 +						    stm32port->wakeirq);
 +		if (ret)
 +			goto err_nowup;
 +
 +		device_set_wakeup_enable(&pdev->dev, false);
- 	}
- 
- 	ret = uart_add_one_port(&stm32_usart_driver, &stm32port->port);
- 	if (ret)
--		goto err_nowup;
-+		goto err_wirq;
++	}
  
  	ret = stm32_of_dma_rx_probe(stm32port, pdev);
  	if (ret)
-@@ -1040,10 +1282,19 @@ static int stm32_serial_probe(struct platform_device *pdev)
+@@ -1040,10 +1331,41 @@ static int stm32_serial_probe(struct platform_device *pdev)
  
  	platform_set_drvdata(pdev, &stm32port->port);
  
++	ret = uart_add_one_port(&stm32_usart_driver, &stm32port->port);
++	if (ret)
++		goto err_dma;
++
 +	pm_runtime_get_noresume(&pdev->dev);
 +	pm_runtime_set_active(&pdev->dev);
 +	pm_runtime_enable(&pdev->dev);
@@ -909,7 +1061,25 @@ index e8d7a7b..fdcc214 100644
 +
  	return 0;
  
-+err_wirq:
++err_dma:
++	if (stm32port->rx_ch)
++		dma_release_chan_linked(&pdev->dev, stm32port->rx_ch);
++
++	if (stm32port->rx_dma_buf)
++		dma_free_coherent(&pdev->dev,
++				  RX_BUF_L, stm32port->rx_buf,
++				  stm32port->rx_dma_buf);
++
++	if (stm32port->tx_ch) {
++		dmaengine_terminate_async(stm32port->tx_ch);
++		dma_release_channel(stm32port->tx_ch);
++	}
++
++	if (stm32port->tx_dma_buf)
++		dma_free_coherent(&pdev->dev,
++				  TX_BUF_L, stm32port->tx_buf,
++				  stm32port->tx_dma_buf);
++
 +	if (stm32port->wakeirq > 0)
 +		dev_pm_clear_wake_irq(&pdev->dev);
 +
@@ -919,26 +1089,33 @@ index e8d7a7b..fdcc214 100644
  		device_init_wakeup(&pdev->dev, false);
  
  err_uninit:
-@@ -1057,12 +1308,16 @@ static int stm32_serial_remove(struct platform_device *pdev)
+@@ -1057,12 +1379,22 @@ static int stm32_serial_remove(struct platform_device *pdev)
  	struct uart_port *port = platform_get_drvdata(pdev);
  	struct stm32_port *stm32_port = to_stm32_port(port);
  	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
 -	struct stm32_usart_config *cfg = &stm32_port->info->cfg;
 +	int err;
-+
++	u32 cr3;
+ 
+-	stm32_clr_bits(port, ofs->cr3, USART_CR3_DMAR);
 +	pm_runtime_get_sync(&pdev->dev);
++
++	err = uart_remove_one_port(&stm32_usart_driver, port);
++
++	stm32_clr_bits(port, ofs->cr1, USART_CR1_PEIE);
++	cr3 = readl_relaxed(port->membase + ofs->cr3);
++	cr3 &= ~USART_CR3_EIE;
++	cr3 &= ~USART_CR3_DMAR;
++	cr3 &= ~USART_CR3_DDRE;
++	writel_relaxed(cr3, port->membase + ofs->cr3);
  
- 	stm32_clr_bits(port, ofs->cr3, USART_CR3_DMAR);
- 
--	if (stm32_port->rx_ch)
-+	if (stm32_port->rx_ch) {
-+		dmaengine_terminate_async(stm32_port->rx_ch);
- 		dma_release_channel(stm32_port->rx_ch);
-+	}
+ 	if (stm32_port->rx_ch)
+-		dma_release_channel(stm32_port->rx_ch);
++		dma_release_chan_linked(&pdev->dev, stm32_port->rx_ch);
  
  	if (stm32_port->rx_dma_buf)
  		dma_free_coherent(&pdev->dev,
-@@ -1071,20 +1326,29 @@ static int stm32_serial_remove(struct platform_device *pdev)
+@@ -1071,20 +1403,27 @@ static int stm32_serial_remove(struct platform_device *pdev)
  
  	stm32_clr_bits(port, ofs->cr3, USART_CR3_DMAT);
  
@@ -962,8 +1139,6 @@ index e8d7a7b..fdcc214 100644
  	clk_disable_unprepare(stm32_port->clk);
  
 -	return uart_remove_one_port(&stm32_usart_driver, port);
-+	err = uart_remove_one_port(&stm32_usart_driver, port);
-+
 +	pm_runtime_disable(&pdev->dev);
 +	pm_runtime_put_noidle(&pdev->dev);
 +
@@ -971,7 +1146,7 @@ index e8d7a7b..fdcc214 100644
  }
  
  
-@@ -1195,7 +1459,7 @@ static void stm32_serial_enable_wakeup(struct uart_port *port, bool enable)
+@@ -1195,7 +1534,7 @@ static void stm32_serial_enable_wakeup(struct uart_port *port, bool enable)
  	struct stm32_usart_config *cfg = &stm32_port->info->cfg;
  	u32 val;
  
@@ -980,7 +1155,7 @@ index e8d7a7b..fdcc214 100644
  		return;
  
  	if (enable) {
-@@ -1207,21 +1471,36 @@ static void stm32_serial_enable_wakeup(struct uart_port *port, bool enable)
+@@ -1207,21 +1546,36 @@ static void stm32_serial_enable_wakeup(struct uart_port *port, bool enable)
  		val |= USART_CR3_WUS_START_BIT | USART_CR3_WUFIE;
  		writel_relaxed(val, port->membase + ofs->cr3);
  		stm32_set_bits(port, ofs->cr1, BIT(cfg->uart_enable_bit));
@@ -1021,7 +1196,7 @@ index e8d7a7b..fdcc214 100644
  
  	return 0;
  }
-@@ -1230,14 +1509,40 @@ static int stm32_serial_resume(struct device *dev)
+@@ -1230,14 +1584,40 @@ static int stm32_serial_resume(struct device *dev)
  {
  	struct uart_port *port = dev_get_drvdata(dev);
  
@@ -1064,7 +1239,7 @@ index e8d7a7b..fdcc214 100644
  };
  
 diff --git a/drivers/tty/serial/stm32-usart.h b/drivers/tty/serial/stm32-usart.h
-index 6f294e2..2a68bc4 100644
+index 6f294e2..ddd87c9 100644
 --- a/drivers/tty/serial/stm32-usart.h
 +++ b/drivers/tty/serial/stm32-usart.h
 @@ -27,6 +27,7 @@ struct stm32_usart_config {
@@ -1091,7 +1266,7 @@ index 6f294e2..2a68bc4 100644
  	}
  };
  
-@@ -96,6 +99,7 @@ struct stm32_usart_info stm32h7_info = {
+@@ -96,19 +99,19 @@ struct stm32_usart_info stm32h7_info = {
  		.has_7bits_data = true,
  		.has_wakeup = true,
  		.has_fifo = true,
@@ -1099,7 +1274,13 @@ index 6f294e2..2a68bc4 100644
  	}
  };
  
-@@ -108,7 +112,6 @@ struct stm32_usart_info stm32h7_info = {
+ /* USART_SR (F4) / USART_ISR (F7) */
+ #define USART_SR_PE		BIT(0)
+ #define USART_SR_FE		BIT(1)
+-#define USART_SR_NF		BIT(2)
++#define USART_SR_NE		BIT(2)		/* F7 (NF for F4) */
+ #define USART_SR_ORE		BIT(3)
+ #define USART_SR_IDLE		BIT(4)
  #define USART_SR_RXNE		BIT(5)
  #define USART_SR_TC		BIT(6)
  #define USART_SR_TXE		BIT(7)
@@ -1107,13 +1288,14 @@ index 6f294e2..2a68bc4 100644
  #define USART_SR_CTSIF		BIT(9)
  #define USART_SR_CTS		BIT(10)		/* F7 */
  #define USART_SR_RTOF		BIT(11)		/* F7 */
-@@ -120,14 +123,10 @@ struct stm32_usart_info stm32h7_info = {
+@@ -120,14 +123,11 @@ struct stm32_usart_info stm32h7_info = {
  #define USART_SR_SBKF		BIT(18)		/* F7 */
  #define USART_SR_WUF		BIT(20)		/* H7 */
  #define USART_SR_TEACK		BIT(21)		/* F7 */
 -#define USART_SR_ERR_MASK	(USART_SR_LBD | USART_SR_ORE | \
 -				 USART_SR_FE | USART_SR_PE)
-+#define USART_SR_ERR_MASK	(USART_SR_ORE | USART_SR_FE | USART_SR_PE)
++#define USART_SR_ERR_MASK	(USART_SR_ORE | USART_SR_NE | USART_SR_FE\
++				| USART_SR_PE)
  /* Dummy bits */
  #define USART_SR_DUMMY_RX	BIT(16)
  
@@ -1123,7 +1305,7 @@ index 6f294e2..2a68bc4 100644
  /* USART_DR */
  #define USART_DR_MASK		GENMASK(8, 0)
  
-@@ -151,8 +150,7 @@ struct stm32_usart_info stm32h7_info = {
+@@ -151,8 +151,7 @@ struct stm32_usart_info stm32h7_info = {
  #define USART_CR1_PS		BIT(9)
  #define USART_CR1_PCE		BIT(10)
  #define USART_CR1_WAKE		BIT(11)
@@ -1133,7 +1315,7 @@ index 6f294e2..2a68bc4 100644
  #define USART_CR1_MME		BIT(13)		/* F7 */
  #define USART_CR1_CMIE		BIT(14)		/* F7 */
  #define USART_CR1_OVER8		BIT(15)
-@@ -169,8 +167,6 @@ struct stm32_usart_info stm32h7_info = {
+@@ -169,8 +168,6 @@ struct stm32_usart_info stm32h7_info = {
  /* USART_CR2 */
  #define USART_CR2_ADD_MASK	GENMASK(3, 0)	/* F4 */
  #define USART_CR2_ADDM7		BIT(4)		/* F7 */
@@ -1142,7 +1324,7 @@ index 6f294e2..2a68bc4 100644
  #define USART_CR2_LBCL		BIT(8)
  #define USART_CR2_CPHA		BIT(9)
  #define USART_CR2_CPOL		BIT(10)
-@@ -209,6 +205,19 @@ struct stm32_usart_info stm32h7_info = {
+@@ -209,6 +206,19 @@ struct stm32_usart_info stm32h7_info = {
  #define USART_CR3_WUS_MASK	GENMASK(21, 20)	/* H7 */
  #define USART_CR3_WUS_START_BIT	BIT(21)		/* H7 */
  #define USART_CR3_WUFIE		BIT(22)		/* H7 */
@@ -1162,7 +1344,7 @@ index 6f294e2..2a68bc4 100644
  
  /* USART_GTPR */
  #define USART_GTPR_PSC_MASK	GENMASK(7, 0)
-@@ -227,12 +236,10 @@ struct stm32_usart_info stm32h7_info = {
+@@ -227,12 +237,10 @@ struct stm32_usart_info stm32h7_info = {
  
  /* USART_ICR */
  #define USART_ICR_PECF		BIT(0)		/* F7 */
@@ -1176,38 +1358,34 @@ index 6f294e2..2a68bc4 100644
  #define USART_ICR_CTSCF		BIT(9)		/* F7 */
  #define USART_ICR_RTOCF		BIT(11)		/* F7 */
  #define USART_ICR_EOBCF		BIT(12)		/* F7 */
-@@ -242,9 +249,15 @@ struct stm32_usart_info stm32h7_info = {
+@@ -242,9 +250,9 @@ struct stm32_usart_info stm32h7_info = {
  #define STM32_SERIAL_NAME "ttySTM"
  #define STM32_MAX_PORTS 8
  
 -#define RX_BUF_L 200		 /* dma rx buffer length     */
-+#define RX_BUF_L 160		 /* dma rx buffer length     */
- #define RX_BUF_P RX_BUF_L	 /* dma rx buffer period     */
+-#define RX_BUF_P RX_BUF_L	 /* dma rx buffer period     */
 -#define TX_BUF_L 200		 /* dma tx buffer length     */
++#define RX_BUF_L 4096		 /* dma rx buffer length     */
++#define RX_BUF_P (RX_BUF_L / 2)	 /* dma rx buffer period     */
 +#define TX_BUF_L RX_BUF_L	 /* dma tx buffer length     */
-+
-+enum dma_cb {
-+	CALLBACK_NOT_CALLED,
-+	CALLBACK_CALLED,
-+	CALLBACK_IGNORED,
-+};
  
  struct stm32_port {
  	struct uart_port port;
-@@ -256,11 +269,16 @@ struct stm32_port {
+@@ -256,11 +264,17 @@ struct stm32_port {
  	struct dma_chan *tx_ch;  /* dma tx channel            */
  	dma_addr_t tx_dma_buf;   /* dma tx buffer bus address */
  	unsigned char *tx_buf;   /* dma tx buffer cpu address */
 +	u32 cr1_irq;		 /* USART_CR1_RXNEIE or RTOIE */
 +	u32 cr3_irq;		 /* USART_CR3_RXFTIE */
  	int last_res;
-+	enum dma_cb rx_dma_cb;	 /* dma rx callback status    */
  	bool tx_dma_busy;	 /* dma tx busy               */
  	bool hw_flow_control;
  	bool fifoen;
  	int wakeirq;
 +	struct pinctrl_state *console_pins;
 +	int rdr_mask;		/* receive data register mask */
++	struct dma_tx_state state;
++	enum dma_status status;
  };
  
  static struct stm32_port stm32_ports[STM32_MAX_PORTS];
@@ -1225,7 +1403,7 @@ index 440320c..2bcd694 100644
  
  ifneq ($(filter y,$(CONFIG_USB_DWC2_HOST) $(CONFIG_USB_DWC2_DUAL_ROLE)),)
 diff --git a/drivers/usb/dwc2/core.c b/drivers/usb/dwc2/core.c
-index 55d5ae2..712cef9 100644
+index 633ba01..8ad88d2 100644
 --- a/drivers/usb/dwc2/core.c
 +++ b/drivers/usb/dwc2/core.c
 @@ -83,6 +83,7 @@ int dwc2_backup_global_registers(struct dwc2_hsotg *hsotg)
@@ -1811,7 +1989,7 @@ index 0000000..7d812b7
 +	return 0;
 +}
 diff --git a/drivers/usb/dwc2/gadget.c b/drivers/usb/dwc2/gadget.c
-index 03614ef..3ebd5dd 100644
+index 3f68edd..3ebd5dd 100644
 --- a/drivers/usb/dwc2/gadget.c
 +++ b/drivers/usb/dwc2/gadget.c
 @@ -123,6 +123,24 @@ static inline void dwc2_gadget_incr_frame_num(struct dwc2_hsotg_ep *hs_ep)
@@ -1891,48 +2069,7 @@ index 03614ef..3ebd5dd 100644
  			dwc2_gadget_start_isoc_ddma(hs_ep);
  			return;
  		}
-@@ -3125,6 +3181,7 @@ void dwc2_hsotg_disconnect(struct dwc2_hsotg *hsotg)
- 	hsotg->connected = 0;
- 	hsotg->test_mode = 0;
- 
-+	/* all endpoints should be shutdown */
- 	for (ep = 0; ep < hsotg->num_of_eps; ep++) {
- 		if (hsotg->eps_in[ep])
- 			kill_all_requests(hsotg, hsotg->eps_in[ep],
-@@ -3175,6 +3232,7 @@ static void dwc2_hsotg_irq_fifoempty(struct dwc2_hsotg *hsotg, bool periodic)
- 			GINTSTS_PTXFEMP |  \
- 			GINTSTS_RXFLVL)
- 
-+static int dwc2_hsotg_ep_disable(struct usb_ep *ep);
- /**
-  * dwc2_hsotg_core_init - issue softreset to the core
-  * @hsotg: The device state
-@@ -3189,13 +3247,23 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
- 	u32 val;
- 	u32 usbcfg;
- 	u32 dcfg = 0;
-+	int ep;
- 
- 	/* Kill any ep0 requests as controller will be reinitialized */
- 	kill_all_requests(hsotg, hsotg->eps_out[0], -ECONNRESET);
- 
--	if (!is_usb_reset)
-+	if (!is_usb_reset) {
- 		if (dwc2_core_reset(hsotg, true))
- 			return;
-+	} else {
-+		/* all endpoints should be shutdown */
-+		for (ep = 1; ep < hsotg->num_of_eps; ep++) {
-+			if (hsotg->eps_in[ep])
-+				dwc2_hsotg_ep_disable(&hsotg->eps_in[ep]->ep);
-+			if (hsotg->eps_out[ep])
-+				dwc2_hsotg_ep_disable(&hsotg->eps_out[ep]->ep);
-+		}
-+	}
- 
- 	/*
- 	 * we must now enable ep0 ready for host detection and then
-@@ -3310,6 +3378,10 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
+@@ -3322,6 +3378,10 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
  		dwc2_set_bit(hsotg, DIEPMSK, DIEPMSK_BNAININTRMSK);
  	}
  
@@ -1943,7 +2080,7 @@ index 03614ef..3ebd5dd 100644
  	dwc2_writel(hsotg, 0, DAINTMSK);
  
  	dev_dbg(hsotg->dev, "EP0: DIEPCTL0=0x%08x, DOEPCTL0=0x%08x\n",
-@@ -3366,6 +3438,10 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
+@@ -3378,6 +3438,10 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
  	/* configure the core to support LPM */
  	dwc2_gadget_init_lpm(hsotg);
  
@@ -1954,7 +2091,7 @@ index 03614ef..3ebd5dd 100644
  	/* must be at-least 3ms to allow bus to see disconnect */
  	mdelay(3);
  
-@@ -3378,7 +3454,7 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
+@@ -3390,7 +3454,7 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
  		dwc2_readl(hsotg, DOEPCTL0));
  }
  
@@ -1963,7 +2100,7 @@ index 03614ef..3ebd5dd 100644
  {
  	/* set the soft-disconnect bit */
  	dwc2_set_bit(hsotg, DCTL, DCTL_SFTDISCON);
-@@ -3387,7 +3463,8 @@ static void dwc2_hsotg_core_disconnect(struct dwc2_hsotg *hsotg)
+@@ -3399,7 +3463,8 @@ static void dwc2_hsotg_core_disconnect(struct dwc2_hsotg *hsotg)
  void dwc2_hsotg_core_connect(struct dwc2_hsotg *hsotg)
  {
  	/* remove the soft-disconnect and let's go */
@@ -1973,7 +2110,7 @@ index 03614ef..3ebd5dd 100644
  }
  
  /**
-@@ -3674,6 +3751,10 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
+@@ -3686,6 +3751,10 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
  	if (gintsts & IRQ_RETRY_MASK && --retry_count > 0)
  		goto irq_retry;
  
@@ -1984,84 +2121,16 @@ index 03614ef..3ebd5dd 100644
  	spin_unlock(&hsotg->lock);
  
  	return IRQ_HANDLED;
-@@ -3993,7 +4074,6 @@ static int dwc2_hsotg_ep_disable(struct usb_ep *ep)
- 	struct dwc2_hsotg *hsotg = hs_ep->parent;
- 	int dir_in = hs_ep->dir_in;
- 	int index = hs_ep->index;
--	unsigned long flags;
- 	u32 epctrl_reg;
- 	u32 ctrl;
- 
-@@ -4011,8 +4091,6 @@ static int dwc2_hsotg_ep_disable(struct usb_ep *ep)
- 
- 	epctrl_reg = dir_in ? DIEPCTL(index) : DOEPCTL(index);
- 
--	spin_lock_irqsave(&hsotg->lock, flags);
--
- 	ctrl = dwc2_readl(hsotg, epctrl_reg);
- 
- 	if (ctrl & DXEPCTL_EPENA)
-@@ -4035,10 +4113,22 @@ static int dwc2_hsotg_ep_disable(struct usb_ep *ep)
- 	hs_ep->fifo_index = 0;
- 	hs_ep->fifo_size = 0;
- 
--	spin_unlock_irqrestore(&hsotg->lock, flags);
- 	return 0;
- }
- 
-+static int dwc2_hsotg_ep_disable_lock(struct usb_ep *ep)
-+{
-+	struct dwc2_hsotg_ep *hs_ep = our_ep(ep);
-+	struct dwc2_hsotg *hsotg = hs_ep->parent;
-+	unsigned long flags;
-+	int ret;
-+
-+	spin_lock_irqsave(&hsotg->lock, flags);
-+	ret = dwc2_hsotg_ep_disable(ep);
-+	spin_unlock_irqrestore(&hsotg->lock, flags);
-+	return ret;
-+}
-+
- /**
-  * on_list - check request is on the given endpoint
-  * @ep: The endpoint to check.
-@@ -4186,7 +4276,7 @@ static int dwc2_hsotg_ep_sethalt_lock(struct usb_ep *ep, int value)
- 
- static const struct usb_ep_ops dwc2_hsotg_ep_ops = {
- 	.enable		= dwc2_hsotg_ep_enable,
--	.disable	= dwc2_hsotg_ep_disable,
-+	.disable	= dwc2_hsotg_ep_disable_lock,
- 	.alloc_request	= dwc2_hsotg_ep_alloc_request,
- 	.free_request	= dwc2_hsotg_ep_free_request,
- 	.queue		= dwc2_hsotg_ep_queue_lock,
-@@ -4326,9 +4416,9 @@ static int dwc2_hsotg_udc_stop(struct usb_gadget *gadget)
- 	/* all endpoints should be shutdown */
- 	for (ep = 1; ep < hsotg->num_of_eps; ep++) {
- 		if (hsotg->eps_in[ep])
--			dwc2_hsotg_ep_disable(&hsotg->eps_in[ep]->ep);
-+			dwc2_hsotg_ep_disable_lock(&hsotg->eps_in[ep]->ep);
- 		if (hsotg->eps_out[ep])
--			dwc2_hsotg_ep_disable(&hsotg->eps_out[ep]->ep);
-+			dwc2_hsotg_ep_disable_lock(&hsotg->eps_out[ep]->ep);
- 	}
- 
- 	spin_lock_irqsave(&hsotg->lock, flags);
-@@ -4774,11 +4864,11 @@ int dwc2_hsotg_suspend(struct dwc2_hsotg *hsotg)
+@@ -4795,7 +4864,7 @@ int dwc2_hsotg_suspend(struct dwc2_hsotg *hsotg)
  		hsotg->gadget.speed = USB_SPEED_UNKNOWN;
  		spin_unlock_irqrestore(&hsotg->lock, flags);
  
 -		for (ep = 0; ep < hsotg->num_of_eps; ep++) {
 +		for (ep = 1; ep < hsotg->num_of_eps; ep++) {
  			if (hsotg->eps_in[ep])
--				dwc2_hsotg_ep_disable(&hsotg->eps_in[ep]->ep);
-+				dwc2_hsotg_ep_disable_lock(&hsotg->eps_in[ep]->ep);
+ 				dwc2_hsotg_ep_disable_lock(&hsotg->eps_in[ep]->ep);
  			if (hsotg->eps_out[ep])
--				dwc2_hsotg_ep_disable(&hsotg->eps_out[ep]->ep);
-+				dwc2_hsotg_ep_disable_lock(&hsotg->eps_out[ep]->ep);
- 		}
- 	}
- 
-@@ -4945,8 +5035,32 @@ void dwc2_gadget_init_lpm(struct dwc2_hsotg *hsotg)
+@@ -4966,8 +5035,32 @@ void dwc2_gadget_init_lpm(struct dwc2_hsotg *hsotg)
  	val |= hsotg->params.lpm_clock_gating ? GLPMCFG_ENBLSLPM : 0;
  	val |= hsotg->params.hird_threshold << GLPMCFG_HIRD_THRES_SHIFT;
  	val |= hsotg->params.besl ? GLPMCFG_ENBESL : 0;
@@ -2095,7 +2164,7 @@ index 03614ef..3ebd5dd 100644
  
  /**
 diff --git a/drivers/usb/dwc2/hcd.c b/drivers/usb/dwc2/hcd.c
-index 260010a..7f128b1 100644
+index a5c8329..67bbf94 100644
 --- a/drivers/usb/dwc2/hcd.c
 +++ b/drivers/usb/dwc2/hcd.c
 @@ -125,7 +125,7 @@ static void dwc2_init_fs_ls_pclk_sel(struct dwc2_hsotg *hsotg)
@@ -2162,113 +2231,26 @@ index 260010a..7f128b1 100644
  	remaining_count = chan->xfer_len - chan->xfer_count;
  	if (remaining_count > chan->max_packet)
  		byte_count = chan->max_packet;
-@@ -3564,6 +3542,7 @@ static int dwc2_hcd_hub_control(struct dwc2_hsotg *hsotg, u16 typereq,
- 	u32 port_status;
- 	u32 speed;
- 	u32 pcgctl;
-+	u32 pwr;
+@@ -1934,7 +1912,8 @@ static void dwc2_hcd_cleanup_channels(struct dwc2_hsotg *hsotg)
+ 		 * release_channel_ddma(), which is called from ep_disable when
+ 		 * device disconnects
+ 		 */
+-		channel->qh = NULL;
++		if (hsotg->params.host_dma && hsotg->params.dma_desc_enable)
++			channel->qh = NULL;
+ 	}
+ 	/* All channels have been freed, mark them available */
+ 	if (hsotg->params.uframe_sched) {
+@@ -3804,7 +3783,8 @@ static int dwc2_hcd_hub_control(struct dwc2_hsotg *hsotg, u16 typereq,
+ 		if (wvalue != USB_PORT_FEAT_TEST && (!windex || windex > 1))
+ 			goto error;
  
- 	switch (typereq) {
- 	case ClearHubFeature:
-@@ -3612,8 +3591,11 @@ static int dwc2_hcd_hub_control(struct dwc2_hsotg *hsotg, u16 typereq,
- 			dev_dbg(hsotg->dev,
- 				"ClearPortFeature USB_PORT_FEAT_POWER\n");
- 			hprt0 = dwc2_read_hprt0(hsotg);
-+			pwr = hprt0 & HPRT0_PWR;
- 			hprt0 &= ~HPRT0_PWR;
- 			dwc2_writel(hsotg, hprt0, HPRT0);
-+			if (pwr)
-+				dwc2_vbus_supply_exit(hsotg);
- 			break;
- 
- 		case USB_PORT_FEAT_INDICATOR:
-@@ -3823,8 +3805,11 @@ static int dwc2_hcd_hub_control(struct dwc2_hsotg *hsotg, u16 typereq,
- 			dev_dbg(hsotg->dev,
- 				"SetPortFeature - USB_PORT_FEAT_POWER\n");
- 			hprt0 = dwc2_read_hprt0(hsotg);
-+			pwr = hprt0 & HPRT0_PWR;
- 			hprt0 |= HPRT0_PWR;
- 			dwc2_writel(hsotg, hprt0, HPRT0);
-+			if (!pwr)
-+				dwc2_vbus_supply_init(hsotg);
- 			break;
- 
- 		case USB_PORT_FEAT_RESET:
-@@ -3841,6 +3826,7 @@ static int dwc2_hcd_hub_control(struct dwc2_hsotg *hsotg, u16 typereq,
- 			dwc2_writel(hsotg, 0, PCGCTL);
- 
- 			hprt0 = dwc2_read_hprt0(hsotg);
-+			pwr = hprt0 & HPRT0_PWR;
- 			/* Clear suspend bit if resetting from suspend state */
- 			hprt0 &= ~HPRT0_SUSP;
- 
-@@ -3854,6 +3840,8 @@ static int dwc2_hcd_hub_control(struct dwc2_hsotg *hsotg, u16 typereq,
- 				dev_dbg(hsotg->dev,
- 					"In host mode, hprt0=%08x\n", hprt0);
- 				dwc2_writel(hsotg, hprt0, HPRT0);
-+				if (!pwr)
-+					dwc2_vbus_supply_init(hsotg);
- 			}
- 
- 			/* Clear reset bit in 10ms (FS/LS) or 50ms (HS) */
-@@ -4393,6 +4381,7 @@ static int _dwc2_hcd_start(struct usb_hcd *hcd)
- 	struct dwc2_hsotg *hsotg = dwc2_hcd_to_hsotg(hcd);
- 	struct usb_bus *bus = hcd_to_bus(hcd);
- 	unsigned long flags;
-+	u32 hprt0;
- 	int ret;
- 
- 	dev_dbg(hsotg->dev, "DWC OTG HCD START\n");
-@@ -4409,12 +4398,16 @@ static int _dwc2_hcd_start(struct usb_hcd *hcd)
- 
- 	dwc2_hcd_reinit(hsotg);
- 
--	/* enable external vbus supply before resuming root hub */
--	spin_unlock_irqrestore(&hsotg->lock, flags);
--	ret = dwc2_vbus_supply_init(hsotg);
--	if (ret)
--		return ret;
--	spin_lock_irqsave(&hsotg->lock, flags);
-+	hprt0 = dwc2_read_hprt0(hsotg);
-+	/* Has vbus power been turned on in dwc2_core_host_init ? */
-+	if (hprt0 & HPRT0_PWR) {
-+		/* Enable external vbus supply before resuming root hub */
-+		spin_unlock_irqrestore(&hsotg->lock, flags);
-+		ret = dwc2_vbus_supply_init(hsotg);
-+		if (ret)
-+			return ret;
-+		spin_lock_irqsave(&hsotg->lock, flags);
-+	}
- 
- 	/* Initialize and connect root hub if one is not already attached */
- 	if (bus->root_hub) {
-@@ -4436,6 +4429,7 @@ static void _dwc2_hcd_stop(struct usb_hcd *hcd)
- {
- 	struct dwc2_hsotg *hsotg = dwc2_hcd_to_hsotg(hcd);
- 	unsigned long flags;
-+	u32 hprt0;
- 
- 	/* Turn off all host-specific interrupts */
- 	dwc2_disable_host_interrupts(hsotg);
-@@ -4444,6 +4438,7 @@ static void _dwc2_hcd_stop(struct usb_hcd *hcd)
- 	synchronize_irq(hcd->irq);
- 
- 	spin_lock_irqsave(&hsotg->lock, flags);
-+	hprt0 = dwc2_read_hprt0(hsotg);
- 	/* Ensure hcd is disconnected */
- 	dwc2_hcd_disconnect(hsotg, true);
- 	dwc2_hcd_stop(hsotg);
-@@ -4452,7 +4447,9 @@ static void _dwc2_hcd_stop(struct usb_hcd *hcd)
- 	clear_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
- 	spin_unlock_irqrestore(&hsotg->lock, flags);
- 
--	dwc2_vbus_supply_exit(hsotg);
-+	/* keep balanced supply init/exit by checking HPRT0_PWR */
-+	if (hprt0 & HPRT0_PWR)
-+		dwc2_vbus_supply_exit(hsotg);
- 
- 	usleep_range(1000, 3000);
- }
+-		if (!hsotg->flags.b.port_connect_status) {
++		if (!hsotg->flags.b.port_connect_status &&
++		    !dwc2_is_host_mode(hsotg)) {
+ 			/*
+ 			 * The port is disconnected, which means the core is
+ 			 * either in device mode or it soon will be. Just
 diff --git a/drivers/usb/dwc2/hw.h b/drivers/usb/dwc2/hw.h
 index 0ca8e7b..7500954 100644
 --- a/drivers/usb/dwc2/hw.h
@@ -2341,18 +2323,10 @@ index 0ca8e7b..7500954 100644
  #define DCTL_CGOUTNAK			BIT(10)
  #define DCTL_SGOUTNAK			BIT(9)
 diff --git a/drivers/usb/dwc2/params.c b/drivers/usb/dwc2/params.c
-index dff2c6e..ce4657c 100644
+index a93415f..8af461c 100644
 --- a/drivers/usb/dwc2/params.c
 +++ b/drivers/usb/dwc2/params.c
-@@ -88,6 +88,7 @@ static void dwc2_set_rk_params(struct dwc2_hsotg *hsotg)
- 	p->host_perio_tx_fifo_size = 256;
- 	p->ahbcfg = GAHBCFG_HBSTLEN_INCR16 <<
- 		GAHBCFG_HBSTLEN_SHIFT;
-+	p->power_down = 0;
- }
- 
- static void dwc2_set_ltq_params(struct dwc2_hsotg *hsotg)
-@@ -151,6 +152,35 @@ static void dwc2_set_stm32f7_hsotg_params(struct dwc2_hsotg *hsotg)
+@@ -152,6 +152,36 @@ static void dwc2_set_stm32f7_hsotg_params(struct dwc2_hsotg *hsotg)
  	p->host_perio_tx_fifo_size = 256;
  }
  
@@ -2370,6 +2344,7 @@ index dff2c6e..ce4657c 100644
 +	p->i2c_enable = false;
 +	p->activate_stm_fs_transceiver = true;
 +	p->activate_stm_id_vb_detection = true;
++	p->power_down = DWC2_POWER_DOWN_PARAM_NONE;
 +}
 +
 +static void dwc2_set_stm32mp1_hsotg_params(struct dwc2_hsotg *hsotg)
@@ -2388,7 +2363,7 @@ index dff2c6e..ce4657c 100644
  const struct of_device_id dwc2_of_match_table[] = {
  	{ .compatible = "brcm,bcm2835-usb", .data = dwc2_set_bcm_params },
  	{ .compatible = "hisilicon,hi6220-usb", .data = dwc2_set_his_params  },
-@@ -172,6 +202,10 @@ const struct of_device_id dwc2_of_match_table[] = {
+@@ -173,6 +203,10 @@ const struct of_device_id dwc2_of_match_table[] = {
  	{ .compatible = "st,stm32f4x9-hsotg" },
  	{ .compatible = "st,stm32f7-hsotg",
  	  .data = dwc2_set_stm32f7_hsotg_params },
@@ -2399,7 +2374,7 @@ index dff2c6e..ce4657c 100644
  	{},
  };
  MODULE_DEVICE_TABLE(of, dwc2_of_match_table);
-@@ -308,9 +342,12 @@ static void dwc2_set_default_params(struct dwc2_hsotg *hsotg)
+@@ -309,9 +343,12 @@ static void dwc2_set_default_params(struct dwc2_hsotg *hsotg)
  	p->hird_threshold_en = true;
  	p->hird_threshold = 4;
  	p->ipg_isoc_en = false;
@@ -2412,7 +2387,7 @@ index dff2c6e..ce4657c 100644
  
  	if ((hsotg->dr_mode == USB_DR_MODE_HOST) ||
  	    (hsotg->dr_mode == USB_DR_MODE_OTG)) {
-@@ -601,6 +638,7 @@ static void dwc2_check_params(struct dwc2_hsotg *hsotg)
+@@ -602,6 +639,7 @@ static void dwc2_check_params(struct dwc2_hsotg *hsotg)
  	CHECK_BOOL(besl, (hsotg->hw_params.snpsid >= DWC2_CORE_REV_3_00a));
  	CHECK_BOOL(hird_threshold_en, hsotg->params.lpm);
  	CHECK_RANGE(hird_threshold, 0, hsotg->params.besl ? 12 : 7, 0);
@@ -2420,7 +2395,7 @@ index dff2c6e..ce4657c 100644
  	CHECK_RANGE(max_packet_count,
  		    15, hw->max_packet_count,
  		    hw->max_packet_count);
-@@ -789,6 +827,8 @@ int dwc2_get_hwparams(struct dwc2_hsotg *hsotg)
+@@ -790,6 +828,8 @@ int dwc2_get_hwparams(struct dwc2_hsotg *hsotg)
  				  GHWCFG4_UTMI_PHY_DATA_WIDTH_SHIFT;
  	hw->acg_enable = !!(hwcfg4 & GHWCFG4_ACG_SUPPORTED);
  	hw->ipg_isoc_en = !!(hwcfg4 & GHWCFG4_IPG_ISOC_SUPPORTED);
@@ -2674,6 +2649,112 @@ index 5776428..3d61100 100644
  	if (dwc2_is_device_mode(dwc2))
  		ret = dwc2_hsotg_resume(dwc2);
  
+diff --git a/drivers/usb/gadget/function/u_serial.c b/drivers/usb/gadget/function/u_serial.c
+index d4d317d..bb1e2e1 100644
+--- a/drivers/usb/gadget/function/u_serial.c
++++ b/drivers/usb/gadget/function/u_serial.c
+@@ -16,7 +16,6 @@
+ 
+ #include <linux/kernel.h>
+ #include <linux/sched.h>
+-#include <linux/interrupt.h>
+ #include <linux/device.h>
+ #include <linux/delay.h>
+ #include <linux/tty.h>
+@@ -26,6 +25,7 @@
+ #include <linux/module.h>
+ #include <linux/console.h>
+ #include <linux/kthread.h>
++#include <linux/workqueue.h>
+ #include <linux/kfifo.h>
+ 
+ #include "u_serial.h"
+@@ -110,7 +110,7 @@ struct gs_port {
+ 	int read_allocated;
+ 	struct list_head	read_queue;
+ 	unsigned		n_read;
+-	struct tasklet_struct	push;
++	struct delayed_work	push;
+ 
+ 	struct list_head	write_pool;
+ 	int write_started;
+@@ -352,9 +352,10 @@ __acquires(&port->port_lock)
+  * So QUEUE_SIZE packets plus however many the FIFO holds (usually two)
+  * can be buffered before the TTY layer's buffers (currently 64 KB).
+  */
+-static void gs_rx_push(unsigned long _port)
++static void gs_rx_push(struct work_struct *work)
+ {
+-	struct gs_port		*port = (void *)_port;
++	struct delayed_work	*w = to_delayed_work(work);
++	struct gs_port		*port = container_of(w, struct gs_port, push);
+ 	struct tty_struct	*tty;
+ 	struct list_head	*queue = &port->read_queue;
+ 	bool			disconnect = false;
+@@ -429,21 +430,13 @@ static void gs_rx_push(unsigned long _port)
+ 
+ 	/* We want our data queue to become empty ASAP, keeping data
+ 	 * in the tty and ldisc (not here).  If we couldn't push any
+-	 * this time around, there may be trouble unless there's an
+-	 * implicit tty_unthrottle() call on its way...
++	 * this time around, RX may be starved, so wait until next jiffy.
+ 	 *
+-	 * REVISIT we should probably add a timer to keep the tasklet
+-	 * from starving ... but it's not clear that case ever happens.
++	 * We may leave non-empty queue only when there is a tty, and
++	 * either it is throttled or there is no more room in flip buffer.
+ 	 */
+-	if (!list_empty(queue) && tty) {
+-		if (!tty_throttled(tty)) {
+-			if (do_push)
+-				tasklet_schedule(&port->push);
+-			else
+-				pr_warn("ttyGS%d: RX not scheduled?\n",
+-					port->port_num);
+-		}
+-	}
++	if (!list_empty(queue) && !tty_throttled(tty))
++		schedule_delayed_work(&port->push, 1);
+ 
+ 	/* If we're still connected, refill the USB RX queue. */
+ 	if (!disconnect && port->port_usb)
+@@ -459,7 +452,7 @@ static void gs_read_complete(struct usb_ep *ep, struct usb_request *req)
+ 	/* Queue all received data until the tty layer is ready for it. */
+ 	spin_lock(&port->port_lock);
+ 	list_add_tail(&req->list, &port->read_queue);
+-	tasklet_schedule(&port->push);
++	schedule_delayed_work(&port->push, 0);
+ 	spin_unlock(&port->port_lock);
+ }
+ 
+@@ -854,8 +847,8 @@ static void gs_unthrottle(struct tty_struct *tty)
+ 		 * rts/cts, or other handshaking with the host, but if the
+ 		 * read queue backs up enough we'll be NAKing OUT packets.
+ 		 */
+-		tasklet_schedule(&port->push);
+ 		pr_vdebug("ttyGS%d: unthrottle\n", port->port_num);
++		schedule_delayed_work(&port->push, 0);
+ 	}
+ 	spin_unlock_irqrestore(&port->port_lock, flags);
+ }
+@@ -1159,7 +1152,7 @@ gs_port_alloc(unsigned port_num, struct usb_cdc_line_coding *coding)
+ 	init_waitqueue_head(&port->drain_wait);
+ 	init_waitqueue_head(&port->close_wait);
+ 
+-	tasklet_init(&port->push, gs_rx_push, (unsigned long) port);
++	INIT_DELAYED_WORK(&port->push, gs_rx_push);
+ 
+ 	INIT_LIST_HEAD(&port->read_pool);
+ 	INIT_LIST_HEAD(&port->read_queue);
+@@ -1186,7 +1179,7 @@ static int gs_closed(struct gs_port *port)
+ 
+ static void gserial_free_port(struct gs_port *port)
+ {
+-	tasklet_kill(&port->push);
++	cancel_delayed_work_sync(&port->push);
+ 	/* wait for old opens to finish */
+ 	wait_event(port->close_wait, gs_closed(port));
+ 	WARN_ON(port->port_usb != NULL);
 diff --git a/drivers/usb/host/ehci-platform.c b/drivers/usb/host/ehci-platform.c
 index 4c306fb..b915c0f 100644
 --- a/drivers/usb/host/ehci-platform.c
@@ -2842,7 +2923,7 @@ index 45b0aef..aedb153 100644
  obj-$(CONFIG_TYPEC_TCPCI)	+= tcpci.o
  obj-$(CONFIG_TYPEC_RT1711H)	+= tcpci_rt1711h.o
 diff --git a/drivers/usb/typec/class.c b/drivers/usb/typec/class.c
-index 00141e0..4813b2f 100644
+index 1916ee1..df4cadd 100644
 --- a/drivers/usb/typec/class.c
 +++ b/drivers/usb/typec/class.c
 @@ -1382,6 +1382,21 @@ void typec_set_pwr_opmode(struct typec_port *port,

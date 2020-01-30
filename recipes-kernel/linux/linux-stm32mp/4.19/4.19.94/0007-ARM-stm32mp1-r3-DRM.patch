@@ -1,29 +1,29 @@
-From ee6d275b13c56f9d60acd0dc2790262153d92668 Mon Sep 17 00:00:00 2001
+From e2fff57ea5561d1fef1ca923bffe34985ebf3e8c Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Thu, 11 Jul 2019 14:12:00 +0200
-Subject: [PATCH 06/30] ARM stm32mp1 r2 DRM
+Date: Fri, 8 Nov 2019 16:52:39 +0100
+Subject: [PATCH 07/31] ARM stm32mp1 r3 DRM
 
 ---
  drivers/gpu/drm/bridge/Kconfig                   |   1 +
- drivers/gpu/drm/bridge/sii902x.c                 | 867 +++++++++++++++++++++--
- drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c    |  12 +
+ drivers/gpu/drm/bridge/sii902x.c                 | 840 +++++++++++++++++++++--
+ drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c    | 102 ++-
  drivers/gpu/drm/drm_gem.c                        |   6 -
  drivers/gpu/drm/drm_modes.c                      |  19 +-
- drivers/gpu/drm/panel/panel-orisetech-otm8009a.c |  78 +-
+ drivers/gpu/drm/panel/panel-orisetech-otm8009a.c |  78 ++-
  drivers/gpu/drm/panel/panel-raydium-rm68200.c    |  20 +-
- drivers/gpu/drm/stm/drv.c                        |  46 +-
+ drivers/gpu/drm/stm/drv.c                        |  76 +-
  drivers/gpu/drm/stm/dw_mipi_dsi-stm.c            | 114 ++-
- drivers/gpu/drm/stm/ltdc.c                       | 222 ++++--
- drivers/gpu/drm/stm/ltdc.h                       |   6 +
+ drivers/gpu/drm/stm/ltdc.c                       | 282 ++++++--
+ drivers/gpu/drm/stm/ltdc.h                       |   7 +
  include/drm/bridge/dw_mipi_dsi.h                 |   1 +
  include/uapi/drm/drm_mode.h                      |   6 +
- 13 files changed, 1210 insertions(+), 188 deletions(-)
+ 13 files changed, 1352 insertions(+), 200 deletions(-)
 
 diff --git a/drivers/gpu/drm/bridge/Kconfig b/drivers/gpu/drm/bridge/Kconfig
-index bf6cad6..fe91c20 100644
+index 7a3e5a8..7695fdf 100644
 --- a/drivers/gpu/drm/bridge/Kconfig
 +++ b/drivers/gpu/drm/bridge/Kconfig
-@@ -95,6 +95,7 @@ config DRM_SII902X
+@@ -96,6 +96,7 @@ config DRM_SII902X
  	depends on OF
  	select DRM_KMS_HELPER
  	select REGMAP_I2C
@@ -32,7 +32,7 @@ index bf6cad6..fe91c20 100644
  	  Silicon Image sii902x bridge chip driver.
  
 diff --git a/drivers/gpu/drm/bridge/sii902x.c b/drivers/gpu/drm/bridge/sii902x.c
-index e59a135..170657a 100644
+index 0cc6dbb..b41dd44 100644
 --- a/drivers/gpu/drm/bridge/sii902x.c
 +++ b/drivers/gpu/drm/bridge/sii902x.c
 @@ -1,4 +1,6 @@
@@ -42,7 +42,7 @@ index e59a135..170657a 100644
   * Copyright (C) 2016 Atmel
   *		      Bo Shen <voice.shen@atmel.com>
   *
-@@ -20,16 +22,23 @@
+@@ -20,16 +22,22 @@
   * GNU General Public License for more details.
   */
  
@@ -51,7 +51,6 @@ index e59a135..170657a 100644
 +#include <linux/i2c-mux.h>
  #include <linux/i2c.h>
  #include <linux/module.h>
-+#include <linux/pinctrl/consumer.h>
 +#include <linux/pm_runtime.h>
  #include <linux/regmap.h>
 +#include <linux/regulator/consumer.h>
@@ -66,7 +65,7 @@ index e59a135..170657a 100644
  #define SII902X_TPI_VIDEO_DATA			0x0
  
  #define SII902X_TPI_PIXEL_REPETITION		0x8
-@@ -71,23 +80,229 @@
+@@ -71,23 +79,229 @@
  #define SII902X_AVI_POWER_STATE_MSK		GENMASK(1, 0)
  #define SII902X_AVI_POWER_STATE_D(l)		((l) & SII902X_AVI_POWER_STATE_MSK)
  
@@ -296,7 +295,7 @@ index e59a135..170657a 100644
  static inline struct sii902x *bridge_to_sii902x(struct drm_bridge *bridge)
  {
  	return container_of(bridge, struct sii902x, bridge);
-@@ -135,45 +350,18 @@ static const struct drm_connector_funcs sii902x_connector_funcs = {
+@@ -135,45 +349,18 @@ static const struct drm_connector_funcs sii902x_connector_funcs = {
  static int sii902x_get_modes(struct drm_connector *connector)
  {
  	struct sii902x *sii902x = connector_to_sii902x(connector);
@@ -315,9 +314,7 @@ index e59a135..170657a 100644
 -				 SII902X_SYS_CTRL_DDC_BUS_REQ);
 -	if (ret)
 -		return ret;
-+	bool hdmi_mode = false;
-+	int num = 0, ret;
- 
+-
 -	timeout = jiffies +
 -		  msecs_to_jiffies(SII902X_I2C_BUS_ACQUISITION_TIMEOUT_MS);
 -	do {
@@ -326,7 +323,9 @@ index e59a135..170657a 100644
 -			return ret;
 -	} while (!(status & SII902X_SYS_CTRL_DDC_BUS_GRTD) &&
 -		 time_before(jiffies, timeout));
--
++	bool hdmi_mode = false;
++	int num = 0, ret;
+ 
 -	if (!(status & SII902X_SYS_CTRL_DDC_BUS_GRTD)) {
 -		dev_err(dev, "failed to acquire the i2c bus\n");
 -		return -ETIMEDOUT;
@@ -348,7 +347,7 @@ index e59a135..170657a 100644
  	}
  
  	ret = drm_display_info_set_bus_formats(&connector->display_info,
-@@ -181,41 +369,10 @@ static int sii902x_get_modes(struct drm_connector *connector)
+@@ -181,41 +368,10 @@ static int sii902x_get_modes(struct drm_connector *connector)
  	if (ret)
  		return ret;
  
@@ -394,7 +393,7 @@ index e59a135..170657a 100644
  
  	return num;
  }
-@@ -245,12 +402,22 @@ static void sii902x_bridge_disable(struct drm_bridge *bridge)
+@@ -245,12 +401,22 @@ static void sii902x_bridge_disable(struct drm_bridge *bridge)
  static void sii902x_bridge_enable(struct drm_bridge *bridge)
  {
  	struct sii902x *sii902x = bridge_to_sii902x(bridge);
@@ -417,25 +416,7 @@ index e59a135..170657a 100644
  }
  
  static void sii902x_bridge_mode_set(struct drm_bridge *bridge,
-@@ -261,8 +428,17 @@ static void sii902x_bridge_mode_set(struct drm_bridge *bridge,
- 	struct regmap *regmap = sii902x->regmap;
- 	u8 buf[HDMI_INFOFRAME_SIZE(AVI)];
- 	struct hdmi_avi_infoframe frame;
-+	unsigned int status = 0;
- 	int ret;
- 
-+	DRM_DEBUG_DRIVER("\n");
-+
-+	regmap_read(sii902x->regmap, SII902X_INT_STATUS, &status);
-+
-+	/* due to old tv, need to restore pinctrl as soon as possible */
-+	if (status & SII902X_PLUGGED_STATUS)
-+		pinctrl_pm_select_default_state(&sii902x->i2c->dev);
-+
- 	buf[0] = adj->clock;
- 	buf[1] = adj->clock >> 8;
- 	buf[2] = adj->vrefresh;
-@@ -329,6 +505,267 @@ static int sii902x_bridge_attach(struct drm_bridge *bridge)
+@@ -330,6 +496,267 @@ static int sii902x_bridge_attach(struct drm_bridge *bridge)
  	return 0;
  }
  
@@ -703,7 +684,7 @@ index e59a135..170657a 100644
  static const struct drm_bridge_funcs sii902x_bridge_funcs = {
  	.attach = sii902x_bridge_attach,
  	.mode_set = sii902x_bridge_mode_set,
-@@ -348,10 +785,39 @@ static const struct regmap_access_table sii902x_volatile_table = {
+@@ -349,10 +776,39 @@ static const struct regmap_access_table sii902x_volatile_table = {
  static const struct regmap_config sii902x_regmap_config = {
  	.reg_bits = 8,
  	.val_bits = 8,
@@ -743,18 +724,7 @@ index e59a135..170657a 100644
  static irqreturn_t sii902x_interrupt(int irq, void *data)
  {
  	struct sii902x *sii902x = data;
-@@ -360,21 +826,145 @@ static irqreturn_t sii902x_interrupt(int irq, void *data)
- 	regmap_read(sii902x->regmap, SII902X_INT_STATUS, &status);
- 	regmap_write(sii902x->regmap, SII902X_INT_STATUS, status);
- 
-+	if (status & SII902X_PLUGGED_STATUS)
-+		pinctrl_pm_select_default_state(&sii902x->i2c->dev);
-+	else
-+		pinctrl_pm_select_sleep_state(&sii902x->i2c->dev);
-+
- 	if ((status & SII902X_HOTPLUG_EVENT) && sii902x->bridge.dev)
- 		drm_helper_hpd_irq_event(sii902x->bridge.dev);
- 
+@@ -367,15 +823,134 @@ static irqreturn_t sii902x_interrupt(int irq, void *data)
  	return IRQ_HANDLED;
  }
  
@@ -889,7 +859,7 @@ index e59a135..170657a 100644
  	sii902x = devm_kzalloc(dev, sizeof(*sii902x), GFP_KERNEL);
  	if (!sii902x)
  		return -ENOMEM;
-@@ -392,39 +982,67 @@ static int sii902x_probe(struct i2c_client *client,
+@@ -393,39 +968,66 @@ static int sii902x_probe(struct i2c_client *client,
  		return PTR_ERR(sii902x->reset_gpio);
  	}
  
@@ -910,7 +880,6 @@ index e59a135..170657a 100644
 +		return ret;
 +	}
 +
-+	pinctrl_pm_select_sleep_state(&sii902x->i2c->dev);
  	sii902x_reset(sii902x);
  
  	ret = regmap_write(sii902x->regmap, SII902X_REG_TPI_RQB, 0x0);
@@ -963,7 +932,7 @@ index e59a135..170657a 100644
  	}
  
  	sii902x->bridge.funcs = &sii902x_bridge_funcs;
-@@ -433,7 +1051,33 @@ static int sii902x_probe(struct i2c_client *client,
+@@ -434,7 +1036,31 @@ static int sii902x_probe(struct i2c_client *client,
  
  	i2c_set_clientdata(client, sii902x);
  
@@ -973,15 +942,14 @@ index e59a135..170657a 100644
 +					sii902x_i2c_bypass_deselect);
 +	if (!sii902x->i2cmux) {
 +		dev_err(dev, "failed to allocate I2C mux\n");
-+		ret = -ENOMEM;
-+		goto err_disable_regulator;
++		return -ENOMEM;
 +	}
 +
 +	sii902x->i2cmux->priv = sii902x;
 +	ret = i2c_mux_add_adapter(sii902x->i2cmux, 0, 0, 0);
 +	if (ret) {
 +		dev_err(dev, "Couldn't add i2c mux adapter\n");
-+		goto err_disable_regulator;
++		return ret;
 +	}
 +
 +	sii902x_register_audio_driver(dev, sii902x);
@@ -989,7 +957,6 @@ index e59a135..170657a 100644
  	return 0;
 +
 +err_disable_regulator:
-+	pinctrl_pm_select_sleep_state(&sii902x->i2c->dev);
 +	regulator_bulk_disable(ARRAY_SIZE(sii902x->supplies),
 +			       sii902x->supplies);
 +
@@ -997,7 +964,7 @@ index e59a135..170657a 100644
  }
  
  static int sii902x_remove(struct i2c_client *client)
-@@ -441,11 +1085,85 @@ static int sii902x_remove(struct i2c_client *client)
+@@ -442,11 +1068,76 @@ static int sii902x_remove(struct i2c_client *client)
  {
  	struct sii902x *sii902x = i2c_get_clientdata(client);
  
@@ -1025,8 +992,6 @@ index e59a135..170657a 100644
 +	regulator_bulk_disable(ARRAY_SIZE(sii902x->supplies),
 +			       sii902x->supplies);
 +
-+	pinctrl_pm_select_sleep_state(&sii902x->i2c->dev);
-+
  	return 0;
  }
  
@@ -1041,16 +1006,9 @@ index e59a135..170657a 100644
 +		.len	= 2,
 +		.buf	= data,
 +	};
-+	unsigned int status = 0;
 +	int ret;
 +
 +	DRM_DEBUG_DRIVER("\n");
-+
-+	regmap_read(sii902x->regmap, SII902X_INT_STATUS, &status);
-+
-+	/* due to old tv, need to restore pinctrl as soon as possible */
-+	if (status & SII902X_PLUGGED_STATUS)
-+		pinctrl_pm_select_default_state(&sii902x->i2c->dev);
 +
 +	ret = regulator_bulk_enable(ARRAY_SIZE(sii902x->supplies),
 +				    sii902x->supplies);
@@ -1083,7 +1041,7 @@ index e59a135..170657a 100644
  static const struct of_device_id sii902x_dt_ids[] = {
  	{ .compatible = "sil,sii9022", },
  	{ }
-@@ -464,6 +1182,7 @@ static struct i2c_driver sii902x_driver = {
+@@ -465,6 +1156,7 @@ static struct i2c_driver sii902x_driver = {
  	.driver = {
  		.name = "sii902x",
  		.of_match_table = sii902x_dt_ids,
@@ -1092,10 +1050,145 @@ index e59a135..170657a 100644
  	.id_table = sii902x_i2c_ids,
  };
 diff --git a/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c b/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c
-index fd79996..8cd3ee9 100644
+index fd79996..2e4334f 100644
 --- a/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c
 +++ b/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c
-@@ -488,6 +488,9 @@ static void dw_mipi_dsi_video_mode_config(struct dw_mipi_dsi *dsi)
+@@ -206,6 +206,20 @@
+ 
+ #define DSI_INT_ST0			0xbc
+ #define DSI_INT_ST1			0xc0
++#define GPRXE				BIT(12)
++#define GPRDE				BIT(11)
++#define GPTXE				BIT(10)
++#define GPWRE				BIT(9)
++#define GCWRE				BIT(8)
++#define DPIPLDWE			BIT(7)
++#define EOTPE				BIT(6)
++#define PSE				BIT(5)
++#define CRCE				BIT(4)
++#define ECCME				BIT(3)
++#define ECCSE				BIT(2)
++#define TOLPRX				BIT(1)
++#define TOHSTX				BIT(0)
++
+ #define DSI_INT_MSK0			0xc4
+ #define DSI_INT_MSK1			0xc8
+ 
+@@ -357,6 +371,42 @@ static int dw_mipi_dsi_gen_pkt_hdr_write(struct dw_mipi_dsi *dsi, u32 hdr_val)
+ 	return 0;
+ }
+ 
++static int dw_mipi_dsi_read_status(struct dw_mipi_dsi *dsi)
++{
++	u32 val;
++
++	val = dsi_read(dsi, DSI_INT_ST1);
++
++	if (val & GPRXE)
++		DRM_DEBUG_DRIVER("DSI Generic payload receive error\n");
++	if (val & GPRDE)
++		DRM_DEBUG_DRIVER("DSI Generic payload read error\n");
++	if (val & GPTXE)
++		DRM_DEBUG_DRIVER("DSI Generic payload transmit error\n");
++	if (val & GPWRE)
++		DRM_DEBUG_DRIVER("DSI Generic payload write error\n");
++	if (val & GCWRE)
++		DRM_DEBUG_DRIVER("DSI Generic command write error\n");
++	if (val & DPIPLDWE)
++		DRM_DEBUG_DRIVER("DSI DPI payload write error\n");
++	if (val & EOTPE)
++		DRM_DEBUG_DRIVER("DSI EoTp error\n");
++	if (val & PSE)
++		DRM_DEBUG_DRIVER("DSI Packet size error\n");
++	if (val & CRCE)
++		DRM_DEBUG_DRIVER("DSI CRC error\n");
++	if (val & ECCME)
++		DRM_DEBUG_DRIVER("DSI ECC multi-bit error\n");
++	if (val & ECCSE)
++		DRM_DEBUG_DRIVER("DSI ECC single-bit error\n");
++	if (val & TOLPRX)
++		DRM_DEBUG_DRIVER("DSI Timeout low-power reception\n");
++	if (val & TOHSTX)
++		DRM_DEBUG_DRIVER("DSI Timeout high-speed transmission\n");
++
++	return val;
++}
++
+ static int dw_mipi_dsi_write(struct dw_mipi_dsi *dsi,
+ 			     const struct mipi_dsi_packet *packet)
+ {
+@@ -386,6 +436,12 @@ static int dw_mipi_dsi_write(struct dw_mipi_dsi *dsi,
+ 				"failed to get available write payload FIFO\n");
+ 			return ret;
+ 		}
++
++		val = dw_mipi_dsi_read_status(dsi);
++		if (val) {
++			dev_err(dsi->dev, "dsi status error 0x%0x\n", val);
++			return -EINVAL;
++		}
+ 	}
+ 
+ 	word = 0;
+@@ -419,6 +475,12 @@ static int dw_mipi_dsi_read(struct dw_mipi_dsi *dsi,
+ 			return ret;
+ 		}
+ 
++		val = dw_mipi_dsi_read_status(dsi);
++		if (val) {
++			dev_err(dsi->dev, "dsi status error 0x%0x\n", val);
++			return -EINVAL;
++		}
++
+ 		val = dsi_read(dsi, DSI_GEN_PLD_DATA);
+ 		for (j = 0; j < 4 && j + i < len; j++)
+ 			buf[i + j] = val >> (8 * j);
+@@ -433,6 +495,7 @@ static ssize_t dw_mipi_dsi_host_transfer(struct mipi_dsi_host *host,
+ 	struct dw_mipi_dsi *dsi = host_to_dsi(host);
+ 	struct mipi_dsi_packet packet;
+ 	int ret, nb_bytes;
++	int retry = 3;
+ 
+ 	ret = mipi_dsi_create_packet(&packet, msg);
+ 	if (ret) {
+@@ -442,19 +505,26 @@ static ssize_t dw_mipi_dsi_host_transfer(struct mipi_dsi_host *host,
+ 
+ 	dw_mipi_message_config(dsi, msg);
+ 
+-	ret = dw_mipi_dsi_write(dsi, &packet);
+-	if (ret)
+-		return ret;
+-
+-	if (msg->rx_buf && msg->rx_len) {
+-		ret = dw_mipi_dsi_read(dsi, msg);
++	while (retry--) {
++		ret = dw_mipi_dsi_write(dsi, &packet);
+ 		if (ret)
+-			return ret;
+-		nb_bytes = msg->rx_len;
+-	} else {
+-		nb_bytes = packet.size;
++			continue;
++
++		if (msg->rx_buf && msg->rx_len) {
++			ret = dw_mipi_dsi_read(dsi, msg);
++			if (ret)
++				continue;
++			nb_bytes = msg->rx_len;
++			break;
++		} else {
++			nb_bytes = packet.size;
++			break;
++		}
+ 	}
+ 
++	if (ret)
++		return ret;
++
+ 	return nb_bytes;
+ }
+ 
+@@ -488,6 +558,9 @@ static void dw_mipi_dsi_video_mode_config(struct dw_mipi_dsi *dsi)
  static void dw_mipi_dsi_set_mode(struct dw_mipi_dsi *dsi,
  				 unsigned long mode_flags)
  {
@@ -1105,7 +1198,7 @@ index fd79996..8cd3ee9 100644
  	dsi_write(dsi, DSI_PWR_UP, RESET);
  
  	if (mode_flags & MIPI_DSI_MODE_VIDEO) {
-@@ -498,6 +501,9 @@ static void dw_mipi_dsi_set_mode(struct dw_mipi_dsi *dsi,
+@@ -498,6 +571,9 @@ static void dw_mipi_dsi_set_mode(struct dw_mipi_dsi *dsi,
  		dsi_write(dsi, DSI_MODE_CFG, ENABLE_CMD_MODE);
  	}
  
@@ -1115,7 +1208,7 @@ index fd79996..8cd3ee9 100644
  	dsi_write(dsi, DSI_PWR_UP, POWERUP);
  }
  
-@@ -588,6 +594,9 @@ static void dw_mipi_dsi_video_packet_config(struct dw_mipi_dsi *dsi,
+@@ -588,6 +664,9 @@ static void dw_mipi_dsi_video_packet_config(struct dw_mipi_dsi *dsi,
  
  static void dw_mipi_dsi_command_mode_config(struct dw_mipi_dsi *dsi)
  {
@@ -1125,7 +1218,7 @@ index fd79996..8cd3ee9 100644
  	/*
  	 * TODO dw drv improvements
  	 * compute high speed transmission counter timeout according
-@@ -601,6 +610,9 @@ static void dw_mipi_dsi_command_mode_config(struct dw_mipi_dsi *dsi)
+@@ -601,6 +680,9 @@ static void dw_mipi_dsi_command_mode_config(struct dw_mipi_dsi *dsi)
  	 */
  	dsi_write(dsi, DSI_BTA_TO_CNT, 0xd00);
  	dsi_write(dsi, DSI_MODE_CFG, ENABLE_CMD_MODE);
@@ -1392,10 +1485,18 @@ index 7759353..9fe15a4 100644
  	}
  
 diff --git a/drivers/gpu/drm/stm/drv.c b/drivers/gpu/drm/stm/drv.c
-index f2021b2..cf61875 100644
+index f2021b2..f578da4 100644
 --- a/drivers/gpu/drm/stm/drv.c
 +++ b/drivers/gpu/drm/stm/drv.c
-@@ -26,7 +26,6 @@
+@@ -10,6 +10,7 @@
+ 
+ #include <linux/component.h>
+ #include <linux/of_platform.h>
++#include <linux/pm_runtime.h>
+ 
+ #include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_helper.h>
+@@ -26,7 +27,6 @@
  
  static const struct drm_mode_config_funcs drv_mode_config_funcs = {
  	.fb_create = drm_gem_fb_create,
@@ -1403,7 +1504,7 @@ index f2021b2..cf61875 100644
  	.atomic_check = drm_atomic_helper_check,
  	.atomic_commit = drm_atomic_helper_commit,
  };
-@@ -52,7 +51,6 @@ DEFINE_DRM_GEM_CMA_FOPS(drv_driver_fops);
+@@ -52,7 +52,6 @@ DEFINE_DRM_GEM_CMA_FOPS(drv_driver_fops);
  static struct drm_driver drv_driver = {
  	.driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_PRIME |
  			   DRIVER_ATOMIC,
@@ -1411,7 +1512,7 @@ index f2021b2..cf61875 100644
  	.name = "stm",
  	.desc = "STMicroelectronics SoC DRM",
  	.date = "20170330",
-@@ -72,6 +70,8 @@ static struct drm_driver drv_driver = {
+@@ -72,6 +71,8 @@ static struct drm_driver drv_driver = {
  	.gem_prime_vmap = drm_gem_cma_prime_vmap,
  	.gem_prime_vunmap = drm_gem_cma_prime_vunmap,
  	.gem_prime_mmap = drm_gem_cma_prime_mmap,
@@ -1420,7 +1521,7 @@ index f2021b2..cf61875 100644
  };
  
  static int drv_load(struct drm_device *ddev)
-@@ -108,12 +108,6 @@ static int drv_load(struct drm_device *ddev)
+@@ -108,12 +109,6 @@ static int drv_load(struct drm_device *ddev)
  	drm_mode_config_reset(ddev);
  	drm_kms_helper_poll_init(ddev);
  
@@ -1433,7 +1534,7 @@ index f2021b2..cf61875 100644
  	platform_set_drvdata(pdev, ddev);
  
  	return 0;
-@@ -126,12 +120,43 @@ static void drv_unload(struct drm_device *ddev)
+@@ -126,12 +121,72 @@ static void drv_unload(struct drm_device *ddev)
  {
  	DRM_DEBUG("%s\n", __func__);
  
@@ -1449,13 +1550,14 @@ index f2021b2..cf61875 100644
 +	struct ltdc_device *ldev = ddev->dev_private;
 +	struct drm_atomic_state *state;
 +
-+	drm_kms_helper_poll_disable(ddev);
++	WARN_ON(ldev->suspend_state);
++
 +	state = drm_atomic_helper_suspend(ddev);
-+	if (IS_ERR(state)) {
-+		drm_kms_helper_poll_enable(ddev);
++	if (IS_ERR(state))
 +		return PTR_ERR(state);
-+	}
++
 +	ldev->suspend_state = state;
++	pm_runtime_force_suspend(dev);
 +
 +	return 0;
 +}
@@ -1464,21 +1566,49 @@ index f2021b2..cf61875 100644
 +{
 +	struct drm_device *ddev = dev_get_drvdata(dev);
 +	struct ltdc_device *ldev = ddev->dev_private;
++	int ret;
 +
-+	drm_atomic_helper_resume(ddev, ldev->suspend_state);
-+	drm_kms_helper_poll_enable(ddev);
++	if (WARN_ON(!ldev->suspend_state))
++		return -ENOENT;
++
++	pm_runtime_force_resume(dev);
++	ret = drm_atomic_helper_resume(ddev, ldev->suspend_state);
++	if (ret)
++		pm_runtime_force_suspend(dev);
++
++	ldev->suspend_state = NULL;
++
++	return ret;
++}
++
++static __maybe_unused int drv_runtime_suspend(struct device *dev)
++{
++	struct drm_device *ddev = dev_get_drvdata(dev);
++
++	DRM_DEBUG_DRIVER("\n");
++	ltdc_suspend(ddev);
 +
 +	return 0;
 +}
 +
++static __maybe_unused int drv_runtime_resume(struct device *dev)
++{
++	struct drm_device *ddev = dev_get_drvdata(dev);
++
++	DRM_DEBUG_DRIVER("\n");
++	return ltdc_resume(ddev);
++}
++
 +static const struct dev_pm_ops drv_pm_ops = {
 +	SET_SYSTEM_SLEEP_PM_OPS(drv_suspend, drv_resume)
++	SET_RUNTIME_PM_OPS(drv_runtime_suspend,
++			   drv_runtime_resume, NULL)
 +};
 +
  static int stm_drm_platform_probe(struct platform_device *pdev)
  {
  	struct device *dev = &pdev->dev;
-@@ -154,6 +179,8 @@ static int stm_drm_platform_probe(struct platform_device *pdev)
+@@ -154,6 +209,8 @@ static int stm_drm_platform_probe(struct platform_device *pdev)
  	if (ret)
  		goto err_put;
  
@@ -1487,7 +1617,7 @@ index f2021b2..cf61875 100644
  	return 0;
  
  err_put:
-@@ -187,6 +214,7 @@ static struct platform_driver stm_drm_platform_driver = {
+@@ -187,6 +244,7 @@ static struct platform_driver stm_drm_platform_driver = {
  	.driver = {
  		.name = "stm32-display",
  		.of_match_table = drv_dt_ids,
@@ -1704,10 +1834,19 @@ index a514b59..44e29af 100644
  };
  
 diff --git a/drivers/gpu/drm/stm/ltdc.c b/drivers/gpu/drm/stm/ltdc.c
-index 808d9fb..3527e69 100644
+index 477d0a2..013b9f9 100644
 --- a/drivers/gpu/drm/stm/ltdc.c
 +++ b/drivers/gpu/drm/stm/ltdc.c
-@@ -148,6 +148,8 @@
+@@ -12,6 +12,8 @@
+ #include <linux/component.h>
+ #include <linux/of_address.h>
+ #include <linux/of_graph.h>
++#include <linux/pinctrl/consumer.h>
++#include <linux/pm_runtime.h>
+ #include <linux/reset.h>
+ 
+ #include <drm/drm_atomic.h>
+@@ -149,6 +151,8 @@
  #define IER_TERRIE	BIT(2)		/* Transfer ERRor Interrupt Enable */
  #define IER_RRIE	BIT(3)		/* Register Reload Interrupt enable */
  
@@ -1716,73 +1855,57 @@ index 808d9fb..3527e69 100644
  #define ISR_LIF		BIT(0)		/* Line Interrupt Flag */
  #define ISR_FUIF	BIT(1)		/* Fifo Underrun Interrupt Flag */
  #define ISR_TERRIF	BIT(2)		/* Transfer ERRor Interrupt Flag */
-@@ -348,6 +350,33 @@ static inline u32 get_pixelformat_without_alpha(u32 drm)
- 	}
+@@ -421,9 +425,6 @@ static void ltdc_crtc_atomic_enable(struct drm_crtc *crtc,
+ 	/* Immediately commit the planes */
+ 	reg_set(ldev->regs, LTDC_SRCR, SRCR_IMR);
+ 
+-	/* Enable LTDC */
+-	reg_set(ldev->regs, LTDC_GCR, GCR_LTDCEN);
+-
+ 	drm_crtc_vblank_on(crtc);
  }
  
-+static int ltdc_power_up(struct ltdc_device *ldev)
-+{
-+	int ret;
-+
-+	DRM_DEBUG_DRIVER("\n");
-+
-+	if (!ldev->power_on) {
-+		ret = clk_prepare_enable(ldev->pixel_clk);
-+		if (ret) {
-+			DRM_ERROR("failed to enable pixel clock (%d)\n",
-+				  ret);
-+			return ret;
-+		}
-+		ldev->power_on = true;
-+	}
-+
-+	return 0;
-+}
-+
-+static void ltdc_power_down(struct ltdc_device *ldev)
-+{
-+	DRM_DEBUG_DRIVER("\n");
-+
-+	clk_disable_unprepare(ldev->pixel_clk);
-+	ldev->power_on = false;
-+}
-+
- static irqreturn_t ltdc_irq_thread(int irq, void *arg)
- {
- 	struct drm_device *ddev = arg;
-@@ -408,9 +437,14 @@ static void ltdc_crtc_atomic_enable(struct drm_crtc *crtc,
- 				    struct drm_crtc_state *old_state)
+@@ -431,19 +432,19 @@ static void ltdc_crtc_atomic_disable(struct drm_crtc *crtc,
+ 				     struct drm_crtc_state *old_state)
  {
  	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
-+	int ret;
++	struct drm_device *ddev = crtc->dev;
  
  	DRM_DEBUG_DRIVER("\n");
  
-+	ret = ltdc_power_up(ldev);
-+	if (ret)
-+		return;
-+
- 	/* Sets the background color value */
- 	reg_write(ldev->regs, LTDC_BCCR, BCCR_BCBLACK);
+ 	drm_crtc_vblank_off(crtc);
  
-@@ -443,6 +477,8 @@ static void ltdc_crtc_atomic_disable(struct drm_crtc *crtc,
+-	/* disable LTDC */
+-	reg_clear(ldev->regs, LTDC_GCR, GCR_LTDCEN);
+-
+ 	/* disable IRQ */
+ 	reg_clear(ldev->regs, LTDC_IER, IER_RRIE | IER_FUIE | IER_TERRIE);
  
  	/* immediately commit disable of layers before switching off LTDC */
  	reg_set(ldev->regs, LTDC_SRCR, SRCR_IMR);
 +
-+	ltdc_power_down(ldev);
++	pm_runtime_put_sync(ddev->dev);
  }
  
  #define CLK_TOLERANCE_HZ 50
-@@ -493,20 +529,16 @@ static bool ltdc_crtc_mode_fixup(struct drm_crtc *crtc,
+@@ -492,33 +493,55 @@ static bool ltdc_crtc_mode_fixup(struct drm_crtc *crtc,
+ 				 struct drm_display_mode *adjusted_mode)
+ {
  	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
++	struct drm_device *ddev = crtc->dev;
  	int rate = mode->clock * 1000;
++	bool runtime_active;
++	int ret;
  
 -	/*
 -	 * TODO clk_round_rate() does not work yet. When ready, it can
 -	 * be used instead of clk_set_rate() then clk_get_rate().
 -	 */
--
++	runtime_active = pm_runtime_active(ddev->dev);
++
++	if (runtime_active)
++		pm_runtime_put_sync(ddev->dev);
+ 
 -	clk_disable(ldev->pixel_clk);
  	if (clk_set_rate(ldev->pixel_clk, rate) < 0) {
  		DRM_ERROR("Cannot set rate (%dHz) for pixel clk\n", rate);
@@ -1792,25 +1915,42 @@ index 808d9fb..3527e69 100644
  
  	adjusted_mode->clock = clk_get_rate(ldev->pixel_clk) / 1000;
  
++	if (runtime_active) {
++		ret = pm_runtime_get_sync(ddev->dev);
++		if (ret) {
++			DRM_ERROR("Failed to fixup mode, cannot get sync\n");
++			return false;
++		}
++	}
++
 +	DRM_DEBUG_DRIVER("requested clock %dkHz, adjusted clock %dkHz\n",
 +			 mode->clock, adjusted_mode->clock);
 +
  	return true;
  }
  
-@@ -518,6 +550,11 @@ static void ltdc_crtc_mode_set_nofb(struct drm_crtc *crtc)
+ static void ltdc_crtc_mode_set_nofb(struct drm_crtc *crtc)
+ {
+ 	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
++	struct drm_device *ddev = crtc->dev;
+ 	struct drm_display_mode *mode = &crtc->state->adjusted_mode;
+ 	struct videomode vm;
  	u32 hsync, vsync, accum_hbp, accum_vbp, accum_act_w, accum_act_h;
  	u32 total_width, total_height;
  	u32 val;
 +	int ret;
 +
-+	ret = ltdc_power_up(ldev);
-+	if (ret)
-+		return;
++	if (!pm_runtime_active(ddev->dev)) {
++		ret = pm_runtime_get_sync(ddev->dev);
++		if (ret) {
++			DRM_ERROR("Failed to set mode, cannot get sync\n");
++			return;
++		}
++	}
  
  	drm_display_mode_to_videomode(mode, &vm);
  
-@@ -546,10 +583,10 @@ static void ltdc_crtc_mode_set_nofb(struct drm_crtc *crtc)
+@@ -547,10 +570,10 @@ static void ltdc_crtc_mode_set_nofb(struct drm_crtc *crtc)
  	if (vm.flags & DISPLAY_FLAGS_VSYNC_HIGH)
  		val |= GCR_VSPOL;
  
@@ -1823,31 +1963,7 @@ index 808d9fb..3527e69 100644
  		val |= GCR_PCPOL;
  
  	reg_update_bits(ldev->regs, LTDC_GCR,
-@@ -611,8 +648,14 @@ static const struct drm_crtc_helper_funcs ltdc_crtc_helper_funcs = {
- static int ltdc_crtc_enable_vblank(struct drm_crtc *crtc)
- {
- 	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
-+	int ret;
- 
- 	DRM_DEBUG_DRIVER("\n");
-+
-+	ret = ltdc_power_up(ldev);
-+	if (ret)
-+		return ret;
-+
- 	reg_set(ldev->regs, LTDC_IER, IER_LIE);
- 
- 	return 0;
-@@ -623,9 +666,58 @@ static void ltdc_crtc_disable_vblank(struct drm_crtc *crtc)
- 	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
- 
- 	DRM_DEBUG_DRIVER("\n");
-+
-+	if (!ldev->power_on) {
-+		DRM_WARN("power is already down\n");
-+		return;
-+	}
-+
+@@ -627,6 +650,53 @@ static void ltdc_crtc_disable_vblank(struct drm_crtc *crtc)
  	reg_clear(ldev->regs, LTDC_IER, IER_LIE);
  }
  
@@ -1876,15 +1992,19 @@ index 808d9fb..3527e69 100644
 +	 * Computation for the two first cases are identical so we can
 +	 * simplify the code and only test if line > vactive_end
 +	 */
-+	line = reg_read(ldev->regs, LTDC_CPSR) & CPSR_CYPOS;
-+	vactive_start = reg_read(ldev->regs, LTDC_BPCR) & BPCR_AVBP;
-+	vactive_end = reg_read(ldev->regs, LTDC_AWCR) & AWCR_AAH;
-+	vtotal = reg_read(ldev->regs, LTDC_TWCR) & TWCR_TOTALH;
++	if (pm_runtime_active(ddev->dev)) {
++		line = reg_read(ldev->regs, LTDC_CPSR) & CPSR_CYPOS;
++		vactive_start = reg_read(ldev->regs, LTDC_BPCR) & BPCR_AVBP;
++		vactive_end = reg_read(ldev->regs, LTDC_AWCR) & AWCR_AAH;
++		vtotal = reg_read(ldev->regs, LTDC_TWCR) & TWCR_TOTALH;
 +
-+	if (line > vactive_end)
-+		*vpos = line - vtotal - vactive_start;
-+	else
-+		*vpos = line - vactive_start;
++		if (line > vactive_end)
++			*vpos = line - vtotal - vactive_start;
++		else
++			*vpos = line - vactive_start;
++	} else {
++		*vpos = 0;
++	}
 +
 +	*hpos = 0;
 +
@@ -1897,7 +2017,7 @@ index 808d9fb..3527e69 100644
  static const struct drm_crtc_funcs ltdc_crtc_funcs = {
  	.destroy = drm_crtc_cleanup,
  	.set_config = drm_atomic_helper_set_config,
-@@ -646,24 +738,44 @@ static int ltdc_plane_atomic_check(struct drm_plane *plane,
+@@ -647,24 +717,44 @@ static int ltdc_plane_atomic_check(struct drm_plane *plane,
  				   struct drm_plane_state *state)
  {
  	struct drm_framebuffer *fb = state->fb;
@@ -1926,7 +2046,10 @@ index 808d9fb..3527e69 100644
 +	dst->y1 = state->crtc_y;
 +	dst->x2 = state->crtc_w + dst->x1 - 1;
 +	dst->y2 = state->crtc_h + dst->y1 - 1;
-+
+ 
+-	/* Reject scaling */
+-	if (src_w != state->crtc_w || src_h != state->crtc_h) {
+-		DRM_ERROR("Scaling is not supported");
 +	DRM_DEBUG_DRIVER("plane:%d fb:%d (%dx%d)@(%d,%d) -> (%dx%d)@(%d,%d)\n",
 +			 plane->base.id, fb->base.id,
 +			 src->x2 - src->x1 + 1, src->y2 - src->y1 + 1,
@@ -1940,10 +2063,7 @@ index 808d9fb..3527e69 100644
 +	if (crtc_state && (crtc_state->mode.hdisplay <= dst->x2 ||
 +			   crtc_state->mode.vdisplay <= dst->y2))
 +		return -EINVAL;
- 
--	/* Reject scaling */
--	if (src_w != state->crtc_w || src_h != state->crtc_h) {
--		DRM_ERROR("Scaling is not supported");
++
 +	/* source sizes do not have to exceed destination sizes */
 +	if (dst->x2 - dst->x1 < src->x2 - src->x1 ||
 +	    dst->y2 - dst->y1 < src->y2 - src->y1)
@@ -1952,7 +2072,7 @@ index 808d9fb..3527e69 100644
  
  	return 0;
  }
-@@ -673,44 +785,36 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
+@@ -674,44 +764,36 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
  {
  	struct ltdc_device *ldev = plane_to_ltdc(plane);
  	struct drm_plane_state *state = plane->state;
@@ -2007,7 +2127,7 @@ index 808d9fb..3527e69 100644
  	reg_update_bits(ldev->regs, LTDC_L1WVPCR + lofs,
  			LXWVPCR_WVSTPOS | LXWVPCR_WVSPPOS, val);
  
-@@ -730,7 +834,7 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
+@@ -731,7 +813,7 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
  	/* Configures the color frame buffer pitch in bytes & line length */
  	pitch_in_bytes = fb->pitches[0];
  	line_length = drm_format_plane_cpp(fb->format->format, 0) *
@@ -2016,7 +2136,7 @@ index 808d9fb..3527e69 100644
  	val = ((pitch_in_bytes << 16) | line_length);
  	reg_update_bits(ldev->regs, LTDC_L1CFBLR + lofs,
  			LXCFBLR_CFBLL | LXCFBLR_CFBP, val);
-@@ -753,7 +857,7 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
+@@ -754,7 +836,7 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
  			LXBFCR_BF2 | LXBFCR_BF1, val);
  
  	/* Configures the frame buffer line number */
@@ -2025,7 +2145,7 @@ index 808d9fb..3527e69 100644
  	reg_update_bits(ldev->regs, LTDC_L1CFBLNR + lofs, LXCFBLNR_CFBLN, val);
  
  	/* Sets the FB address */
-@@ -772,11 +876,11 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
+@@ -773,11 +855,11 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
  
  	mutex_lock(&ldev->err_lock);
  	if (ldev->error_status & ISR_FUIF) {
@@ -2039,7 +2159,7 @@ index 808d9fb..3527e69 100644
  		ldev->error_status &= ~ISR_TERRIF;
  	}
  	mutex_unlock(&ldev->err_lock);
-@@ -814,6 +918,13 @@ static void ltdc_plane_atomic_print_state(struct drm_printer *p,
+@@ -815,6 +897,13 @@ static void ltdc_plane_atomic_print_state(struct drm_printer *p,
  	fpsi->counter = 0;
  }
  
@@ -2053,7 +2173,7 @@ index 808d9fb..3527e69 100644
  static const struct drm_plane_funcs ltdc_plane_funcs = {
  	.update_plane = drm_atomic_helper_update_plane,
  	.disable_plane = drm_atomic_helper_disable_plane,
-@@ -822,6 +933,7 @@ static const struct drm_plane_funcs ltdc_plane_funcs = {
+@@ -823,6 +912,7 @@ static const struct drm_plane_funcs ltdc_plane_funcs = {
  	.atomic_duplicate_state = drm_atomic_helper_plane_duplicate_state,
  	.atomic_destroy_state = drm_atomic_helper_plane_destroy_state,
  	.atomic_print_state = ltdc_plane_atomic_print_state,
@@ -2061,7 +2181,7 @@ index 808d9fb..3527e69 100644
  };
  
  static const struct drm_plane_helper_funcs ltdc_plane_helper_funcs = {
-@@ -841,6 +953,10 @@ static struct drm_plane *ltdc_plane_create(struct drm_device *ddev,
+@@ -843,6 +933,10 @@ static struct drm_plane *ltdc_plane_create(struct drm_device *ddev,
  	u32 formats[NB_PF * 2];
  	u32 drm_fmt, drm_fmt_no_alpha;
  	int ret;
@@ -2072,7 +2192,7 @@ index 808d9fb..3527e69 100644
  
  	/* Get supported pixel formats */
  	for (i = 0; i < NB_PF; i++) {
-@@ -868,7 +984,7 @@ static struct drm_plane *ltdc_plane_create(struct drm_device *ddev,
+@@ -870,7 +964,7 @@ static struct drm_plane *ltdc_plane_create(struct drm_device *ddev,
  
  	ret = drm_universal_plane_init(ddev, plane, possible_crtcs,
  				       &ltdc_plane_funcs, formats, nb_fmt,
@@ -2081,7 +2201,102 @@ index 808d9fb..3527e69 100644
  	if (ret < 0)
  		return NULL;
  
-@@ -1051,14 +1167,15 @@ int ltdc_load(struct drm_device *ddev)
+@@ -942,6 +1036,54 @@ static const struct drm_encoder_funcs ltdc_encoder_funcs = {
+ 	.destroy = drm_encoder_cleanup,
+ };
+ 
++static void ltdc_encoder_disable(struct drm_encoder *encoder)
++{
++	struct drm_device *ddev = encoder->dev;
++	struct ltdc_device *ldev = ddev->dev_private;
++
++	DRM_DEBUG_DRIVER("\n");
++
++	/* Disable LTDC */
++	reg_clear(ldev->regs, LTDC_GCR, GCR_LTDCEN);
++
++	/* Set to sleep state the pinctrl whatever type of encoder */
++	pinctrl_pm_select_sleep_state(ddev->dev);
++}
++
++static void ltdc_encoder_enable(struct drm_encoder *encoder)
++{
++	struct drm_device *ddev = encoder->dev;
++	struct ltdc_device *ldev = ddev->dev_private;
++
++	DRM_DEBUG_DRIVER("\n");
++
++	/* Enable LTDC */
++	reg_set(ldev->regs, LTDC_GCR, GCR_LTDCEN);
++}
++
++static void ltdc_encoder_mode_set(struct drm_encoder *encoder,
++				  struct drm_display_mode *mode,
++				  struct drm_display_mode *adjusted_mode)
++{
++	struct drm_device *ddev = encoder->dev;
++
++	DRM_DEBUG_DRIVER("\n");
++
++	/*
++	 * Set to default state the pinctrl only with DPI type.
++	 * Others types like DSI, don't need pinctrl due to
++	 * internal bridge (the signals do not come out of the chipset).
++	 */
++	if (encoder->encoder_type == DRM_MODE_ENCODER_DPI)
++		pinctrl_pm_select_default_state(ddev->dev);
++}
++
++static const struct drm_encoder_helper_funcs ltdc_encoder_helper_funcs = {
++	.disable = ltdc_encoder_disable,
++	.enable = ltdc_encoder_enable,
++	.mode_set = ltdc_encoder_mode_set,
++};
++
+ static int ltdc_encoder_init(struct drm_device *ddev, struct drm_bridge *bridge)
+ {
+ 	struct drm_encoder *encoder;
+@@ -957,6 +1099,8 @@ static int ltdc_encoder_init(struct drm_device *ddev, struct drm_bridge *bridge)
+ 	drm_encoder_init(ddev, encoder, &ltdc_encoder_funcs,
+ 			 DRM_MODE_ENCODER_DPI, NULL);
+ 
++	drm_encoder_helper_add(encoder, &ltdc_encoder_helper_funcs);
++
+ 	ret = drm_bridge_attach(encoder, bridge, NULL);
+ 	if (ret) {
+ 		drm_encoder_cleanup(encoder);
+@@ -1014,6 +1158,30 @@ static int ltdc_get_caps(struct drm_device *ddev)
+ 	return 0;
+ }
+ 
++void ltdc_suspend(struct drm_device *ddev)
++{
++	struct ltdc_device *ldev = ddev->dev_private;
++
++	DRM_DEBUG_DRIVER("\n");
++	clk_disable_unprepare(ldev->pixel_clk);
++}
++
++int ltdc_resume(struct drm_device *ddev)
++{
++	struct ltdc_device *ldev = ddev->dev_private;
++	int ret;
++
++	DRM_DEBUG_DRIVER("\n");
++
++	ret = clk_prepare_enable(ldev->pixel_clk);
++	if (ret) {
++		DRM_ERROR("failed to enable pixel clock (%d)\n", ret);
++		return ret;
++	}
++
++	return 0;
++}
++
+ int ltdc_load(struct drm_device *ddev)
+ {
+ 	struct platform_device *pdev = to_platform_device(ddev->dev);
+@@ -1053,8 +1221,9 @@ int ltdc_load(struct drm_device *ddev)
  
  	ldev->pixel_clk = devm_clk_get(dev, "lcd");
  	if (IS_ERR(ldev->pixel_clk)) {
@@ -2092,18 +2307,8 @@ index 808d9fb..3527e69 100644
 +		return PTR_ERR(ldev->pixel_clk);
  	}
  
--	if (clk_prepare_enable(ldev->pixel_clk)) {
--		DRM_ERROR("Unable to prepare pixel clock\n");
--		return -ENODEV;
--	}
-+	ldev->power_on = false;
-+	ret = ltdc_power_up(ldev);
-+	if (ret)
-+		return ret;
- 
- 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
- 	ldev->regs = devm_ioremap_resource(dev, res);
-@@ -1070,6 +1187,9 @@ int ltdc_load(struct drm_device *ddev)
+ 	if (clk_prepare_enable(ldev->pixel_clk)) {
+@@ -1072,6 +1241,9 @@ int ltdc_load(struct drm_device *ddev)
  
  	for (i = 0; i < MAX_IRQ; i++) {
  		irq = platform_get_irq(pdev, i);
@@ -2113,7 +2318,7 @@ index 808d9fb..3527e69 100644
  		if (irq < 0)
  			continue;
  
-@@ -1129,6 +1249,8 @@ int ltdc_load(struct drm_device *ddev)
+@@ -1131,6 +1303,8 @@ int ltdc_load(struct drm_device *ddev)
  		goto err;
  	}
  
@@ -2122,34 +2327,47 @@ index 808d9fb..3527e69 100644
  	ret = ltdc_crtc_init(ddev, crtc);
  	if (ret) {
  		DRM_ERROR("Failed to init crtc\n");
-@@ -1150,7 +1272,7 @@ int ltdc_load(struct drm_device *ddev)
+@@ -1146,8 +1320,13 @@ int ltdc_load(struct drm_device *ddev)
+ 	/* Allow usage of vblank without having to call drm_irq_install */
+ 	ddev->irq_enabled = 1;
+ 
+-	return 0;
++	clk_disable_unprepare(ldev->pixel_clk);
++
++	pinctrl_pm_select_sleep_state(ddev->dev);
++
++	pm_runtime_enable(ddev->dev);
+ 
++	return 0;
+ err:
  	for (i = 0; i < MAX_ENDPOINTS; i++)
  		drm_panel_bridge_remove(bridge[i]);
+@@ -1159,7 +1338,6 @@ int ltdc_load(struct drm_device *ddev)
  
--	clk_disable_unprepare(ldev->pixel_clk);
-+	ltdc_power_down(ldev);
+ void ltdc_unload(struct drm_device *ddev)
+ {
+-	struct ltdc_device *ldev = ddev->dev_private;
+ 	int i;
  
- 	return ret;
- }
-@@ -1165,7 +1287,7 @@ void ltdc_unload(struct drm_device *ddev)
+ 	DRM_DEBUG_DRIVER("\n");
+@@ -1167,7 +1345,7 @@ void ltdc_unload(struct drm_device *ddev)
  	for (i = 0; i < MAX_ENDPOINTS; i++)
  		drm_of_panel_bridge_remove(ddev->dev->of_node, 0, i);
  
 -	clk_disable_unprepare(ldev->pixel_clk);
-+	ltdc_power_down(ldev);
++	pm_runtime_disable(ddev->dev);
  }
  
  MODULE_AUTHOR("Philippe Cornu <philippe.cornu@st.com>");
 diff --git a/drivers/gpu/drm/stm/ltdc.h b/drivers/gpu/drm/stm/ltdc.h
-index d5afb89..08bd69d 100644
+index d5afb89..9b410c6 100644
 --- a/drivers/gpu/drm/stm/ltdc.h
 +++ b/drivers/gpu/drm/stm/ltdc.h
-@@ -36,8 +36,14 @@ struct ltdc_device {
+@@ -36,9 +36,16 @@ struct ltdc_device {
  	u32 error_status;
  	u32 irq_status;
  	struct fps_info plane_fpsi[LTDC_MAX_LAYER];
 +	struct drm_atomic_state *suspend_state;
-+	bool power_on;
  };
  
 +bool ltdc_crtc_scanoutpos(struct drm_device *dev, unsigned int pipe,
@@ -2158,7 +2376,10 @@ index d5afb89..08bd69d 100644
 +			  const struct drm_display_mode *mode);
  int ltdc_load(struct drm_device *ddev);
  void ltdc_unload(struct drm_device *ddev);
++void ltdc_suspend(struct drm_device *ddev);
++int ltdc_resume(struct drm_device *ddev);
  
+ #endif
 diff --git a/include/drm/bridge/dw_mipi_dsi.h b/include/drm/bridge/dw_mipi_dsi.h
 index d9c6d54..0fdc550 100644
 --- a/include/drm/bridge/dw_mipi_dsi.h

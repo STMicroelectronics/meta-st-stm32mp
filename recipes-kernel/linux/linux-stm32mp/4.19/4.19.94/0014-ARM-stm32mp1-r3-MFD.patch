@@ -1,21 +1,21 @@
-From 1e1b3d357ac9971d70631b624301524294ea5d3c Mon Sep 17 00:00:00 2001
+From f37dea894c9913b5d35a7dc0258fddb735d1b007 Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Thu, 11 Jul 2019 14:12:02 +0200
-Subject: [PATCH 13/30] ARM stm32mp1 r2 MFD
+Date: Fri, 8 Nov 2019 16:52:42 +0100
+Subject: [PATCH 14/31] ARM stm32mp1 r3 MFD
 
 ---
- drivers/mfd/Kconfig                  |  31 ++
+ drivers/mfd/Kconfig                  |  34 +++
  drivers/mfd/Makefile                 |   4 +-
- drivers/mfd/stm32-pwr.c              | 400 ++++++++++++++++++++++
- drivers/mfd/stmfx.c                  | 626 +++++++++++++++++++++++++++++++++++
- drivers/mfd/stpmic1.c                | 409 +++++++++++++++++++++++
+ drivers/mfd/stm32-pwr.c              | 400 +++++++++++++++++++++++++
+ drivers/mfd/stmfx.c                  | 545 +++++++++++++++++++++++++++++++++++
+ drivers/mfd/stpmic1.c                | 219 ++++++++++++++
  drivers/mfd/syscon.c                 |  19 ++
  drivers/mfd/wm8994-core.c            |  21 ++
- include/dt-bindings/mfd/st,stpmic1.h |  46 +++
- include/linux/mfd/stmfx.h            |  27 ++
- include/linux/mfd/stpmic1.h          | 212 ++++++++++++
+ include/dt-bindings/mfd/st,stpmic1.h |  50 ++++
+ include/linux/mfd/stmfx.h            | 123 ++++++++
+ include/linux/mfd/stpmic1.h          | 212 ++++++++++++++
  include/linux/mfd/wm8994/pdata.h     |   6 +
- 11 files changed, 1800 insertions(+), 1 deletion(-)
+ 11 files changed, 1632 insertions(+), 1 deletion(-)
  create mode 100644 drivers/mfd/stm32-pwr.c
  create mode 100644 drivers/mfd/stmfx.c
  create mode 100644 drivers/mfd/stpmic1.c
@@ -24,10 +24,10 @@ Subject: [PATCH 13/30] ARM stm32mp1 r2 MFD
  create mode 100644 include/linux/mfd/stpmic1.h
 
 diff --git a/drivers/mfd/Kconfig b/drivers/mfd/Kconfig
-index 11841f4..cc25a19 100644
+index dd938a5..2930188 100644
 --- a/drivers/mfd/Kconfig
 +++ b/drivers/mfd/Kconfig
-@@ -1855,6 +1855,37 @@ config MFD_STM32_TIMERS
+@@ -1855,6 +1855,40 @@ config MFD_STM32_TIMERS
  	  for PWM and IIO Timer. This driver allow to share the
  	  registers between the others drivers.
  
@@ -56,8 +56,11 @@ index 11841f4..cc25a19 100644
 +	select REGMAP_IRQ
 +	select MFD_CORE
 +	help
-+	  Support for ST Microelectronics STPMIC1 PMIC. STPMIC1 MFD driver is
-+	  the core driver for STPMIC1 component that mainly handles interrupts.
++	  Support for ST Microelectronics STPMIC1 PMIC. STPMIC1 has power on
++	  key, watchdog and regulator functionalities which are supported via
++	  the relevant subsystems. This driver provides core support for the
++	  STPMIC1. In order to use the actual functionaltiy of the device other
++	  drivers must be enabled.
 +
 +	  To compile this driver as a module, choose M here: the
 +	  module will be called stpmic1.
@@ -493,15 +496,15 @@ index 0000000..92744bf
 +module_exit(stm32_pwr_exit);
 diff --git a/drivers/mfd/stmfx.c b/drivers/mfd/stmfx.c
 new file mode 100644
-index 0000000..cfd4fca
+index 0000000..857991c
 --- /dev/null
 +++ b/drivers/mfd/stmfx.c
-@@ -0,0 +1,626 @@
+@@ -0,0 +1,545 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Driver for STMicroelectronics Multi-Function eXpander (STMFX) core
 + *
-+ * Copyright (C) 2018 STMicroelectronics
++ * Copyright (C) 2019 STMicroelectronics
 + * Author(s): Amelie Delaunay <amelie.delaunay@st.com>.
 + */
 +#include <linux/bitfield.h>
@@ -513,85 +516,84 @@ index 0000000..cfd4fca
 +#include <linux/module.h>
 +#include <linux/regulator/consumer.h>
 +
-+/* General */
-+#define STMFX_REG_CHIP_ID		0x00 /* R */
-+#define STMFX_REG_FW_VERSION_MSB	0x01 /* R */
-+#define STMFX_REG_FW_VERSION_LSB	0x02 /* R */
-+#define STMFX_REG_SYS_CTRL		0x40 /* RW */
-+/* IRQ output management */
-+#define STMFX_REG_IRQ_OUT_PIN		0x41 /* RW */
-+#define STMFX_REG_IRQ_SRC_EN		0x42 /* RW */
-+#define STMFX_REG_IRQ_PENDING		0x08 /* R */
-+#define STMFX_REG_IRQ_ACK		0x44 /* RW */
-+/* GPIO management */
-+#define STMFX_REG_IRQ_GPI_PENDING1	0x0C /* R */
-+#define STMFX_REG_IRQ_GPI_PENDING2	0x0D /* R */
-+#define STMFX_REG_IRQ_GPI_PENDING3	0x0E /* R */
-+#define STMFX_REG_GPIO_STATE1		0x10 /* R */
-+#define STMFX_REG_GPIO_STATE2		0x11 /* R */
-+#define STMFX_REG_GPIO_STATE3		0x12 /* R */
-+#define STMFX_REG_IRQ_GPI_SRC1		0x48 /* RW */
-+#define STMFX_REG_IRQ_GPI_SRC2		0x49 /* RW */
-+#define STMFX_REG_IRQ_GPI_SRC3		0x4A /* RW */
-+#define STMFX_REG_GPO_SET1		0x6C /* RW */
-+#define STMFX_REG_GPO_SET2		0x6D /* RW */
-+#define STMFX_REG_GPO_SET3		0x6E /* RW */
-+#define STMFX_REG_GPO_CLR1		0x70 /* RW */
-+#define STMFX_REG_GPO_CLR2		0x71 /* RW */
-+#define STMFX_REG_GPO_CLR3		0x72 /* RW */
++static bool stmfx_reg_volatile(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case STMFX_REG_SYS_CTRL:
++	case STMFX_REG_IRQ_SRC_EN:
++	case STMFX_REG_IRQ_PENDING:
++	case STMFX_REG_IRQ_GPI_PENDING1:
++	case STMFX_REG_IRQ_GPI_PENDING2:
++	case STMFX_REG_IRQ_GPI_PENDING3:
++	case STMFX_REG_GPIO_STATE1:
++	case STMFX_REG_GPIO_STATE2:
++	case STMFX_REG_GPIO_STATE3:
++	case STMFX_REG_IRQ_GPI_SRC1:
++	case STMFX_REG_IRQ_GPI_SRC2:
++	case STMFX_REG_IRQ_GPI_SRC3:
++	case STMFX_REG_GPO_SET1:
++	case STMFX_REG_GPO_SET2:
++	case STMFX_REG_GPO_SET3:
++	case STMFX_REG_GPO_CLR1:
++	case STMFX_REG_GPO_CLR2:
++	case STMFX_REG_GPO_CLR3:
++		return true;
++	default:
++		return false;
++	}
++}
 +
-+#define STMFX_REG_MAX			0xB0
++static bool stmfx_reg_writeable(struct device *dev, unsigned int reg)
++{
++	return (reg >= STMFX_REG_SYS_CTRL);
++}
 +
-+/* MFX boot time is around 10ms, so after reset, we have to wait this delay */
-+#define STMFX_BOOT_TIME_MS 10
-+
-+/* STMFX_REG_CHIP_ID bitfields */
-+#define STMFX_REG_CHIP_ID_MASK		GENMASK(7, 0)
-+
-+/* STMFX_REG_SYS_CTRL bitfields */
-+#define STMFX_REG_SYS_CTRL_GPIO_EN	BIT(0)
-+#define STMFX_REG_SYS_CTRL_TS_EN	BIT(1)
-+#define STMFX_REG_SYS_CTRL_IDD_EN	BIT(2)
-+#define STMFX_REG_SYS_CTRL_ALTGPIO_EN	BIT(3)
-+#define STMFX_REG_SYS_CTRL_SWRST	BIT(7)
-+
-+/* STMFX_REG_IRQ_OUT_PIN bitfields */
-+#define STMFX_REG_IRQ_OUT_PIN_TYPE	BIT(0) /* 0-OD 1-PP */
-+#define STMFX_REG_IRQ_OUT_PIN_POL	BIT(1) /* 0-active LOW 1-active HIGH */
-+
-+/* STMFX_REG_IRQ_(SRC_EN/PENDING/ACK) bit shift */
-+enum stmfx_irqs {
-+	STMFX_REG_IRQ_SRC_EN_GPIO = 0,
-+	STMFX_REG_IRQ_SRC_EN_IDD,
-+	STMFX_REG_IRQ_SRC_EN_ERROR,
-+	STMFX_REG_IRQ_SRC_EN_TS_DET,
-+	STMFX_REG_IRQ_SRC_EN_TS_NE,
-+	STMFX_REG_IRQ_SRC_EN_TS_TH,
-+	STMFX_REG_IRQ_SRC_EN_TS_FULL,
-+	STMFX_REG_IRQ_SRC_EN_TS_OVF,
-+	STMFX_REG_IRQ_SRC_MAX,
++static const struct regmap_config stmfx_regmap_config = {
++	.reg_bits	= 8,
++	.reg_stride	= 1,
++	.val_bits	= 8,
++	.max_register	= STMFX_REG_MAX,
++	.volatile_reg	= stmfx_reg_volatile,
++	.writeable_reg	= stmfx_reg_writeable,
++	.cache_type	= REGCACHE_RBTREE,
 +};
 +
-+/**
-+ * struct stmfx_ddata - STMFX MFD private structure
-+ * @stmfx:		state holder with device for logs and register map
-+ * @vdd:		STMFX power supply
-+ * @irq_domain:		IRQ domain
-+ * @lock:		IRQ bus lock
-+ * @irq_src:		cache of IRQ_SRC_EN register for bus_lock
-+ * @bkp_sysctrl:	backup of SYS_CTRL register for suspend/resume
-+ * @bkp_irqoutpin:	backup of IRQ_OUT_PIN register for suspend/resume
-+ */
-+struct stmfx_ddata {
-+	struct stmfx *stmfx;
-+	struct regulator *vdd;
-+	struct irq_domain *irq_domain;
-+	struct mutex lock; /* IRQ bus lock */
-+	u8 irq_src;
-+#ifdef CONFIG_PM
-+	u8 bkp_sysctrl;
-+	u8 bkp_irqoutpin;
-+#endif
++static const struct resource stmfx_pinctrl_resources[] = {
++	DEFINE_RES_IRQ(STMFX_REG_IRQ_SRC_EN_GPIO),
++};
++
++static const struct resource stmfx_idd_resources[] = {
++	DEFINE_RES_IRQ(STMFX_REG_IRQ_SRC_EN_IDD),
++	DEFINE_RES_IRQ(STMFX_REG_IRQ_SRC_EN_ERROR),
++};
++
++static const struct resource stmfx_ts_resources[] = {
++	DEFINE_RES_IRQ(STMFX_REG_IRQ_SRC_EN_TS_DET),
++	DEFINE_RES_IRQ(STMFX_REG_IRQ_SRC_EN_TS_NE),
++	DEFINE_RES_IRQ(STMFX_REG_IRQ_SRC_EN_TS_TH),
++	DEFINE_RES_IRQ(STMFX_REG_IRQ_SRC_EN_TS_FULL),
++	DEFINE_RES_IRQ(STMFX_REG_IRQ_SRC_EN_TS_OVF),
++};
++
++static struct mfd_cell stmfx_cells[] = {
++	{
++		.of_compatible = "st,stmfx-0300-pinctrl",
++		.name = "stmfx-pinctrl",
++		.resources = stmfx_pinctrl_resources,
++		.num_resources = ARRAY_SIZE(stmfx_pinctrl_resources),
++	},
++	{
++		.of_compatible = "st,stmfx-0300-idd",
++		.name = "stmfx-idd",
++		.resources = stmfx_idd_resources,
++		.num_resources = ARRAY_SIZE(stmfx_idd_resources),
++	},
++	{
++		.of_compatible = "st,stmfx-0300-ts",
++		.name = "stmfx-ts",
++		.resources = stmfx_ts_resources,
++		.num_resources = ARRAY_SIZE(stmfx_ts_resources),
++	},
 +};
 +
 +static u8 stmfx_func_to_mask(u32 func)
@@ -665,32 +667,32 @@ index 0000000..cfd4fca
 +
 +static void stmfx_irq_bus_lock(struct irq_data *data)
 +{
-+	struct stmfx_ddata *ddata = irq_data_get_irq_chip_data(data);
++	struct stmfx *stmfx = irq_data_get_irq_chip_data(data);
 +
-+	mutex_lock(&ddata->lock);
++	mutex_lock(&stmfx->lock);
 +}
 +
 +static void stmfx_irq_bus_sync_unlock(struct irq_data *data)
 +{
-+	struct stmfx_ddata *ddata = irq_data_get_irq_chip_data(data);
++	struct stmfx *stmfx = irq_data_get_irq_chip_data(data);
 +
-+	regmap_write(ddata->stmfx->map, STMFX_REG_IRQ_SRC_EN, ddata->irq_src);
++	regmap_write(stmfx->map, STMFX_REG_IRQ_SRC_EN, stmfx->irq_src);
 +
-+	mutex_unlock(&ddata->lock);
++	mutex_unlock(&stmfx->lock);
 +}
 +
 +static void stmfx_irq_mask(struct irq_data *data)
 +{
-+	struct stmfx_ddata *ddata = irq_data_get_irq_chip_data(data);
++	struct stmfx *stmfx = irq_data_get_irq_chip_data(data);
 +
-+	ddata->irq_src &= ~BIT(data->hwirq % 8);
++	stmfx->irq_src &= ~BIT(data->hwirq % 8);
 +}
 +
 +static void stmfx_irq_unmask(struct irq_data *data)
 +{
-+	struct stmfx_ddata *ddata = irq_data_get_irq_chip_data(data);
++	struct stmfx *stmfx = irq_data_get_irq_chip_data(data);
 +
-+	ddata->irq_src |= BIT(data->hwirq % 8);
++	stmfx->irq_src |= BIT(data->hwirq % 8);
 +}
 +
 +static struct irq_chip stmfx_irq_chip = {
@@ -703,13 +705,12 @@ index 0000000..cfd4fca
 +
 +static irqreturn_t stmfx_irq_handler(int irq, void *data)
 +{
-+	struct stmfx_ddata *ddata = data;
-+	unsigned long n, pending;
-+	u32 ack;
-+	int ret;
++	struct stmfx *stmfx = data;
++	unsigned long bits;
++	u32 pending, ack;
++	int n, ret;
 +
-+	ret = regmap_read(ddata->stmfx->map, STMFX_REG_IRQ_PENDING,
-+			  (u32 *)&pending);
++	ret = regmap_read(stmfx->map, STMFX_REG_IRQ_PENDING, &pending);
 +	if (ret)
 +		return IRQ_NONE;
 +
@@ -719,13 +720,14 @@ index 0000000..cfd4fca
 +	 */
 +	ack = pending & ~BIT(STMFX_REG_IRQ_SRC_EN_GPIO);
 +	if (ack) {
-+		ret = regmap_write(ddata->stmfx->map, STMFX_REG_IRQ_ACK, ack);
++		ret = regmap_write(stmfx->map, STMFX_REG_IRQ_ACK, ack);
 +		if (ret)
 +			return IRQ_NONE;
 +	}
 +
-+	for_each_set_bit(n, &pending, STMFX_REG_IRQ_SRC_MAX)
-+		handle_nested_irq(irq_find_mapping(ddata->irq_domain, n));
++	bits = pending;
++	for_each_set_bit(n, &bits, STMFX_REG_IRQ_SRC_MAX)
++		handle_nested_irq(irq_find_mapping(stmfx->irq_domain, n));
 +
 +	return IRQ_HANDLED;
 +}
@@ -752,55 +754,58 @@ index 0000000..cfd4fca
 +	.unmap	= stmfx_irq_unmap,
 +};
 +
-+static void stmfx_irq_exit(struct stmfx_ddata *ddata)
++static void stmfx_irq_exit(struct i2c_client *client)
 +{
++	struct stmfx *stmfx = i2c_get_clientdata(client);
 +	int hwirq;
 +
 +	for (hwirq = 0; hwirq < STMFX_REG_IRQ_SRC_MAX; hwirq++)
-+		irq_dispose_mapping(irq_find_mapping(ddata->irq_domain, hwirq));
-+	irq_domain_remove(ddata->irq_domain);
++		irq_dispose_mapping(irq_find_mapping(stmfx->irq_domain, hwirq));
++
++	irq_domain_remove(stmfx->irq_domain);
 +}
 +
-+static int stmfx_irq_init(struct stmfx_ddata *ddata, int irq)
++static int stmfx_irq_init(struct i2c_client *client)
 +{
-+	struct device *dev = ddata->stmfx->dev;
++	struct stmfx *stmfx = i2c_get_clientdata(client);
 +	u32 irqoutpin = 0, irqtrigger;
 +	int ret;
 +
-+	ddata->irq_domain = irq_domain_add_simple(dev->of_node,
++	stmfx->irq_domain = irq_domain_add_simple(stmfx->dev->of_node,
 +						  STMFX_REG_IRQ_SRC_MAX, 0,
-+						  &stmfx_irq_ops, ddata);
-+	if (!ddata->irq_domain) {
-+		dev_err(dev, "failed to create irq domain\n");
++						  &stmfx_irq_ops, stmfx);
++	if (!stmfx->irq_domain) {
++		dev_err(stmfx->dev, "Failed to create IRQ domain\n");
 +		return -EINVAL;
 +	}
 +
-+	if (!of_property_read_bool(dev->of_node, "drive-open-drain"))
++	if (!of_property_read_bool(stmfx->dev->of_node, "drive-open-drain"))
 +		irqoutpin |= STMFX_REG_IRQ_OUT_PIN_TYPE;
 +
-+	irqtrigger = irq_get_trigger_type(irq);
++	irqtrigger = irq_get_trigger_type(client->irq);
 +	if ((irqtrigger & IRQ_TYPE_EDGE_RISING) ||
 +	    (irqtrigger & IRQ_TYPE_LEVEL_HIGH))
 +		irqoutpin |= STMFX_REG_IRQ_OUT_PIN_POL;
 +
-+	ret = regmap_write(ddata->stmfx->map, STMFX_REG_IRQ_OUT_PIN, irqoutpin);
++	ret = regmap_write(stmfx->map, STMFX_REG_IRQ_OUT_PIN, irqoutpin);
 +	if (ret)
 +		return ret;
 +
-+	ret = devm_request_threaded_irq(dev, irq, NULL, stmfx_irq_handler,
++	ret = devm_request_threaded_irq(stmfx->dev, client->irq,
++					NULL, stmfx_irq_handler,
 +					irqtrigger | IRQF_ONESHOT,
-+					"stmfx", ddata);
++					"stmfx", stmfx);
 +	if (ret)
-+		stmfx_irq_exit(ddata);
++		stmfx_irq_exit(client);
 +
 +	return ret;
 +}
 +
-+static int stmfx_chip_reset(struct stmfx_ddata *ddata)
++static int stmfx_chip_reset(struct stmfx *stmfx)
 +{
 +	int ret;
 +
-+	ret = regmap_write(ddata->stmfx->map, STMFX_REG_SYS_CTRL,
++	ret = regmap_write(stmfx->map, STMFX_REG_SYS_CTRL,
 +			   STMFX_REG_SYS_CTRL_SWRST);
 +	if (ret)
 +		return ret;
@@ -810,34 +815,35 @@ index 0000000..cfd4fca
 +	return ret;
 +}
 +
-+static int stmfx_chip_init(struct stmfx_ddata *ddata, struct i2c_client *client)
++static int stmfx_chip_init(struct i2c_client *client)
 +{
++	struct stmfx *stmfx = i2c_get_clientdata(client);
 +	u32 id;
 +	u8 version[2];
 +	int ret;
 +
-+	ddata->vdd = devm_regulator_get_optional(&client->dev, "vdd");
-+	if (IS_ERR(ddata->vdd)) {
-+		ret = PTR_ERR(ddata->vdd);
-+		if (ret != -ENODEV) {
-+			if (ret != -EPROBE_DEFER)
-+				dev_err(&client->dev,
-+					"no vdd regulator found:%d\n", ret);
-+			return ret;
-+		}
++	stmfx->vdd = devm_regulator_get_optional(&client->dev, "vdd");
++	ret = PTR_ERR_OR_ZERO(stmfx->vdd);
++	if (ret == -ENODEV) {
++		stmfx->vdd = NULL;
++	} else if (ret == -EPROBE_DEFER) {
++		return ret;
++	} else if (ret) {
++		dev_err(&client->dev, "Failed to get VDD regulator: %d\n", ret);
++		return ret;
 +	}
 +
-+	if (!IS_ERR(ddata->vdd)) {
-+		ret = regulator_enable(ddata->vdd);
++	if (stmfx->vdd) {
++		ret = regulator_enable(stmfx->vdd);
 +		if (ret) {
-+			dev_err(&client->dev, "vdd enable failed: %d\n", ret);
++			dev_err(&client->dev, "VDD enable failed: %d\n", ret);
 +			return ret;
 +		}
 +	}
 +
-+	ret = regmap_read(ddata->stmfx->map, STMFX_REG_CHIP_ID, &id);
++	ret = regmap_read(stmfx->map, STMFX_REG_CHIP_ID, &id);
 +	if (ret) {
-+		dev_err(&client->dev, "error reading chip id: %d\n", ret);
++		dev_err(&client->dev, "Error reading chip ID: %d\n", ret);
 +		goto err;
 +	}
 +
@@ -853,125 +859,74 @@ index 0000000..cfd4fca
 +	 *       1       | b: 1000 011x h:0x86 |       0x43
 +	 */
 +	if (FIELD_GET(STMFX_REG_CHIP_ID_MASK, ~id) != (client->addr << 1)) {
-+		dev_err(&client->dev, "unknown chip id: %#x\n", id);
++		dev_err(&client->dev, "Unknown chip ID: %#x\n", id);
 +		ret = -EINVAL;
 +		goto err;
 +	}
 +
-+	ret = regmap_bulk_read(ddata->stmfx->map, STMFX_REG_FW_VERSION_MSB,
++	ret = regmap_bulk_read(stmfx->map, STMFX_REG_FW_VERSION_MSB,
 +			       version, ARRAY_SIZE(version));
 +	if (ret) {
-+		dev_err(&client->dev, "error reading fw version: %d\n", ret);
++		dev_err(&client->dev, "Error reading FW version: %d\n", ret);
 +		goto err;
 +	}
 +
 +	dev_info(&client->dev, "STMFX id: %#x, fw version: %x.%02x\n",
 +		 id, version[0], version[1]);
 +
-+	return stmfx_chip_reset(ddata);
++	ret = stmfx_chip_reset(stmfx);
++	if (ret) {
++		dev_err(&client->dev, "Failed to reset chip: %d\n", ret);
++		goto err;
++	}
++
++	return 0;
 +
 +err:
-+	if (!IS_ERR(ddata->vdd))
-+		return regulator_disable(ddata->vdd);
++	if (stmfx->vdd)
++		return regulator_disable(stmfx->vdd);
 +
 +	return ret;
 +}
 +
-+static int stmfx_chip_exit(struct stmfx_ddata *ddata)
++static int stmfx_chip_exit(struct i2c_client *client)
 +{
-+	regmap_write(ddata->stmfx->map, STMFX_REG_IRQ_SRC_EN, 0);
-+	regmap_write(ddata->stmfx->map, STMFX_REG_SYS_CTRL, 0);
++	struct stmfx *stmfx = i2c_get_clientdata(client);
 +
-+	if (!IS_ERR(ddata->vdd))
-+		return regulator_disable(ddata->vdd);
++	regmap_write(stmfx->map, STMFX_REG_IRQ_SRC_EN, 0);
++	regmap_write(stmfx->map, STMFX_REG_SYS_CTRL, 0);
++
++	if (stmfx->vdd)
++		return regulator_disable(stmfx->vdd);
 +
 +	return 0;
 +}
-+
-+static const struct resource stmfx_pinctrl_resources[] = {
-+	DEFINE_RES_IRQ(STMFX_REG_IRQ_SRC_EN_GPIO),
-+};
-+
-+static struct mfd_cell stmfx_cells[] = {
-+	{
-+		.of_compatible = "st,stmfx-0300-pinctrl",
-+		.name = "stmfx-pinctrl",
-+		.resources = stmfx_pinctrl_resources,
-+		.num_resources = ARRAY_SIZE(stmfx_pinctrl_resources),
-+	}
-+};
-+
-+static bool stmfx_reg_volatile(struct device *dev, unsigned int reg)
-+{
-+	switch (reg) {
-+	case STMFX_REG_SYS_CTRL:
-+	case STMFX_REG_IRQ_SRC_EN:
-+	case STMFX_REG_IRQ_PENDING:
-+	case STMFX_REG_IRQ_GPI_PENDING1:
-+	case STMFX_REG_IRQ_GPI_PENDING2:
-+	case STMFX_REG_IRQ_GPI_PENDING3:
-+	case STMFX_REG_GPIO_STATE1:
-+	case STMFX_REG_GPIO_STATE2:
-+	case STMFX_REG_GPIO_STATE3:
-+	case STMFX_REG_IRQ_GPI_SRC1:
-+	case STMFX_REG_IRQ_GPI_SRC2:
-+	case STMFX_REG_IRQ_GPI_SRC3:
-+	case STMFX_REG_GPO_SET1:
-+	case STMFX_REG_GPO_SET2:
-+	case STMFX_REG_GPO_SET3:
-+	case STMFX_REG_GPO_CLR1:
-+	case STMFX_REG_GPO_CLR2:
-+	case STMFX_REG_GPO_CLR3:
-+		return true;
-+	default:
-+		return false;
-+	}
-+}
-+
-+static bool stmfx_reg_writeable(struct device *dev, unsigned int reg)
-+{
-+	return (reg >= STMFX_REG_SYS_CTRL);
-+}
-+
-+static const struct regmap_config stmfx_regmap_config = {
-+	.reg_bits	= 8,
-+	.reg_stride	= 1,
-+	.val_bits	= 8,
-+	.max_register	= STMFX_REG_MAX,
-+	.volatile_reg	= stmfx_reg_volatile,
-+	.writeable_reg	= stmfx_reg_writeable,
-+	.cache_type	= REGCACHE_RBTREE,
-+};
 +
 +static int stmfx_probe(struct i2c_client *client,
 +		       const struct i2c_device_id *id)
 +{
 +	struct device *dev = &client->dev;
-+	struct stmfx_ddata *ddata;
-+	int i, ret;
++	struct stmfx *stmfx;
++	int ret;
 +
-+	ddata = devm_kzalloc(dev, sizeof(*ddata), GFP_KERNEL);
-+	if (!ddata)
-+		return -ENOMEM;
-+	/* State holder */
-+	ddata->stmfx = devm_kzalloc(dev, sizeof(*ddata->stmfx), GFP_KERNEL);
-+	if (!ddata->stmfx)
++	stmfx = devm_kzalloc(dev, sizeof(*stmfx), GFP_KERNEL);
++	if (!stmfx)
 +		return -ENOMEM;
 +
-+	i2c_set_clientdata(client, ddata);
++	i2c_set_clientdata(client, stmfx);
 +
-+	ddata->stmfx->dev = dev;
++	stmfx->dev = dev;
 +
-+	ddata->stmfx->map = devm_regmap_init_i2c(client, &stmfx_regmap_config);
-+	if (IS_ERR(ddata->stmfx->map)) {
-+		ret = PTR_ERR(ddata->stmfx->map);
-+		dev_err(dev, "failed to allocate register map: %d\n", ret);
++	stmfx->map = devm_regmap_init_i2c(client, &stmfx_regmap_config);
++	if (IS_ERR(stmfx->map)) {
++		ret = PTR_ERR(stmfx->map);
++		dev_err(dev, "Failed to allocate register map: %d\n", ret);
 +		return ret;
 +	}
 +
-+	mutex_init(&ddata->lock);
++	mutex_init(&stmfx->lock);
 +
-+	ret = stmfx_chip_init(ddata, client);
++	ret = stmfx_chip_init(client);
 +	if (ret) {
 +		if (ret == -ETIMEDOUT)
 +			return -EPROBE_DEFER;
@@ -979,123 +934,90 @@ index 0000000..cfd4fca
 +	}
 +
 +	if (client->irq < 0) {
-+		dev_err(dev, "failed to get irq: %d\n", client->irq);
++		dev_err(dev, "Failed to get IRQ: %d\n", client->irq);
 +		ret = client->irq;
 +		goto err_chip_exit;
 +	}
 +
-+	ret = stmfx_irq_init(ddata, client->irq);
++	ret = stmfx_irq_init(client);
 +	if (ret)
 +		goto err_chip_exit;
 +
-+	for (i = 0; i < ARRAY_SIZE(stmfx_cells); i++) {
-+		stmfx_cells[i].platform_data = ddata->stmfx;
-+		stmfx_cells[i].pdata_size = sizeof(struct stmfx);
-+	}
-+
 +	ret = devm_mfd_add_devices(dev, PLATFORM_DEVID_NONE,
 +				   stmfx_cells, ARRAY_SIZE(stmfx_cells), NULL,
-+				   0, ddata->irq_domain);
++				   0, stmfx->irq_domain);
 +	if (ret)
 +		goto err_irq_exit;
 +
 +	return 0;
 +
 +err_irq_exit:
-+	stmfx_irq_exit(ddata);
++	stmfx_irq_exit(client);
 +err_chip_exit:
-+	stmfx_chip_exit(ddata);
++	stmfx_chip_exit(client);
 +
 +	return ret;
 +}
 +
 +static int stmfx_remove(struct i2c_client *client)
 +{
-+	struct stmfx_ddata *ddata = i2c_get_clientdata(client);
++	stmfx_irq_exit(client);
 +
-+	stmfx_irq_exit(ddata);
-+
-+	return stmfx_chip_exit(ddata);
++	return stmfx_chip_exit(client);
 +}
 +
 +#ifdef CONFIG_PM_SLEEP
-+static int stmfx_backup_regs(struct stmfx_ddata *ddata)
-+{
-+	int ret;
-+
-+	ret = regmap_raw_read(ddata->stmfx->map, STMFX_REG_SYS_CTRL,
-+			      &ddata->bkp_sysctrl, sizeof(ddata->bkp_sysctrl));
-+	if (ret)
-+		return ret;
-+	ret = regmap_raw_read(ddata->stmfx->map, STMFX_REG_IRQ_OUT_PIN,
-+			      &ddata->bkp_irqoutpin,
-+			      sizeof(ddata->bkp_irqoutpin));
-+	if (ret)
-+		return ret;
-+
-+	return 0;
-+}
-+
-+static int stmfx_restore_regs(struct stmfx_ddata *ddata)
-+{
-+	int ret;
-+
-+	ret = regmap_raw_write(ddata->stmfx->map, STMFX_REG_SYS_CTRL,
-+			       &ddata->bkp_sysctrl, sizeof(ddata->bkp_sysctrl));
-+	if (ret)
-+		return ret;
-+	ret = regmap_raw_write(ddata->stmfx->map, STMFX_REG_IRQ_OUT_PIN,
-+			       &ddata->bkp_irqoutpin,
-+			       sizeof(ddata->bkp_irqoutpin));
-+	if (ret)
-+		return ret;
-+	ret = regmap_raw_write(ddata->stmfx->map, STMFX_REG_IRQ_SRC_EN,
-+			       &ddata->irq_src, sizeof(ddata->irq_src));
-+	if (ret)
-+		return ret;
-+
-+	return 0;
-+}
-+
 +static int stmfx_suspend(struct device *dev)
 +{
-+	struct stmfx_ddata *ddata = dev_get_drvdata(dev);
++	struct stmfx *stmfx = dev_get_drvdata(dev);
 +	int ret;
 +
-+	ret = stmfx_backup_regs(ddata);
-+	if (ret) {
-+		dev_err(ddata->stmfx->dev, "registers backup failure\n");
++	ret = regmap_raw_read(stmfx->map, STMFX_REG_SYS_CTRL,
++			      &stmfx->bkp_sysctrl, sizeof(stmfx->bkp_sysctrl));
++	if (ret)
 +		return ret;
-+	}
 +
-+	if (!IS_ERR(ddata->vdd)) {
-+		ret = regulator_disable(ddata->vdd);
-+		if (ret)
-+			return ret;
-+	}
++	ret = regmap_raw_read(stmfx->map, STMFX_REG_IRQ_OUT_PIN,
++			      &stmfx->bkp_irqoutpin,
++			      sizeof(stmfx->bkp_irqoutpin));
++	if (ret)
++		return ret;
++
++	if (stmfx->vdd)
++		return regulator_disable(stmfx->vdd);
 +
 +	return 0;
 +}
 +
 +static int stmfx_resume(struct device *dev)
 +{
-+	struct stmfx_ddata *ddata = dev_get_drvdata(dev);
++	struct stmfx *stmfx = dev_get_drvdata(dev);
 +	int ret;
 +
-+	if (!IS_ERR(ddata->vdd)) {
-+		ret = regulator_enable(ddata->vdd);
++	if (stmfx->vdd) {
++		ret = regulator_enable(stmfx->vdd);
 +		if (ret) {
-+			dev_err(ddata->stmfx->dev,
-+				"vdd enable failed: %d\n", ret);
++			dev_err(stmfx->dev,
++				"VDD enable failed: %d\n", ret);
 +			return ret;
 +		}
 +	}
 +
-+	ret = stmfx_restore_regs(ddata);
-+	if (ret) {
-+		dev_err(ddata->stmfx->dev, "registers restoration failure\n");
++	ret = regmap_raw_write(stmfx->map, STMFX_REG_SYS_CTRL,
++			       &stmfx->bkp_sysctrl, sizeof(stmfx->bkp_sysctrl));
++	if (ret)
 +		return ret;
-+	}
++
++	ret = regmap_raw_write(stmfx->map, STMFX_REG_IRQ_OUT_PIN,
++			       &stmfx->bkp_irqoutpin,
++			       sizeof(stmfx->bkp_irqoutpin));
++	if (ret)
++		return ret;
++
++	ret = regmap_raw_write(stmfx->map, STMFX_REG_IRQ_SRC_EN,
++			       &stmfx->irq_src, sizeof(stmfx->irq_src));
++	if (ret)
++		return ret;
 +
 +	return 0;
 +}
@@ -1125,10 +1047,10 @@ index 0000000..cfd4fca
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/mfd/stpmic1.c b/drivers/mfd/stpmic1.c
 new file mode 100644
-index 0000000..648315d
+index 0000000..766c321
 --- /dev/null
 +++ b/drivers/mfd/stpmic1.c
-@@ -0,0 +1,409 @@
+@@ -0,0 +1,219 @@
 +// SPDX-License-Identifier: GPL-2.0
 +// Copyright (C) STMicroelectronics 2018
 +// Author: Pascal Paillet <p.paillet@st.com>
@@ -1147,219 +1069,93 @@ index 0000000..648315d
 +#include <dt-bindings/mfd/st,stpmic1.h>
 +
 +#define STPMIC1_MAIN_IRQ 0
-+#define STPMIC1_WAKEUP_IRQ 1
 +
-+static bool stpmic1_reg_readable(struct device *dev, unsigned int reg)
-+{
-+	switch (reg) {
-+	case TURN_ON_SR:
-+	case TURN_OFF_SR:
-+	case ICC_LDO_TURN_OFF_SR:
-+	case ICC_BUCK_TURN_OFF_SR:
-+	case RREQ_STATE_SR:
-+	case VERSION_SR:
-+	case SWOFF_PWRCTRL_CR:
-+	case PADS_PULL_CR:
-+	case BUCKS_PD_CR:
-+	case LDO14_PD_CR:
-+	case LDO56_VREF_PD_CR:
-+	case VBUS_DET_VIN_CR:
-+	case PKEY_TURNOFF_CR:
-+	case BUCKS_MASK_RANK_CR:
-+	case BUCKS_MASK_RESET_CR:
-+	case LDOS_MASK_RANK_CR:
-+	case LDOS_MASK_RESET_CR:
-+	case WCHDG_CR:
-+	case WCHDG_TIMER_CR:
-+	case BUCKS_ICCTO_CR:
-+	case LDOS_ICCTO_CR:
-+	case BUCK1_ACTIVE_CR:
-+	case BUCK2_ACTIVE_CR:
-+	case BUCK3_ACTIVE_CR:
-+	case BUCK4_ACTIVE_CR:
-+	case VREF_DDR_ACTIVE_CR:
-+	case LDO1_ACTIVE_CR:
-+	case LDO2_ACTIVE_CR:
-+	case LDO3_ACTIVE_CR:
-+	case LDO4_ACTIVE_CR:
-+	case LDO5_ACTIVE_CR:
-+	case LDO6_ACTIVE_CR:
-+	case BUCK1_STDBY_CR:
-+	case BUCK2_STDBY_CR:
-+	case BUCK3_STDBY_CR:
-+	case BUCK4_STDBY_CR:
-+	case VREF_DDR_STDBY_CR:
-+	case LDO1_STDBY_CR:
-+	case LDO2_STDBY_CR:
-+	case LDO3_STDBY_CR:
-+	case LDO4_STDBY_CR:
-+	case LDO5_STDBY_CR:
-+	case LDO6_STDBY_CR:
-+	case BST_SW_CR:
-+	case INT_PENDING_R1:
-+	case INT_PENDING_R2:
-+	case INT_PENDING_R3:
-+	case INT_PENDING_R4:
-+	case INT_DBG_LATCH_R1:
-+	case INT_DBG_LATCH_R2:
-+	case INT_DBG_LATCH_R3:
-+	case INT_DBG_LATCH_R4:
-+	case INT_CLEAR_R1:
-+	case INT_CLEAR_R2:
-+	case INT_CLEAR_R3:
-+	case INT_CLEAR_R4:
-+	case INT_MASK_R1:
-+	case INT_MASK_R2:
-+	case INT_MASK_R3:
-+	case INT_MASK_R4:
-+	case INT_SET_MASK_R1:
-+	case INT_SET_MASK_R2:
-+	case INT_SET_MASK_R3:
-+	case INT_SET_MASK_R4:
-+	case INT_CLEAR_MASK_R1:
-+	case INT_CLEAR_MASK_R2:
-+	case INT_CLEAR_MASK_R3:
-+	case INT_CLEAR_MASK_R4:
-+	case INT_SRC_R1:
-+	case INT_SRC_R2:
-+	case INT_SRC_R3:
-+	case INT_SRC_R4:
-+		return true;
-+	default:
-+		return false;
-+	}
-+}
++static const struct regmap_range stpmic1_readable_ranges[] = {
++	regmap_reg_range(TURN_ON_SR, VERSION_SR),
++	regmap_reg_range(SWOFF_PWRCTRL_CR, LDO6_STDBY_CR),
++	regmap_reg_range(BST_SW_CR, BST_SW_CR),
++	regmap_reg_range(INT_PENDING_R1, INT_PENDING_R4),
++	regmap_reg_range(INT_CLEAR_R1, INT_CLEAR_R4),
++	regmap_reg_range(INT_MASK_R1, INT_MASK_R4),
++	regmap_reg_range(INT_SET_MASK_R1, INT_SET_MASK_R4),
++	regmap_reg_range(INT_CLEAR_MASK_R1, INT_CLEAR_MASK_R4),
++	regmap_reg_range(INT_SRC_R1, INT_SRC_R1),
++};
 +
-+static bool stpmic1_reg_writeable(struct device *dev, unsigned int reg)
-+{
-+	switch (reg) {
-+	case SWOFF_PWRCTRL_CR:
-+	case PADS_PULL_CR:
-+	case BUCKS_PD_CR:
-+	case LDO14_PD_CR:
-+	case LDO56_VREF_PD_CR:
-+	case VBUS_DET_VIN_CR:
-+	case PKEY_TURNOFF_CR:
-+	case BUCKS_MASK_RANK_CR:
-+	case BUCKS_MASK_RESET_CR:
-+	case LDOS_MASK_RANK_CR:
-+	case LDOS_MASK_RESET_CR:
-+	case WCHDG_CR:
-+	case WCHDG_TIMER_CR:
-+	case BUCKS_ICCTO_CR:
-+	case LDOS_ICCTO_CR:
-+	case BUCK1_ACTIVE_CR:
-+	case BUCK2_ACTIVE_CR:
-+	case BUCK3_ACTIVE_CR:
-+	case BUCK4_ACTIVE_CR:
-+	case VREF_DDR_ACTIVE_CR:
-+	case LDO1_ACTIVE_CR:
-+	case LDO2_ACTIVE_CR:
-+	case LDO3_ACTIVE_CR:
-+	case LDO4_ACTIVE_CR:
-+	case LDO5_ACTIVE_CR:
-+	case LDO6_ACTIVE_CR:
-+	case BUCK1_STDBY_CR:
-+	case BUCK2_STDBY_CR:
-+	case BUCK3_STDBY_CR:
-+	case BUCK4_STDBY_CR:
-+	case VREF_DDR_STDBY_CR:
-+	case LDO1_STDBY_CR:
-+	case LDO2_STDBY_CR:
-+	case LDO3_STDBY_CR:
-+	case LDO4_STDBY_CR:
-+	case LDO5_STDBY_CR:
-+	case LDO6_STDBY_CR:
-+	case BST_SW_CR:
-+	case INT_DBG_LATCH_R1:
-+	case INT_DBG_LATCH_R2:
-+	case INT_DBG_LATCH_R3:
-+	case INT_DBG_LATCH_R4:
-+	case INT_CLEAR_R1:
-+	case INT_CLEAR_R2:
-+	case INT_CLEAR_R3:
-+	case INT_CLEAR_R4:
-+	case INT_SET_MASK_R1:
-+	case INT_SET_MASK_R2:
-+	case INT_SET_MASK_R3:
-+	case INT_SET_MASK_R4:
-+	case INT_CLEAR_MASK_R1:
-+	case INT_CLEAR_MASK_R2:
-+	case INT_CLEAR_MASK_R3:
-+	case INT_CLEAR_MASK_R4:
-+		return true;
-+	default:
-+		return false;
-+	}
-+}
++static const struct regmap_range stpmic1_writeable_ranges[] = {
++	regmap_reg_range(SWOFF_PWRCTRL_CR, LDO6_STDBY_CR),
++	regmap_reg_range(BST_SW_CR, BST_SW_CR),
++	regmap_reg_range(INT_CLEAR_R1, INT_CLEAR_R4),
++	regmap_reg_range(INT_SET_MASK_R1, INT_SET_MASK_R4),
++	regmap_reg_range(INT_CLEAR_MASK_R1, INT_CLEAR_MASK_R4),
++};
 +
-+static bool stpmic1_reg_volatile(struct device *dev, unsigned int reg)
-+{
-+	switch (reg) {
-+	case TURN_ON_SR:
-+	case TURN_OFF_SR:
-+	case ICC_LDO_TURN_OFF_SR:
-+	case ICC_BUCK_TURN_OFF_SR:
-+	case RREQ_STATE_SR:
-+	case INT_PENDING_R1:
-+	case INT_PENDING_R2:
-+	case INT_PENDING_R3:
-+	case INT_PENDING_R4:
-+	case INT_SRC_R1:
-+	case INT_SRC_R2:
-+	case INT_SRC_R3:
-+	case INT_SRC_R4:
-+	case WCHDG_CR:
-+		return true;
-+	default:
-+		return false;
-+	}
-+}
++static const struct regmap_range stpmic1_volatile_ranges[] = {
++	regmap_reg_range(TURN_ON_SR, VERSION_SR),
++	regmap_reg_range(WCHDG_CR, WCHDG_CR),
++	regmap_reg_range(INT_PENDING_R1, INT_PENDING_R4),
++	regmap_reg_range(INT_SRC_R1, INT_SRC_R4),
++};
++
++static const struct regmap_access_table stpmic1_readable_table = {
++	.yes_ranges = stpmic1_readable_ranges,
++	.n_yes_ranges = ARRAY_SIZE(stpmic1_readable_ranges),
++};
++
++static const struct regmap_access_table stpmic1_writeable_table = {
++	.yes_ranges = stpmic1_writeable_ranges,
++	.n_yes_ranges = ARRAY_SIZE(stpmic1_writeable_ranges),
++};
++
++static const struct regmap_access_table stpmic1_volatile_table = {
++	.yes_ranges = stpmic1_volatile_ranges,
++	.n_yes_ranges = ARRAY_SIZE(stpmic1_volatile_ranges),
++};
 +
 +const struct regmap_config stpmic1_regmap_config = {
 +	.reg_bits = 8,
 +	.val_bits = 8,
 +	.cache_type = REGCACHE_RBTREE,
 +	.max_register = PMIC_MAX_REGISTER_ADDRESS,
-+	.readable_reg = stpmic1_reg_readable,
-+	.writeable_reg = stpmic1_reg_writeable,
-+	.volatile_reg = stpmic1_reg_volatile,
++	.rd_table = &stpmic1_readable_table,
++	.wr_table = &stpmic1_writeable_table,
++	.volatile_table = &stpmic1_volatile_table,
 +};
 +
 +static const struct regmap_irq stpmic1_irqs[] = {
-+	[IT_PONKEY_F]		= { .mask = 0x01 },
-+	[IT_PONKEY_R]		= { .mask = 0x02 },
-+	[IT_WAKEUP_F]		= { .mask = 0x04 },
-+	[IT_WAKEUP_R]		= { .mask = 0x08 },
-+	[IT_VBUS_OTG_F]		= { .mask = 0x10 },
-+	[IT_VBUS_OTG_R]		= { .mask = 0x20 },
-+	[IT_SWOUT_F]		= { .mask = 0x40 },
-+	[IT_SWOUT_R]		= { .mask = 0x80 },
++	REGMAP_IRQ_REG(IT_PONKEY_F, 0, 0x01),
++	REGMAP_IRQ_REG(IT_PONKEY_R, 0, 0x02),
++	REGMAP_IRQ_REG(IT_WAKEUP_F, 0, 0x04),
++	REGMAP_IRQ_REG(IT_WAKEUP_R, 0, 0x08),
++	REGMAP_IRQ_REG(IT_VBUS_OTG_F, 0, 0x10),
++	REGMAP_IRQ_REG(IT_VBUS_OTG_R, 0, 0x20),
++	REGMAP_IRQ_REG(IT_SWOUT_F, 0, 0x40),
++	REGMAP_IRQ_REG(IT_SWOUT_R, 0, 0x80),
 +
-+	[IT_CURLIM_BUCK1]	= { .reg_offset = 1, .mask = 0x01 },
-+	[IT_CURLIM_BUCK2]	= { .reg_offset = 1, .mask = 0x02 },
-+	[IT_CURLIM_BUCK3]	= { .reg_offset = 1, .mask = 0x04 },
-+	[IT_CURLIM_BUCK4]	= { .reg_offset = 1, .mask = 0x08 },
-+	[IT_OCP_OTG]		= { .reg_offset = 1, .mask = 0x10 },
-+	[IT_OCP_SWOUT]		= { .reg_offset = 1, .mask = 0x20 },
-+	[IT_OCP_BOOST]		= { .reg_offset = 1, .mask = 0x40 },
-+	[IT_OVP_BOOST]		= { .reg_offset = 1, .mask = 0x80 },
++	REGMAP_IRQ_REG(IT_CURLIM_BUCK1, 1, 0x01),
++	REGMAP_IRQ_REG(IT_CURLIM_BUCK2, 1, 0x02),
++	REGMAP_IRQ_REG(IT_CURLIM_BUCK3, 1, 0x04),
++	REGMAP_IRQ_REG(IT_CURLIM_BUCK4, 1, 0x08),
++	REGMAP_IRQ_REG(IT_OCP_OTG, 1, 0x10),
++	REGMAP_IRQ_REG(IT_OCP_SWOUT, 1, 0x20),
++	REGMAP_IRQ_REG(IT_OCP_BOOST, 1, 0x40),
++	REGMAP_IRQ_REG(IT_OVP_BOOST, 1, 0x80),
 +
-+	[IT_CURLIM_LDO1]	= { .reg_offset = 2, .mask = 0x01 },
-+	[IT_CURLIM_LDO2]	= { .reg_offset = 2, .mask = 0x02 },
-+	[IT_CURLIM_LDO3]	= { .reg_offset = 2, .mask = 0x04 },
-+	[IT_CURLIM_LDO4]	= { .reg_offset = 2, .mask = 0x08 },
-+	[IT_CURLIM_LDO5]	= { .reg_offset = 2, .mask = 0x10 },
-+	[IT_CURLIM_LDO6]	= { .reg_offset = 2, .mask = 0x20 },
-+	[IT_SHORT_SWOTG]	= { .reg_offset = 2, .mask = 0x40 },
-+	[IT_SHORT_SWOUT]	= { .reg_offset = 2, .mask = 0x80 },
++	REGMAP_IRQ_REG(IT_CURLIM_LDO1, 2, 0x01),
++	REGMAP_IRQ_REG(IT_CURLIM_LDO2, 2, 0x02),
++	REGMAP_IRQ_REG(IT_CURLIM_LDO3, 2, 0x04),
++	REGMAP_IRQ_REG(IT_CURLIM_LDO4, 2, 0x08),
++	REGMAP_IRQ_REG(IT_CURLIM_LDO5, 2, 0x10),
++	REGMAP_IRQ_REG(IT_CURLIM_LDO6, 2, 0x20),
++	REGMAP_IRQ_REG(IT_SHORT_SWOTG, 2, 0x40),
++	REGMAP_IRQ_REG(IT_SHORT_SWOUT, 2, 0x80),
 +
-+	[IT_TWARN_F]		= { .reg_offset = 3, .mask = 0x01 },
-+	[IT_TWARN_R]		= { .reg_offset = 3, .mask = 0x02 },
-+	[IT_VINLOW_F]		= { .reg_offset = 3, .mask = 0x04 },
-+	[IT_VINLOW_R]		= { .reg_offset = 3, .mask = 0x08 },
-+	[IT_SWIN_F]		= { .reg_offset = 3, .mask = 0x40 },
-+	[IT_SWIN_R]		= { .reg_offset = 3, .mask = 0x80 },
++	REGMAP_IRQ_REG(IT_TWARN_F, 3, 0x01),
++	REGMAP_IRQ_REG(IT_TWARN_R, 3, 0x02),
++	REGMAP_IRQ_REG(IT_VINLOW_F, 3, 0x04),
++	REGMAP_IRQ_REG(IT_VINLOW_R, 3, 0x08),
++	REGMAP_IRQ_REG(IT_SWIN_F, 3, 0x40),
++	REGMAP_IRQ_REG(IT_SWIN_R, 3, 0x80),
 +};
 +
 +static const struct regmap_irq_chip stpmic1_regmap_irq_chip = {
@@ -1399,78 +1195,14 @@ index 0000000..648315d
 +		return ddata->irq;
 +	}
 +
-+	if (of_property_read_bool(np, "wakeup-source"))
-+		device_init_wakeup(dev, true);
-+
-+	if (!of_property_read_u32(np, "st,main-control-register", &reg)) {
-+		ret = regmap_update_bits(ddata->regmap,
-+					 SWOFF_PWRCTRL_CR,
-+					 PWRCTRL_POLARITY_HIGH |
-+					 PWRCTRL_PIN_VALID |
-+					 RESTART_REQUEST_ENABLED,
-+					 reg);
-+		if (ret) {
-+			dev_err(dev,
-+				"Failed to update main control register: %d\n",
-+				ret);
-+			return ret;
-+		}
-+	}
-+
-+	/* Read Version ID */
 +	ret = regmap_read(ddata->regmap, VERSION_SR, &reg);
 +	if (ret) {
-+		dev_err(dev, "Unable to read pmic version\n");
++		dev_err(dev, "Unable to read PMIC version\n");
 +		return ret;
 +	}
 +	dev_info(dev, "PMIC Chip Version: 0x%x\n", reg);
 +
-+	if (!of_property_read_u32(np, "st,pads-pull-register", &reg)) {
-+		ret = regmap_update_bits(ddata->regmap,
-+					 PADS_PULL_CR,
-+					 WAKEUP_DETECTOR_DISABLED |
-+					 PWRCTRL_PD_ACTIVE |
-+					 PWRCTRL_PU_ACTIVE |
-+					 WAKEUP_PD_ACTIVE,
-+					 reg);
-+		if (ret) {
-+			dev_err(dev,
-+				"Failed to update pads control register: %d\n",
-+				ret);
-+			return ret;
-+		}
-+	}
-+
-+	if (!of_property_read_u32(np, "st,vin-control-register", &reg)) {
-+		ret = regmap_update_bits(ddata->regmap,
-+					 VBUS_DET_VIN_CR,
-+					 VINLOW_CTRL_REG_MASK,
-+					 reg);
-+		if (ret) {
-+			dev_err(dev,
-+				"Failed to update vin control register: %d\n",
-+				ret);
-+			return ret;
-+		}
-+	}
-+
-+	if (!of_property_read_u32(np, "st,usb-control-register", &reg)) {
-+		ret = regmap_update_bits(ddata->regmap, BST_SW_CR,
-+					 BOOST_OVP_DISABLED |
-+					 VBUS_OTG_DETECTION_DISABLED |
-+					 SW_OUT_DISCHARGE |
-+					 VBUS_OTG_DISCHARGE |
-+					 OCP_LIMIT_HIGH,
-+					 reg);
-+		if (ret) {
-+			dev_err(dev,
-+				"Failed to update usb control register: %d\n",
-+				ret);
-+			return ret;
-+		}
-+	}
-+
-+	/* Initialize PMIC IRQ Chip & IRQ domains associated */
++	/* Initialize PMIC IRQ Chip & associated IRQ domains */
 +	ret = devm_regmap_add_irq_chip(dev, ddata->regmap, ddata->irq,
 +				       IRQF_ONESHOT | IRQF_SHARED,
 +				       0, &stpmic1_regmap_irq_chip,
@@ -1483,13 +1215,6 @@ index 0000000..648315d
 +	return devm_of_platform_populate(dev);
 +}
 +
-+static const struct i2c_device_id stpmic1_id[] = {
-+	{ "stpmic1"},
-+	{}
-+};
-+
-+MODULE_DEVICE_TABLE(i2c, stpmic1_id);
-+
 +#ifdef CONFIG_PM_SLEEP
 +static int stpmic1_suspend(struct device *dev)
 +{
@@ -1497,6 +1222,7 @@ index 0000000..648315d
 +	struct stpmic1 *pmic_dev = i2c_get_clientdata(i2c);
 +
 +	disable_irq(pmic_dev->irq);
++
 +	if (device_may_wakeup(dev))
 +		enable_irq_wake(pmic_dev->irq);
 +
@@ -1524,13 +1250,19 @@ index 0000000..648315d
 +
 +static SIMPLE_DEV_PM_OPS(stpmic1_pm, stpmic1_suspend, stpmic1_resume);
 +
++static const struct of_device_id stpmic1_of_match[] = {
++	{ .compatible = "st,stpmic1", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, stpmic1_of_match);
++
 +static struct i2c_driver stpmic1_driver = {
 +	.driver = {
 +		.name = "stpmic1",
++		.of_match_table = of_match_ptr(stpmic1_of_match),
 +		.pm = &stpmic1_pm,
 +	},
 +	.probe = stpmic1_probe,
-+	.id_table = stpmic1_id,
 +};
 +
 +module_i2c_driver(stpmic1_driver);
@@ -1637,10 +1369,10 @@ index 22bd652..ab8f1d4 100644
  #else
 diff --git a/include/dt-bindings/mfd/st,stpmic1.h b/include/dt-bindings/mfd/st,stpmic1.h
 new file mode 100644
-index 0000000..b2d6c83
+index 0000000..321cd087
 --- /dev/null
 +++ b/include/dt-bindings/mfd/st,stpmic1.h
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,50 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +/*
 + * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
@@ -1686,23 +1418,104 @@ index 0000000..b2d6c83
 +#define IT_SWIN_F	30
 +#define IT_SWIN_R	31
 +
++/* BUCK MODES definitions */
++#define STPMIC1_BUCK_MODE_NORMAL 0
++#define STPMIC1_BUCK_MODE_LP 2
++
 +#endif /* __DT_BINDINGS_STPMIC1_H__ */
 diff --git a/include/linux/mfd/stmfx.h b/include/linux/mfd/stmfx.h
 new file mode 100644
-index 0000000..35c3d42
+index 0000000..3c67983
 --- /dev/null
 +++ b/include/linux/mfd/stmfx.h
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,123 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +/*
-+ * Copyright (C) 2018 STMicroelectronics
++ * Copyright (C) 2019 STMicroelectronics
 + * Author(s): Amelie Delaunay <amelie.delaunay@st.com>.
 + */
 +
 +#ifndef MFD_STMFX_H
-+#define MFX_STMFX_H
++#define MFD_STMFX_H
 +
 +#include <linux/regmap.h>
++
++/* General */
++#define STMFX_REG_CHIP_ID		0x00 /* R */
++#define STMFX_REG_FW_VERSION_MSB	0x01 /* R */
++#define STMFX_REG_FW_VERSION_LSB	0x02 /* R */
++#define STMFX_REG_SYS_CTRL		0x40 /* RW */
++/* IRQ output management */
++#define STMFX_REG_IRQ_OUT_PIN		0x41 /* RW */
++#define STMFX_REG_IRQ_SRC_EN		0x42 /* RW */
++#define STMFX_REG_IRQ_PENDING		0x08 /* R */
++#define STMFX_REG_IRQ_ACK		0x44 /* RW */
++/* GPIO management */
++#define STMFX_REG_IRQ_GPI_PENDING1	0x0C /* R */
++#define STMFX_REG_IRQ_GPI_PENDING2	0x0D /* R */
++#define STMFX_REG_IRQ_GPI_PENDING3	0x0E /* R */
++#define STMFX_REG_GPIO_STATE1		0x10 /* R */
++#define STMFX_REG_GPIO_STATE2		0x11 /* R */
++#define STMFX_REG_GPIO_STATE3		0x12 /* R */
++#define STMFX_REG_IRQ_GPI_SRC1		0x48 /* RW */
++#define STMFX_REG_IRQ_GPI_SRC2		0x49 /* RW */
++#define STMFX_REG_IRQ_GPI_SRC3		0x4A /* RW */
++#define STMFX_REG_IRQ_GPI_EVT1		0x4C /* RW */
++#define STMFX_REG_IRQ_GPI_EVT2		0x4D /* RW */
++#define STMFX_REG_IRQ_GPI_EVT3		0x4E /* RW */
++#define STMFX_REG_IRQ_GPI_TYPE1		0x50 /* RW */
++#define STMFX_REG_IRQ_GPI_TYPE2		0x51 /* RW */
++#define STMFX_REG_IRQ_GPI_TYPE3		0x52 /* RW */
++#define STMFX_REG_IRQ_GPI_ACK1		0x54 /* RW */
++#define STMFX_REG_IRQ_GPI_ACK2		0x55 /* RW */
++#define STMFX_REG_IRQ_GPI_ACK3		0x56 /* RW */
++#define STMFX_REG_GPIO_DIR1		0x60 /* RW */
++#define STMFX_REG_GPIO_DIR2		0x61 /* RW */
++#define STMFX_REG_GPIO_DIR3		0x62 /* RW */
++#define STMFX_REG_GPIO_TYPE1		0x64 /* RW */
++#define STMFX_REG_GPIO_TYPE2		0x65 /* RW */
++#define STMFX_REG_GPIO_TYPE3		0x66 /* RW */
++#define STMFX_REG_GPIO_PUPD1		0x68 /* RW */
++#define STMFX_REG_GPIO_PUPD2		0x69 /* RW */
++#define STMFX_REG_GPIO_PUPD3		0x6A /* RW */
++#define STMFX_REG_GPO_SET1		0x6C /* RW */
++#define STMFX_REG_GPO_SET2		0x6D /* RW */
++#define STMFX_REG_GPO_SET3		0x6E /* RW */
++#define STMFX_REG_GPO_CLR1		0x70 /* RW */
++#define STMFX_REG_GPO_CLR2		0x71 /* RW */
++#define STMFX_REG_GPO_CLR3		0x72 /* RW */
++
++#define STMFX_REG_MAX			0xB0
++
++/* MFX boot time is around 10ms, so after reset, we have to wait this delay */
++#define STMFX_BOOT_TIME_MS 10
++
++/* STMFX_REG_CHIP_ID bitfields */
++#define STMFX_REG_CHIP_ID_MASK		GENMASK(7, 0)
++
++/* STMFX_REG_SYS_CTRL bitfields */
++#define STMFX_REG_SYS_CTRL_GPIO_EN	BIT(0)
++#define STMFX_REG_SYS_CTRL_TS_EN	BIT(1)
++#define STMFX_REG_SYS_CTRL_IDD_EN	BIT(2)
++#define STMFX_REG_SYS_CTRL_ALTGPIO_EN	BIT(3)
++#define STMFX_REG_SYS_CTRL_SWRST	BIT(7)
++
++/* STMFX_REG_IRQ_OUT_PIN bitfields */
++#define STMFX_REG_IRQ_OUT_PIN_TYPE	BIT(0) /* 0-OD 1-PP */
++#define STMFX_REG_IRQ_OUT_PIN_POL	BIT(1) /* 0-active LOW 1-active HIGH */
++
++/* STMFX_REG_IRQ_(SRC_EN/PENDING/ACK) bit shift */
++enum stmfx_irqs {
++	STMFX_REG_IRQ_SRC_EN_GPIO = 0,
++	STMFX_REG_IRQ_SRC_EN_IDD,
++	STMFX_REG_IRQ_SRC_EN_ERROR,
++	STMFX_REG_IRQ_SRC_EN_TS_DET,
++	STMFX_REG_IRQ_SRC_EN_TS_NE,
++	STMFX_REG_IRQ_SRC_EN_TS_TH,
++	STMFX_REG_IRQ_SRC_EN_TS_FULL,
++	STMFX_REG_IRQ_SRC_EN_TS_OVF,
++	STMFX_REG_IRQ_SRC_MAX,
++};
 +
 +enum stmfx_functions {
 +	STMFX_FUNC_GPIO		= BIT(0), /* GPIO[15:0] */
@@ -1712,9 +1525,28 @@ index 0000000..35c3d42
 +	STMFX_FUNC_IDD		= BIT(4),
 +};
 +
++/**
++ * struct stmfx_ddata - STMFX MFD structure
++ * @device:		device reference used for logs
++ * @map:		register map
++ * @vdd:		STMFX power supply
++ * @irq_domain:		IRQ domain
++ * @lock:		IRQ bus lock
++ * @irq_src:		cache of IRQ_SRC_EN register for bus_lock
++ * @bkp_sysctrl:	backup of SYS_CTRL register for suspend/resume
++ * @bkp_irqoutpin:	backup of IRQ_OUT_PIN register for suspend/resume
++ */
 +struct stmfx {
 +	struct device *dev;
 +	struct regmap *map;
++	struct regulator *vdd;
++	struct irq_domain *irq_domain;
++	struct mutex lock; /* IRQ bus lock */
++	u8 irq_src;
++#ifdef CONFIG_PM
++	u8 bkp_sysctrl;
++	u8 bkp_irqoutpin;
++#endif
 +};
 +
 +int stmfx_function_enable(struct stmfx *stmfx, u32 func);

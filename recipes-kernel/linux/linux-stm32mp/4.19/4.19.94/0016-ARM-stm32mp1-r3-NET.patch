@@ -1,20 +1,34 @@
-From edca8bc73b6a7e2057b821cc41e68fe3d7c0bb03 Mon Sep 17 00:00:00 2001
+From 61b384e5eaed6c1ef9342e7216ffd2376e0f611d Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Thu, 11 Jul 2019 14:12:02 +0200
-Subject: [PATCH 15/30] ARM stm32mp1 r2 NET
+Date: Fri, 8 Nov 2019 16:52:43 +0100
+Subject: [PATCH 16/31] ARM stm32mp1 r3 NET
 
 ---
- drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c  | 166 +++++++++++++++++----
+ drivers/net/ethernet/stmicro/stmmac/common.h       |   2 +-
+ drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c  | 167 +++++++++++++++++----
  drivers/net/ethernet/stmicro/stmmac/dwmac4_lib.c   |   2 +-
  drivers/net/ethernet/stmicro/stmmac/stmmac_main.c  |  45 +++++-
  .../net/ethernet/stmicro/stmmac/stmmac_platform.c  |   3 +
  .../wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c  |   6 +
  .../net/wireless/broadcom/brcm80211/brcmfmac/pno.c |   5 +
  .../net/wireless/broadcom/brcm80211/brcmutil/d11.c |   3 -
- 7 files changed, 189 insertions(+), 41 deletions(-)
+ 8 files changed, 191 insertions(+), 42 deletions(-)
 
+diff --git a/drivers/net/ethernet/stmicro/stmmac/common.h b/drivers/net/ethernet/stmicro/stmmac/common.h
+index b069b3a..272b9ca6 100644
+--- a/drivers/net/ethernet/stmicro/stmmac/common.h
++++ b/drivers/net/ethernet/stmicro/stmmac/common.h
+@@ -261,7 +261,7 @@ struct stmmac_safety_stats {
+ #define STMMAC_COAL_TX_TIMER	1000
+ #define STMMAC_MAX_COAL_TX_TICK	100000
+ #define STMMAC_TX_MAX_FRAMES	256
+-#define STMMAC_TX_FRAMES	1
++#define STMMAC_TX_FRAMES	25
+ 
+ /* Packets types */
+ enum packets_types {
 diff --git a/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c b/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
-index 7e2e79d..6e260e9 100644
+index 7e2e79d..dd45026 100644
 --- a/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
 +++ b/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
 @@ -25,9 +25,24 @@
@@ -178,13 +192,13 @@ index 7e2e79d..6e260e9 100644
  	return regmap_update_bits(dwmac->regmap, reg,
  				 dwmac->ops->syscfg_eth_mask, val);
  }
-@@ -232,35 +304,64 @@ static int stm32_dwmac_parse_data(struct stm32_dwmac *dwmac,
+@@ -232,35 +304,65 @@ static int stm32_dwmac_parse_data(struct stm32_dwmac *dwmac,
  static int stm32mp1_parse_data(struct stm32_dwmac *dwmac,
  			       struct device *dev)
  {
 +	struct platform_device *pdev = to_platform_device(dev);
  	struct device_node *np = dev->of_node;
-+	int err = 0;
++	int err;
  
 -	dwmac->int_phyclk = of_property_read_bool(np, "st,int-phyclk");
 +	/* Gigabit Ethernet 125MHz clock selection. */
@@ -231,6 +245,7 @@ index 7e2e79d..6e260e9 100644
  	}
  
 -	return 0;
++	err = 0;
 +	/* Get IRQ information early to have an ability to ask for deferred
 +	 * probe if needed before we went too far with resource allocation.
 +	 */
@@ -257,7 +272,7 @@ index 7e2e79d..6e260e9 100644
  }
  
  static int stm32_dwmac_probe(struct platform_device *pdev)
-@@ -326,9 +427,15 @@ static int stm32_dwmac_remove(struct platform_device *pdev)
+@@ -326,9 +428,15 @@ static int stm32_dwmac_remove(struct platform_device *pdev)
  	struct net_device *ndev = platform_get_drvdata(pdev);
  	struct stmmac_priv *priv = netdev_priv(ndev);
  	int ret = stmmac_dvr_remove(&pdev->dev);
@@ -273,7 +288,7 @@ index 7e2e79d..6e260e9 100644
  	return ret;
  }
  
-@@ -341,8 +448,9 @@ static int stm32mp1_suspend(struct stm32_dwmac *dwmac)
+@@ -341,8 +449,9 @@ static int stm32mp1_suspend(struct stm32_dwmac *dwmac)
  		return ret;
  
  	clk_disable_unprepare(dwmac->clk_tx);
@@ -299,7 +314,7 @@ index 49f5687..5b35071 100644
  		if (!(readl(ioaddr + DMA_BUS_MODE) & DMA_BUS_MODE_SFT_RESET))
  			break;
 diff --git a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
-index 50c0082..1df9027 100644
+index 014fe93..ccb512f 100644
 --- a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
 +++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
 @@ -2713,6 +2713,8 @@ static int stmmac_release(struct net_device *dev)
@@ -320,7 +335,7 @@ index 50c0082..1df9027 100644
  	for (chan = 0; chan < priv->plat->tx_queues_to_use; chan++)
  		del_timer_sync(&priv->tx_queue[chan].txtimer);
  
-@@ -4485,14 +4485,13 @@ int stmmac_suspend(struct device *dev)
+@@ -4501,14 +4501,13 @@ int stmmac_suspend(struct device *dev)
  	if (!ndev || !netif_running(ndev))
  		return 0;
  
@@ -337,7 +352,7 @@ index 50c0082..1df9027 100644
  	stmmac_disable_all_queues(priv);
  
  	/* Stop TX/RX DMA */
-@@ -4514,6 +4513,10 @@ int stmmac_suspend(struct device *dev)
+@@ -4532,6 +4531,10 @@ int stmmac_suspend(struct device *dev)
  	priv->oldlink = false;
  	priv->speed = SPEED_UNKNOWN;
  	priv->oldduplex = DUPLEX_UNKNOWN;
@@ -348,7 +363,7 @@ index 50c0082..1df9027 100644
  	return 0;
  }
  EXPORT_SYMBOL_GPL(stmmac_suspend);
-@@ -4554,6 +4557,7 @@ int stmmac_resume(struct device *dev)
+@@ -4572,6 +4575,7 @@ int stmmac_resume(struct device *dev)
  {
  	struct net_device *ndev = dev_get_drvdata(dev);
  	struct stmmac_priv *priv = netdev_priv(ndev);
@@ -356,7 +371,14 @@ index 50c0082..1df9027 100644
  
  	if (!netif_running(ndev))
  		return 0;
-@@ -4585,7 +4589,28 @@ int stmmac_resume(struct device *dev)
+@@ -4601,11 +4605,32 @@ int stmmac_resume(struct device *dev)
+ 
+ 	netif_device_attach(ndev);
+ 
++	if (ndev->phydev)
++		phy_start(ndev->phydev);
++
+ 	mutex_lock(&priv->lock);
  
  	stmmac_reset_queues_param(priv);
  
@@ -380,13 +402,10 @@ index 50c0082..1df9027 100644
 +			   __func__);
 +		goto init_error;
 +	}
-+
-+	if (ndev->phydev)
-+		phy_start(ndev->phydev);
  
  	stmmac_hw_setup(ndev, false);
  	stmmac_init_tx_coalesce(priv);
-@@ -4597,10 +4622,14 @@ int stmmac_resume(struct device *dev)
+@@ -4617,10 +4642,14 @@ int stmmac_resume(struct device *dev)
  
  	mutex_unlock(&priv->lock);
  

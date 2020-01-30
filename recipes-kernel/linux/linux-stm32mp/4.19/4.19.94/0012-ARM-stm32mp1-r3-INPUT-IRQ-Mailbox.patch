@@ -1,18 +1,20 @@
-From a7a3aa42479bf82ba9ed31d2960ad299a5bb214b Mon Sep 17 00:00:00 2001
+From b9a72771779e960b3ddf14d372ed6484cba99cbc Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Thu, 11 Jul 2019 14:12:01 +0200
-Subject: [PATCH 11/30] ARM stm32mp1 r2 INPUT IRQ Mailbox
+Date: Fri, 8 Nov 2019 16:52:41 +0100
+Subject: [PATCH 12/31] ARM stm32mp1 r3 INPUT IRQ Mailbox
 
 ---
  drivers/input/misc/Kconfig             |  11 ++
  drivers/input/misc/Makefile            |   2 +
- drivers/input/misc/stpmic1_onkey.c     | 197 +++++++++++++++++++
- drivers/input/touchscreen/edt-ft5x06.c |   8 +-
- drivers/input/touchscreen/goodix.c     |   9 +
+ drivers/input/misc/stpmic1_onkey.c     | 198 +++++++++++++++++++
+ drivers/input/touchscreen/edt-ft5x06.c |  24 ++-
+ drivers/input/touchscreen/goodix.c     |  24 +++
  drivers/irqchip/irq-stm32-exti.c       | 339 +++++++++++++++++++++++++++------
- drivers/mailbox/mailbox-test.c         |  26 +--
- drivers/mailbox/stm32-ipcc.c           |  54 ++++--
- 8 files changed, 555 insertions(+), 91 deletions(-)
+ drivers/mailbox/mailbox-test.c         |  12 +-
+ drivers/mailbox/stm32-ipcc.c           |   4 +-
+ kernel/irq/internals.h                 |   4 -
+ kernel/irq/manage.c                    |  75 ++------
+ 10 files changed, 563 insertions(+), 130 deletions(-)
  create mode 100644 drivers/input/misc/stpmic1_onkey.c
 
 diff --git a/drivers/input/misc/Kconfig b/drivers/input/misc/Kconfig
@@ -54,10 +56,10 @@ index 9d0f9d1..1b44202 100644
 +
 diff --git a/drivers/input/misc/stpmic1_onkey.c b/drivers/input/misc/stpmic1_onkey.c
 new file mode 100644
-index 0000000..6a7f08b
+index 0000000..7b49c99
 --- /dev/null
 +++ b/drivers/input/misc/stpmic1_onkey.c
-@@ -0,0 +1,197 @@
+@@ -0,0 +1,198 @@
 +// SPDX-License-Identifier: GPL-2.0
 +// Copyright (C) STMicroelectronics 2018
 +// Author: Pascal Paillet <p.paillet@st.com> for STMicroelectronics.
@@ -135,7 +137,7 @@ index 0000000..6a7f08b
 +	}
 +
 +	if (!device_property_read_u32(dev, "power-off-time-sec", &val)) {
-+		if ((val > 0) && (val <= 16)) {
++		if (val > 0 && val <= 16) {
 +			dev_dbg(dev, "power-off-time=%d seconds\n", val);
 +			reg |= PONKEY_PWR_OFF;
 +			reg |= ((16 - val) & PONKEY_TURNOFF_TIMER_MASK);
@@ -160,7 +162,8 @@ index 0000000..6a7f08b
 +					   PONKEY_PU_INACTIVE,
 +					   PONKEY_PU_INACTIVE);
 +		if (error) {
-+			dev_err(dev, "ONKEY Pads configuration failed: %d\n", error);
++			dev_err(dev, "ONKEY Pads configuration failed: %d\n",
++				error);
 +			return error;
 +		}
 +	}
@@ -256,10 +259,28 @@ index 0000000..6a7f08b
 +MODULE_AUTHOR("Pascal Paillet <p.paillet@st.com>");
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/input/touchscreen/edt-ft5x06.c b/drivers/input/touchscreen/edt-ft5x06.c
-index 1e18ca0..c1c6f2a 100644
+index 1e18ca0..745da4c 100644
 --- a/drivers/input/touchscreen/edt-ft5x06.c
 +++ b/drivers/input/touchscreen/edt-ft5x06.c
-@@ -1033,7 +1033,7 @@ static int edt_ft5x06_ts_probe(struct i2c_client *client,
+@@ -39,6 +39,8 @@
+ #include <linux/input/mt.h>
+ #include <linux/input/touchscreen.h>
+ #include <linux/of_device.h>
++#include <drm/drm_mipi_dsi.h>
++
+ 
+ #define WORK_REGISTER_THRESHOLD		0x00
+ #define WORK_REGISTER_REPORT_RATE	0x08
+@@ -968,6 +970,8 @@ static int edt_ft5x06_ts_probe(struct i2c_client *client,
+ {
+ 	const struct edt_i2c_chip_data *chip_data;
+ 	struct edt_ft5x06_ts_data *tsdata;
++	struct mipi_dsi_device *panel;
++	struct device_node *np;
+ 	struct input_dev *input;
+ 	unsigned long irq_flags;
+ 	int error;
+@@ -1033,7 +1037,7 @@ static int edt_ft5x06_ts_probe(struct i2c_client *client,
  
  	error = edt_ft5x06_ts_identify(client, tsdata, fw_version);
  	if (error) {
@@ -268,7 +289,26 @@ index 1e18ca0..c1c6f2a 100644
  		return error;
  	}
  
-@@ -1152,11 +1152,16 @@ static const struct edt_i2c_chip_data edt_ft6236_data = {
+@@ -1105,6 +1109,18 @@ static int edt_ft5x06_ts_probe(struct i2c_client *client,
+ 		tsdata->wake_gpio ? desc_to_gpio(tsdata->wake_gpio) : -1,
+ 		tsdata->reset_gpio ? desc_to_gpio(tsdata->reset_gpio) : -1);
+ 
++	np = of_parse_phandle(client->dev.of_node, "panel", 0);
++	if (np) {
++		panel = of_find_mipi_dsi_device_by_node(np);
++		of_node_put(np);
++		if (!panel)
++			return -ENOENT;
++
++		device_link_add(&client->dev, &panel->dev, DL_FLAG_STATELESS |
++				DL_FLAG_AUTOREMOVE_SUPPLIER);
++		put_device(&panel->dev);
++	}
++
+ 	return 0;
+ }
+ 
+@@ -1152,11 +1168,16 @@ static const struct edt_i2c_chip_data edt_ft6236_data = {
  	.max_support_points = 2,
  };
  
@@ -285,7 +325,7 @@ index 1e18ca0..c1c6f2a 100644
  	{ /* sentinel */ }
  };
  MODULE_DEVICE_TABLE(i2c, edt_ft5x06_ts_id);
-@@ -1169,6 +1174,7 @@ static const struct of_device_id edt_ft5x06_of_match[] = {
+@@ -1169,6 +1190,7 @@ static const struct of_device_id edt_ft5x06_of_match[] = {
  	{ .compatible = "edt,edt-ft5506", .data = &edt_ft5506_data },
  	/* Note focaltech vendor prefix for compatibility with ft6236.c */
  	{ .compatible = "focaltech,ft6236", .data = &edt_ft6236_data },
@@ -294,18 +334,21 @@ index 1e18ca0..c1c6f2a 100644
  };
  MODULE_DEVICE_TABLE(of, edt_ft5x06_of_match);
 diff --git a/drivers/input/touchscreen/goodix.c b/drivers/input/touchscreen/goodix.c
-index f2d9c2c..9ce8db4 100644
+index b20ba65..c196423 100644
 --- a/drivers/input/touchscreen/goodix.c
 +++ b/drivers/input/touchscreen/goodix.c
-@@ -27,6 +27,7 @@
+@@ -25,8 +25,10 @@
+ #include <linux/input/touchscreen.h>
+ #include <linux/module.h>
  #include <linux/delay.h>
++#include <drm/drm_mipi_dsi.h>
  #include <linux/irq.h>
  #include <linux/interrupt.h>
 +#include <linux/gpio.h>
  #include <linux/slab.h>
  #include <linux/acpi.h>
  #include <linux/of.h>
-@@ -357,6 +358,13 @@ static void goodix_free_irq(struct goodix_ts_data *ts)
+@@ -366,6 +368,13 @@ static void goodix_free_irq(struct goodix_ts_data *ts)
  
  static int goodix_request_irq(struct goodix_ts_data *ts)
  {
@@ -319,7 +362,42 @@ index f2d9c2c..9ce8db4 100644
  	return devm_request_threaded_irq(&ts->client->dev, ts->client->irq,
  					 NULL, goodix_ts_irq_handler,
  					 ts->irq_flags, ts->client->name, ts);
-@@ -949,6 +957,7 @@ static const struct of_device_id goodix_of_match[] = {
+@@ -774,6 +783,8 @@ static int goodix_ts_probe(struct i2c_client *client,
+ 			   const struct i2c_device_id *id)
+ {
+ 	struct goodix_ts_data *ts;
++	struct mipi_dsi_device *panel;
++	struct device_node *np;
+ 	int error;
+ 
+ 	dev_dbg(&client->dev, "I2C Address: 0x%02x\n", client->addr);
+@@ -842,6 +853,17 @@ static int goodix_ts_probe(struct i2c_client *client,
+ 			return error;
+ 	}
+ 
++	np = of_parse_phandle(client->dev.of_node, "panel", 0);
++	if (np) {
++		panel = of_find_mipi_dsi_device_by_node(np);
++		of_node_put(np);
++		if (!panel)
++			return -ENOENT;
++		device_link_add(&client->dev, &panel->dev, DL_FLAG_STATELESS |
++				DL_FLAG_AUTOREMOVE_SUPPLIER);
++		put_device(&panel->dev);
++	}
++
+ 	return 0;
+ }
+ 
+@@ -896,6 +918,7 @@ static int __maybe_unused goodix_suspend(struct device *dev)
+ 	 * sooner, delay 58ms here.
+ 	 */
+ 	msleep(58);
++
+ 	return 0;
+ }
+ 
+@@ -958,6 +981,7 @@ static const struct of_device_id goodix_of_match[] = {
  	{ .compatible = "goodix,gt9271" },
  	{ .compatible = "goodix,gt928" },
  	{ .compatible = "goodix,gt967" },
@@ -856,7 +934,7 @@ index 97b27f3..8e5a31b 100644
 -
 -IRQCHIP_DECLARE(stm32mp1_exti, "st,stm32mp1-exti", stm32mp1_exti_of_init);
 diff --git a/drivers/mailbox/mailbox-test.c b/drivers/mailbox/mailbox-test.c
-index 58bfafc..4e4ac4b 100644
+index 129b365..4e4ac4b 100644
 --- a/drivers/mailbox/mailbox-test.c
 +++ b/drivers/mailbox/mailbox-test.c
 @@ -31,7 +31,6 @@
@@ -896,38 +974,7 @@ index 58bfafc..4e4ac4b 100644
  			    tdev, &mbox_test_signal_ops);
  
  	return 0;
-@@ -363,22 +363,24 @@ static int mbox_test_probe(struct platform_device *pdev)
- 
- 	/* It's okay for MMIO to be NULL */
- 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
--	size = resource_size(res);
- 	tdev->tx_mmio = devm_ioremap_resource(&pdev->dev, res);
--	if (PTR_ERR(tdev->tx_mmio) == -EBUSY)
-+	if (PTR_ERR(tdev->tx_mmio) == -EBUSY) {
- 		/* if reserved area in SRAM, try just ioremap */
-+		size = resource_size(res);
- 		tdev->tx_mmio = devm_ioremap(&pdev->dev, res->start, size);
--	else if (IS_ERR(tdev->tx_mmio))
-+	} else if (IS_ERR(tdev->tx_mmio)) {
- 		tdev->tx_mmio = NULL;
-+	}
- 
- 	/* If specified, second reg entry is Rx MMIO */
- 	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
--	size = resource_size(res);
- 	tdev->rx_mmio = devm_ioremap_resource(&pdev->dev, res);
--	if (PTR_ERR(tdev->rx_mmio) == -EBUSY)
-+	if (PTR_ERR(tdev->rx_mmio) == -EBUSY) {
-+		size = resource_size(res);
- 		tdev->rx_mmio = devm_ioremap(&pdev->dev, res->start, size);
--	else if (IS_ERR(tdev->rx_mmio))
-+	} else if (IS_ERR(tdev->rx_mmio)) {
- 		tdev->rx_mmio = tdev->tx_mmio;
-+	}
- 
- 	tdev->tx_channel = mbox_test_request_channel(pdev, "tx");
- 	tdev->rx_channel = mbox_test_request_channel(pdev, "rx");
-@@ -416,7 +418,7 @@ static int mbox_test_remove(struct platform_device *pdev)
+@@ -418,7 +418,7 @@ static int mbox_test_remove(struct platform_device *pdev)
  {
  	struct mbox_test_device *tdev = platform_get_drvdata(pdev);
  
@@ -937,153 +984,10 @@ index 58bfafc..4e4ac4b 100644
  	if (tdev->tx_channel)
  		mbox_free_channel(tdev->tx_channel);
 diff --git a/drivers/mailbox/stm32-ipcc.c b/drivers/mailbox/stm32-ipcc.c
-index 533b0da..eaf4ea4 100644
+index e313222..eaf4ea4 100644
 --- a/drivers/mailbox/stm32-ipcc.c
 +++ b/drivers/mailbox/stm32-ipcc.c
-@@ -8,9 +8,9 @@
- #include <linux/bitfield.h>
- #include <linux/clk.h>
- #include <linux/interrupt.h>
-+#include <linux/io.h>
- #include <linux/mailbox_controller.h>
- #include <linux/module.h>
--#include <linux/of_irq.h>
- #include <linux/platform_device.h>
- #include <linux/pm_wakeirq.h>
- 
-@@ -50,6 +50,7 @@ struct stm32_ipcc {
- 	void __iomem *reg_base;
- 	void __iomem *reg_proc;
- 	struct clk *clk;
-+	spinlock_t lock; /* protect access to IPCC registers */
- 	int irqs[IPCC_IRQ_NUM];
- 	int wkp;
- 	u32 proc_id;
-@@ -58,14 +59,24 @@ struct stm32_ipcc {
- 	u32 xmr;
- };
- 
--static inline void stm32_ipcc_set_bits(void __iomem *reg, u32 mask)
-+static inline void stm32_ipcc_set_bits(spinlock_t *lock, void __iomem *reg,
-+				       u32 mask)
- {
-+	unsigned long flags;
-+
-+	spin_lock_irqsave(lock, flags);
- 	writel_relaxed(readl_relaxed(reg) | mask, reg);
-+	spin_unlock_irqrestore(lock, flags);
- }
- 
--static inline void stm32_ipcc_clr_bits(void __iomem *reg, u32 mask)
-+static inline void stm32_ipcc_clr_bits(spinlock_t *lock, void __iomem *reg,
-+				       u32 mask)
- {
-+	unsigned long flags;
-+
-+	spin_lock_irqsave(lock, flags);
- 	writel_relaxed(readl_relaxed(reg) & ~mask, reg);
-+	spin_unlock_irqrestore(lock, flags);
- }
- 
- static irqreturn_t stm32_ipcc_rx_irq(int irq, void *data)
-@@ -92,7 +103,7 @@ static irqreturn_t stm32_ipcc_rx_irq(int irq, void *data)
- 
- 		mbox_chan_received_data(&ipcc->controller.chans[chan], NULL);
- 
--		stm32_ipcc_set_bits(ipcc->reg_proc + IPCC_XSCR,
-+		stm32_ipcc_set_bits(&ipcc->lock, ipcc->reg_proc + IPCC_XSCR,
- 				    RX_BIT_CHAN(chan));
- 
- 		ret = IRQ_HANDLED;
-@@ -121,7 +132,7 @@ static irqreturn_t stm32_ipcc_tx_irq(int irq, void *data)
- 		dev_dbg(dev, "%s: chan:%d tx\n", __func__, chan);
- 
- 		/* mask 'tx channel free' interrupt */
--		stm32_ipcc_set_bits(ipcc->reg_proc + IPCC_XMR,
-+		stm32_ipcc_set_bits(&ipcc->lock, ipcc->reg_proc + IPCC_XMR,
- 				    TX_BIT_CHAN(chan));
- 
- 		mbox_chan_txdone(&ipcc->controller.chans[chan], 0);
-@@ -141,10 +152,12 @@ static int stm32_ipcc_send_data(struct mbox_chan *link, void *data)
- 	dev_dbg(ipcc->controller.dev, "%s: chan:%d\n", __func__, chan);
- 
- 	/* set channel n occupied */
--	stm32_ipcc_set_bits(ipcc->reg_proc + IPCC_XSCR, TX_BIT_CHAN(chan));
-+	stm32_ipcc_set_bits(&ipcc->lock, ipcc->reg_proc + IPCC_XSCR,
-+			    TX_BIT_CHAN(chan));
- 
- 	/* unmask 'tx channel free' interrupt */
--	stm32_ipcc_clr_bits(ipcc->reg_proc + IPCC_XMR, TX_BIT_CHAN(chan));
-+	stm32_ipcc_clr_bits(&ipcc->lock, ipcc->reg_proc + IPCC_XMR,
-+			    TX_BIT_CHAN(chan));
- 
- 	return 0;
- }
-@@ -163,7 +176,8 @@ static int stm32_ipcc_startup(struct mbox_chan *link)
- 	}
- 
- 	/* unmask 'rx channel occupied' interrupt */
--	stm32_ipcc_clr_bits(ipcc->reg_proc + IPCC_XMR, RX_BIT_CHAN(chan));
-+	stm32_ipcc_clr_bits(&ipcc->lock, ipcc->reg_proc + IPCC_XMR,
-+			    RX_BIT_CHAN(chan));
- 
- 	return 0;
- }
-@@ -175,7 +189,7 @@ static void stm32_ipcc_shutdown(struct mbox_chan *link)
- 					       controller);
- 
- 	/* mask rx/tx interrupt */
--	stm32_ipcc_set_bits(ipcc->reg_proc + IPCC_XMR,
-+	stm32_ipcc_set_bits(&ipcc->lock, ipcc->reg_proc + IPCC_XMR,
- 			    RX_BIT_CHAN(chan) | TX_BIT_CHAN(chan));
- 
- 	clk_disable_unprepare(ipcc->clk);
-@@ -208,6 +222,8 @@ static int stm32_ipcc_probe(struct platform_device *pdev)
- 	if (!ipcc)
- 		return -ENOMEM;
- 
-+	spin_lock_init(&ipcc->lock);
-+
- 	/* proc_id */
- 	if (of_property_read_u32(np, "st,proc-id", &ipcc->proc_id)) {
- 		dev_err(dev, "Missing st,proc-id\n");
-@@ -240,9 +256,11 @@ static int stm32_ipcc_probe(struct platform_device *pdev)
- 
- 	/* irq */
- 	for (i = 0; i < IPCC_IRQ_NUM; i++) {
--		ipcc->irqs[i] = of_irq_get_byname(dev->of_node, irq_name[i]);
-+		ipcc->irqs[i] = platform_get_irq_byname(pdev, irq_name[i]);
- 		if (ipcc->irqs[i] < 0) {
--			dev_err(dev, "no IRQ specified %s\n", irq_name[i]);
-+			if (ipcc->irqs[i] != -EPROBE_DEFER)
-+				dev_err(dev, "no IRQ specified %s\n",
-+					irq_name[i]);
- 			ret = ipcc->irqs[i];
- 			goto err_clk;
- 		}
-@@ -257,15 +275,17 @@ static int stm32_ipcc_probe(struct platform_device *pdev)
- 	}
- 
- 	/* mask and enable rx/tx irq */
--	stm32_ipcc_set_bits(ipcc->reg_proc + IPCC_XMR,
-+	stm32_ipcc_set_bits(&ipcc->lock, ipcc->reg_proc + IPCC_XMR,
- 			    RX_BIT_MASK | TX_BIT_MASK);
--	stm32_ipcc_set_bits(ipcc->reg_proc + IPCC_XCR, XCR_RXOIE | XCR_TXOIE);
-+	stm32_ipcc_set_bits(&ipcc->lock, ipcc->reg_proc + IPCC_XCR,
-+			    XCR_RXOIE | XCR_TXOIE);
- 
- 	/* wakeup */
- 	if (of_property_read_bool(np, "wakeup-source")) {
--		ipcc->wkp = of_irq_get_byname(dev->of_node, "wakeup");
-+		ipcc->wkp = platform_get_irq_byname(pdev, "wakeup");
- 		if (ipcc->wkp < 0) {
--			dev_err(dev, "could not get wakeup IRQ\n");
-+			if (ipcc->wkp != -EPROBE_DEFER)
-+				dev_err(dev, "could not get wakeup IRQ\n");
- 			ret = ipcc->wkp;
- 			goto err_clk;
- 		}
-@@ -276,8 +296,8 @@ static int stm32_ipcc_probe(struct platform_device *pdev)
+@@ -296,8 +296,8 @@ static int stm32_ipcc_probe(struct platform_device *pdev)
  			dev_err(dev, "Failed to set wake up irq\n");
  			goto err_init_wkp;
  		}
@@ -1094,6 +998,169 @@ index 533b0da..eaf4ea4 100644
  	}
  
  	/* mailbox controller */
+diff --git a/kernel/irq/internals.h b/kernel/irq/internals.h
+index ea57f3d..c119aa1 100644
+--- a/kernel/irq/internals.h
++++ b/kernel/irq/internals.h
+@@ -95,10 +95,6 @@ static inline void irq_mark_irq(unsigned int irq) { }
+ extern void irq_mark_irq(unsigned int irq);
+ #endif
+ 
+-extern int __irq_get_irqchip_state(struct irq_data *data,
+-				   enum irqchip_irq_state which,
+-				   bool *state);
+-
+ extern void init_kstat_irqs(struct irq_desc *desc, int node, int nr);
+ 
+ irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc, unsigned int *flags);
+diff --git a/kernel/irq/manage.c b/kernel/irq/manage.c
+index 23bcfa7..f8214bb 100644
+--- a/kernel/irq/manage.c
++++ b/kernel/irq/manage.c
+@@ -35,9 +35,8 @@ static int __init setup_forced_irqthreads(char *arg)
+ early_param("threadirqs", setup_forced_irqthreads);
+ #endif
+ 
+-static void __synchronize_hardirq(struct irq_desc *desc, bool sync_chip)
++static void __synchronize_hardirq(struct irq_desc *desc)
+ {
+-	struct irq_data *irqd = irq_desc_get_irq_data(desc);
+ 	bool inprogress;
+ 
+ 	do {
+@@ -53,20 +52,6 @@ static void __synchronize_hardirq(struct irq_desc *desc, bool sync_chip)
+ 		/* Ok, that indicated we're done: double-check carefully. */
+ 		raw_spin_lock_irqsave(&desc->lock, flags);
+ 		inprogress = irqd_irq_inprogress(&desc->irq_data);
+-
+-		/*
+-		 * If requested and supported, check at the chip whether it
+-		 * is in flight at the hardware level, i.e. already pending
+-		 * in a CPU and waiting for service and acknowledge.
+-		 */
+-		if (!inprogress && sync_chip) {
+-			/*
+-			 * Ignore the return code. inprogress is only updated
+-			 * when the chip supports it.
+-			 */
+-			__irq_get_irqchip_state(irqd, IRQCHIP_STATE_ACTIVE,
+-						&inprogress);
+-		}
+ 		raw_spin_unlock_irqrestore(&desc->lock, flags);
+ 
+ 		/* Oops, that failed? */
+@@ -89,18 +74,13 @@ static void __synchronize_hardirq(struct irq_desc *desc, bool sync_chip)
+  *	Returns: false if a threaded handler is active.
+  *
+  *	This function may be called - with care - from IRQ context.
+- *
+- *	It does not check whether there is an interrupt in flight at the
+- *	hardware level, but not serviced yet, as this might deadlock when
+- *	called with interrupts disabled and the target CPU of the interrupt
+- *	is the current CPU.
+  */
+ bool synchronize_hardirq(unsigned int irq)
+ {
+ 	struct irq_desc *desc = irq_to_desc(irq);
+ 
+ 	if (desc) {
+-		__synchronize_hardirq(desc, false);
++		__synchronize_hardirq(desc);
+ 		return !atomic_read(&desc->threads_active);
+ 	}
+ 
+@@ -118,17 +98,13 @@ EXPORT_SYMBOL(synchronize_hardirq);
+  *
+  *	Can only be called from preemptible code as it might sleep when
+  *	an interrupt thread is associated to @irq.
+- *
+- *	It optionally makes sure (when the irq chip supports that method)
+- *	that the interrupt is not pending in any CPU and waiting for
+- *	service.
+  */
+ void synchronize_irq(unsigned int irq)
+ {
+ 	struct irq_desc *desc = irq_to_desc(irq);
+ 
+ 	if (desc) {
+-		__synchronize_hardirq(desc, true);
++		__synchronize_hardirq(desc);
+ 		/*
+ 		 * We made sure that no hardirq handler is
+ 		 * running. Now verify that no threaded handlers are
+@@ -1674,12 +1650,8 @@ static struct irqaction *__free_irq(struct irq_desc *desc, void *dev_id)
+ 
+ 	unregister_handler_proc(irq, action);
+ 
+-	/*
+-	 * Make sure it's not being used on another CPU and if the chip
+-	 * supports it also make sure that there is no (not yet serviced)
+-	 * interrupt in flight at the hardware level.
+-	 */
+-	__synchronize_hardirq(desc, true);
++	/* Make sure it's not being used on another CPU: */
++	synchronize_hardirq(irq);
+ 
+ #ifdef CONFIG_DEBUG_SHIRQ
+ 	/*
+@@ -2212,28 +2184,6 @@ int __request_percpu_irq(unsigned int irq, irq_handler_t handler,
+ }
+ EXPORT_SYMBOL_GPL(__request_percpu_irq);
+ 
+-int __irq_get_irqchip_state(struct irq_data *data, enum irqchip_irq_state which,
+-			    bool *state)
+-{
+-	struct irq_chip *chip;
+-	int err = -EINVAL;
+-
+-	do {
+-		chip = irq_data_get_irq_chip(data);
+-		if (chip->irq_get_irqchip_state)
+-			break;
+-#ifdef CONFIG_IRQ_DOMAIN_HIERARCHY
+-		data = data->parent_data;
+-#else
+-		data = NULL;
+-#endif
+-	} while (data);
+-
+-	if (data)
+-		err = chip->irq_get_irqchip_state(data, which, state);
+-	return err;
+-}
+-
+ /**
+  *	irq_get_irqchip_state - returns the irqchip state of a interrupt.
+  *	@irq: Interrupt line that is forwarded to a VM
+@@ -2252,6 +2202,7 @@ int irq_get_irqchip_state(unsigned int irq, enum irqchip_irq_state which,
+ {
+ 	struct irq_desc *desc;
+ 	struct irq_data *data;
++	struct irq_chip *chip;
+ 	unsigned long flags;
+ 	int err = -EINVAL;
+ 
+@@ -2261,7 +2212,19 @@ int irq_get_irqchip_state(unsigned int irq, enum irqchip_irq_state which,
+ 
+ 	data = irq_desc_get_irq_data(desc);
+ 
+-	err = __irq_get_irqchip_state(data, which, state);
++	do {
++		chip = irq_data_get_irq_chip(data);
++		if (chip->irq_get_irqchip_state)
++			break;
++#ifdef CONFIG_IRQ_DOMAIN_HIERARCHY
++		data = data->parent_data;
++#else
++		data = NULL;
++#endif
++	} while (data);
++
++	if (data)
++		err = chip->irq_get_irqchip_state(data, which, state);
+ 
+ 	irq_put_desc_busunlock(desc, flags);
+ 	return err;
 -- 
 2.7.4
 

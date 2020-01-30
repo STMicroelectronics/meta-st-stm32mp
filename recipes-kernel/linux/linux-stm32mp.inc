@@ -4,9 +4,9 @@ inherit kernel
 
 DEPENDS += "openssl-native util-linux-native"
 
-B = "${WORKDIR}/linux-${MACHINE}-standard-build"
+B = "${WORKDIR}/build"
 # Configure build dir for externalsrc class usage through devtool
-EXTERNALSRC_BUILD_pn-${PN} = "${WORKDIR}/linux-${MACHINE}-standard-build"
+EXTERNALSRC_BUILD_pn-${PN} = "${WORKDIR}/build"
 
 # To share config fragments between layers
 FILESEXTRAPATHS_prepend := "${THISDIR}:"

@@ -1,7 +1,7 @@
-From 0feaf56c6535420b9c89752e55353887e8266959 Mon Sep 17 00:00:00 2001
+From b1e1c0d118b5f460f13d08f7a4f25210aaa88641 Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Thu, 11 Jul 2019 14:12:04 +0200
-Subject: [PATCH 20/30] ARM stm32mp1 r2 REMOTEPROC RPMSG RESET
+Date: Fri, 8 Nov 2019 16:52:45 +0100
+Subject: [PATCH 21/31] ARM stm32mp1 r3 REMOTEPROC RPMSG RESET
 
 ---
  drivers/remoteproc/Kconfig               |  36 ++
@@ -12,18 +12,18 @@ Subject: [PATCH 20/30] ARM stm32mp1 r2 REMOTEPROC RPMSG RESET
  drivers/remoteproc/remoteproc_virtio.c   |  58 ++-
  drivers/remoteproc/rproc_srm_core.c      | 303 +++++++++++
  drivers/remoteproc/rproc_srm_core.h      |  98 ++++
- drivers/remoteproc/rproc_srm_dev.c       | 833 ++++++++++++++++++++++++++++++
- drivers/remoteproc/stm32_rproc.c         | 847 +++++++++++++++++++++++++++++++
+ drivers/remoteproc/rproc_srm_dev.c       | 744 +++++++++++++++++++++++++++
+ drivers/remoteproc/stm32_rproc.c         | 858 +++++++++++++++++++++++++++++++
  drivers/reset/reset-stm32mp1.c           |  48 ++
  drivers/rpmsg/Kconfig                    |   9 +
  drivers/rpmsg/Makefile                   |   1 +
  drivers/rpmsg/rpmsg_core.c               |  19 +
  drivers/rpmsg/rpmsg_internal.h           |   2 +
- drivers/rpmsg/rpmsg_tty.c                | 305 +++++++++++
+ drivers/rpmsg/rpmsg_tty.c                | 310 +++++++++++
  drivers/rpmsg/virtio_rpmsg_bus.c         |  17 +-
  include/linux/remoteproc.h               |  38 +-
  include/linux/rpmsg.h                    |   9 +
- 19 files changed, 3200 insertions(+), 149 deletions(-)
+ 19 files changed, 3127 insertions(+), 149 deletions(-)
  create mode 100644 drivers/remoteproc/rproc_srm_core.c
  create mode 100644 drivers/remoteproc/rproc_srm_core.h
  create mode 100644 drivers/remoteproc/rproc_srm_dev.c
@@ -1699,10 +1699,10 @@ index 0000000..7dffdb38
 +#endif
 diff --git a/drivers/remoteproc/rproc_srm_dev.c b/drivers/remoteproc/rproc_srm_dev.c
 new file mode 100644
-index 0000000..7dc99c5
+index 0000000..6b164da
 --- /dev/null
 +++ b/drivers/remoteproc/rproc_srm_dev.c
-@@ -0,0 +1,833 @@
+@@ -0,0 +1,744 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
@@ -1717,7 +1717,6 @@ index 0000000..7dc99c5
 +#include <linux/module.h>
 +#include <linux/of.h>
 +#include <linux/of_irq.h>
-+#include <linux/pinctrl/pinctrl.h>
 +#include <linux/platform_device.h>
 +#include <linux/regulator/consumer.h>
 +#include <linux/remoteproc.h>
@@ -1730,12 +1729,6 @@ index 0000000..7dc99c5
 +	struct clk *clk;
 +	const char *name;
 +	bool parent_enabled;
-+};
-+
-+struct rproc_srm_pin_info {
-+	struct list_head list;
-+	unsigned int index;
-+	char *name;
 +};
 +
 +struct rproc_srm_regu_info {
@@ -1758,12 +1751,10 @@ index 0000000..7dc99c5
 +	struct device *dev;
 +	struct rproc_srm_core *core;
 +	struct notifier_block nb;
-+	struct pinctrl *pctrl;
 +	bool early_boot;
 +
 +	struct list_head clk_list_head;
 +	struct list_head regu_list_head;
-+	struct list_head pin_list_head;
 +	struct list_head irq_list_head;
 +};
 +
@@ -2247,79 +2238,6 @@ index 0000000..7dc99c5
 +	return ret;
 +}
 +
-+/* Pins */
-+static void rproc_srm_dev_pins_put(struct rproc_srm_dev *rproc_srm_dev)
-+{
-+	struct device *dev = rproc_srm_dev->dev;
-+	struct rproc_srm_pin_info *p, *tmp;
-+
-+	list_for_each_entry_safe(p, tmp, &rproc_srm_dev->pin_list_head, list) {
-+		devm_kfree(dev, p->name);
-+		devm_kfree(dev, p);
-+		dev_dbg(dev, "remove pin cfg %d (%s)\n", p->index, p->name);
-+		list_del(&p->list);
-+	}
-+
-+	if (!IS_ERR_OR_NULL(rproc_srm_dev->pctrl)) {
-+		devm_pinctrl_put(rproc_srm_dev->pctrl);
-+		rproc_srm_dev->pctrl = NULL;
-+	}
-+}
-+
-+static int rproc_srm_dev_pins_get(struct rproc_srm_dev *rproc_srm_dev)
-+{
-+	struct device *dev = rproc_srm_dev->dev;
-+	struct device_node *np = dev->of_node;
-+	struct rproc_srm_pin_info *p;
-+	int ret, nb_p;
-+	unsigned int i;
-+	const char *name;
-+
-+	if (!np)
-+		return 0;
-+
-+	rproc_srm_dev->pctrl = devm_pinctrl_get(dev);
-+	if (IS_ERR(rproc_srm_dev->pctrl))
-+		return 0;
-+
-+	nb_p = of_property_count_strings(np, "pinctrl-names");
-+	if (nb_p <= 0) {
-+		dev_err(dev, "pinctrl-names not defined\n");
-+		ret = -EINVAL;
-+		goto err;
-+	}
-+
-+	for (i = 0; i < nb_p; i++) {
-+		p = devm_kzalloc(dev, sizeof(*p), GFP_KERNEL);
-+		if (!p) {
-+			ret = -ENOMEM;
-+			goto err;
-+		}
-+
-+		if (of_property_read_string_index(np, "pinctrl-names", i,
-+						  &name)) {
-+			dev_err(dev, "no pinctrl-names (pin %d)\n", i);
-+			ret = -EINVAL;
-+			goto err;
-+		}
-+		p->name = devm_kstrdup(dev, name, GFP_KERNEL);
-+
-+		/* pinctrl-names shall not be "default" (but "rproc_default") */
-+		if (!strcmp(p->name, PINCTRL_STATE_DEFAULT))
-+			dev_warn(dev, "pin config potentially overwritten!\n");
-+
-+		p->index = i;
-+
-+		list_add_tail(&p->list, &rproc_srm_dev->pin_list_head);
-+		dev_dbg(dev, "found pin cfg %d (%s)\n", p->index, p->name);
-+	}
-+	return 0;
-+
-+err:
-+	rproc_srm_dev_pins_put(rproc_srm_dev);
-+	return ret;
-+}
-+
 +/* Core */
 +static int rproc_srm_dev_notify_cb(struct notifier_block *nb, unsigned long evt,
 +				   void *data)
@@ -2405,7 +2323,7 @@ index 0000000..7dc99c5
 +	rproc_srm_dev_regus_unsetup(rproc_srm_dev);
 +	rproc_srm_dev_clocks_unsetup(rproc_srm_dev);
 +
-+	/* For pins and IRQs: nothing to unsetup */
++	/* For IRQs: nothing to unsetup */
 +}
 +
 +static int
@@ -2424,7 +2342,7 @@ index 0000000..7dc99c5
 +	if (ret)
 +		return ret;
 +
-+	/* For pins and IRQs: nothing to setup */
++	/* For IRQs: nothing to setup */
 +	return 0;
 +}
 +
@@ -2453,20 +2371,15 @@ index 0000000..7dc99c5
 +	rproc_srm_dev->core = dev_get_drvdata(dev->parent);
 +
 +	INIT_LIST_HEAD(&rproc_srm_dev->clk_list_head);
-+	INIT_LIST_HEAD(&rproc_srm_dev->pin_list_head);
 +	INIT_LIST_HEAD(&rproc_srm_dev->regu_list_head);
 +	INIT_LIST_HEAD(&rproc_srm_dev->irq_list_head);
 +
-+	/* Get clocks, regu, irqs and pinctrl */
++	/* Get clocks, regu and irqs */
 +	ret = rproc_srm_dev_clocks_get(rproc_srm_dev);
 +	if (ret)
 +		return ret;
 +
 +	ret = rproc_srm_dev_regus_get(rproc_srm_dev);
-+	if (ret)
-+		goto err_get;
-+
-+	ret = rproc_srm_dev_pins_get(rproc_srm_dev);
 +	if (ret)
 +		goto err_get;
 +
@@ -2489,7 +2402,6 @@ index 0000000..7dc99c5
 +					   &rproc_srm_dev->nb);
 +err_get:
 +	rproc_srm_dev_irqs_put(rproc_srm_dev);
-+	rproc_srm_dev_pins_put(rproc_srm_dev);
 +	rproc_srm_dev_regus_put(rproc_srm_dev);
 +	rproc_srm_dev_clocks_put(rproc_srm_dev);
 +	return ret;
@@ -2509,7 +2421,6 @@ index 0000000..7dc99c5
 +
 +	rproc_srm_dev_irqs_put(rproc_srm_dev);
 +	rproc_srm_dev_regus_put(rproc_srm_dev);
-+	rproc_srm_dev_pins_put(rproc_srm_dev);
 +	rproc_srm_dev_clocks_put(rproc_srm_dev);
 +
 +	return 0;
@@ -2538,10 +2449,10 @@ index 0000000..7dc99c5
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/remoteproc/stm32_rproc.c b/drivers/remoteproc/stm32_rproc.c
 new file mode 100644
-index 0000000..6533503
+index 0000000..21a569a
 --- /dev/null
 +++ b/drivers/remoteproc/stm32_rproc.c
-@@ -0,0 +1,847 @@
+@@ -0,0 +1,858 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
@@ -2579,6 +2490,8 @@ index 0000000..6533503
 +#define STM32_MBX_VQ1		"vq1"
 +#define STM32_MBX_VQ1_ID	1
 +#define STM32_MBX_SHUTDOWN	"shutdown"
++
++#define RSC_TBL_SIZE		(1024)
 +
 +struct stm32_syscon {
 +	struct regmap *map;
@@ -2619,7 +2532,6 @@ index 0000000..6533503
 +	struct workqueue_struct *workqueue;
 +	bool secured_soc;
 +	void __iomem *rsc_va;
-+	u32 rsc_len;
 +};
 +
 +static int stm32_rproc_pa_to_da(struct rproc *rproc, phys_addr_t pa, u64 *da)
@@ -2772,7 +2684,6 @@ index 0000000..6533503
 +	int status;
 +	struct resource_table *table = NULL;
 +	struct stm32_rproc *ddata = rproc->priv;
-+	size_t tablesz = 0;
 +
 +	if (!rproc->early_boot) {
 +		status = rproc_elf_load_rsc_table(rproc, fw);
@@ -2783,14 +2694,14 @@ index 0000000..6533503
 +	}
 +
 +	if (ddata->rsc_va) {
-+		tablesz = ddata->rsc_len;
 +		table = (struct resource_table *)ddata->rsc_va;
-+		rproc->cached_table = kmemdup(table, tablesz, GFP_KERNEL);
++		/* Assuming that the resource table fits in 1kB is fair */
++		rproc->cached_table = kmemdup(table, RSC_TBL_SIZE, GFP_KERNEL);
 +		if (!rproc->cached_table)
 +			return -ENOMEM;
 +
 +		rproc->table_ptr = rproc->cached_table;
-+		rproc->table_sz = tablesz;
++		rproc->table_sz = RSC_TBL_SIZE;
 +		return 0;
 +	}
 +
@@ -2799,7 +2710,7 @@ index 0000000..6533503
 +	rproc->table_sz = 0;
 +
 +no_rsc_table:
-+	dev_warn(&rproc->dev, "not resource table found for this firmware\n");
++	dev_warn(&rproc->dev, "no resource table found for this firmware\n");
 +	return 0;
 +}
 +
@@ -2956,7 +2867,7 @@ index 0000000..6533503
 +	}
 +};
 +
-+static void stm32_rproc_request_mbox(struct rproc *rproc)
++static int stm32_rproc_request_mbox(struct rproc *rproc)
 +{
 +	struct stm32_rproc *ddata = rproc->priv;
 +	struct device *dev = &rproc->dev;
@@ -2974,7 +2885,9 @@ index 0000000..6533503
 +		cl->dev = dev->parent;
 +
 +		ddata->mb[i].chan = mbox_request_channel_byname(cl, name);
-+		if (IS_ERR(ddata->mb[i].chan)) {
++		if (PTR_ERR(ddata->mb[i].chan) == -EPROBE_DEFER) {
++			return -EPROBE_DEFER;
++		} else if (IS_ERR(ddata->mb[i].chan)) {
 +			dev_warn(dev, "cannot get %s mbox\n", name);
 +			ddata->mb[i].chan = NULL;
 +		}
@@ -2983,6 +2896,8 @@ index 0000000..6533503
 +				  stm32_rproc_mb_vq_work);
 +		}
 +	}
++
++	return 0;
 +}
 +
 +static int stm32_rproc_set_hold_boot(struct rproc *rproc, bool hold)
@@ -3171,7 +3086,7 @@ index 0000000..6533503
 +	struct device_node *np = dev->of_node;
 +	struct rproc *rproc = platform_get_drvdata(pdev);
 +	struct stm32_rproc *ddata = rproc->priv;
-+	struct stm32_syscon tz;
++	struct stm32_syscon tz, rsctbl;
 +	phys_addr_t rsc_pa;
 +	u32 rsc_da;
 +	unsigned int tzen;
@@ -3232,7 +3147,7 @@ index 0000000..6533503
 +
 +	err = stm32_rproc_get_syscon(np, "st,syscfg-pdds", &ddata->pdds);
 +	if (err)
-+		dev_warn(dev, "failed to get pdds\n");
++		dev_warn(dev, "pdds not supported\n");
 +
 +
 +	rproc->auto_boot = of_property_read_bool(np, "auto_boot");
@@ -3244,30 +3159,35 @@ index 0000000..6533503
 +
 +	if (of_property_read_bool(np, "early-booted")) {
 +		rproc->early_boot = true;
-+		err = of_property_read_u32(np, "rsc-address", &rsc_da);
-+		if (err)
-+			/* no optional rsc table found */
-+			return 0;
 +
-+		err = of_property_read_u32(np, "rsc-size", &ddata->rsc_len);
++		if (stm32_rproc_get_syscon(np, "st,syscfg-rsc-tbl", &rsctbl)) {
++			/* no rsc table syscon (optional) */
++			dev_warn(dev, "rsc tbl syscon not supported\n");
++			goto bail;
++		}
++
++		err = regmap_read(rsctbl.map, rsctbl.reg, &rsc_da);
 +		if (err) {
-+			dev_err(dev, "resource table size required as address defined\n");
++			dev_err(&rproc->dev, "failed to read rsc tbl addr\n");
 +			return err;
 +		}
++		if (!rsc_da)
++			/* no rsc table */
++			goto bail;
 +
 +		err = stm32_rproc_da_to_pa(rproc, rsc_da, &rsc_pa);
 +		if (err)
 +			return err;
 +
-+		ddata->rsc_va = devm_ioremap_wc(dev, rsc_pa, ddata->rsc_len);
++		ddata->rsc_va = devm_ioremap_wc(dev, rsc_pa, RSC_TBL_SIZE);
 +		if (IS_ERR_OR_NULL(ddata->rsc_va)) {
 +			dev_err(dev, "Unable to map memory region: %pa+%zx\n",
-+				&rsc_pa,  ddata->rsc_len);
++				&rsc_pa, RSC_TBL_SIZE);
 +			ddata->rsc_va = NULL;
 +			return -ENOMEM;
 +		}
 +	}
-+
++bail:
 +	return 0;
 +}
 +
@@ -3301,10 +3221,12 @@ index 0000000..6533503
 +	if (!rproc->early_boot) {
 +		ret = stm32_rproc_stop(rproc);
 +		if (ret)
-+			goto free_rproc;
++			goto free_wkq;
 +	}
 +
-+	stm32_rproc_request_mbox(rproc);
++	ret = stm32_rproc_request_mbox(rproc);
++	if (ret)
++		goto free_wkq;
 +
 +	ret = rproc_add(rproc);
 +	if (ret)
@@ -3560,10 +3482,10 @@ index 0d791c3..65bcb52 100644
  int rpmsg_register_device(struct rpmsg_device *rpdev);
 diff --git a/drivers/rpmsg/rpmsg_tty.c b/drivers/rpmsg/rpmsg_tty.c
 new file mode 100644
-index 0000000..26814d3
+index 0000000..5776389
 --- /dev/null
 +++ b/drivers/rpmsg/rpmsg_tty.c
-@@ -0,0 +1,305 @@
+@@ -0,0 +1,310 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
@@ -3837,6 +3759,11 @@ index 0000000..26814d3
 +				  TTY_DRIVER_DYNAMIC_DEV;
 +
 +	tty_set_operations(rpmsg_tty_driver, &rpmsg_tty_ops);
++
++	/* Disable unused mode by default */
++	rpmsg_tty_driver->init_termios = tty_std_termios;
++	rpmsg_tty_driver->init_termios.c_lflag &= ~(ECHO | ICANON);
++	rpmsg_tty_driver->init_termios.c_oflag &= ~(OPOST | ONLCR);
 +
 +	err = tty_register_driver(rpmsg_tty_driver);
 +	if (err < 0) {
