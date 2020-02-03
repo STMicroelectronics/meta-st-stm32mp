@@ -1,0 +1,125 @@
+From 6e2b3424b4d9d58c7bb5d3cef4d7762e3817d554 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@st.com>
+Date: Thu, 7 Nov 2019 14:32:28 +0100
+Subject: [PATCH 1/2] tests/modetest: automatic configuration
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add a new option to set automatically a mode using default crtc,
+encoder and mode.
+
+Signed-off-by: Yannick Fertré <yannick.fertre@st.com>
+---
+ tests/modetest/modetest.c | 54 +++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 52 insertions(+), 2 deletions(-)
+
+diff --git a/tests/modetest/modetest.c b/tests/modetest/modetest.c
+index e66be66..018338c 100644
+--- a/tests/modetest/modetest.c
++++ b/tests/modetest/modetest.c
+@@ -1811,7 +1811,7 @@ static void parse_fill_patterns(char *arg)
+ 
+ static void usage(char *name)
+ {
+-	fprintf(stderr, "usage: %s [-acDdefMPpsCvw]\n", name);
++	fprintf(stderr, "usage: %s [-acDdefMPpsCvwA]\n", name);
+ 
+ 	fprintf(stderr, "\n Query options:\n\n");
+ 	fprintf(stderr, "\t-c\tlist connectors\n");
+@@ -1832,6 +1832,7 @@ static void usage(char *name)
+ 	fprintf(stderr, "\t-d\tdrop master after mode set\n");
+ 	fprintf(stderr, "\t-M module\tuse the given driver\n");
+ 	fprintf(stderr, "\t-D device\tuse the given device\n");
++	fprintf(stderr, "\t-A Set a mode using default crtc, encoder and mode.\n");
+ 
+ 	fprintf(stderr, "\n\tDefault is to dump all info.\n");
+ 	exit(0);
+@@ -1890,7 +1891,7 @@ static int pipe_resolve_connectors(struct device *dev, struct pipe_arg *pipe)
+ 	return 0;
+ }
+ 
+-static char optstr[] = "acdD:efF:M:P:ps:Cvw:";
++static char optstr[] = "acdD:efF:M:P:ps:Cvw:A";
+ 
+ int main(int argc, char **argv)
+ {
+@@ -1911,6 +1912,7 @@ int main(int argc, char **argv)
+ 	struct plane_arg *plane_args = NULL;
+ 	struct property_arg *prop_args = NULL;
+ 	unsigned int args = 0;
++	bool auto_configuration = false;
+ 	int ret;
+ 
+ 	memset(&dev, 0, sizeof dev);
+@@ -1999,12 +2001,18 @@ int main(int argc, char **argv)
+ 
+ 			prop_count++;
+ 			break;
++		case 'A':
++			auto_configuration = true;
++			break;
+ 		default:
+ 			usage(argv[0]);
+ 			break;
+ 		}
+ 	}
+ 
++	if (auto_configuration)
++		use_atomic = false;
++
+ 	if (!args || (args == 1 && use_atomic))
+ 		encoders = connectors = crtcs = planes = framebuffers = 1;
+ 
+@@ -2042,6 +2050,48 @@ int main(int argc, char **argv)
+ 		return 1;
+ 	}
+ 
++#define connector_status_connected 1
++	if (auto_configuration)	{
++		struct resources *resources = dev.resources;
++		drmModeConnector *connector;
++		char auto_arg[32];
++		int j;
++
++		if (!resources->res->count_connectors ||
++		    !resources->res->count_crtcs) {
++			fprintf(stderr, "Cannot find connector or crtc\n");
++			return 1;
++		}
++
++		for (j = 0; j < resources->res->count_connectors; j++) {
++			connector = resources->connectors[j].connector;
++			if(connector->connection == connector_status_connected)
++				break;
++		}
++
++		if (!connector->count_modes) {
++			fprintf(stderr, "Cannot find mode\n");
++			return 1;
++		}
++
++		snprintf(auto_arg, sizeof(auto_arg) - 1, "%d@%d:%s-%d@%s\n",
++			 connector->connector_id, resources->res->crtcs[0],
++			 connector->modes[0].name, connector->modes[0].vrefresh,
++			 "XR24");
++
++		pipe_args = realloc(pipe_args, sizeof *pipe_args);
++		if (pipe_args == NULL) {
++			fprintf(stderr, "memory allocation failed\n");
++			return 2;
++		}
++		memset(&pipe_args[count], 0, sizeof(*pipe_args));
++
++		if (parse_connector(&pipe_args[count], auto_arg) < 0)
++			return 3;
++		/* fix to one plane without atomic */
++		count = 1;
++	}
++
+ 	for (i = 0; i < count; i++) {
+ 		if (pipe_resolve_connectors(&dev, &pipe_args[i]) < 0) {
+ 			free_resources(dev.resources);
+-- 
+2.17.1
+
