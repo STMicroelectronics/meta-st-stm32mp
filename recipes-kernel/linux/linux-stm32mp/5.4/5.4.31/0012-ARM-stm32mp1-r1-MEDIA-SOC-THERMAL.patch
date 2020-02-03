@@ -1,0 +1,1556 @@
+From 3da66d9a5ce2cb975d8ee48f47d497de85d79ccc Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@st.com>
+Date: Fri, 10 Apr 2020 14:44:58 +0200
+Subject: [PATCH 12/23] ARM-stm32mp1-r1-MEDIA-SOC-THERMAL
+
+---
+ drivers/media/i2c/ov5640.c                |  77 +++--
+ drivers/media/platform/stm32/stm32-cec.c  |  10 +-
+ drivers/media/platform/stm32/stm32-dcmi.c |  51 ++-
+ drivers/media/v4l2-core/v4l2-fwnode.c     |   3 +
+ drivers/soc/Kconfig                       |   1 +
+ drivers/soc/Makefile                      |   1 +
+ drivers/soc/st/Kconfig                    |  17 +
+ drivers/soc/st/Makefile                   |   2 +
+ drivers/soc/st/stm32_hdp.c                | 242 ++++++++++++++
+ drivers/soc/st/stm32_pm_domain.c          | 212 ++++++++++++
+ drivers/thermal/st/stm_thermal.c          | 383 +++++++---------------
+ include/media/v4l2-fwnode.h               |   2 +
+ 12 files changed, 699 insertions(+), 302 deletions(-)
+ create mode 100644 drivers/soc/st/Kconfig
+ create mode 100644 drivers/soc/st/Makefile
+ create mode 100644 drivers/soc/st/stm32_hdp.c
+ create mode 100644 drivers/soc/st/stm32_pm_domain.c
+
+diff --git a/drivers/media/i2c/ov5640.c b/drivers/media/i2c/ov5640.c
+index a398ea81e..3bee8eed7 100644
+--- a/drivers/media/i2c/ov5640.c
++++ b/drivers/media/i2c/ov5640.c
+@@ -63,6 +63,7 @@
+ #define OV5640_REG_TIMING_VTS		0x380e
+ #define OV5640_REG_TIMING_TC_REG20	0x3820
+ #define OV5640_REG_TIMING_TC_REG21	0x3821
++#define OV5640_REG_DVP_PCLK_DIVIDER	0x3824
+ #define OV5640_REG_AEC_CTRL00		0x3a00
+ #define OV5640_REG_AEC_B50_STEP		0x3a08
+ #define OV5640_REG_AEC_B60_STEP		0x3a0a
+@@ -214,6 +215,7 @@ struct ov5640_ctrls {
+ 	struct v4l2_ctrl *test_pattern;
+ 	struct v4l2_ctrl *hflip;
+ 	struct v4l2_ctrl *vflip;
++	struct v4l2_ctrl *link_freq;
+ };
+ 
+ struct ov5640_dev {
+@@ -370,8 +372,8 @@ static const struct reg_value ov5640_setting_VGA_640_480[] = {
+ 	{0x3a0a, 0x00, 0, 0}, {0x3a0b, 0xf6, 0, 0}, {0x3a0e, 0x03, 0, 0},
+ 	{0x3a0d, 0x04, 0, 0}, {0x3a14, 0x03, 0, 0}, {0x3a15, 0xd8, 0, 0},
+ 	{0x4001, 0x02, 0, 0}, {0x4004, 0x02, 0, 0},
+-	{0x4407, 0x04, 0, 0}, {0x460b, 0x35, 0, 0}, {0x460c, 0x22, 0, 0},
+-	{0x3824, 0x02, 0, 0}, {0x5001, 0xa3, 0, 0},
++	{0x4407, 0x04, 0, 0},
++	{0x5001, 0xa3, 0, 0},
+ };
+ 
+ static const struct reg_value ov5640_setting_XGA_1024_768[] = {
+@@ -389,8 +391,7 @@ static const struct reg_value ov5640_setting_XGA_1024_768[] = {
+ 	{0x3a0a, 0x00, 0, 0}, {0x3a0b, 0xf6, 0, 0}, {0x3a0e, 0x03, 0, 0},
+ 	{0x3a0d, 0x04, 0, 0}, {0x3a14, 0x03, 0, 0}, {0x3a15, 0xd8, 0, 0},
+ 	{0x4001, 0x02, 0, 0}, {0x4004, 0x02, 0, 0},
+-	{0x4407, 0x04, 0, 0}, {0x460b, 0x35, 0, 0}, {0x460c, 0x22, 0, 0},
+-	{0x3824, 0x02, 0, 0}, {0x5001, 0xa3, 0, 0},
++	{0x4407, 0x04, 0, 0}, {0x5001, 0xa3, 0, 0},
+ };
+ 
+ static const struct reg_value ov5640_setting_QVGA_320_240[] = {
+@@ -408,8 +409,7 @@ static const struct reg_value ov5640_setting_QVGA_320_240[] = {
+ 	{0x3a0a, 0x00, 0, 0}, {0x3a0b, 0xf6, 0, 0}, {0x3a0e, 0x03, 0, 0},
+ 	{0x3a0d, 0x04, 0, 0}, {0x3a14, 0x03, 0, 0}, {0x3a15, 0xd8, 0, 0},
+ 	{0x4001, 0x02, 0, 0}, {0x4004, 0x02, 0, 0},
+-	{0x4407, 0x04, 0, 0}, {0x460b, 0x35, 0, 0}, {0x460c, 0x22, 0, 0},
+-	{0x3824, 0x02, 0, 0}, {0x5001, 0xa3, 0, 0},
++	{0x4407, 0x04, 0, 0}, {0x5001, 0xa3, 0, 0},
+ };
+ 
+ static const struct reg_value ov5640_setting_QCIF_176_144[] = {
+@@ -427,8 +427,7 @@ static const struct reg_value ov5640_setting_QCIF_176_144[] = {
+ 	{0x3a0a, 0x00, 0, 0}, {0x3a0b, 0xf6, 0, 0}, {0x3a0e, 0x03, 0, 0},
+ 	{0x3a0d, 0x04, 0, 0}, {0x3a14, 0x03, 0, 0}, {0x3a15, 0xd8, 0, 0},
+ 	{0x4001, 0x02, 0, 0}, {0x4004, 0x02, 0, 0},
+-	{0x4407, 0x04, 0, 0}, {0x460b, 0x35, 0, 0}, {0x460c, 0x22, 0, 0},
+-	{0x3824, 0x02, 0, 0}, {0x5001, 0xa3, 0, 0},
++	{0x4407, 0x04, 0, 0}, {0x5001, 0xa3, 0, 0},
+ };
+ 
+ static const struct reg_value ov5640_setting_NTSC_720_480[] = {
+@@ -446,8 +445,7 @@ static const struct reg_value ov5640_setting_NTSC_720_480[] = {
+ 	{0x3a0a, 0x00, 0, 0}, {0x3a0b, 0xf6, 0, 0}, {0x3a0e, 0x03, 0, 0},
+ 	{0x3a0d, 0x04, 0, 0}, {0x3a14, 0x03, 0, 0}, {0x3a15, 0xd8, 0, 0},
+ 	{0x4001, 0x02, 0, 0}, {0x4004, 0x02, 0, 0},
+-	{0x4407, 0x04, 0, 0}, {0x460b, 0x35, 0, 0}, {0x460c, 0x22, 0, 0},
+-	{0x3824, 0x02, 0, 0}, {0x5001, 0xa3, 0, 0},
++	{0x4407, 0x04, 0, 0}, {0x5001, 0xa3, 0, 0},
+ };
+ 
+ static const struct reg_value ov5640_setting_PAL_720_576[] = {
+@@ -465,8 +463,7 @@ static const struct reg_value ov5640_setting_PAL_720_576[] = {
+ 	{0x3a0a, 0x00, 0, 0}, {0x3a0b, 0xf6, 0, 0}, {0x3a0e, 0x03, 0, 0},
+ 	{0x3a0d, 0x04, 0, 0}, {0x3a14, 0x03, 0, 0}, {0x3a15, 0xd8, 0, 0},
+ 	{0x4001, 0x02, 0, 0}, {0x4004, 0x02, 0, 0},
+-	{0x4407, 0x04, 0, 0}, {0x460b, 0x35, 0, 0}, {0x460c, 0x22, 0, 0},
+-	{0x3824, 0x02, 0, 0}, {0x5001, 0xa3, 0, 0},
++	{0x4407, 0x04, 0, 0}, {0x5001, 0xa3, 0, 0},
+ };
+ 
+ static const struct reg_value ov5640_setting_720P_1280_720[] = {
+@@ -484,8 +481,7 @@ static const struct reg_value ov5640_setting_720P_1280_720[] = {
+ 	{0x3a0a, 0x01, 0, 0}, {0x3a0b, 0x72, 0, 0}, {0x3a0e, 0x01, 0, 0},
+ 	{0x3a0d, 0x02, 0, 0}, {0x3a14, 0x02, 0, 0}, {0x3a15, 0xe4, 0, 0},
+ 	{0x4001, 0x02, 0, 0}, {0x4004, 0x02, 0, 0},
+-	{0x4407, 0x04, 0, 0}, {0x460b, 0x37, 0, 0}, {0x460c, 0x20, 0, 0},
+-	{0x3824, 0x04, 0, 0}, {0x5001, 0x83, 0, 0},
++	{0x4407, 0x04, 0, 0}, {0x5001, 0xa3, 0, 0},
+ };
+ 
+ static const struct reg_value ov5640_setting_1080P_1920_1080[] = {
+@@ -504,8 +500,8 @@ static const struct reg_value ov5640_setting_1080P_1920_1080[] = {
+ 	{0x3a0a, 0x00, 0, 0}, {0x3a0b, 0xf6, 0, 0}, {0x3a0e, 0x03, 0, 0},
+ 	{0x3a0d, 0x04, 0, 0}, {0x3a14, 0x03, 0, 0}, {0x3a15, 0xd8, 0, 0},
+ 	{0x4001, 0x02, 0, 0}, {0x4004, 0x06, 0, 0},
+-	{0x4407, 0x04, 0, 0}, {0x460b, 0x35, 0, 0}, {0x460c, 0x22, 0, 0},
+-	{0x3824, 0x02, 0, 0}, {0x5001, 0x83, 0, 0},
++	{0x4407, 0x04, 0, 0},
++	{0x5001, 0x83, 0, 0},
+ 	{0x3c07, 0x07, 0, 0}, {0x3c08, 0x00, 0, 0},
+ 	{0x3c09, 0x1c, 0, 0}, {0x3c0a, 0x9c, 0, 0}, {0x3c0b, 0x40, 0, 0},
+ 	{0x3800, 0x01, 0, 0}, {0x3801, 0x50, 0, 0}, {0x3802, 0x01, 0, 0},
+@@ -516,7 +512,6 @@ static const struct reg_value ov5640_setting_1080P_1920_1080[] = {
+ 	{0x3a09, 0x50, 0, 0}, {0x3a0a, 0x01, 0, 0}, {0x3a0b, 0x18, 0, 0},
+ 	{0x3a0e, 0x03, 0, 0}, {0x3a0d, 0x04, 0, 0}, {0x3a14, 0x04, 0, 0},
+ 	{0x3a15, 0x60, 0, 0}, {0x4407, 0x04, 0, 0},
+-	{0x460b, 0x37, 0, 0}, {0x460c, 0x20, 0, 0}, {0x3824, 0x04, 0, 0},
+ 	{0x4005, 0x1a, 0, 0}, {0x3008, 0x02, 0, 0},
+ };
+ 
+@@ -535,8 +530,8 @@ static const struct reg_value ov5640_setting_QSXGA_2592_1944[] = {
+ 	{0x3a0a, 0x00, 0, 0}, {0x3a0b, 0xf6, 0, 0}, {0x3a0e, 0x03, 0, 0},
+ 	{0x3a0d, 0x04, 0, 0}, {0x3a14, 0x03, 0, 0}, {0x3a15, 0xd8, 0, 0},
+ 	{0x4001, 0x02, 0, 0}, {0x4004, 0x06, 0, 0},
+-	{0x4407, 0x04, 0, 0}, {0x460b, 0x35, 0, 0}, {0x460c, 0x22, 0, 0},
+-	{0x3824, 0x02, 0, 0}, {0x5001, 0x83, 0, 70},
++	{0x4407, 0x04, 0, 0},
++	{0x5001, 0x83, 0, 70},
+ };
+ 
+ /* power-on sensor init reg table */
+@@ -1005,9 +1000,38 @@ static unsigned long ov5640_calc_pclk(struct ov5640_dev *sensor,
+ 
+ static int ov5640_set_dvp_pclk(struct ov5640_dev *sensor, unsigned long rate)
+ {
++	const struct ov5640_mode_info *mode = sensor->current_mode;
+ 	u8 prediv, mult, sysdiv, pll_rdiv, bit_div, pclk_div;
++	struct i2c_client *client = sensor->i2c_client;
++	unsigned int pclk_freq, max_pclk_freq;
++	u8 dvp_pclk_divider;
+ 	int ret;
+ 
++	/*
++	 * 1280x720 and 1024x768 are reported to use 'SUBSAMPLING' only,
++	 * but they seems to go through the scaler before subsampling.
++	 */
++	if (mode->dn_mode == SCALING ||
++	   (mode->id == OV5640_MODE_720P_1280_720) ||
++	   (mode->id == OV5640_MODE_XGA_1024_768))
++		dvp_pclk_divider = 1;
++	else
++		dvp_pclk_divider = 2;
++
++	ret = ov5640_write_reg(sensor, OV5640_REG_DVP_PCLK_DIVIDER,
++			       dvp_pclk_divider);
++	if (ret)
++		return ret;
++	pclk_freq = rate / dvp_pclk_divider;
++	max_pclk_freq = sensor->ep.bus.parallel.pclk_max_frequency;
++
++	/* clip rate according to optional maximum pixel clock limit */
++	if (max_pclk_freq && (pclk_freq > max_pclk_freq)) {
++		rate = max_pclk_freq * dvp_pclk_divider;
++		dev_dbg(&client->dev, "DVP pixel clock too high (%d > %d Hz), reducing rate...\n",
++			pclk_freq, max_pclk_freq);
++	}
++
+ 	ov5640_calc_pclk(sensor, rate, &prediv, &mult, &sysdiv, &pll_rdiv,
+ 			 &bit_div, &pclk_div);
+ 
+@@ -1042,6 +1066,7 @@ static int ov5640_set_dvp_pclk(struct ov5640_dev *sensor, unsigned long rate)
+ 			      (ilog2(pclk_div) << 4));
+ }
+ 
++#if 0
+ /* set JPEG framing sizes */
+ static int ov5640_set_jpeg_timings(struct ov5640_dev *sensor,
+ 				   const struct ov5640_mode_info *mode)
+@@ -1065,19 +1090,20 @@ static int ov5640_set_jpeg_timings(struct ov5640_dev *sensor,
+ 
+ 	return ov5640_write_reg16(sensor, OV5640_REG_VFIFO_VSIZE, mode->vact);
+ }
++#endif
+ 
+ /* download ov5640 settings to sensor through i2c */
+ static int ov5640_set_timings(struct ov5640_dev *sensor,
+ 			      const struct ov5640_mode_info *mode)
+ {
+ 	int ret;
+-
++#if 0
+ 	if (sensor->fmt.code == MEDIA_BUS_FMT_JPEG_1X8) {
+ 		ret = ov5640_set_jpeg_timings(sensor, mode);
+ 		if (ret < 0)
+ 			return ret;
+ 	}
+-
++#endif
+ 	ret = ov5640_write_reg16(sensor, OV5640_REG_TIMING_DVPHO, mode->hact);
+ 	if (ret < 0)
+ 		return ret;
+@@ -2199,6 +2225,10 @@ static int ov5640_try_fmt_internal(struct v4l2_subdev *sd,
+ 	return 0;
+ }
+ 
++static const s64 link_freq_menu_items[] = {
++	384000000,
++};
++
+ static int ov5640_set_fmt(struct v4l2_subdev *sd,
+ 			  struct v4l2_subdev_pad_config *cfg,
+ 			  struct v4l2_subdev_format *format)
+@@ -2637,6 +2667,8 @@ static int ov5640_s_ctrl(struct v4l2_ctrl *ctrl)
+ 	case V4L2_CID_VFLIP:
+ 		ret = ov5640_set_ctrl_vflip(sensor, ctrl->val);
+ 		break;
++	case V4L2_CID_LINK_FREQ:
++		return 0;
+ 	default:
+ 		ret = -EINVAL;
+ 		break;
+@@ -2704,6 +2736,9 @@ static int ov5640_init_controls(struct ov5640_dev *sensor)
+ 				       V4L2_CID_POWER_LINE_FREQUENCY_AUTO, 0,
+ 				       V4L2_CID_POWER_LINE_FREQUENCY_50HZ);
+ 
++	ctrls->link_freq = v4l2_ctrl_new_int_menu(hdl, ops, V4L2_CID_LINK_FREQ,
++						  0, 0, link_freq_menu_items);
++
+ 	if (hdl->error) {
+ 		ret = hdl->error;
+ 		goto free_ctrls;
+diff --git a/drivers/media/platform/stm32/stm32-cec.c b/drivers/media/platform/stm32/stm32-cec.c
+index 8a86b2cc2..108f83c26 100644
+--- a/drivers/media/platform/stm32/stm32-cec.c
++++ b/drivers/media/platform/stm32/stm32-cec.c
+@@ -291,7 +291,9 @@ static int stm32_cec_probe(struct platform_device *pdev)
+ 
+ 	cec->clk_cec = devm_clk_get(&pdev->dev, "cec");
+ 	if (IS_ERR(cec->clk_cec)) {
+-		dev_err(&pdev->dev, "Cannot get cec clock\n");
++		if (PTR_ERR(cec->clk_cec) != -EPROBE_DEFER)
++			dev_err(&pdev->dev, "Cannot get cec clock\n");
++
+ 		return PTR_ERR(cec->clk_cec);
+ 	}
+ 
+@@ -302,10 +304,14 @@ static int stm32_cec_probe(struct platform_device *pdev)
+ 	}
+ 
+ 	cec->clk_hdmi_cec = devm_clk_get(&pdev->dev, "hdmi-cec");
++	if (IS_ERR(cec->clk_hdmi_cec) &&
++	    PTR_ERR(cec->clk_hdmi_cec) == -EPROBE_DEFER)
++			return -EPROBE_DEFER;
++
+ 	if (!IS_ERR(cec->clk_hdmi_cec)) {
+ 		ret = clk_prepare(cec->clk_hdmi_cec);
+ 		if (ret) {
+-			dev_err(&pdev->dev, "Unable to prepare hdmi-cec clock\n");
++			dev_err(&pdev->dev, "Can't prepare hdmi-cec clock\n");
+ 			return ret;
+ 		}
+ 	}
+diff --git a/drivers/media/platform/stm32/stm32-dcmi.c b/drivers/media/platform/stm32/stm32-dcmi.c
+index 9392e3409..2e78facd0 100644
+--- a/drivers/media/platform/stm32/stm32-dcmi.c
++++ b/drivers/media/platform/stm32/stm32-dcmi.c
+@@ -95,6 +95,9 @@ enum state {
+ #define MIN_HEIGHT	16U
+ #define MAX_HEIGHT	2592U
+ 
++/* DMA can sustain YUV 720p@15fps max */
++#define MAX_DMA_BANDWIDTH	(1280 * 720 * 2 * 15)
++
+ #define TIMEOUT_MS	1000
+ 
+ #define OVERRUN_ERROR_THRESHOLD	3
+@@ -324,7 +327,7 @@ static int dcmi_start_dma(struct stm32_dcmi *dcmi,
+ 	}
+ 
+ 	/*
+-	 * Avoid call of dmaengine_terminate_all() between
++	 * Avoid call of dmaengine_terminate_sync() between
+ 	 * dmaengine_prep_slave_single() and dmaengine_submit()
+ 	 * by locking the whole DMA submission sequence
+ 	 */
+@@ -438,7 +441,7 @@ static void dcmi_process_jpeg(struct stm32_dcmi *dcmi)
+ 	}
+ 
+ 	/* Abort DMA operation */
+-	dmaengine_terminate_all(dcmi->dma_chan);
++	dmaengine_terminate_sync(dcmi->dma_chan);
+ 
+ 	/* Restart capture */
+ 	if (dcmi_restart_capture(dcmi))
+@@ -784,8 +787,31 @@ static int dcmi_start_streaming(struct vb2_queue *vq, unsigned int count)
+ 		dcmi_set_crop(dcmi);
+ 
+ 	/* Enable jpeg capture */
+-	if (dcmi->sd_format->fourcc == V4L2_PIX_FMT_JPEG)
+-		reg_set(dcmi->regs, DCMI_CR, CR_CM);/* Snapshot mode */
++	if (dcmi->sd_format->fourcc == V4L2_PIX_FMT_JPEG) {
++		unsigned int rate;
++		struct v4l2_streamparm p = {
++			.type = V4L2_BUF_TYPE_VIDEO_CAPTURE
++		};
++		struct v4l2_fract frame_interval = {1, 30};
++
++		ret = v4l2_g_parm_cap(dcmi->vdev, dcmi->entity.source, &p);
++		if (!ret)
++			frame_interval = p.parm.capture.timeperframe;
++
++		rate = dcmi->fmt.fmt.pix.sizeimage *
++		       frame_interval.denominator / frame_interval.numerator;
++
++		/*
++		 * If rate exceed DMA capabilities, switch to snapshot mode
++		 * to ensure that current DMA transfer is elapsed before
++		 * capturing a new JPEG.
++		 */
++		if (rate > MAX_DMA_BANDWIDTH) {
++			reg_set(dcmi->regs, DCMI_CR, CR_CM);/* Snapshot mode */
++			dev_dbg(dcmi->dev, "Capture rate is too high for continuous mode (%d > %d bytes/s), switch to snapshot mode\n",
++				rate, MAX_DMA_BANDWIDTH);
++		}
++	}
+ 
+ 	/* Enable dcmi */
+ 	reg_set(dcmi->regs, DCMI_CR, CR_ENABLE);
+@@ -884,7 +910,7 @@ static void dcmi_stop_streaming(struct vb2_queue *vq)
+ 
+ 	/* Stop all pending DMA operations */
+ 	mutex_lock(&dcmi->dma_lock);
+-	dmaengine_terminate_all(dcmi->dma_chan);
++	dmaengine_terminate_sync(dcmi->dma_chan);
+ 	mutex_unlock(&dcmi->dma_lock);
+ 
+ 	pm_runtime_put(dcmi->dev);
+@@ -1853,7 +1879,9 @@ static int dcmi_probe(struct platform_device *pdev)
+ 
+ 	dcmi->rstc = devm_reset_control_get_exclusive(&pdev->dev, NULL);
+ 	if (IS_ERR(dcmi->rstc)) {
+-		dev_err(&pdev->dev, "Could not get reset control\n");
++		if (PTR_ERR(dcmi->rstc) != -EPROBE_DEFER)
++			dev_err(&pdev->dev, "Could not get reset control\n");
++
+ 		return PTR_ERR(dcmi->rstc);
+ 	}
+ 
+@@ -1910,10 +1938,13 @@ static int dcmi_probe(struct platform_device *pdev)
+ 		return PTR_ERR(mclk);
+ 	}
+ 
+-	chan = dma_request_slave_channel(&pdev->dev, "tx");
+-	if (!chan) {
+-		dev_info(&pdev->dev, "Unable to request DMA channel, defer probing\n");
+-		return -EPROBE_DEFER;
++	chan = dma_request_chan(&pdev->dev, "tx");
++	if (IS_ERR(chan)) {
++		ret = PTR_ERR(chan);
++		if (ret != -EPROBE_DEFER)
++			dev_err(&pdev->dev,
++				"Failed to request DMA channel: %d\n", ret);
++		return ret;
+ 	}
+ 
+ 	spin_lock_init(&dcmi->irqlock);
+diff --git a/drivers/media/v4l2-core/v4l2-fwnode.c b/drivers/media/v4l2-core/v4l2-fwnode.c
+index 3bd188878..7f370d6b7 100644
+--- a/drivers/media/v4l2-core/v4l2-fwnode.c
++++ b/drivers/media/v4l2-core/v4l2-fwnode.c
+@@ -356,6 +356,9 @@ v4l2_fwnode_endpoint_parse_parallel_bus(struct fwnode_handle *fwnode,
+ 		pr_debug("data-enable-active %s\n", v ? "high" : "low");
+ 	}
+ 
++	if (!fwnode_property_read_u32(fwnode, "pclk-max-frequency", &v))
++		bus->pclk_max_frequency = v;
++
+ 	switch (bus_type) {
+ 	default:
+ 		bus->flags = flags;
+diff --git a/drivers/soc/Kconfig b/drivers/soc/Kconfig
+index 833e04a78..4ad5724f5 100644
+--- a/drivers/soc/Kconfig
++++ b/drivers/soc/Kconfig
+@@ -14,6 +14,7 @@ source "drivers/soc/qcom/Kconfig"
+ source "drivers/soc/renesas/Kconfig"
+ source "drivers/soc/rockchip/Kconfig"
+ source "drivers/soc/samsung/Kconfig"
++source "drivers/soc/st/Kconfig"
+ source "drivers/soc/sunxi/Kconfig"
+ source "drivers/soc/tegra/Kconfig"
+ source "drivers/soc/ti/Kconfig"
+diff --git a/drivers/soc/Makefile b/drivers/soc/Makefile
+index 2ec355003..30d3dcabf 100644
+--- a/drivers/soc/Makefile
++++ b/drivers/soc/Makefile
+@@ -20,6 +20,7 @@ obj-y				+= qcom/
+ obj-y				+= renesas/
+ obj-$(CONFIG_ARCH_ROCKCHIP)	+= rockchip/
+ obj-$(CONFIG_SOC_SAMSUNG)	+= samsung/
++obj-$(CONFIG_ARCH_STM32)	+= st/
+ obj-y				+= sunxi/
+ obj-$(CONFIG_ARCH_TEGRA)	+= tegra/
+ obj-y				+= ti/
+diff --git a/drivers/soc/st/Kconfig b/drivers/soc/st/Kconfig
+new file mode 100644
+index 000000000..59db03150
+--- /dev/null
++++ b/drivers/soc/st/Kconfig
+@@ -0,0 +1,17 @@
++if ARCH_STM32
++
++config STM32_HDP
++	bool "STMicroelectronics STM32MP157 Hardware Debug Port (HDP) pin control"
++	depends on MACH_STM32MP157
++	default n if MACH_STM32MP157
++	help
++	  The Hardware Debug Port allows the observation of internal signals. By using multiplexers,
++	  up to 16 signals for each of 8-bit output can be observed.
++
++config STM32_PM_DOMAINS
++	bool "STM32 PM domains"
++	depends on MACH_STM32MP157
++	select PM_GENERIC_DOMAINS
++	default y if MACH_STM32MP157
++
++endif # ARCH_STM32
+diff --git a/drivers/soc/st/Makefile b/drivers/soc/st/Makefile
+new file mode 100644
+index 000000000..0fce1db16
+--- /dev/null
++++ b/drivers/soc/st/Makefile
+@@ -0,0 +1,2 @@
++obj-$(CONFIG_STM32_HDP) += stm32_hdp.o
++obj-$(CONFIG_STM32_PM_DOMAINS) += stm32_pm_domain.o
+diff --git a/drivers/soc/st/stm32_hdp.c b/drivers/soc/st/stm32_hdp.c
+new file mode 100644
+index 000000000..6408ac68c
+--- /dev/null
++++ b/drivers/soc/st/stm32_hdp.c
+@@ -0,0 +1,242 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
++ * Author: Christophe Roullier <christophe.roullier@st.com>
++ * for STMicroelectronics.
++ */
++
++#include <linux/clk.h>
++#include <linux/debugfs.h>
++#include <linux/init.h>
++#include <linux/of.h>
++#include <linux/module.h>
++#include <linux/pinctrl/pinconf.h>
++#include <linux/pinctrl/pinconf-generic.h>
++#include <linux/pinctrl/pinctrl.h>
++#include <linux/platform_device.h>
++#include <linux/io.h>
++#include <linux/suspend.h>
++
++#define HDP_CTRL_ENABLE 1
++#define HDP_CTRL_DISABLE 0
++
++enum {
++	HDP_CTRL = 0,
++	HDP_MUX = 0x4,
++	HDP_VAL = 0x10,
++	HDP_GPOSET = 0x14,
++	HDP_GPOCLR = 0x18,
++	HDP_GPOVAL = 0x1c,
++	HDP_VERR = 0x3f4,
++	HDP_IPIDR = 0x3f8,
++	HDP_SIDR = 0x3fc
++} HDP_register_offsets;
++
++struct data_priv {
++	struct clk *clk;
++	int clk_is_enabled;
++	struct dentry *pwr_dentry;
++	unsigned char __iomem *hdp_membase;
++	unsigned int hdp_ctrl;
++	unsigned int hdp_mux;
++};
++
++/* enable/disable */
++static int stm32_hdp_enable_set(void *data, int val)
++{
++	struct data_priv *e = (struct data_priv *)data;
++
++	if (!e->clk)
++		return -EPERM;
++
++	if (val == 1) {
++		if (clk_prepare_enable(e->clk) < 0) {
++			pr_err("Failed to enable HDP clock\n");
++			return -EPERM;
++		}
++		e->clk_is_enabled = 1;
++	} else {
++		clk_disable_unprepare(e->clk);
++		e->clk_is_enabled = 0;
++	}
++	return 0;
++}
++
++static int stm32_hdp_fops_set(void *data, u64 val)
++{
++	unsigned char __iomem *addr = (unsigned char __iomem *)data;
++
++	writel_relaxed(val, addr);
++
++	return 0;
++}
++
++static int stm32_hdp_fops_get(void *data, u64 *val)
++{
++	unsigned char __iomem *addr = (unsigned char __iomem *)data;
++
++	*val = readl_relaxed(addr);
++
++	return 0;
++}
++
++DEFINE_SIMPLE_ATTRIBUTE(stm32_hdp_fops, stm32_hdp_fops_get,
++			stm32_hdp_fops_set, "0x%llx\n");
++
++int stm32_hdp_probe(struct platform_device *pdev)
++{
++	struct device_node *np = pdev->dev.of_node;
++	struct device *dev = &pdev->dev;
++	struct resource *res;
++
++	struct data_priv *data;
++	struct dentry *r;
++
++	int ret;
++	const __be32 *getmuxing;
++	u32 muxing, version;
++
++	if (!np)
++		return -ENODEV;
++
++	data = devm_kzalloc(&pdev->dev, sizeof(struct data_priv), GFP_KERNEL);
++	if (!data)
++		return -ENOMEM;
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	data->hdp_membase = devm_ioremap_resource(&pdev->dev, res);
++	if (IS_ERR(data->hdp_membase))
++		return PTR_ERR(data->hdp_membase);
++
++	/*  Get HDP clocks */
++	data->clk = devm_clk_get(dev, "hdp");
++	if (IS_ERR(data->clk)) {
++		dev_err(dev, "No HDP CK clock provided...\n");
++		return PTR_ERR(data->clk);
++	}
++
++	/* Enable clock */
++	ret = stm32_hdp_enable_set(data, 1);
++	if (ret != 0)
++		return ret;
++
++	getmuxing = of_get_property(np, "muxing-hdp", NULL);
++	if (!getmuxing) {
++		dev_err(dev,
++			"no muxing-hdp property in node\n");
++		/* Disable clock */
++		ret = stm32_hdp_enable_set(data, 0);
++		if (ret != 0)
++			return ret;
++
++		return -EINVAL;
++	}
++
++	/* add hdp directory */
++	r = debugfs_create_dir("hdp", NULL);
++	if (!r) {
++		dev_err(dev, "Unable to create HDP debugFS\n");
++		/* Disable clock */
++		ret = stm32_hdp_enable_set(data, 0);
++		if (ret != 0)
++			return ret;
++
++		return -ENODEV;
++	}
++
++	debugfs_create_file("ctrl", 0644, r,
++			    data->hdp_membase + HDP_CTRL, &stm32_hdp_fops);
++	debugfs_create_file("mux", 0644, r,
++			    data->hdp_membase + HDP_MUX, &stm32_hdp_fops);
++	debugfs_create_file("val", 0644, r,
++			    data->hdp_membase + HDP_VAL, &stm32_hdp_fops);
++	debugfs_create_file("gposet", 0644, r,
++			    data->hdp_membase + HDP_GPOSET, &stm32_hdp_fops);
++	debugfs_create_file("gpoclr", 0644, r,
++			    data->hdp_membase + HDP_GPOCLR, &stm32_hdp_fops);
++	debugfs_create_file("gpoval", 0644, r,
++			    data->hdp_membase + HDP_GPOVAL, &stm32_hdp_fops);
++
++	/* Enable HDP */
++	writel(HDP_CTRL_ENABLE, data->hdp_membase + HDP_CTRL);
++
++	/* HDP Multiplexing */
++	muxing = of_read_number(getmuxing,
++				of_n_addr_cells(np));
++
++	writel(muxing, data->hdp_membase + HDP_MUX);
++
++	platform_set_drvdata(pdev, data);
++
++	/* Get Majeur, Minor version */
++	version = readl(data->hdp_membase + HDP_VERR);
++
++	dev_info(dev, "STM32 HDP version %d.%d initialized\n",
++		 version >> 4, version & 0x0F);
++
++	return 0;
++}
++
++static int stm32_hdp_remove(struct platform_device *pdev)
++{
++	struct data_priv *data = platform_get_drvdata(pdev);
++
++	/* Disable HDP */
++	writel(HDP_CTRL_DISABLE, data->hdp_membase + HDP_CTRL);
++
++	if (data->clk) {
++		if (data->clk_is_enabled)
++			clk_disable_unprepare(data->clk);
++	}
++
++	pr_info("driver STM32 HDP removed\n");
++	return 0;
++}
++
++#ifdef CONFIG_PM_SLEEP
++static int stm32_hdp_suspend(struct device *dev)
++{
++	struct data_priv *data = dev_get_drvdata(dev);
++
++	data->hdp_ctrl = readl_relaxed(data->hdp_membase + HDP_CTRL);
++	data->hdp_mux = readl_relaxed(data->hdp_membase + HDP_MUX);
++
++	pinctrl_pm_select_sleep_state(dev);
++
++	return 0;
++}
++
++static int stm32_hdp_resume(struct device *dev)
++{
++	struct data_priv *data = dev_get_drvdata(dev);
++
++	writel_relaxed(data->hdp_ctrl, data->hdp_membase + HDP_CTRL);
++	writel_relaxed(data->hdp_mux, data->hdp_membase + HDP_MUX);
++
++	pinctrl_pm_select_default_state(dev);
++
++	return 0;
++}
++#endif /* CONFIG_PM_SLEEP */
++
++static SIMPLE_DEV_PM_OPS(stm32_hdp_pm_ops,
++			 stm32_hdp_suspend,
++			 stm32_hdp_resume);
++
++static const struct of_device_id hdp_match[] = {
++	{	.compatible = "st,stm32mp1-hdp",},
++	{ }
++};
++MODULE_DEVICE_TABLE(of, hdp_match);
++
++static struct platform_driver hdp_driver = {
++	.probe = stm32_hdp_probe,
++	.remove = stm32_hdp_remove,
++	.driver = {
++		.name = "hdp",
++		.of_match_table = hdp_match,
++		.pm = &stm32_hdp_pm_ops,
++	},
++};
++
++module_platform_driver(hdp_driver);
+diff --git a/drivers/soc/st/stm32_pm_domain.c b/drivers/soc/st/stm32_pm_domain.c
+new file mode 100644
+index 000000000..0386624c2
+--- /dev/null
++++ b/drivers/soc/st/stm32_pm_domain.c
+@@ -0,0 +1,212 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
++ * Author: Alexandre Torgue <alexandre.torgue@st.com> for STMicroelectronics.
++ * Author: Olivier Bideau <olivier.bideau@st.com> for STMicroelectronics.
++ */
++
++#include <linux/arm-smccc.h>
++#include <linux/err.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/of_platform.h>
++#include <linux/pm_domain.h>
++#include <linux/printk.h>
++#include <linux/slab.h>
++
++#define SMC(domain, state)				\
++{							\
++	struct arm_smccc_res res;			\
++	arm_smccc_smc(0x82001008, domain, state, 0,	\
++		      0, 0, 0, 0, &res);		\
++}
++
++#define STM32_SMC_PD_DOMAIN_ON	0
++#define STM32_SMC_PD_DOMAIN_OFF	1
++
++struct stm32_pm_domain {
++	struct device *dev;
++	struct generic_pm_domain genpd;
++	int id;
++};
++
++static int stm32_pd_power_off(struct generic_pm_domain *domain)
++{
++	struct stm32_pm_domain *priv = container_of(domain,
++						    struct stm32_pm_domain,
++						    genpd);
++
++	SMC(priv->id, STM32_SMC_PD_DOMAIN_OFF);
++
++	dev_dbg(priv->dev, "%s OFF\n", domain->name);
++
++	return 0;
++}
++
++static int stm32_pd_power_on(struct generic_pm_domain *domain)
++{
++	struct stm32_pm_domain *priv = container_of(domain,
++						    struct stm32_pm_domain,
++						    genpd);
++
++	SMC(priv->id, STM32_SMC_PD_DOMAIN_ON);
++
++	dev_dbg(priv->dev, "%s ON\n", domain->name);
++
++	return 0;
++}
++
++static void stm32_pm_domain_remove(struct stm32_pm_domain *domain)
++{
++	int ret;
++
++	ret = pm_genpd_remove(&domain->genpd);
++	if (ret)
++		dev_err(domain->dev, "failed to remove PM domain %s: %d\n",
++			domain->genpd.name, ret);
++}
++
++static int stm32_pm_domain_add(struct stm32_pm_domain *domain,
++			       struct device *dev,
++			       struct device_node *np)
++{
++	int ret;
++
++	domain->dev = dev;
++	domain->genpd.name = np->name;
++	domain->genpd.power_off = stm32_pd_power_off;
++	domain->genpd.power_on = stm32_pd_power_on;
++	domain->genpd.flags |= GENPD_FLAG_ACTIVE_WAKEUP;
++
++	ret = of_property_read_u32(np, "reg", &domain->id);
++	if (ret) {
++		dev_err(domain->dev, "no domain ID\n");
++		return ret;
++	}
++
++	ret = pm_genpd_init(&domain->genpd, NULL, 0);
++	if (ret < 0) {
++		dev_err(domain->dev, "failed to initialise PM domain %s: %d\n",
++			np->name, ret);
++		return ret;
++	}
++
++	ret = of_genpd_add_provider_simple(np, &domain->genpd);
++	if (ret < 0) {
++		dev_err(domain->dev, "failed to register PM domain %s: %d\n",
++			np->name, ret);
++		stm32_pm_domain_remove(domain);
++		return ret;
++	}
++
++	dev_info(domain->dev, "domain %s registered\n", np->name);
++
++	return 0;
++}
++
++static void stm32_pm_subdomain_add(struct stm32_pm_domain *domain,
++				   struct device *dev,
++				   struct device_node *np)
++{
++	struct device_node *np_child;
++	int ret;
++
++	for_each_child_of_node(np, np_child) {
++		struct stm32_pm_domain *sub_domain;
++
++		sub_domain = devm_kzalloc(dev, sizeof(*sub_domain), GFP_KERNEL);
++		if (!sub_domain)
++			continue;
++
++		sub_domain->dev = dev;
++		sub_domain->genpd.name = np_child->name;
++		sub_domain->genpd.power_off = stm32_pd_power_off;
++		sub_domain->genpd.power_on = stm32_pd_power_on;
++		sub_domain->genpd.flags |= GENPD_FLAG_ACTIVE_WAKEUP;
++
++		ret = of_property_read_u32(np_child, "reg", &sub_domain->id);
++		if (ret) {
++			dev_err(sub_domain->dev, "no domain ID\n");
++			devm_kfree(dev, sub_domain);
++			continue;
++		}
++
++		ret = pm_genpd_init(&sub_domain->genpd, NULL, 0);
++		if (ret < 0) {
++			dev_err(sub_domain->dev, "failed to initialise PM domain %s: %d\n"
++				, np_child->name, ret);
++			devm_kfree(dev, sub_domain);
++			continue;
++		}
++
++		ret = of_genpd_add_provider_simple(np_child,
++						   &sub_domain->genpd);
++		if (ret < 0) {
++			dev_err(sub_domain->dev, "failed to register PM domain %s: %d\n"
++				, np_child->name, ret);
++			stm32_pm_domain_remove(sub_domain);
++			devm_kfree(dev, sub_domain);
++			continue;
++		}
++
++		ret = pm_genpd_add_subdomain(&domain->genpd,
++					     &sub_domain->genpd);
++
++		if (ret < 0) {
++			dev_err(sub_domain->dev, "failed to add Sub PM domain %s: %d\n"
++				, np_child->name, ret);
++			stm32_pm_domain_remove(sub_domain);
++			devm_kfree(dev, sub_domain);
++			continue;
++		}
++
++		dev_info(sub_domain->dev, "subdomain %s registered\n",
++			 np_child->name);
++	}
++}
++
++static int stm32_pm_domain_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct device_node *np = dev->of_node, *child_np;
++	int ret;
++
++	for_each_child_of_node(np, child_np) {
++		struct stm32_pm_domain *domain;
++
++		domain = devm_kzalloc(dev, sizeof(*domain), GFP_KERNEL);
++		if (!domain)
++			continue;
++
++		ret = stm32_pm_domain_add(domain, dev, child_np);
++		if (ret) {
++			devm_kfree(dev, domain);
++			continue;
++		}
++
++		stm32_pm_subdomain_add(domain, dev, child_np);
++	}
++
++	dev_info(dev, "domains probed\n");
++
++	return 0;
++}
++
++static const struct of_device_id stm32_pm_domain_matches[] = {
++	{ .compatible = "st,stm32mp157c-pd", },
++	{ },
++};
++
++static struct platform_driver stm32_pm_domains_driver = {
++	.probe = stm32_pm_domain_probe,
++	.driver = {
++		.name   = "stm32-pm-domain",
++		.of_match_table = stm32_pm_domain_matches,
++	},
++};
++
++static int __init stm32_pm_domains_init(void)
++{
++	return platform_driver_register(&stm32_pm_domains_driver);
++}
++core_initcall(stm32_pm_domains_init);
+diff --git a/drivers/thermal/st/stm_thermal.c b/drivers/thermal/st/stm_thermal.c
+index cf9ddc52f..1cecf9544 100644
+--- a/drivers/thermal/st/stm_thermal.c
++++ b/drivers/thermal/st/stm_thermal.c
+@@ -30,7 +30,7 @@
+ #define DTS_DR_OFFSET		0x1C
+ #define DTS_SR_OFFSET		0x20
+ #define DTS_ITENR_OFFSET	0x24
+-#define DTS_CIFR_OFFSET		0x28
++#define DTS_ICIFR_OFFSET		0x28
+ 
+ /* DTS_CFGR1 register mask definitions */
+ #define HSREF_CLK_DIV_MASK	GENMASK(30, 24)
+@@ -51,10 +51,16 @@
+ /* DTS_DR register mask definitions */
+ #define TS1_MFREQ_MASK		GENMASK(15, 0)
+ 
++/* DTS_ITENR register mask definitions */
++#define ITENR_MASK		(GENMASK(2, 0) | GENMASK(6, 4))
++
++/* DTS_ICIFR register mask definitions */
++#define ICIFR_MASK		(GENMASK(2, 0) | GENMASK(6, 4))
++
+ /* Less significant bit position definitions */
+ #define TS1_T0_POS		16
+-#define TS1_SMP_TIME_POS	16
+ #define TS1_HITTHD_POS		16
++#define TS1_LITTHD_POS		0
+ #define HSREF_CLK_DIV_POS	24
+ 
+ /* DTS_CFGR1 bit definitions */
+@@ -76,58 +82,37 @@
+ #define ONE_MHZ			1000000
+ #define POLL_TIMEOUT		5000
+ #define STARTUP_TIME		40
+-#define TS1_T0_VAL0		30
+-#define TS1_T0_VAL1		130
++#define T0			30000  /* 30 celsius */
+ #define NO_HW_TRIG		0
+-
+-/* The Thermal Framework expects millidegrees */
+-#define mcelsius(temp)		((temp) * 1000)
+-
+-/* The Sensor expects oC degrees */
+-#define celsius(temp)		((temp) / 1000)
++#define SAMPLING_TIME		15
+ 
+ struct stm_thermal_sensor {
+ 	struct device *dev;
+ 	struct thermal_zone_device *th_dev;
+ 	enum thermal_device_mode mode;
+ 	struct clk *clk;
+-	int high_temp;
+-	int low_temp;
+-	int temp_critical;
+-	int temp_passive;
+ 	unsigned int low_temp_enabled;
+-	int num_trips;
++	unsigned int high_temp_enabled;
+ 	int irq;
+-	unsigned int irq_enabled;
+ 	void __iomem *base;
+-	int t0, fmt0, ramp_coeff;
++	int fmt0, ramp_coeff;
+ };
+ 
+-static irqreturn_t stm_thermal_alarm_irq(int irq, void *sdata)
+-{
+-	struct stm_thermal_sensor *sensor = sdata;
+-
+-	disable_irq_nosync(irq);
+-	sensor->irq_enabled = false;
+-
+-	return IRQ_WAKE_THREAD;
+-}
++static int stm_enable_irq(struct stm_thermal_sensor *sensor);
+ 
+ static irqreturn_t stm_thermal_alarm_irq_thread(int irq, void *sdata)
+ {
+-	u32 value;
+ 	struct stm_thermal_sensor *sensor = sdata;
+ 
+-	/* read IT reason in SR and clear flags */
+-	value = readl_relaxed(sensor->base + DTS_SR_OFFSET);
++	dev_dbg(sensor->dev, "sr:%d\n",
++		readl_relaxed(sensor->base + DTS_SR_OFFSET));
+ 
+-	if ((value & LOW_THRESHOLD) == LOW_THRESHOLD)
+-		writel_relaxed(LOW_THRESHOLD, sensor->base + DTS_CIFR_OFFSET);
++	thermal_zone_device_update(sensor->th_dev, THERMAL_EVENT_UNSPECIFIED);
+ 
+-	if ((value & HIGH_THRESHOLD) == HIGH_THRESHOLD)
+-		writel_relaxed(HIGH_THRESHOLD, sensor->base + DTS_CIFR_OFFSET);
++	stm_enable_irq(sensor);
+ 
+-	thermal_zone_device_update(sensor->th_dev, THERMAL_EVENT_UNSPECIFIED);
++	/* Acknoledge all DTS irqs */
++	writel_relaxed(ICIFR_MASK, sensor->base + DTS_ICIFR_OFFSET);
+ 
+ 	return IRQ_HANDLED;
+ }
+@@ -160,6 +145,8 @@ static int stm_sensor_power_on(struct stm_thermal_sensor *sensor)
+ 	writel_relaxed(value, sensor->base +
+ 		       DTS_CFGR1_OFFSET);
+ 
++	sensor->mode = THERMAL_DEVICE_ENABLED;
++
+ 	return 0;
+ }
+ 
+@@ -167,6 +154,8 @@ static int stm_sensor_power_off(struct stm_thermal_sensor *sensor)
+ {
+ 	u32 value;
+ 
++	sensor->mode = THERMAL_DEVICE_DISABLED;
++
+ 	/* Stop measuring */
+ 	value = readl_relaxed(sensor->base + DTS_CFGR1_OFFSET);
+ 	value &= ~TS1_START;
+@@ -232,14 +221,6 @@ static int stm_thermal_calibration(struct stm_thermal_sensor *sensor)
+ /* Fill in DTS structure with factory sensor values */
+ static int stm_thermal_read_factory_settings(struct stm_thermal_sensor *sensor)
+ {
+-	/* Retrieve engineering calibration temperature */
+-	sensor->t0 = readl_relaxed(sensor->base + DTS_T0VALR1_OFFSET) &
+-					TS1_T0_MASK;
+-	if (!sensor->t0)
+-		sensor->t0 = TS1_T0_VAL0;
+-	else
+-		sensor->t0 = TS1_T0_VAL1;
+-
+ 	/* Retrieve fmt0 and put it on Hz */
+ 	sensor->fmt0 = ADJUST * (readl_relaxed(sensor->base +
+ 				 DTS_T0VALR1_OFFSET) & TS1_FMT0_MASK);
+@@ -253,8 +234,8 @@ static int stm_thermal_read_factory_settings(struct stm_thermal_sensor *sensor)
+ 		return -EINVAL;
+ 	}
+ 
+-	dev_dbg(sensor->dev, "%s: T0 = %doC, FMT0 = %dHz, RAMP_COEFF = %dHz/oC",
+-		__func__, sensor->t0, sensor->fmt0, sensor->ramp_coeff);
++	dev_dbg(sensor->dev, "%s: FMT0 = %dHz, RAMP_COEFF = %dHz/oC",
++		__func__, sensor->fmt0, sensor->ramp_coeff);
+ 
+ 	return 0;
+ }
+@@ -263,60 +244,16 @@ static int stm_thermal_calculate_threshold(struct stm_thermal_sensor *sensor,
+ 					   int temp, u32 *th)
+ {
+ 	int freqM;
+-	u32 sampling_time;
+-
+-	/* Retrieve the number of periods to sample */
+-	sampling_time = (readl_relaxed(sensor->base + DTS_CFGR1_OFFSET) &
+-			TS1_SMP_TIME_MASK) >> TS1_SMP_TIME_POS;
+ 
+ 	/* Figure out the CLK_PTAT frequency for a given temperature */
+-	freqM = ((temp - sensor->t0) * sensor->ramp_coeff)
+-		 + sensor->fmt0;
+-
+-	dev_dbg(sensor->dev, "%s: freqM for threshold = %d Hz",
+-		__func__, freqM);
++	freqM = ((temp - T0) * sensor->ramp_coeff) / 1000 + sensor->fmt0;
+ 
+ 	/* Figure out the threshold sample number */
+-	*th = clk_get_rate(sensor->clk);
++	*th = clk_get_rate(sensor->clk) * SAMPLING_TIME / freqM;
+ 	if (!*th)
+ 		return -EINVAL;
+ 
+-	*th = *th / freqM;
+-
+-	*th *= sampling_time;
+-
+-	return 0;
+-}
+-
+-static int stm_thermal_set_threshold(struct stm_thermal_sensor *sensor)
+-{
+-	u32 value, th;
+-	int ret;
+-
+-	value = readl_relaxed(sensor->base + DTS_ITR1_OFFSET);
+-
+-	/* Erase threshold content */
+-	value &= ~(TS1_LITTHD_MASK | TS1_HITTHD_MASK);
+-
+-	/* Retrieve the sample threshold number th for a given temperature */
+-	ret = stm_thermal_calculate_threshold(sensor, sensor->high_temp, &th);
+-	if (ret)
+-		return ret;
+-
+-	value |= th & TS1_LITTHD_MASK;
+-
+-	if (sensor->low_temp_enabled) {
+-		/* Retrieve the sample threshold */
+-		ret = stm_thermal_calculate_threshold(sensor, sensor->low_temp,
+-						      &th);
+-		if (ret)
+-			return ret;
+-
+-		value |= (TS1_HITTHD_MASK  & (th << TS1_HITTHD_POS));
+-	}
+-
+-	/* Write value on the Low interrupt threshold */
+-	writel_relaxed(value, sensor->base + DTS_ITR1_OFFSET);
++	dev_dbg(sensor->dev, "freqM=%d Hz, threshold=0x%x", freqM, *th);
+ 
+ 	return 0;
+ }
+@@ -326,12 +263,10 @@ static int stm_disable_irq(struct stm_thermal_sensor *sensor)
+ {
+ 	u32 value;
+ 
+-	/* Disable IT generation for low and high thresholds */
++	/* Disable IT generation */
+ 	value = readl_relaxed(sensor->base + DTS_ITENR_OFFSET);
+-	writel_relaxed(value & ~(LOW_THRESHOLD | HIGH_THRESHOLD),
+-		       sensor->base + DTS_ITENR_OFFSET);
+-
+-	dev_dbg(sensor->dev, "%s: IT disabled on sensor side", __func__);
++	value &= ~ITENR_MASK;
++	writel_relaxed(value, sensor->base + DTS_ITENR_OFFSET);
+ 
+ 	return 0;
+ }
+@@ -341,62 +276,68 @@ static int stm_enable_irq(struct stm_thermal_sensor *sensor)
+ {
+ 	u32 value;
+ 
+-	/*
+-	 * Code below enables High temperature threshold using a low threshold
+-	 * sampling value
+-	 */
+-
+-	/* Make sure LOW_THRESHOLD IT is clear before enabling */
+-	writel_relaxed(LOW_THRESHOLD, sensor->base + DTS_CIFR_OFFSET);
++	dev_dbg(sensor->dev, "low:%d high:%d\n", sensor->low_temp_enabled,
++		sensor->high_temp_enabled);
+ 
+-	/* Enable IT generation for low threshold */
++	/* Disable IT generation for low and high thresholds */
+ 	value = readl_relaxed(sensor->base + DTS_ITENR_OFFSET);
+-	value |= LOW_THRESHOLD;
+-
+-	/* Enable the low temperature threshold if needed */
+-	if (sensor->low_temp_enabled) {
+-		/* Make sure HIGH_THRESHOLD IT is clear before enabling */
+-		writel_relaxed(HIGH_THRESHOLD, sensor->base + DTS_CIFR_OFFSET);
++	value &= ~(LOW_THRESHOLD | HIGH_THRESHOLD);
+ 
+-		/* Enable IT generation for high threshold */
++	if (sensor->low_temp_enabled)
+ 		value |= HIGH_THRESHOLD;
+-	}
+ 
+-	/* Enable thresholds */
+-	writel_relaxed(value, sensor->base + DTS_ITENR_OFFSET);
++	if (sensor->high_temp_enabled)
++		value |= LOW_THRESHOLD;
+ 
+-	dev_dbg(sensor->dev, "%s: IT enabled on sensor side", __func__);
++	/* Enable interrupts */
++	writel_relaxed(value, sensor->base + DTS_ITENR_OFFSET);
+ 
+ 	return 0;
+ }
+ 
+-static int stm_thermal_update_threshold(struct stm_thermal_sensor *sensor)
++static int stm_thermal_set_trips(void *data, int low, int high)
+ {
++	struct stm_thermal_sensor *sensor = data;
++	u32 itr1, th;
+ 	int ret;
+ 
+-	sensor->mode = THERMAL_DEVICE_DISABLED;
++	dev_dbg(sensor->dev, "set trips %d <--> %d\n", low, high);
+ 
+-	ret = stm_sensor_power_off(sensor);
+-	if (ret)
+-		return ret;
++	/* Erase threshold content */
++	itr1 = readl_relaxed(sensor->base + DTS_ITR1_OFFSET);
++	itr1 &= ~(TS1_LITTHD_MASK | TS1_HITTHD_MASK);
+ 
+-	ret = stm_disable_irq(sensor);
+-	if (ret)
+-		return ret;
++	/*
++	 * Disable low-temp if "low" is too small. As per thermal framework
++	 * API, we use -INT_MAX rather than INT_MIN.
++	 */
+ 
+-	ret = stm_thermal_set_threshold(sensor);
+-	if (ret)
+-		return ret;
++	if (low > -INT_MAX) {
++		sensor->low_temp_enabled = 1;
++		/* add 0.5 of hysteresis due to measurement error */
++		ret = stm_thermal_calculate_threshold(sensor, low - 500, &th);
++		if (ret)
++			return ret;
+ 
+-	ret = stm_enable_irq(sensor);
+-	if (ret)
+-		return ret;
++		itr1 |= (TS1_HITTHD_MASK  & (th << TS1_HITTHD_POS));
++	} else {
++		sensor->low_temp_enabled = 0;
++	}
+ 
+-	ret = stm_sensor_power_on(sensor);
+-	if (ret)
+-		return ret;
++	/* Disable high-temp if "high" is too big. */
++	if (high < INT_MAX) {
++		sensor->high_temp_enabled = 1;
++		ret = stm_thermal_calculate_threshold(sensor, high, &th);
++		if (ret)
++			return ret;
+ 
+-	sensor->mode = THERMAL_DEVICE_ENABLED;
++		itr1 |= (TS1_LITTHD_MASK  & (th << TS1_LITTHD_POS));
++	} else {
++		sensor->high_temp_enabled = 0;
++	}
++
++	/* Write new threshod values*/
++	writel_relaxed(itr1, sensor->base + DTS_ITR1_OFFSET);
+ 
+ 	return 0;
+ }
+@@ -405,76 +346,26 @@ static int stm_thermal_update_threshold(struct stm_thermal_sensor *sensor)
+ static int stm_thermal_get_temp(void *data, int *temp)
+ {
+ 	struct stm_thermal_sensor *sensor = data;
+-	u32 sampling_time;
++	u32 periods;
+ 	int freqM, ret;
+ 
+ 	if (sensor->mode != THERMAL_DEVICE_ENABLED)
+ 		return -EAGAIN;
+ 
+-	/* Retrieve the number of samples */
+-	ret = readl_poll_timeout(sensor->base + DTS_DR_OFFSET, freqM,
+-				 (freqM & TS1_MFREQ_MASK), STARTUP_TIME,
+-				 POLL_TIMEOUT);
+-
++	/* Retrieve the number of periods sampled */
++	ret = readl_relaxed_poll_timeout(sensor->base + DTS_DR_OFFSET, periods,
++					 (periods & TS1_MFREQ_MASK),
++					 STARTUP_TIME, POLL_TIMEOUT);
+ 	if (ret)
+ 		return ret;
+ 
+-	if (!freqM)
+-		return -ENODATA;
+-
+-	/* Retrieve the number of periods sampled */
+-	sampling_time = (readl_relaxed(sensor->base + DTS_CFGR1_OFFSET) &
+-			TS1_SMP_TIME_MASK) >> TS1_SMP_TIME_POS;
+-
+-	/* Figure out the number of samples per period */
+-	freqM /= sampling_time;
+-
+ 	/* Figure out the CLK_PTAT frequency */
+-	freqM = clk_get_rate(sensor->clk) / freqM;
++	freqM = (clk_get_rate(sensor->clk) * SAMPLING_TIME) / periods;
+ 	if (!freqM)
+ 		return -EINVAL;
+ 
+-	dev_dbg(sensor->dev, "%s: freqM=%d\n", __func__, freqM);
+-
+ 	/* Figure out the temperature in mili celsius */
+-	*temp = mcelsius(sensor->t0 + ((freqM - sensor->fmt0) /
+-			 sensor->ramp_coeff));
+-
+-	dev_dbg(sensor->dev, "%s: temperature = %d millicelsius",
+-		__func__, *temp);
+-
+-	/* Update thresholds */
+-	if (sensor->num_trips > 1) {
+-		/* Update alarm threshold value to next higher trip point */
+-		if (sensor->high_temp == sensor->temp_passive &&
+-		    celsius(*temp) >= sensor->temp_passive) {
+-			sensor->high_temp = sensor->temp_critical;
+-			sensor->low_temp = sensor->temp_passive;
+-			sensor->low_temp_enabled = true;
+-			ret = stm_thermal_update_threshold(sensor);
+-			if (ret)
+-				return ret;
+-		}
+-
+-		if (sensor->high_temp == sensor->temp_critical &&
+-		    celsius(*temp) < sensor->temp_passive) {
+-			sensor->high_temp = sensor->temp_passive;
+-			sensor->low_temp_enabled = false;
+-			ret = stm_thermal_update_threshold(sensor);
+-			if (ret)
+-				return ret;
+-		}
+-
+-		/*
+-		 * Re-enable alarm IRQ if temperature below critical
+-		 * temperature
+-		 */
+-		if (!sensor->irq_enabled &&
+-		    (celsius(*temp) < sensor->temp_critical)) {
+-			sensor->irq_enabled = true;
+-			enable_irq(sensor->irq);
+-		}
+-	}
++	*temp = (freqM - sensor->fmt0) * 1000 / sensor->ramp_coeff + T0;
+ 
+ 	return 0;
+ }
+@@ -493,7 +384,7 @@ static int stm_register_irq(struct stm_thermal_sensor *sensor)
+ 	}
+ 
+ 	ret = devm_request_threaded_irq(dev, sensor->irq,
+-					stm_thermal_alarm_irq,
++					NULL,
+ 					stm_thermal_alarm_irq_thread,
+ 					IRQF_ONESHOT,
+ 					dev->driver->name, sensor);
+@@ -503,8 +394,6 @@ static int stm_register_irq(struct stm_thermal_sensor *sensor)
+ 		return ret;
+ 	}
+ 
+-	sensor->irq_enabled = true;
+-
+ 	dev_dbg(dev, "%s: thermal IRQ registered", __func__);
+ 
+ 	return 0;
+@@ -514,6 +403,8 @@ static int stm_thermal_sensor_off(struct stm_thermal_sensor *sensor)
+ {
+ 	int ret;
+ 
++	stm_disable_irq(sensor);
++
+ 	ret = stm_sensor_power_off(sensor);
+ 	if (ret)
+ 		return ret;
+@@ -526,7 +417,6 @@ static int stm_thermal_sensor_off(struct stm_thermal_sensor *sensor)
+ static int stm_thermal_prepare(struct stm_thermal_sensor *sensor)
+ {
+ 	int ret;
+-	struct device *dev = sensor->dev;
+ 
+ 	ret = clk_prepare_enable(sensor->clk);
+ 	if (ret)
+@@ -540,26 +430,8 @@ static int stm_thermal_prepare(struct stm_thermal_sensor *sensor)
+ 	if (ret)
+ 		goto thermal_unprepare;
+ 
+-	/* Set threshold(s) for IRQ */
+-	ret = stm_thermal_set_threshold(sensor);
+-	if (ret)
+-		goto thermal_unprepare;
+-
+-	ret = stm_enable_irq(sensor);
+-	if (ret)
+-		goto thermal_unprepare;
+-
+-	ret = stm_sensor_power_on(sensor);
+-	if (ret) {
+-		dev_err(dev, "%s: failed to power on sensor\n", __func__);
+-		goto irq_disable;
+-	}
+-
+ 	return 0;
+ 
+-irq_disable:
+-	stm_disable_irq(sensor);
+-
+ thermal_unprepare:
+ 	clk_disable_unprepare(sensor->clk);
+ 
+@@ -576,8 +448,6 @@ static int stm_thermal_suspend(struct device *dev)
+ 	if (ret)
+ 		return ret;
+ 
+-	sensor->mode = THERMAL_DEVICE_DISABLED;
+-
+ 	return 0;
+ }
+ 
+@@ -590,7 +460,12 @@ static int stm_thermal_resume(struct device *dev)
+ 	if (ret)
+ 		return ret;
+ 
+-	sensor->mode = THERMAL_DEVICE_ENABLED;
++	ret = stm_sensor_power_on(sensor);
++	if (ret)
++		return ret;
++
++	thermal_zone_device_update(sensor->th_dev, THERMAL_EVENT_UNSPECIFIED);
++	stm_enable_irq(sensor);
+ 
+ 	return 0;
+ }
+@@ -600,6 +475,7 @@ SIMPLE_DEV_PM_OPS(stm_thermal_pm_ops, stm_thermal_suspend, stm_thermal_resume);
+ 
+ static const struct thermal_zone_of_device_ops stm_tz_ops = {
+ 	.get_temp	= stm_thermal_get_temp,
++	.set_trips	= stm_thermal_set_trips,
+ };
+ 
+ static const struct of_device_id stm_thermal_of_match[] = {
+@@ -612,9 +488,8 @@ static int stm_thermal_probe(struct platform_device *pdev)
+ {
+ 	struct stm_thermal_sensor *sensor;
+ 	struct resource *res;
+-	const struct thermal_trip *trip;
+ 	void __iomem *base;
+-	int ret, i;
++	int ret;
+ 
+ 	if (!pdev->dev.of_node) {
+ 		dev_err(&pdev->dev, "%s: device tree node not found\n",
+@@ -640,15 +515,28 @@ static int stm_thermal_probe(struct platform_device *pdev)
+ 
+ 	sensor->clk = devm_clk_get(&pdev->dev, "pclk");
+ 	if (IS_ERR(sensor->clk)) {
+-		dev_err(&pdev->dev, "%s: failed to fetch PCLK clock\n",
+-			__func__);
++		if (PTR_ERR(sensor->clk) != -EPROBE_DEFER)
++			dev_err(&pdev->dev, "Failed to get PCLK clock\n");
+ 		return PTR_ERR(sensor->clk);
+ 	}
+ 
+-	/* Register IRQ into GIC */
+-	ret = stm_register_irq(sensor);
+-	if (ret)
++	stm_disable_irq(sensor);
++
++	/* Clear irq flags */
++	writel_relaxed(ICIFR_MASK, sensor->base + DTS_ICIFR_OFFSET);
++
++	/* Configure and enable HW sensor */
++	ret = stm_thermal_prepare(sensor);
++	if (ret) {
++		dev_err(&pdev->dev, "Error preprare sensor: %d\n", ret);
+ 		return ret;
++	}
++
++	ret = stm_sensor_power_on(sensor);
++	if (ret) {
++		dev_err(&pdev->dev, "Error power on sensor: %d\n", ret);
++		return ret;
++	}
+ 
+ 	sensor->th_dev = devm_thermal_zone_of_sensor_register(&pdev->dev, 0,
+ 							      sensor,
+@@ -661,53 +549,12 @@ static int stm_thermal_probe(struct platform_device *pdev)
+ 		return ret;
+ 	}
+ 
+-	if (!sensor->th_dev->ops->get_crit_temp) {
+-		/* Critical point must be provided */
+-		ret = -EINVAL;
+-		goto err_tz;
+-	}
+-
+-	ret = sensor->th_dev->ops->get_crit_temp(sensor->th_dev,
+-			&sensor->temp_critical);
+-	if (ret) {
+-		dev_err(&pdev->dev,
+-			"Not able to read critical_temp: %d\n", ret);
++	/* Register IRQ into GIC */
++	ret = stm_register_irq(sensor);
++	if (ret)
+ 		goto err_tz;
+-	}
+-
+-	sensor->temp_critical = celsius(sensor->temp_critical);
+-
+-	/* Set thresholds for IRQ */
+-	sensor->high_temp = sensor->temp_critical;
+-
+-	trip = of_thermal_get_trip_points(sensor->th_dev);
+-	sensor->num_trips = of_thermal_get_ntrips(sensor->th_dev);
+-
+-	/* Find out passive temperature if it exists */
+-	for (i = (sensor->num_trips - 1); i >= 0;  i--) {
+-		if (trip[i].type == THERMAL_TRIP_PASSIVE) {
+-			sensor->temp_passive = celsius(trip[i].temperature);
+-			/* Update high temperature threshold */
+-			sensor->high_temp = sensor->temp_passive;
+-			}
+-	}
+-
+-	/*
+-	 * Ensure low_temp_enabled flag is disabled.
+-	 * By disabling low_temp_enabled, low threshold IT will not be
+-	 * configured neither enabled because it is not needed as high
+-	 * threshold is set on the lowest temperature trip point after
+-	 * probe.
+-	 */
+-	sensor->low_temp_enabled = false;
+ 
+-	/* Configure and enable HW sensor */
+-	ret = stm_thermal_prepare(sensor);
+-	if (ret) {
+-		dev_err(&pdev->dev,
+-			"Not able to enable sensor: %d\n", ret);
+-		goto err_tz;
+-	}
++	stm_enable_irq(sensor);
+ 
+ 	/*
+ 	 * Thermal_zone doesn't enable hwmon as default,
+@@ -718,8 +565,6 @@ static int stm_thermal_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		goto err_tz;
+ 
+-	sensor->mode = THERMAL_DEVICE_ENABLED;
+-
+ 	dev_info(&pdev->dev, "%s: Driver initialized successfully\n",
+ 		 __func__);
+ 
+diff --git a/include/media/v4l2-fwnode.h b/include/media/v4l2-fwnode.h
+index f6a7bcd13..c3dd47f14 100644
+--- a/include/media/v4l2-fwnode.h
++++ b/include/media/v4l2-fwnode.h
+@@ -50,11 +50,13 @@ struct v4l2_fwnode_bus_mipi_csi2 {
+  * @flags: media bus (V4L2_MBUS_*) flags
+  * @bus_width: bus width in bits
+  * @data_shift: data shift in bits
++ * @max_pclk_frequency: maximum pixel clock in hertz
+  */
+ struct v4l2_fwnode_bus_parallel {
+ 	unsigned int flags;
+ 	unsigned char bus_width;
+ 	unsigned char data_shift;
++	unsigned int pclk_max_frequency;
+ };
+ 
+ /**
+-- 
+2.17.1
+

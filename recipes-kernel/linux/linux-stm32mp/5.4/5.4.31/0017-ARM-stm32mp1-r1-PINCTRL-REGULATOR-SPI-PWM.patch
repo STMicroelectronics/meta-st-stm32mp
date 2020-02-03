@@ -1,0 +1,2670 @@
+From 479f8a903c863085c2bc680c71ae0f7fea166aa8 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@st.com>
+Date: Fri, 10 Apr 2020 14:47:29 +0200
+Subject: [PATCH 17/23] ARM-stm32mp1-r1-PINCTRL-REGULATOR-SPI-PWM
+
+---
+ drivers/pinctrl/pinctrl-stmfx.c            |  36 +-
+ drivers/pinctrl/stm32/pinctrl-stm32.c      | 250 +++++++---
+ drivers/pinctrl/stm32/pinctrl-stm32.h      |  17 +-
+ drivers/pinctrl/stm32/pinctrl-stm32mp157.c |   1 +
+ drivers/pwm/pwm-stm32.c                    | 116 +++--
+ drivers/regulator/stm32-pwr.c              |  85 +++-
+ drivers/regulator/stpmic1_regulator.c      | 203 +++++++-
+ drivers/spi/spi-stm32-qspi.c               | 127 ++++-
+ drivers/spi/spi-stm32.c                    | 511 +++++++++++++--------
+ 9 files changed, 990 insertions(+), 356 deletions(-)
+
+diff --git a/drivers/pinctrl/pinctrl-stmfx.c b/drivers/pinctrl/pinctrl-stmfx.c
+index ccdf0bb21..f7958eece 100644
+--- a/drivers/pinctrl/pinctrl-stmfx.c
++++ b/drivers/pinctrl/pinctrl-stmfx.c
+@@ -277,7 +277,7 @@ static int stmfx_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
+ 	struct pinctrl_gpio_range *range;
+ 	enum pin_config_param param;
+ 	u32 arg;
+-	int dir, i, ret;
++	int i, ret;
+ 
+ 	range = pinctrl_find_gpio_range_from_pin_nolock(pctldev, pin);
+ 	if (!range) {
+@@ -285,10 +285,6 @@ static int stmfx_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
+ 		return -EINVAL;
+ 	}
+ 
+-	dir = stmfx_gpio_get_direction(&pctl->gpio_chip, pin);
+-	if (dir < 0)
+-		return dir;
+-
+ 	for (i = 0; i < num_configs; i++) {
+ 		param = pinconf_to_config_param(configs[i]);
+ 		arg = pinconf_to_config_argument(configs[i]);
+@@ -505,6 +501,34 @@ static void stmfx_pinctrl_irq_bus_sync_unlock(struct irq_data *data)
+ 	mutex_unlock(&pctl->lock);
+ }
+ 
++static int stmfx_gpio_irq_request_resources(struct irq_data *data)
++{
++	struct gpio_chip *gpio_chip = irq_data_get_irq_chip_data(data);
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gpio_chip);
++	int ret;
++
++	ret = stmfx_gpio_direction_input(&pctl->gpio_chip, data->hwirq);
++	if (ret)
++		return ret;
++
++	ret = gpiochip_lock_as_irq(&pctl->gpio_chip, data->hwirq);
++	if (ret) {
++		dev_err(pctl->dev, "Unable to lock gpio %lu as IRQ: %d\n",
++			data->hwirq, ret);
++		return ret;
++	}
++
++	return 0;
++}
++
++static void stmfx_gpio_irq_release_resources(struct irq_data *data)
++{
++	struct gpio_chip *gpio_chip = irq_data_get_irq_chip_data(data);
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gpio_chip);
++
++	gpiochip_unlock_as_irq(&pctl->gpio_chip, data->hwirq);
++}
++
+ static void stmfx_pinctrl_irq_toggle_trigger(struct stmfx_pinctrl *pctl,
+ 					     unsigned int offset)
+ {
+@@ -664,6 +688,8 @@ static int stmfx_pinctrl_probe(struct platform_device *pdev)
+ 	pctl->irq_chip.irq_set_type = stmfx_pinctrl_irq_set_type;
+ 	pctl->irq_chip.irq_bus_lock = stmfx_pinctrl_irq_bus_lock;
+ 	pctl->irq_chip.irq_bus_sync_unlock = stmfx_pinctrl_irq_bus_sync_unlock;
++	pctl->irq_chip.irq_request_resources = stmfx_gpio_irq_request_resources;
++	pctl->irq_chip.irq_release_resources = stmfx_gpio_irq_release_resources;
+ 
+ 	ret = gpiochip_irqchip_add_nested(&pctl->gpio_chip, &pctl->irq_chip,
+ 					  0, handle_bad_irq, IRQ_TYPE_NONE);
+diff --git a/drivers/pinctrl/stm32/pinctrl-stm32.c b/drivers/pinctrl/stm32/pinctrl-stm32.c
+index 2d5e0435a..1d52cbeab 100644
+--- a/drivers/pinctrl/stm32/pinctrl-stm32.c
++++ b/drivers/pinctrl/stm32/pinctrl-stm32.c
+@@ -64,7 +64,7 @@
+ #define gpio_range_to_bank(chip) \
+ 		container_of(chip, struct stm32_gpio_bank, range)
+ 
+-#define HWSPINLOCK_TIMEOUT	5 /* msec */
++#define HWSPNLCK_TIMEOUT	1000 /* usec */
+ 
+ static const char * const stm32_gpio_functions[] = {
+ 	"gpio", "af0", "af1",
+@@ -73,6 +73,7 @@ static const char * const stm32_gpio_functions[] = {
+ 	"af8", "af9", "af10",
+ 	"af11", "af12", "af13",
+ 	"af14", "af15", "analog",
++	"reserved",
+ };
+ 
+ struct stm32_pinctrl_group {
+@@ -84,6 +85,7 @@ struct stm32_pinctrl_group {
+ struct stm32_gpio_bank {
+ 	void __iomem *base;
+ 	struct clk *clk;
++	struct reset_control *rstc;
+ 	spinlock_t lock;
+ 	struct gpio_chip gpio_chip;
+ 	struct pinctrl_gpio_range range;
+@@ -92,6 +94,7 @@ struct stm32_gpio_bank {
+ 	u32 bank_nr;
+ 	u32 bank_ioport_nr;
+ 	u32 pin_backup[STM32_GPIO_PINS_PER_BANK];
++	u8 irq_type[STM32_GPIO_PINS_PER_BANK];
+ };
+ 
+ struct stm32_pinctrl {
+@@ -113,6 +116,7 @@ struct stm32_pinctrl {
+ 	u32 pkg;
+ 	u16 irqmux_map;
+ 	spinlock_t irqmux_lock;
++	u32 pin_base_shift;
+ };
+ 
+ static inline int stm32_gpio_pin(int gpio)
+@@ -301,6 +305,51 @@ static const struct gpio_chip stm32_gpio_template = {
+ 	.direction_output	= stm32_gpio_direction_output,
+ 	.to_irq			= stm32_gpio_to_irq,
+ 	.get_direction		= stm32_gpio_get_direction,
++	.set_config		= gpiochip_generic_config,
++};
++
++static void stm32_gpio_irq_trigger(struct irq_data *d)
++{
++	struct stm32_gpio_bank *bank = d->domain->host_data;
++	int level;
++
++	/* If level interrupt type then retrig */
++	level = stm32_gpio_get(&bank->gpio_chip, d->hwirq);
++	if ((level == 0 && bank->irq_type[d->hwirq] == IRQ_TYPE_LEVEL_LOW) ||
++	    (level == 1 && bank->irq_type[d->hwirq] == IRQ_TYPE_LEVEL_HIGH))
++		irq_chip_retrigger_hierarchy(d);
++}
++
++static void stm32_gpio_irq_eoi(struct irq_data *d)
++{
++	irq_chip_eoi_parent(d);
++	stm32_gpio_irq_trigger(d);
++};
++
++static int stm32_gpio_set_type(struct irq_data *d, unsigned int type)
++{
++	struct stm32_gpio_bank *bank = d->domain->host_data;
++	u32 parent_type;
++
++	switch (type) {
++	case IRQ_TYPE_EDGE_RISING:
++	case IRQ_TYPE_EDGE_FALLING:
++	case IRQ_TYPE_EDGE_BOTH:
++		parent_type = type;
++		break;
++	case IRQ_TYPE_LEVEL_HIGH:
++		parent_type = IRQ_TYPE_EDGE_RISING;
++		break;
++	case IRQ_TYPE_LEVEL_LOW:
++		parent_type = IRQ_TYPE_EDGE_FALLING;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	bank->irq_type[d->hwirq] = type;
++
++	return irq_chip_set_type_parent(d, parent_type);
+ };
+ 
+ static int stm32_gpio_irq_request_resources(struct irq_data *irq_data)
+@@ -330,13 +379,19 @@ static void stm32_gpio_irq_release_resources(struct irq_data *irq_data)
+ 	gpiochip_unlock_as_irq(&bank->gpio_chip, irq_data->hwirq);
+ }
+ 
++static void stm32_gpio_irq_unmask(struct irq_data *d)
++{
++	irq_chip_unmask_parent(d);
++	stm32_gpio_irq_trigger(d);
++}
++
+ static struct irq_chip stm32_gpio_irq_chip = {
+ 	.name		= "stm32gpio",
+-	.irq_eoi	= irq_chip_eoi_parent,
++	.irq_eoi	= stm32_gpio_irq_eoi,
+ 	.irq_ack	= irq_chip_ack_parent,
+ 	.irq_mask	= irq_chip_mask_parent,
+-	.irq_unmask	= irq_chip_unmask_parent,
+-	.irq_set_type	= irq_chip_set_type_parent,
++	.irq_unmask	= stm32_gpio_irq_unmask,
++	.irq_set_type	= stm32_gpio_set_type,
+ 	.irq_set_wake	= irq_chip_set_wake_parent,
+ 	.irq_request_resources = stm32_gpio_irq_request_resources,
+ 	.irq_release_resources = stm32_gpio_irq_release_resources,
+@@ -369,12 +424,14 @@ static int stm32_gpio_domain_activate(struct irq_domain *d,
+ 	 * to avoid overriding.
+ 	 */
+ 	spin_lock_irqsave(&pctl->irqmux_lock, flags);
+-	if (pctl->hwlock)
+-		ret = hwspin_lock_timeout(pctl->hwlock, HWSPINLOCK_TIMEOUT);
+ 
+-	if (ret) {
+-		dev_err(pctl->dev, "Can't get hwspinlock\n");
+-		goto unlock;
++	if (pctl->hwlock) {
++		ret = hwspin_lock_timeout_in_atomic(pctl->hwlock,
++						    HWSPNLCK_TIMEOUT);
++		if (ret) {
++			dev_err(pctl->dev, "Can't get hwspinlock\n");
++			goto unlock;
++		}
+ 	}
+ 
+ 	if (pctl->irqmux_map & BIT(irq_data->hwirq)) {
+@@ -382,7 +439,7 @@ static int stm32_gpio_domain_activate(struct irq_domain *d,
+ 			irq_data->hwirq);
+ 		ret = -EBUSY;
+ 		if (pctl->hwlock)
+-			hwspin_unlock(pctl->hwlock);
++			hwspin_unlock_in_atomic(pctl->hwlock);
+ 		goto unlock;
+ 	} else {
+ 		pctl->irqmux_map |= BIT(irq_data->hwirq);
+@@ -391,7 +448,7 @@ static int stm32_gpio_domain_activate(struct irq_domain *d,
+ 	regmap_field_write(pctl->irqmux[irq_data->hwirq], bank->bank_ioport_nr);
+ 
+ 	if (pctl->hwlock)
+-		hwspin_unlock(pctl->hwlock);
++		hwspin_unlock_in_atomic(pctl->hwlock);
+ 
+ unlock:
+ 	spin_unlock_irqrestore(&pctl->irqmux_lock, flags);
+@@ -458,7 +515,7 @@ stm32_pctrl_find_group_by_pin(struct stm32_pinctrl *pctl, u32 pin)
+ static bool stm32_pctrl_is_function_valid(struct stm32_pinctrl *pctl,
+ 		u32 pin_num, u32 fnum)
+ {
+-	int i;
++	int i, k;
+ 
+ 	for (i = 0; i < pctl->npins; i++) {
+ 		const struct stm32_desc_pin *pin = pctl->pins + i;
+@@ -467,7 +524,10 @@ static bool stm32_pctrl_is_function_valid(struct stm32_pinctrl *pctl,
+ 		if (pin->pin.number != pin_num)
+ 			continue;
+ 
+-		while (func && func->name) {
++		if (fnum == STM32_PIN_RSVD)
++			return true;
++
++		for (k = 0; k < STM32_CONFIG_NUM; k++) {
+ 			if (func->num == fnum)
+ 				return true;
+ 			func++;
+@@ -699,12 +759,13 @@ static int stm32_pmx_set_mode(struct stm32_gpio_bank *bank,
+ 	clk_enable(bank->clk);
+ 	spin_lock_irqsave(&bank->lock, flags);
+ 
+-	if (pctl->hwlock)
+-		err = hwspin_lock_timeout(pctl->hwlock, HWSPINLOCK_TIMEOUT);
+-
+-	if (err) {
+-		dev_err(pctl->dev, "Can't get hwspinlock\n");
+-		goto unlock;
++	if (pctl->hwlock) {
++		err = hwspin_lock_timeout_in_atomic(pctl->hwlock,
++						    HWSPNLCK_TIMEOUT);
++		if (err) {
++			dev_err(pctl->dev, "Can't get hwspinlock\n");
++			goto unlock;
++		}
+ 	}
+ 
+ 	val = readl_relaxed(bank->base + alt_offset);
+@@ -718,7 +779,7 @@ static int stm32_pmx_set_mode(struct stm32_gpio_bank *bank,
+ 	writel_relaxed(val, bank->base + STM32_GPIO_MODER);
+ 
+ 	if (pctl->hwlock)
+-		hwspin_unlock(pctl->hwlock);
++		hwspin_unlock_in_atomic(pctl->hwlock);
+ 
+ 	stm32_gpio_backup_mode(bank, pin, mode, alt);
+ 
+@@ -777,6 +838,11 @@ static int stm32_pmx_set_mux(struct pinctrl_dev *pctldev,
+ 		return -EINVAL;
+ 	}
+ 
++	if (function == STM32_PIN_RSVD) {
++		dev_dbg(pctl->dev, "Reserved pins, skipping HW update.\n");
++		return 0;
++	}
++
+ 	bank = gpiochip_get_data(range->gc);
+ 	pin = stm32_gpio_pin(g->pin);
+ 
+@@ -818,12 +884,13 @@ static int stm32_pconf_set_driving(struct stm32_gpio_bank *bank,
+ 	clk_enable(bank->clk);
+ 	spin_lock_irqsave(&bank->lock, flags);
+ 
+-	if (pctl->hwlock)
+-		err = hwspin_lock_timeout(pctl->hwlock, HWSPINLOCK_TIMEOUT);
+-
+-	if (err) {
+-		dev_err(pctl->dev, "Can't get hwspinlock\n");
+-		goto unlock;
++	if (pctl->hwlock) {
++		err = hwspin_lock_timeout_in_atomic(pctl->hwlock,
++						    HWSPNLCK_TIMEOUT);
++		if (err) {
++			dev_err(pctl->dev, "Can't get hwspinlock\n");
++			goto unlock;
++		}
+ 	}
+ 
+ 	val = readl_relaxed(bank->base + STM32_GPIO_TYPER);
+@@ -832,7 +899,7 @@ static int stm32_pconf_set_driving(struct stm32_gpio_bank *bank,
+ 	writel_relaxed(val, bank->base + STM32_GPIO_TYPER);
+ 
+ 	if (pctl->hwlock)
+-		hwspin_unlock(pctl->hwlock);
++		hwspin_unlock_in_atomic(pctl->hwlock);
+ 
+ 	stm32_gpio_backup_driving(bank, offset, drive);
+ 
+@@ -872,12 +939,13 @@ static int stm32_pconf_set_speed(struct stm32_gpio_bank *bank,
+ 	clk_enable(bank->clk);
+ 	spin_lock_irqsave(&bank->lock, flags);
+ 
+-	if (pctl->hwlock)
+-		err = hwspin_lock_timeout(pctl->hwlock, HWSPINLOCK_TIMEOUT);
+-
+-	if (err) {
+-		dev_err(pctl->dev, "Can't get hwspinlock\n");
+-		goto unlock;
++	if (pctl->hwlock) {
++		err = hwspin_lock_timeout_in_atomic(pctl->hwlock,
++						    HWSPNLCK_TIMEOUT);
++		if (err) {
++			dev_err(pctl->dev, "Can't get hwspinlock\n");
++			goto unlock;
++		}
+ 	}
+ 
+ 	val = readl_relaxed(bank->base + STM32_GPIO_SPEEDR);
+@@ -886,7 +954,7 @@ static int stm32_pconf_set_speed(struct stm32_gpio_bank *bank,
+ 	writel_relaxed(val, bank->base + STM32_GPIO_SPEEDR);
+ 
+ 	if (pctl->hwlock)
+-		hwspin_unlock(pctl->hwlock);
++		hwspin_unlock_in_atomic(pctl->hwlock);
+ 
+ 	stm32_gpio_backup_speed(bank, offset, speed);
+ 
+@@ -926,12 +994,13 @@ static int stm32_pconf_set_bias(struct stm32_gpio_bank *bank,
+ 	clk_enable(bank->clk);
+ 	spin_lock_irqsave(&bank->lock, flags);
+ 
+-	if (pctl->hwlock)
+-		err = hwspin_lock_timeout(pctl->hwlock, HWSPINLOCK_TIMEOUT);
+-
+-	if (err) {
+-		dev_err(pctl->dev, "Can't get hwspinlock\n");
+-		goto unlock;
++	if (pctl->hwlock) {
++		err = hwspin_lock_timeout_in_atomic(pctl->hwlock,
++						    HWSPNLCK_TIMEOUT);
++		if (err) {
++			dev_err(pctl->dev, "Can't get hwspinlock\n");
++			goto unlock;
++		}
+ 	}
+ 
+ 	val = readl_relaxed(bank->base + STM32_GPIO_PUPDR);
+@@ -940,7 +1009,7 @@ static int stm32_pconf_set_bias(struct stm32_gpio_bank *bank,
+ 	writel_relaxed(val, bank->base + STM32_GPIO_PUPDR);
+ 
+ 	if (pctl->hwlock)
+-		hwspin_unlock(pctl->hwlock);
++		hwspin_unlock_in_atomic(pctl->hwlock);
+ 
+ 	stm32_gpio_backup_bias(bank, offset, bias);
+ 
+@@ -992,20 +1061,14 @@ static bool stm32_pconf_get(struct stm32_gpio_bank *bank,
+ }
+ 
+ static int stm32_pconf_parse_conf(struct pinctrl_dev *pctldev,
+-		unsigned int pin, enum pin_config_param param,
+-		enum pin_config_param arg)
++				  struct pinctrl_gpio_range *range,
++				  unsigned int pin,
++				  enum pin_config_param param,
++				  enum pin_config_param arg)
+ {
+-	struct stm32_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
+-	struct pinctrl_gpio_range *range;
+ 	struct stm32_gpio_bank *bank;
+ 	int offset, ret = 0;
+ 
+-	range = pinctrl_find_gpio_range_from_pin(pctldev, pin);
+-	if (!range) {
+-		dev_err(pctl->dev, "No gpio range defined.\n");
+-		return -EINVAL;
+-	}
+-
+ 	bank = gpiochip_get_data(range->gc);
+ 	offset = stm32_gpio_pin(pin);
+ 
+@@ -1033,7 +1096,8 @@ static int stm32_pconf_parse_conf(struct pinctrl_dev *pctldev,
+ 		ret = stm32_pmx_gpio_set_direction(pctldev, range, pin, false);
+ 		break;
+ 	default:
+-		ret = -EINVAL;
++		dev_dbg(pctldev->dev, "configuration %d not supported.\n",
++			param);
+ 	}
+ 
+ 	return ret;
+@@ -1055,12 +1119,19 @@ static int stm32_pconf_group_set(struct pinctrl_dev *pctldev, unsigned group,
+ {
+ 	struct stm32_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
+ 	struct stm32_pinctrl_group *g = &pctl->groups[group];
++	struct pinctrl_gpio_range *range;
+ 	int i, ret;
+ 
++	range = pinctrl_find_gpio_range_from_pin(pctldev, g->pin);
++	if (!range) {
++		dev_err(pctl->dev, "No gpio range defined.\n");
++		return -EINVAL;
++	}
++
+ 	for (i = 0; i < num_configs; i++) {
+-		ret = stm32_pconf_parse_conf(pctldev, g->pin,
+-			pinconf_to_config_param(configs[i]),
+-			pinconf_to_config_argument(configs[i]));
++		ret = stm32_pconf_parse_conf(pctldev, range, g->pin,
++				pinconf_to_config_param(configs[i]),
++				pinconf_to_config_argument(configs[i]));
+ 		if (ret < 0)
+ 			return ret;
+ 
+@@ -1070,10 +1141,36 @@ static int stm32_pconf_group_set(struct pinctrl_dev *pctldev, unsigned group,
+ 	return 0;
+ }
+ 
++static int stm32_pconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
++			   unsigned long *configs, unsigned int num_configs)
++{
++	struct stm32_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++	struct pinctrl_gpio_range *range;
++	int i, ret;
++
++	range = pinctrl_find_gpio_range_from_pin_nolock(pctldev, pin);
++	if (!range) {
++		dev_err(pctl->dev, "No gpio range defined.\n");
++		return -EINVAL;
++	}
++
++	for (i = 0; i < num_configs; i++) {
++		ret = stm32_pconf_parse_conf(pctldev, range, pin,
++			pinconf_to_config_param(configs[i]),
++			pinconf_to_config_argument(configs[i]));
++		if (ret < 0)
++			return ret;
++	}
++
++	return 0;
++}
++
+ static void stm32_pconf_dbg_show(struct pinctrl_dev *pctldev,
+ 				 struct seq_file *s,
+ 				 unsigned int pin)
+ {
++	struct stm32_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++	const struct stm32_desc_pin *pin_desc;
+ 	struct pinctrl_gpio_range *range;
+ 	struct stm32_gpio_bank *bank;
+ 	int offset;
+@@ -1123,7 +1220,9 @@ static void stm32_pconf_dbg_show(struct pinctrl_dev *pctldev,
+ 	case 2:
+ 		drive = stm32_pconf_get_driving(bank, offset);
+ 		speed = stm32_pconf_get_speed(bank, offset);
+-		seq_printf(s, "%d - %s - %s - %s %s", alt,
++		pin_desc = pctl->pins + (pin - pctl->pin_base_shift);
++		seq_printf(s, "%d (%s) - %s - %s - %s %s", alt,
++			   pin_desc->functions[alt + 1].name,
+ 			   drive ? "open drain" : "push pull",
+ 			   biasing[bias],
+ 			   speeds[speed], "speed");
+@@ -1140,6 +1239,7 @@ static const struct pinconf_ops stm32_pconf_ops = {
+ 	.pin_config_group_get	= stm32_pconf_group_get,
+ 	.pin_config_group_set	= stm32_pconf_group_set,
+ 	.pin_config_dbg_show	= stm32_pconf_dbg_show,
++	.pin_config_set		= stm32_pconf_set,
+ };
+ 
+ static int stm32_gpiolib_register_bank(struct stm32_pinctrl *pctl,
+@@ -1151,13 +1251,11 @@ static int stm32_gpiolib_register_bank(struct stm32_pinctrl *pctl,
+ 	struct of_phandle_args args;
+ 	struct device *dev = pctl->dev;
+ 	struct resource res;
+-	struct reset_control *rstc;
+ 	int npins = STM32_GPIO_PINS_PER_BANK;
+ 	int bank_nr, err;
+ 
+-	rstc = of_reset_control_get_exclusive(np, NULL);
+-	if (!IS_ERR(rstc))
+-		reset_control_deassert(rstc);
++	if (!IS_ERR(bank->rstc))
++		reset_control_deassert(bank->rstc);
+ 
+ 	if (of_address_to_resource(np, 0, &res))
+ 		return -ENODEV;
+@@ -1166,12 +1264,6 @@ static int stm32_gpiolib_register_bank(struct stm32_pinctrl *pctl,
+ 	if (IS_ERR(bank->base))
+ 		return PTR_ERR(bank->base);
+ 
+-	bank->clk = of_clk_get_by_name(np, NULL);
+-	if (IS_ERR(bank->clk)) {
+-		dev_err(dev, "failed to get clk (%ld)\n", PTR_ERR(bank->clk));
+-		return PTR_ERR(bank->clk);
+-	}
+-
+ 	err = clk_prepare(bank->clk);
+ 	if (err) {
+ 		dev_err(dev, "failed to prepare clk (%d)\n", err);
+@@ -1335,7 +1427,8 @@ static int stm32_pctrl_create_pins_tab(struct stm32_pinctrl *pctl,
+ 		if (pctl->pkg && !(pctl->pkg & p->pkg))
+ 			continue;
+ 		pins->pin = p->pin;
+-		pins->functions = p->functions;
++		memcpy((struct stm32_desc_pin *)pins->functions, p->functions,
++		       STM32_CONFIG_NUM * sizeof(struct stm32_desc_function));
+ 		pins++;
+ 		nb_pins_available++;
+ 	}
+@@ -1444,6 +1537,7 @@ int stm32_pctl_probe(struct platform_device *pdev)
+ 	pctl->pctl_desc.pctlops = &stm32_pctrl_ops;
+ 	pctl->pctl_desc.pmxops = &stm32_pmx_ops;
+ 	pctl->dev = &pdev->dev;
++	pctl->pin_base_shift = pctl->match_data->pin_base_shift;
+ 
+ 	pctl->pctl_dev = devm_pinctrl_register(&pdev->dev, &pctl->pctl_desc,
+ 					       pctl);
+@@ -1466,6 +1560,28 @@ int stm32_pctl_probe(struct platform_device *pdev)
+ 	if (!pctl->banks)
+ 		return -ENOMEM;
+ 
++	i = 0;
++	for_each_available_child_of_node(np, child) {
++		struct stm32_gpio_bank *bank = &pctl->banks[i];
++
++		if (of_property_read_bool(child, "gpio-controller")) {
++			bank->rstc = of_reset_control_get_exclusive(child,
++								    NULL);
++			if (PTR_ERR(bank->rstc) == -EPROBE_DEFER)
++				return -EPROBE_DEFER;
++
++			bank->clk = of_clk_get_by_name(child, NULL);
++			if (IS_ERR(bank->clk)) {
++				if (PTR_ERR(bank->clk) != -EPROBE_DEFER)
++					dev_err(dev,
++						"failed to get clk (%ld)\n",
++						PTR_ERR(bank->clk));
++				return PTR_ERR(bank->clk);
++			}
++			i++;
++		}
++	}
++
+ 	for_each_available_child_of_node(np, child) {
+ 		if (of_property_read_bool(child, "gpio-controller")) {
+ 			ret = stm32_gpiolib_register_bank(pctl, child);
+diff --git a/drivers/pinctrl/stm32/pinctrl-stm32.h b/drivers/pinctrl/stm32/pinctrl-stm32.h
+index ec0d34c33..b11a223f3 100644
+--- a/drivers/pinctrl/stm32/pinctrl-stm32.h
++++ b/drivers/pinctrl/stm32/pinctrl-stm32.h
+@@ -17,6 +17,8 @@
+ #define STM32_PIN_GPIO		0
+ #define STM32_PIN_AF(x)		((x) + 1)
+ #define STM32_PIN_ANALOG	(STM32_PIN_AF(15) + 1)
++#define STM32_PIN_RSVD		(STM32_PIN_ANALOG + 1)
++#define STM32_CONFIG_NUM	(STM32_PIN_RSVD + 1)
+ 
+ /*  package information */
+ #define STM32MP_PKG_AA		BIT(0)
+@@ -24,6 +26,8 @@
+ #define STM32MP_PKG_AC		BIT(2)
+ #define STM32MP_PKG_AD		BIT(3)
+ 
++#define STM32MP157_Z_BASE_SHIFT	400
++
+ struct stm32_desc_function {
+ 	const char *name;
+ 	const unsigned char num;
+@@ -31,26 +35,26 @@ struct stm32_desc_function {
+ 
+ struct stm32_desc_pin {
+ 	struct pinctrl_pin_desc pin;
+-	const struct stm32_desc_function *functions;
++	const struct stm32_desc_function functions[STM32_CONFIG_NUM];
+ 	const unsigned int pkg;
+ };
+ 
+ #define STM32_PIN(_pin, ...)					\
+ 	{							\
+ 		.pin = _pin,					\
+-		.functions = (struct stm32_desc_function[]){	\
+-			__VA_ARGS__, { } },			\
++		.functions = {	\
++			__VA_ARGS__},			\
+ 	}
+ 
+ #define STM32_PIN_PKG(_pin, _pkg, ...)					\
+ 	{							\
+ 		.pin = _pin,					\
+ 		.pkg  = _pkg,				\
+-		.functions = (struct stm32_desc_function[]){	\
+-			__VA_ARGS__, { } },			\
++		.functions = {	\
++			__VA_ARGS__},			\
+ 	}
+ #define STM32_FUNCTION(_num, _name)		\
+-	{							\
++	[_num] = {						\
+ 		.num = _num,					\
+ 		.name = _name,					\
+ 	}
+@@ -58,6 +62,7 @@ struct stm32_desc_pin {
+ struct stm32_pinctrl_match_data {
+ 	const struct stm32_desc_pin *pins;
+ 	const unsigned int npins;
++	const unsigned int pin_base_shift;
+ };
+ 
+ struct stm32_gpio_bank;
+diff --git a/drivers/pinctrl/stm32/pinctrl-stm32mp157.c b/drivers/pinctrl/stm32/pinctrl-stm32mp157.c
+index 2ccb99d64..86fe6d5ac 100644
+--- a/drivers/pinctrl/stm32/pinctrl-stm32mp157.c
++++ b/drivers/pinctrl/stm32/pinctrl-stm32mp157.c
+@@ -2328,6 +2328,7 @@ static struct stm32_pinctrl_match_data stm32mp157_match_data = {
+ static struct stm32_pinctrl_match_data stm32mp157_z_match_data = {
+ 	.pins = stm32mp157_z_pins,
+ 	.npins = ARRAY_SIZE(stm32mp157_z_pins),
++	.pin_base_shift = STM32MP157_Z_BASE_SHIFT,
+ };
+ 
+ static const struct of_device_id stm32mp157_pctrl_match[] = {
+diff --git a/drivers/pwm/pwm-stm32.c b/drivers/pwm/pwm-stm32.c
+index 359b08596..d3be944f2 100644
+--- a/drivers/pwm/pwm-stm32.c
++++ b/drivers/pwm/pwm-stm32.c
+@@ -12,6 +12,7 @@
+ #include <linux/mfd/stm32-timers.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
++#include <linux/pinctrl/consumer.h>
+ #include <linux/platform_device.h>
+ #include <linux/pwm.h>
+ 
+@@ -19,6 +20,12 @@
+ #define CCMR_CHANNEL_MASK  0xFF
+ #define MAX_BREAKINPUT 2
+ 
++struct stm32_breakinput {
++	u32 index;
++	u32 level;
++	u32 filter;
++};
++
+ struct stm32_pwm {
+ 	struct pwm_chip chip;
+ 	struct mutex lock; /* protect pwm config/enable */
+@@ -26,15 +33,11 @@ struct stm32_pwm {
+ 	struct regmap *regmap;
+ 	u32 max_arr;
+ 	bool have_complementary_output;
++	struct stm32_breakinput breakinputs[MAX_BREAKINPUT];
++	unsigned int num_breakinputs;
+ 	u32 capture[4] ____cacheline_aligned; /* DMA'able buffer */
+ };
+ 
+-struct stm32_breakinput {
+-	u32 index;
+-	u32 level;
+-	u32 filter;
+-};
+-
+ static inline struct stm32_pwm *to_stm32_pwm_dev(struct pwm_chip *chip)
+ {
+ 	return container_of(chip, struct stm32_pwm, chip);
+@@ -374,9 +377,7 @@ static int stm32_pwm_config(struct stm32_pwm *priv, int ch,
+ 	else
+ 		regmap_update_bits(priv->regmap, TIM_CCMR2, mask, ccmr);
+ 
+-	regmap_update_bits(priv->regmap, TIM_BDTR,
+-			   TIM_BDTR_MOE | TIM_BDTR_AOE,
+-			   TIM_BDTR_MOE | TIM_BDTR_AOE);
++	regmap_update_bits(priv->regmap, TIM_BDTR, TIM_BDTR_MOE, TIM_BDTR_MOE);
+ 
+ 	return 0;
+ }
+@@ -488,22 +489,19 @@ static const struct pwm_ops stm32pwm_ops = {
+ };
+ 
+ static int stm32_pwm_set_breakinput(struct stm32_pwm *priv,
+-				    int index, int level, int filter)
++				    const struct stm32_breakinput *bi)
+ {
+-	u32 bke = (index == 0) ? TIM_BDTR_BKE : TIM_BDTR_BK2E;
+-	int shift = (index == 0) ? TIM_BDTR_BKF_SHIFT : TIM_BDTR_BK2F_SHIFT;
+-	u32 mask = (index == 0) ? TIM_BDTR_BKE | TIM_BDTR_BKP | TIM_BDTR_BKF
+-				: TIM_BDTR_BK2E | TIM_BDTR_BK2P | TIM_BDTR_BK2F;
+-	u32 bdtr = bke;
++	u32 shift = TIM_BDTR_BKF_SHIFT(bi->index);
++	u32 bke = TIM_BDTR_BKE(bi->index);
++	u32 bkp = TIM_BDTR_BKP(bi->index);
++	u32 bkf = TIM_BDTR_BKF(bi->index);
++	u32 mask = bkf | bkp | bke;
++	u32 bdtr;
+ 
+-	/*
+-	 * The both bits could be set since only one will be wrote
+-	 * due to mask value.
+-	 */
+-	if (level)
+-		bdtr |= TIM_BDTR_BKP | TIM_BDTR_BK2P;
++	bdtr = (bi->filter & TIM_BDTR_BKF_MASK) << shift | bke;
+ 
+-	bdtr |= (filter & TIM_BDTR_BKF_MASK) << shift;
++	if (bi->level)
++		bdtr |= bkp;
+ 
+ 	regmap_update_bits(priv->regmap, TIM_BDTR, mask, bdtr);
+ 
+@@ -512,11 +510,25 @@ static int stm32_pwm_set_breakinput(struct stm32_pwm *priv,
+ 	return (bdtr & bke) ? 0 : -EINVAL;
+ }
+ 
+-static int stm32_pwm_apply_breakinputs(struct stm32_pwm *priv,
++static int stm32_pwm_apply_breakinputs(struct stm32_pwm *priv)
++{
++	unsigned int i;
++	int ret;
++
++	for (i = 0; i < priv->num_breakinputs; i++) {
++		ret = stm32_pwm_set_breakinput(priv, &priv->breakinputs[i]);
++		if (ret < 0)
++			return ret;
++	}
++
++	return 0;
++}
++
++static int stm32_pwm_probe_breakinputs(struct stm32_pwm *priv,
+ 				       struct device_node *np)
+ {
+-	struct stm32_breakinput breakinput[MAX_BREAKINPUT];
+-	int nb, ret, i, array_size;
++	int nb, ret, array_size;
++	unsigned int i;
+ 
+ 	nb = of_property_count_elems_of_size(np, "st,breakinput",
+ 					     sizeof(struct stm32_breakinput));
+@@ -531,20 +543,21 @@ static int stm32_pwm_apply_breakinputs(struct stm32_pwm *priv,
+ 	if (nb > MAX_BREAKINPUT)
+ 		return -EINVAL;
+ 
++	priv->num_breakinputs = nb;
+ 	array_size = nb * sizeof(struct stm32_breakinput) / sizeof(u32);
+ 	ret = of_property_read_u32_array(np, "st,breakinput",
+-					 (u32 *)breakinput, array_size);
++					 (u32 *)priv->breakinputs, array_size);
+ 	if (ret)
+ 		return ret;
+ 
+-	for (i = 0; i < nb && !ret; i++) {
+-		ret = stm32_pwm_set_breakinput(priv,
+-					       breakinput[i].index,
+-					       breakinput[i].level,
+-					       breakinput[i].filter);
++	for (i = 0; i < priv->num_breakinputs; i++) {
++		if (priv->breakinputs[i].index > 1 ||
++		    priv->breakinputs[i].level > 1 ||
++		    priv->breakinputs[i].filter > 15)
++			return -EINVAL;
+ 	}
+ 
+-	return ret;
++	return stm32_pwm_apply_breakinputs(priv);
+ }
+ 
+ static void stm32_pwm_detect_complementary(struct stm32_pwm *priv)
+@@ -614,7 +627,7 @@ static int stm32_pwm_probe(struct platform_device *pdev)
+ 	if (!priv->regmap || !priv->clk)
+ 		return -EINVAL;
+ 
+-	ret = stm32_pwm_apply_breakinputs(priv, np);
++	ret = stm32_pwm_probe_breakinputs(priv, np);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -647,6 +660,42 @@ static int stm32_pwm_remove(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
++static int __maybe_unused stm32_pwm_suspend(struct device *dev)
++{
++	struct stm32_pwm *priv = dev_get_drvdata(dev);
++	unsigned int i;
++	u32 ccer, mask;
++
++	/* Look for active channels */
++	ccer = active_channels(priv);
++
++	for (i = 0; i < priv->chip.npwm; i++) {
++		mask = TIM_CCER_CC1E << (i * 4);
++		if (ccer & mask) {
++			dev_err(dev, "PWM %u still in use by consumer %s\n",
++				i, priv->chip.pwms[i].label);
++			return -EBUSY;
++		}
++	}
++
++	return pinctrl_pm_select_sleep_state(dev);
++}
++
++static int __maybe_unused stm32_pwm_resume(struct device *dev)
++{
++	struct stm32_pwm *priv = dev_get_drvdata(dev);
++	int ret;
++
++	ret = pinctrl_pm_select_default_state(dev);
++	if (ret)
++		return ret;
++
++	/* restore breakinput registers that may have been lost in low power */
++	return stm32_pwm_apply_breakinputs(priv);
++}
++
++static SIMPLE_DEV_PM_OPS(stm32_pwm_pm_ops, stm32_pwm_suspend, stm32_pwm_resume);
++
+ static const struct of_device_id stm32_pwm_of_match[] = {
+ 	{ .compatible = "st,stm32-pwm",	},
+ 	{ /* end node */ },
+@@ -659,6 +708,7 @@ static struct platform_driver stm32_pwm_driver = {
+ 	.driver	= {
+ 		.name = "stm32-pwm",
+ 		.of_match_table = stm32_pwm_of_match,
++		.pm = &stm32_pwm_pm_ops,
+ 	},
+ };
+ module_platform_driver(stm32_pwm_driver);
+diff --git a/drivers/regulator/stm32-pwr.c b/drivers/regulator/stm32-pwr.c
+index e0e627b01..373d83797 100644
+--- a/drivers/regulator/stm32-pwr.c
++++ b/drivers/regulator/stm32-pwr.c
+@@ -3,12 +3,15 @@
+ // Authors: Gabriel Fernandez <gabriel.fernandez@st.com>
+ //          Pascal Paillet <p.paillet@st.com>.
+ 
++#include <linux/arm-smccc.h>
+ #include <linux/io.h>
+ #include <linux/iopoll.h>
++#include <linux/mfd/syscon.h>
+ #include <linux/module.h>
+ #include <linux/of_address.h>
+ #include <linux/of_device.h>
+ #include <linux/platform_device.h>
++#include <linux/regmap.h>
+ #include <linux/regulator/driver.h>
+ #include <linux/regulator/of_regulator.h>
+ 
+@@ -24,6 +27,11 @@
+ #define REG_1_1_EN BIT(30)
+ #define REG_1_1_RDY BIT(31)
+ 
++#define STM32_SMC_PWR		0x82001001
++#define STM32_WRITE		0x1
++#define STM32_SMC_REG_SET	0x2
++#define STM32_SMC_REG_CLEAR	0x3
++
+ /* list of supported regulators */
+ enum {
+ 	PWR_REG11,
+@@ -39,10 +47,18 @@ static u32 ready_mask_table[STM32PWR_REG_NUM_REGS] = {
+ };
+ 
+ struct stm32_pwr_reg {
++	int tzen;
+ 	void __iomem *base;
+ 	u32 ready_mask;
+ };
+ 
++#define SMC(class, op, address, val)\
++	({\
++	struct arm_smccc_res res;\
++	arm_smccc_smc(class, op, address, val,\
++			0, 0, 0, 0, &res);\
++	})
++
+ static int stm32_pwr_reg_is_ready(struct regulator_dev *rdev)
+ {
+ 	struct stm32_pwr_reg *priv = rdev_get_drvdata(rdev);
+@@ -69,9 +85,15 @@ static int stm32_pwr_reg_enable(struct regulator_dev *rdev)
+ 	int ret;
+ 	u32 val;
+ 
+-	val = readl_relaxed(priv->base + REG_PWR_CR3);
+-	val |= rdev->desc->enable_mask;
+-	writel_relaxed(val, priv->base + REG_PWR_CR3);
++	if (priv->tzen) {
++		SMC(STM32_SMC_PWR, STM32_SMC_REG_SET, REG_PWR_CR3,
++		    rdev->desc->enable_mask);
++	} else {
++		val = readl_relaxed(priv->base + REG_PWR_CR3);
++		val |= rdev->desc->enable_mask;
++		writel_relaxed(val, priv->base + REG_PWR_CR3);
++	}
++
+ 
+ 	/* use an arbitrary timeout of 20ms */
+ 	ret = readx_poll_timeout(stm32_pwr_reg_is_ready, rdev, val, val,
+@@ -88,9 +110,14 @@ static int stm32_pwr_reg_disable(struct regulator_dev *rdev)
+ 	int ret;
+ 	u32 val;
+ 
+-	val = readl_relaxed(priv->base + REG_PWR_CR3);
+-	val &= ~rdev->desc->enable_mask;
+-	writel_relaxed(val, priv->base + REG_PWR_CR3);
++	if (priv->tzen) {
++		SMC(STM32_SMC_PWR, STM32_SMC_REG_CLEAR, REG_PWR_CR3,
++		    rdev->desc->enable_mask);
++	} else {
++		val = readl_relaxed(priv->base + REG_PWR_CR3);
++		val &= ~rdev->desc->enable_mask;
++		writel_relaxed(val, priv->base + REG_PWR_CR3);
++	}
+ 
+ 	/* use an arbitrary timeout of 20ms */
+ 	ret = readx_poll_timeout(stm32_pwr_reg_is_ready, rdev, val, !val,
+@@ -121,12 +148,50 @@ static const struct regulator_ops stm32_pwr_reg_ops = {
+ 		.supply_name = _supply, \
+ 	} \
+ 
+-static const struct regulator_desc stm32_pwr_desc[] = {
++static struct regulator_desc stm32_pwr_desc[] = {
+ 	PWR_REG(PWR_REG11, "reg11", 1100000, REG_1_1_EN, "vdd"),
+ 	PWR_REG(PWR_REG18, "reg18", 1800000, REG_1_8_EN, "vdd"),
+ 	PWR_REG(PWR_USB33, "usb33", 3300000, USB_3_3_EN, "vdd_3v3_usbfs"),
+ };
+ 
++static int is_stm32_soc_secured(struct platform_device *pdev, int *val)
++{
++	struct device_node *np = pdev->dev.of_node;
++	struct regmap *syscon;
++	u32 reg, mask;
++	int tzc_val = 0;
++	int err;
++
++	syscon = syscon_regmap_lookup_by_phandle(np, "st,tzcr");
++	if (IS_ERR(syscon)) {
++		if (PTR_ERR(syscon) != -EPROBE_DEFER)
++			dev_err(&pdev->dev, "tzcr syscon required\n");
++		return PTR_ERR(syscon);
++	}
++
++	err = of_property_read_u32_index(np, "st,tzcr", 1, &reg);
++	if (err) {
++		dev_err(&pdev->dev, "tzcr offset required !\n");
++		return err;
++	}
++
++	err = of_property_read_u32_index(np, "st,tzcr", 2, &mask);
++	if (err) {
++		dev_err(&pdev->dev, "tzcr mask required !\n");
++		return err;
++	}
++
++	err = regmap_read(syscon, reg, &tzc_val);
++	if (err) {
++		dev_err(&pdev->dev, "failed to read tzcr status !\n");
++		return err;
++	}
++
++	*val = tzc_val & mask;
++
++	return 0;
++}
++
+ static int stm32_pwr_regulator_probe(struct platform_device *pdev)
+ {
+ 	struct device_node *np = pdev->dev.of_node;
+@@ -135,6 +200,11 @@ static int stm32_pwr_regulator_probe(struct platform_device *pdev)
+ 	struct regulator_dev *rdev;
+ 	struct regulator_config config = { };
+ 	int i, ret = 0;
++	int tzen = 0;
++
++	ret = is_stm32_soc_secured(pdev, &tzen);
++	if (ret)
++		return ret;
+ 
+ 	base = of_iomap(np, 0);
+ 	if (!base) {
+@@ -149,6 +219,7 @@ static int stm32_pwr_regulator_probe(struct platform_device *pdev)
+ 				    GFP_KERNEL);
+ 		if (!priv)
+ 			return -ENOMEM;
++		priv->tzen = tzen;
+ 		priv->base = base;
+ 		priv->ready_mask = ready_mask_table[i];
+ 		config.driver_data = priv;
+diff --git a/drivers/regulator/stpmic1_regulator.c b/drivers/regulator/stpmic1_regulator.c
+index f09061473..4537e3ab1 100644
+--- a/drivers/regulator/stpmic1_regulator.c
++++ b/drivers/regulator/stpmic1_regulator.c
+@@ -2,7 +2,9 @@
+ // Copyright (C) STMicroelectronics 2018
+ // Author: Pascal Paillet <p.paillet@st.com> for STMicroelectronics.
+ 
++#include <linux/delay.h>
+ #include <linux/interrupt.h>
++#include <linux/ktime.h>
+ #include <linux/mfd/stpmic1.h>
+ #include <linux/module.h>
+ #include <linux/of_irq.h>
+@@ -30,10 +32,26 @@ struct stpmic1_regulator_cfg {
+ 	u8 icc_mask;
+ };
+ 
++/**
++ * struct boost_data - this structure is used as driver data for the usb boost
++ * @boost_rdev: device for boost regulator
++ * @vbus_otg_rdev: device for vbus_otg regulator
++ * @sw_out_rdev: device for sw_out regulator
++ * @occ_timeout: overcurrent detection timeout
++ */
++struct boost_data {
++	struct regulator_dev *boost_rdev;
++	struct regulator_dev *vbus_otg_rdev;
++	struct regulator_dev *sw_out_rdev;
++	ktime_t occ_timeout;
++};
++
+ static int stpmic1_set_mode(struct regulator_dev *rdev, unsigned int mode);
+ static unsigned int stpmic1_get_mode(struct regulator_dev *rdev);
+ static int stpmic1_set_icc(struct regulator_dev *rdev);
+ static unsigned int stpmic1_map_mode(unsigned int mode);
++static int regulator_enable_boost(struct regulator_dev *rdev);
++static int regulator_disable_boost(struct regulator_dev *rdev);
+ 
+ enum {
+ 	STPMIC1_BUCK1 = 0,
+@@ -54,6 +72,8 @@ enum {
+ 
+ /* Enable time worst case is 5000mV/(2250uV/uS) */
+ #define PMIC_ENABLE_TIME_US 2200
++/* Ramp delay worst case is (2250uV/uS) */
++#define PMIC_RAMP_DELAY 2200
+ 
+ static const struct regulator_linear_range buck1_ranges[] = {
+ 	REGULATOR_LINEAR_RANGE(725000, 0, 4, 0),
+@@ -179,8 +199,8 @@ static const struct regulator_ops stpmic1_vref_ddr_ops = {
+ 
+ static const struct regulator_ops stpmic1_boost_regul_ops = {
+ 	.is_enabled = regulator_is_enabled_regmap,
+-	.enable = regulator_enable_regmap,
+-	.disable = regulator_disable_regmap,
++	.enable = regulator_enable_boost,
++	.disable = regulator_disable_boost,
+ 	.set_over_current_protection = stpmic1_set_icc,
+ };
+ 
+@@ -208,6 +228,7 @@ static const struct regulator_ops stpmic1_switch_regul_ops = {
+ 	.enable_val = 1, \
+ 	.disable_val = 0, \
+ 	.enable_time = PMIC_ENABLE_TIME_US, \
++	.ramp_delay = PMIC_RAMP_DELAY, \
+ 	.supply_name = #base, \
+ }
+ 
+@@ -227,6 +248,7 @@ static const struct regulator_ops stpmic1_switch_regul_ops = {
+ 	.enable_val = 1, \
+ 	.disable_val = 0, \
+ 	.enable_time = PMIC_ENABLE_TIME_US, \
++	.ramp_delay = PMIC_RAMP_DELAY, \
+ 	.bypass_reg = LDO3_ACTIVE_CR, \
+ 	.bypass_mask = LDO_BYPASS_MASK, \
+ 	.bypass_val_on = LDO_BYPASS_MASK, \
+@@ -248,6 +270,7 @@ static const struct regulator_ops stpmic1_switch_regul_ops = {
+ 	.enable_val = 1, \
+ 	.disable_val = 0, \
+ 	.enable_time = PMIC_ENABLE_TIME_US, \
++	.ramp_delay = PMIC_RAMP_DELAY, \
+ 	.supply_name = #base, \
+ }
+ 
+@@ -267,6 +290,7 @@ static const struct regulator_ops stpmic1_switch_regul_ops = {
+ 	.enable_val = 1, \
+ 	.disable_val = 0, \
+ 	.enable_time = PMIC_ENABLE_TIME_US, \
++	.ramp_delay = PMIC_RAMP_DELAY, \
+ 	.of_map_mode = stpmic1_map_mode, \
+ 	.pull_down_reg = ids##_PULL_DOWN_REG, \
+ 	.pull_down_mask = ids##_PULL_DOWN_MASK, \
+@@ -511,6 +535,94 @@ static irqreturn_t stpmic1_curlim_irq_handler(int irq, void *data)
+ 	return IRQ_HANDLED;
+ }
+ 
++static int regulator_enable_boost(struct regulator_dev *rdev)
++{
++	struct boost_data *usb_data = rdev_get_drvdata(rdev);
++
++	usb_data->occ_timeout = ktime_add_us(ktime_get(), 100000);
++
++	return regulator_enable_regmap(rdev);
++}
++
++static int regulator_disable_boost(struct regulator_dev *rdev)
++{
++	struct boost_data *usb_data = rdev_get_drvdata(rdev);
++
++	usb_data->occ_timeout = 0;
++
++	return regulator_disable_regmap(rdev);
++}
++
++static void stpmic1_reset_boost(struct boost_data *usb_data)
++{
++	int otg_on = 0;
++	int sw_out_on = 0;
++
++	dev_dbg(rdev_get_dev(usb_data->boost_rdev), "reset usb boost\n");
++
++	regulator_lock(usb_data->boost_rdev);
++
++	/* the boost was actually disabled by the over-current protection */
++	regulator_disable_regmap(usb_data->boost_rdev);
++
++	if (usb_data->vbus_otg_rdev)
++		otg_on = regulator_is_enabled_regmap(usb_data->vbus_otg_rdev);
++	if (otg_on) {
++		regulator_lock(usb_data->vbus_otg_rdev);
++		regulator_disable_regmap(usb_data->vbus_otg_rdev);
++	}
++
++	if (usb_data->sw_out_rdev)
++		sw_out_on = regulator_is_enabled_regmap(usb_data->sw_out_rdev);
++	if (sw_out_on) {
++		regulator_lock(usb_data->sw_out_rdev);
++		regulator_disable_regmap(usb_data->sw_out_rdev);
++	}
++
++	regulator_enable_regmap(usb_data->boost_rdev);
++
++	/* sleep at least 5ms */
++	usleep_range(5000, 10000);
++
++	if (otg_on) {
++		regulator_enable_regmap(usb_data->vbus_otg_rdev);
++		regulator_unlock(usb_data->vbus_otg_rdev);
++	}
++
++	if (sw_out_on) {
++		regulator_enable_regmap(usb_data->sw_out_rdev);
++		regulator_unlock(usb_data->sw_out_rdev);
++	}
++
++	regulator_unlock(usb_data->boost_rdev);
++}
++
++static irqreturn_t stpmic1_boost_irq_handler(int irq, void *data)
++{
++	struct boost_data *usb_data = (struct boost_data *)data;
++
++	dev_dbg(rdev_get_dev(usb_data->boost_rdev), "usb boost irq handler\n");
++
++	/* overcurrent detected on boost after timeout */
++	if (usb_data->occ_timeout != 0 &&
++	    ktime_compare(ktime_get(), usb_data->occ_timeout) > 0) {
++		/* reset usb boost and usb power switches */
++		stpmic1_reset_boost(usb_data);
++		return IRQ_HANDLED;
++	}
++
++	regulator_lock(usb_data->boost_rdev);
++
++	/* Send an overcurrent notification */
++	regulator_notifier_call_chain(usb_data->boost_rdev,
++				      REGULATOR_EVENT_OVER_CURRENT,
++				      NULL);
++
++	regulator_unlock(usb_data->boost_rdev);
++
++	return IRQ_HANDLED;
++}
++
+ #define MATCH(_name, _id) \
+ 	[STPMIC1_##_id] = { \
+ 		.name = #_name, \
+@@ -534,9 +646,10 @@ static struct of_regulator_match stpmic1_matches[] = {
+ 	MATCH(pwr_sw2, SW_OUT),
+ };
+ 
+-static int stpmic1_regulator_register(struct platform_device *pdev, int id,
+-				      struct of_regulator_match *match,
+-				      const struct stpmic1_regulator_cfg *cfg)
++static struct regulator_dev *
++stpmic1_regulator_register(struct platform_device *pdev, int id,
++			   struct of_regulator_match *match,
++			   const struct stpmic1_regulator_cfg *cfg)
+ {
+ 	struct stpmic1 *pmic_dev = dev_get_drvdata(pdev->dev.parent);
+ 	struct regulator_dev *rdev;
+@@ -554,7 +667,7 @@ static int stpmic1_regulator_register(struct platform_device *pdev, int id,
+ 	if (IS_ERR(rdev)) {
+ 		dev_err(&pdev->dev, "failed to register %s regulator\n",
+ 			cfg->desc.name);
+-		return PTR_ERR(rdev);
++		return rdev;
+ 	}
+ 
+ 	/* set mask reset */
+@@ -566,7 +679,7 @@ static int stpmic1_regulator_register(struct platform_device *pdev, int id,
+ 					 cfg->mask_reset_mask);
+ 		if (ret) {
+ 			dev_err(&pdev->dev, "set mask reset failed\n");
+-			return ret;
++			return ERR_PTR(ret);
+ 		}
+ 	}
+ 
+@@ -580,15 +693,60 @@ static int stpmic1_regulator_register(struct platform_device *pdev, int id,
+ 						pdev->name, rdev);
+ 		if (ret) {
+ 			dev_err(&pdev->dev, "Request IRQ failed\n");
+-			return ret;
++			return ERR_PTR(ret);
+ 		}
+ 	}
+-	return 0;
++
++	return rdev;
++}
++
++static struct regulator_dev *
++stpmic1_boost_register(struct platform_device *pdev, int id,
++		       struct of_regulator_match *match,
++		       const struct stpmic1_regulator_cfg *cfg,
++		       struct boost_data *usb_data)
++{
++	struct stpmic1 *pmic_dev = dev_get_drvdata(pdev->dev.parent);
++	struct regulator_dev *rdev;
++	struct regulator_config config = {};
++	int ret = 0;
++	int irq;
++
++	config.dev = &pdev->dev;
++	config.init_data = match->init_data;
++	config.of_node = match->of_node;
++	config.regmap = pmic_dev->regmap;
++	config.driver_data = (void *)usb_data;
++
++	rdev = devm_regulator_register(&pdev->dev, &cfg->desc, &config);
++	if (IS_ERR(rdev)) {
++		dev_err(&pdev->dev, "failed to register %s regulator\n",
++			cfg->desc.name);
++		return rdev;
++	}
++
++	/* setup an irq handler for over-current detection */
++	irq = of_irq_get(config.of_node, 0);
++	if (irq > 0) {
++		ret = devm_request_threaded_irq(&pdev->dev,
++						irq, NULL,
++						stpmic1_boost_irq_handler,
++						IRQF_ONESHOT, pdev->name,
++						usb_data);
++		if (ret) {
++			dev_err(&pdev->dev, "Request IRQ failed\n");
++			return ERR_PTR(ret);
++		}
++	}
++
++	return rdev;
+ }
+ 
+ static int stpmic1_regulator_probe(struct platform_device *pdev)
+ {
+ 	int i, ret;
++	struct boost_data *usb_data;
++	struct regulator_dev *rdev;
+ 
+ 	ret = of_regulator_match(&pdev->dev, pdev->dev.of_node, stpmic1_matches,
+ 				 ARRAY_SIZE(stpmic1_matches));
+@@ -598,11 +756,30 @@ static int stpmic1_regulator_probe(struct platform_device *pdev)
+ 		return ret;
+ 	}
+ 
++	usb_data = devm_kzalloc(&pdev->dev, sizeof(*usb_data), GFP_KERNEL);
++	if (!usb_data)
++		return -ENOMEM;
++
+ 	for (i = 0; i < ARRAY_SIZE(stpmic1_regulator_cfgs); i++) {
+-		ret = stpmic1_regulator_register(pdev, i, &stpmic1_matches[i],
+-						 &stpmic1_regulator_cfgs[i]);
+-		if (ret < 0)
+-			return ret;
++		if (i == STPMIC1_BOOST) {
++			rdev =
++			stpmic1_boost_register(pdev, i, &stpmic1_matches[i],
++					       &stpmic1_regulator_cfgs[i],
++					       usb_data);
++
++			usb_data->boost_rdev = rdev;
++		} else {
++			rdev =
++			stpmic1_regulator_register(pdev, i, &stpmic1_matches[i],
++						   &stpmic1_regulator_cfgs[i]);
++
++			if (i == STPMIC1_VBUS_OTG)
++				usb_data->vbus_otg_rdev = rdev;
++			else if (i == STPMIC1_SW_OUT)
++				usb_data->sw_out_rdev = rdev;
++		}
++		if (IS_ERR(rdev))
++			return PTR_ERR(rdev);
+ 	}
+ 
+ 	dev_dbg(&pdev->dev, "stpmic1_regulator driver probed\n");
+diff --git a/drivers/spi/spi-stm32-qspi.c b/drivers/spi/spi-stm32-qspi.c
+index 4e726929b..02f110b10 100644
+--- a/drivers/spi/spi-stm32-qspi.c
++++ b/drivers/spi/spi-stm32-qspi.c
+@@ -16,6 +16,7 @@
+ #include <linux/of.h>
+ #include <linux/of_device.h>
+ #include <linux/pinctrl/consumer.h>
++#include <linux/pm_runtime.h>
+ #include <linux/platform_device.h>
+ #include <linux/reset.h>
+ #include <linux/sizes.h>
+@@ -87,6 +88,7 @@
+ #define STM32_BUSY_TIMEOUT_US 100000
+ #define STM32_ABT_TIMEOUT_US 100000
+ #define STM32_COMP_TIMEOUT_MS 1000
++#define STM32_AUTOSUSPEND_DELAY -1
+ 
+ struct stm32_qspi_flash {
+ 	struct stm32_qspi *qspi;
+@@ -431,10 +433,17 @@ static int stm32_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
+ 	struct stm32_qspi *qspi = spi_controller_get_devdata(mem->spi->master);
+ 	int ret;
+ 
++	ret = pm_runtime_get_sync(qspi->dev);
++	if (ret < 0)
++		return ret;
++
+ 	mutex_lock(&qspi->lock);
+ 	ret = stm32_qspi_send(mem, op);
+ 	mutex_unlock(&qspi->lock);
+ 
++	pm_runtime_mark_last_busy(qspi->dev);
++	pm_runtime_put_autosuspend(qspi->dev);
++
+ 	return ret;
+ }
+ 
+@@ -444,6 +453,7 @@ static int stm32_qspi_setup(struct spi_device *spi)
+ 	struct stm32_qspi *qspi = spi_controller_get_devdata(ctrl);
+ 	struct stm32_qspi_flash *flash;
+ 	u32 presc;
++	int ret;
+ 
+ 	if (ctrl->busy)
+ 		return -EBUSY;
+@@ -451,6 +461,10 @@ static int stm32_qspi_setup(struct spi_device *spi)
+ 	if (!spi->max_speed_hz)
+ 		return -EINVAL;
+ 
++	ret = pm_runtime_get_sync(qspi->dev);
++	if (ret < 0)
++		return ret;
++
+ 	presc = DIV_ROUND_UP(qspi->clk_rate, spi->max_speed_hz) - 1;
+ 
+ 	flash = &qspi->flash[spi->chip_select];
+@@ -467,13 +481,17 @@ static int stm32_qspi_setup(struct spi_device *spi)
+ 	writel_relaxed(qspi->dcr_reg, qspi->io_base + QSPI_DCR);
+ 	mutex_unlock(&qspi->lock);
+ 
++	pm_runtime_mark_last_busy(qspi->dev);
++	pm_runtime_put_autosuspend(qspi->dev);
++
+ 	return 0;
+ }
+ 
+-static void stm32_qspi_dma_setup(struct stm32_qspi *qspi)
++static int stm32_qspi_dma_setup(struct stm32_qspi *qspi)
+ {
+ 	struct dma_slave_config dma_cfg;
+ 	struct device *dev = qspi->dev;
++	int ret = 0;
+ 
+ 	memset(&dma_cfg, 0, sizeof(dma_cfg));
+ 
+@@ -484,8 +502,13 @@ static void stm32_qspi_dma_setup(struct stm32_qspi *qspi)
+ 	dma_cfg.src_maxburst = 4;
+ 	dma_cfg.dst_maxburst = 4;
+ 
+-	qspi->dma_chrx = dma_request_slave_channel(dev, "rx");
+-	if (qspi->dma_chrx) {
++	qspi->dma_chrx = dma_request_chan(dev, "rx");
++	if (IS_ERR(qspi->dma_chrx)) {
++		ret = PTR_ERR(qspi->dma_chrx);
++		qspi->dma_chrx = NULL;
++		if (ret == -EPROBE_DEFER)
++			goto out;
++	} else {
+ 		if (dmaengine_slave_config(qspi->dma_chrx, &dma_cfg)) {
+ 			dev_err(dev, "dma rx config failed\n");
+ 			dma_release_channel(qspi->dma_chrx);
+@@ -493,8 +516,11 @@ static void stm32_qspi_dma_setup(struct stm32_qspi *qspi)
+ 		}
+ 	}
+ 
+-	qspi->dma_chtx = dma_request_slave_channel(dev, "tx");
+-	if (qspi->dma_chtx) {
++	qspi->dma_chtx = dma_request_chan(dev, "tx");
++	if (IS_ERR(qspi->dma_chtx)) {
++		ret = PTR_ERR(qspi->dma_chtx);
++		qspi->dma_chtx = NULL;
++	} else {
+ 		if (dmaengine_slave_config(qspi->dma_chtx, &dma_cfg)) {
+ 			dev_err(dev, "dma tx config failed\n");
+ 			dma_release_channel(qspi->dma_chtx);
+@@ -502,7 +528,13 @@ static void stm32_qspi_dma_setup(struct stm32_qspi *qspi)
+ 		}
+ 	}
+ 
++out:
+ 	init_completion(&qspi->dma_completion);
++
++	if (ret != -EPROBE_DEFER)
++		ret = 0;
++
++	return ret;
+ }
+ 
+ static void stm32_qspi_dma_free(struct stm32_qspi *qspi)
+@@ -524,9 +556,14 @@ static const struct spi_controller_mem_ops stm32_qspi_mem_ops = {
+ static void stm32_qspi_release(struct stm32_qspi *qspi)
+ {
+ 	/* disable qspi */
++	pm_runtime_get_sync(qspi->dev);
+ 	writel_relaxed(0, qspi->io_base + QSPI_CR);
+ 	stm32_qspi_dma_free(qspi);
+ 	mutex_destroy(&qspi->lock);
++	pm_runtime_put_noidle(qspi->dev);
++	pm_runtime_disable(qspi->dev);
++	pm_runtime_set_suspended(qspi->dev);
++	pm_runtime_dont_use_autosuspend(qspi->dev);
+ 	clk_disable_unprepare(qspi->clk);
+ }
+ 
+@@ -550,7 +587,7 @@ static int stm32_qspi_probe(struct platform_device *pdev)
+ 	qspi->io_base = devm_ioremap_resource(dev, res);
+ 	if (IS_ERR(qspi->io_base)) {
+ 		ret = PTR_ERR(qspi->io_base);
+-		goto err;
++		goto err_master_put;
+ 	}
+ 
+ 	qspi->phys_base = res->start;
+@@ -559,24 +596,26 @@ static int stm32_qspi_probe(struct platform_device *pdev)
+ 	qspi->mm_base = devm_ioremap_resource(dev, res);
+ 	if (IS_ERR(qspi->mm_base)) {
+ 		ret = PTR_ERR(qspi->mm_base);
+-		goto err;
++		goto err_master_put;
+ 	}
+ 
+ 	qspi->mm_size = resource_size(res);
+ 	if (qspi->mm_size > STM32_QSPI_MAX_MMAP_SZ) {
+ 		ret = -EINVAL;
+-		goto err;
++		goto err_master_put;
+ 	}
+ 
+ 	irq = platform_get_irq(pdev, 0);
+-	if (irq < 0)
+-		return irq;
++	if (irq < 0) {
++		ret = irq;
++		goto err_master_put;
++	}
+ 
+ 	ret = devm_request_irq(dev, irq, stm32_qspi_irq, 0,
+ 			       dev_name(dev), qspi);
+ 	if (ret) {
+ 		dev_err(dev, "failed to request irq\n");
+-		goto err;
++		goto err_master_put;
+ 	}
+ 
+ 	init_completion(&qspi->data_completion);
+@@ -584,23 +623,27 @@ static int stm32_qspi_probe(struct platform_device *pdev)
+ 	qspi->clk = devm_clk_get(dev, NULL);
+ 	if (IS_ERR(qspi->clk)) {
+ 		ret = PTR_ERR(qspi->clk);
+-		goto err;
++		goto err_master_put;
+ 	}
+ 
+ 	qspi->clk_rate = clk_get_rate(qspi->clk);
+ 	if (!qspi->clk_rate) {
+ 		ret = -EINVAL;
+-		goto err;
++		goto err_master_put;
+ 	}
+ 
+ 	ret = clk_prepare_enable(qspi->clk);
+ 	if (ret) {
+ 		dev_err(dev, "can not enable the clock\n");
+-		goto err;
++		goto err_master_put;
+ 	}
+ 
+ 	rstc = devm_reset_control_get_exclusive(dev, NULL);
+-	if (!IS_ERR(rstc)) {
++	if (IS_ERR(rstc)) {
++		ret = PTR_ERR(rstc);
++		if (ret == -EPROBE_DEFER)
++			goto err_qspi_release;
++	} else {
+ 		reset_control_assert(rstc);
+ 		udelay(2);
+ 		reset_control_deassert(rstc);
+@@ -608,7 +651,10 @@ static int stm32_qspi_probe(struct platform_device *pdev)
+ 
+ 	qspi->dev = dev;
+ 	platform_set_drvdata(pdev, qspi);
+-	stm32_qspi_dma_setup(qspi);
++	ret = stm32_qspi_dma_setup(qspi);
++	if (ret)
++		goto err_qspi_release;
++
+ 	mutex_init(&qspi->lock);
+ 
+ 	ctrl->mode_bits = SPI_RX_DUAL | SPI_RX_QUAD
+@@ -619,12 +665,24 @@ static int stm32_qspi_probe(struct platform_device *pdev)
+ 	ctrl->num_chipselect = STM32_QSPI_MAX_NORCHIP;
+ 	ctrl->dev.of_node = dev->of_node;
+ 
++	pm_runtime_set_autosuspend_delay(dev, STM32_AUTOSUSPEND_DELAY);
++	pm_runtime_use_autosuspend(dev);
++	pm_runtime_set_active(dev);
++	pm_runtime_enable(dev);
++	pm_runtime_get_noresume(dev);
++
+ 	ret = devm_spi_register_master(dev, ctrl);
+-	if (!ret)
+-		return 0;
++	if (ret)
++		goto err_qspi_release;
++
++	pm_runtime_mark_last_busy(dev);
++	pm_runtime_put_autosuspend(dev);
++
++	return 0;
+ 
+-err:
++err_qspi_release:
+ 	stm32_qspi_release(qspi);
++err_master_put:
+ 	spi_master_put(qspi->ctrl);
+ 
+ 	return ret;
+@@ -635,14 +693,28 @@ static int stm32_qspi_remove(struct platform_device *pdev)
+ 	struct stm32_qspi *qspi = platform_get_drvdata(pdev);
+ 
+ 	stm32_qspi_release(qspi);
++
+ 	return 0;
+ }
+ 
+-static int __maybe_unused stm32_qspi_suspend(struct device *dev)
++static int __maybe_unused stm32_qspi_runtime_suspend(struct device *dev)
+ {
+ 	struct stm32_qspi *qspi = dev_get_drvdata(dev);
+ 
+ 	clk_disable_unprepare(qspi->clk);
++
++	return 0;
++}
++
++static int __maybe_unused stm32_qspi_runtime_resume(struct device *dev)
++{
++	struct stm32_qspi *qspi = dev_get_drvdata(dev);
++
++	return clk_prepare_enable(qspi->clk);
++}
++
++static int __maybe_unused stm32_qspi_suspend(struct device *dev)
++{
+ 	pinctrl_pm_select_sleep_state(dev);
+ 
+ 	return 0;
+@@ -651,17 +723,28 @@ static int __maybe_unused stm32_qspi_suspend(struct device *dev)
+ static int __maybe_unused stm32_qspi_resume(struct device *dev)
+ {
+ 	struct stm32_qspi *qspi = dev_get_drvdata(dev);
++	int ret;
+ 
+ 	pinctrl_pm_select_default_state(dev);
+-	clk_prepare_enable(qspi->clk);
++
++	ret = pm_runtime_get_sync(qspi->dev);
++	if (ret < 0)
++		return ret;
+ 
+ 	writel_relaxed(qspi->cr_reg, qspi->io_base + QSPI_CR);
+ 	writel_relaxed(qspi->dcr_reg, qspi->io_base + QSPI_DCR);
+ 
++	pm_runtime_mark_last_busy(qspi->dev);
++	pm_runtime_put_autosuspend(qspi->dev);
++
+ 	return 0;
+ }
+ 
+-static SIMPLE_DEV_PM_OPS(stm32_qspi_pm_ops, stm32_qspi_suspend, stm32_qspi_resume);
++static const struct dev_pm_ops stm32_qspi_pm_ops = {
++	SET_RUNTIME_PM_OPS(stm32_qspi_runtime_suspend,
++			   stm32_qspi_runtime_resume, NULL)
++	SET_SYSTEM_SLEEP_PM_OPS(stm32_qspi_suspend, stm32_qspi_resume)
++};
+ 
+ static const struct of_device_id stm32_qspi_match[] = {
+ 	{.compatible = "st,stm32f469-qspi"},
+diff --git a/drivers/spi/spi-stm32.c b/drivers/spi/spi-stm32.c
+index b222ce8d0..df98a6925 100644
+--- a/drivers/spi/spi-stm32.c
++++ b/drivers/spi/spi-stm32.c
+@@ -5,6 +5,7 @@
+ // Copyright (C) 2017, STMicroelectronics - All Rights Reserved
+ // Author(s): Amelie Delaunay <amelie.delaunay@st.com> for STMicroelectronics.
+ 
++#include <linux/bitfield.h>
+ #include <linux/debugfs.h>
+ #include <linux/clk.h>
+ #include <linux/delay.h>
+@@ -13,6 +14,7 @@
+ #include <linux/interrupt.h>
+ #include <linux/iopoll.h>
+ #include <linux/module.h>
++#include <linux/of_gpio.h>
+ #include <linux/of_platform.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/reset.h>
+@@ -31,8 +33,8 @@
+ #define STM32F4_SPI_CR1_CPHA		BIT(0)
+ #define STM32F4_SPI_CR1_CPOL		BIT(1)
+ #define STM32F4_SPI_CR1_MSTR		BIT(2)
+-#define STM32F4_SPI_CR1_BR_SHIFT	3
+ #define STM32F4_SPI_CR1_BR		GENMASK(5, 3)
++#define STM32F4_SPI_CR1_BR_SHIFT	3
+ #define STM32F4_SPI_CR1_SPE		BIT(6)
+ #define STM32F4_SPI_CR1_LSBFRST		BIT(7)
+ #define STM32F4_SPI_CR1_SSI		BIT(8)
+@@ -94,27 +96,24 @@
+ #define STM32H7_SPI_CR1_SSI		BIT(12)
+ 
+ /* STM32H7_SPI_CR2 bit fields */
+-#define STM32H7_SPI_CR2_TSIZE_SHIFT	0
+ #define STM32H7_SPI_CR2_TSIZE		GENMASK(15, 0)
++#define STM32H7_SPI_CR2_TSER		GENMASK(31, 16)
++#define STM32H7_SPI_TSIZE_MAX		GENMASK(15, 0)
++#define STM32H7_SPI_TSER_MAX		(GENMASK(31, 16) >> 16)
+ 
+ /* STM32H7_SPI_CFG1 bit fields */
+-#define STM32H7_SPI_CFG1_DSIZE_SHIFT	0
+ #define STM32H7_SPI_CFG1_DSIZE		GENMASK(4, 0)
+-#define STM32H7_SPI_CFG1_FTHLV_SHIFT	5
+ #define STM32H7_SPI_CFG1_FTHLV		GENMASK(8, 5)
+ #define STM32H7_SPI_CFG1_RXDMAEN	BIT(14)
+ #define STM32H7_SPI_CFG1_TXDMAEN	BIT(15)
+-#define STM32H7_SPI_CFG1_MBR_SHIFT	28
+ #define STM32H7_SPI_CFG1_MBR		GENMASK(30, 28)
++#define STM32H7_SPI_CFG1_MBR_SHIFT	28
+ #define STM32H7_SPI_CFG1_MBR_MIN	0
+ #define STM32H7_SPI_CFG1_MBR_MAX	(GENMASK(30, 28) >> 28)
+ 
+ /* STM32H7_SPI_CFG2 bit fields */
+-#define STM32H7_SPI_CFG2_MIDI_SHIFT	4
+ #define STM32H7_SPI_CFG2_MIDI		GENMASK(7, 4)
+-#define STM32H7_SPI_CFG2_COMM_SHIFT	17
+ #define STM32H7_SPI_CFG2_COMM		GENMASK(18, 17)
+-#define STM32H7_SPI_CFG2_SP_SHIFT	19
+ #define STM32H7_SPI_CFG2_SP		GENMASK(21, 19)
+ #define STM32H7_SPI_CFG2_MASTER		BIT(22)
+ #define STM32H7_SPI_CFG2_LSBFRST	BIT(23)
+@@ -131,16 +130,18 @@
+ #define STM32H7_SPI_IER_TXTFIE		BIT(4)
+ #define STM32H7_SPI_IER_OVRIE		BIT(6)
+ #define STM32H7_SPI_IER_MODFIE		BIT(9)
++#define STM32H7_SPI_IER_TSERFIE		BIT(10)
+ #define STM32H7_SPI_IER_ALL		GENMASK(10, 0)
+ 
+ /* STM32H7_SPI_SR bit fields */
+ #define STM32H7_SPI_SR_RXP		BIT(0)
+ #define STM32H7_SPI_SR_TXP		BIT(1)
+ #define STM32H7_SPI_SR_EOT		BIT(3)
++#define STM32H7_SPI_SR_TXTF		BIT(4)
+ #define STM32H7_SPI_SR_OVR		BIT(6)
+ #define STM32H7_SPI_SR_MODF		BIT(9)
++#define STM32H7_SPI_SR_TSERF		BIT(10)
+ #define STM32H7_SPI_SR_SUSP		BIT(11)
+-#define STM32H7_SPI_SR_RXPLVL_SHIFT	13
+ #define STM32H7_SPI_SR_RXPLVL		GENMASK(14, 13)
+ #define STM32H7_SPI_SR_RXWNE		BIT(15)
+ 
+@@ -167,8 +168,6 @@
+ #define SPI_3WIRE_TX		3
+ #define SPI_3WIRE_RX		4
+ 
+-#define SPI_1HZ_NS		1000000000
+-
+ /*
+  * use PIO for small transfers, avoiding DMA setup/teardown overhead for drivers
+  * without fifo buffers.
+@@ -249,7 +248,7 @@ struct stm32_spi_cfg {
+ 	int (*set_mode)(struct stm32_spi *spi, unsigned int comm_type);
+ 	void (*set_data_idleness)(struct stm32_spi *spi, u32 length);
+ 	int (*set_number_of_data)(struct stm32_spi *spi, u32 length);
+-	void (*transfer_one_dma_start)(struct stm32_spi *spi);
++	int (*transfer_one_dma_start)(struct stm32_spi *spi);
+ 	void (*dma_rx_cb)(void *data);
+ 	void (*dma_tx_cb)(void *data);
+ 	int (*transfer_one_irq)(struct stm32_spi *spi);
+@@ -268,7 +267,6 @@ struct stm32_spi_cfg {
+  * @base: virtual memory area
+  * @clk: hw kernel clock feeding the SPI clock generator
+  * @clk_rate: rate of the hw kernel clock feeding the SPI clock generator
+- * @rst: SPI controller reset line
+  * @lock: prevent I/O concurrent access
+  * @irq: SPI controller interrupt line
+  * @fifo_size: size of the embedded fifo in bytes
+@@ -278,6 +276,7 @@ struct stm32_spi_cfg {
+  * @cur_fthlv: fifo threshold level (data frames in a single data packet)
+  * @cur_comm: SPI communication mode
+  * @cur_xferlen: current transfer length in bytes
++ * @cur_reload: current transfer remaining bytes to be loaded
+  * @cur_usedma: boolean to know if dma is used in current transfer
+  * @tx_buf: data to be written, or NULL
+  * @rx_buf: data to be read, or NULL
+@@ -294,7 +293,6 @@ struct stm32_spi {
+ 	void __iomem *base;
+ 	struct clk *clk;
+ 	u32 clk_rate;
+-	struct reset_control *rst;
+ 	spinlock_t lock; /* prevent I/O concurrent access */
+ 	int irq;
+ 	unsigned int fifo_size;
+@@ -305,6 +303,7 @@ struct stm32_spi {
+ 	unsigned int cur_fthlv;
+ 	unsigned int cur_comm;
+ 	unsigned int cur_xferlen;
++	unsigned int cur_reload;
+ 	bool cur_usedma;
+ 
+ 	const void *tx_buf;
+@@ -313,7 +312,10 @@ struct stm32_spi {
+ 	int rx_len;
+ 	struct dma_chan *dma_tx;
+ 	struct dma_chan *dma_rx;
++	struct completion dma_completion;
+ 	dma_addr_t phys_addr;
++	struct completion xfer_completion;
++	int xfer_status;
+ };
+ 
+ static const struct stm32_spi_regspec stm32f4_spi_regspec = {
+@@ -417,9 +419,7 @@ static int stm32h7_spi_get_bpw_mask(struct stm32_spi *spi)
+ 	stm32_spi_set_bits(spi, STM32H7_SPI_CFG1, STM32H7_SPI_CFG1_DSIZE);
+ 
+ 	cfg1 = readl_relaxed(spi->base + STM32H7_SPI_CFG1);
+-	max_bpw = (cfg1 & STM32H7_SPI_CFG1_DSIZE) >>
+-		  STM32H7_SPI_CFG1_DSIZE_SHIFT;
+-	max_bpw += 1;
++	max_bpw = FIELD_GET(STM32H7_SPI_CFG1_DSIZE, cfg1) + 1;
+ 
+ 	spin_unlock_irqrestore(&spi->lock, flags);
+ 
+@@ -442,7 +442,8 @@ static int stm32_spi_prepare_mbr(struct stm32_spi *spi, u32 speed_hz,
+ {
+ 	u32 div, mbrdiv;
+ 
+-	div = DIV_ROUND_UP(spi->clk_rate, speed_hz);
++	/* Ensure spi->clk_rate is even */
++	div = DIV_ROUND_UP(spi->clk_rate & ~0x1, speed_hz);
+ 
+ 	/*
+ 	 * SPI framework set xfer->speed_hz to master->max_speed_hz if
+@@ -469,19 +470,22 @@ static int stm32_spi_prepare_mbr(struct stm32_spi *spi, u32 speed_hz,
+  * stm32h7_spi_prepare_fthlv - Determine FIFO threshold level
+  * @spi: pointer to the spi controller data structure
+  */
+-static u32 stm32h7_spi_prepare_fthlv(struct stm32_spi *spi)
++static u32 stm32h7_spi_prepare_fthlv(struct stm32_spi *spi, u32 xfer_len)
+ {
+-	u32 fthlv, half_fifo;
++	u32 fthlv, half_fifo, packet;
+ 
+ 	/* data packet should not exceed 1/2 of fifo space */
+ 	half_fifo = (spi->fifo_size / 2);
+ 
++	/* data_packet should not exceed transfer length */
++	packet = (half_fifo > xfer_len) ? xfer_len : half_fifo;
++
+ 	if (spi->cur_bpw <= 8)
+-		fthlv = half_fifo;
++		fthlv = packet;
+ 	else if (spi->cur_bpw <= 16)
+-		fthlv = half_fifo / 2;
++		fthlv = packet / 2;
+ 	else
+-		fthlv = half_fifo / 4;
++		fthlv = packet / 4;
+ 
+ 	/* align packet size with data registers access */
+ 	if (spi->cur_bpw > 8)
+@@ -489,9 +493,29 @@ static u32 stm32h7_spi_prepare_fthlv(struct stm32_spi *spi)
+ 	else
+ 		fthlv -= (fthlv % 4); /* multiple of 4 */
+ 
++	if (!fthlv)
++		fthlv = 1;
++
+ 	return fthlv;
+ }
+ 
++static void stm32h7_spi_transfer_extension(struct stm32_spi *spi)
++{
++	if (spi->cur_reload > 0) {
++		u32 cr2 = readl_relaxed(spi->base + STM32H7_SPI_CR2);
++		u32 tsize = FIELD_GET(STM32H7_SPI_CR2_TSIZE, cr2);
++		u32 tser = STM32H7_SPI_TSER_MAX;
++
++		tser -= (STM32H7_SPI_TSER_MAX % spi->cur_fthlv);
++		tser = min(spi->cur_reload, tser);
++
++		writel_relaxed(FIELD_PREP(STM32H7_SPI_CR2_TSER, tser) |
++			       FIELD_PREP(STM32H7_SPI_CR2_TSIZE, tsize),
++			       spi->base + STM32H7_SPI_CR2);
++		spi->cur_reload -= tser;
++	}
++}
++
+ /**
+  * stm32f4_spi_write_tx - Write bytes to Transmit Data Register
+  * @spi: pointer to the spi controller data structure
+@@ -592,25 +616,26 @@ static void stm32f4_spi_read_rx(struct stm32_spi *spi)
+  * Write in rx_buf depends on remaining bytes to avoid to write beyond
+  * rx_buf end.
+  */
+-static void stm32h7_spi_read_rxfifo(struct stm32_spi *spi, bool flush)
++static void stm32h7_spi_read_rxfifo(struct stm32_spi *spi)
+ {
+ 	u32 sr = readl_relaxed(spi->base + STM32H7_SPI_SR);
+-	u32 rxplvl = (sr & STM32H7_SPI_SR_RXPLVL) >>
+-		     STM32H7_SPI_SR_RXPLVL_SHIFT;
++	u32 rxplvl = FIELD_GET(STM32H7_SPI_SR_RXPLVL, sr);
+ 
+ 	while ((spi->rx_len > 0) &&
+ 	       ((sr & STM32H7_SPI_SR_RXP) ||
+-		(flush && ((sr & STM32H7_SPI_SR_RXWNE) || (rxplvl > 0))))) {
++		((sr & STM32H7_SPI_SR_EOT) &&
++		 ((sr & STM32H7_SPI_SR_RXWNE) || (rxplvl > 0))))) {
+ 		u32 offs = spi->cur_xferlen - spi->rx_len;
+ 
+ 		if ((spi->rx_len >= sizeof(u32)) ||
+-		    (flush && (sr & STM32H7_SPI_SR_RXWNE))) {
++		    (sr & STM32H7_SPI_SR_RXWNE)) {
+ 			u32 *rx_buf32 = (u32 *)(spi->rx_buf + offs);
+ 
+ 			*rx_buf32 = readl_relaxed(spi->base + STM32H7_SPI_RXDR);
+ 			spi->rx_len -= sizeof(u32);
+ 		} else if ((spi->rx_len >= sizeof(u16)) ||
+-			   (flush && (rxplvl >= 2 || spi->cur_bpw > 8))) {
++			   (!(sr & STM32H7_SPI_SR_RXWNE) &&
++			    (rxplvl >= 2 || spi->cur_bpw > 8))) {
+ 			u16 *rx_buf16 = (u16 *)(spi->rx_buf + offs);
+ 
+ 			*rx_buf16 = readw_relaxed(spi->base + STM32H7_SPI_RXDR);
+@@ -623,12 +648,11 @@ static void stm32h7_spi_read_rxfifo(struct stm32_spi *spi, bool flush)
+ 		}
+ 
+ 		sr = readl_relaxed(spi->base + STM32H7_SPI_SR);
+-		rxplvl = (sr & STM32H7_SPI_SR_RXPLVL) >>
+-			 STM32H7_SPI_SR_RXPLVL_SHIFT;
++		rxplvl = FIELD_GET(STM32H7_SPI_SR_RXPLVL, sr);
+ 	}
+ 
+-	dev_dbg(spi->dev, "%s%s: %d bytes left\n", __func__,
+-		flush ? "(flush)" : "", spi->rx_len);
++	dev_dbg(spi->dev, "%s: %d bytes left (sr=%08x)\n",
++		__func__, spi->rx_len, sr);
+ }
+ 
+ /**
+@@ -696,12 +720,7 @@ static void stm32f4_spi_disable(struct stm32_spi *spi)
+  * @spi: pointer to the spi controller data structure
+  *
+  * RX-Fifo is flushed when SPI controller is disabled. To prevent any data
+- * loss, use stm32h7_spi_read_rxfifo(flush) to read the remaining bytes in
+- * RX-Fifo.
+- * Normally, if TSIZE has been configured, we should relax the hardware at the
+- * reception of the EOT interrupt. But in case of error, EOT will not be
+- * raised. So the subsystem unprepare_message call allows us to properly
+- * complete the transfer from an hardware point of view.
++ * loss, use stm32_spi_read_rxfifo to read the remaining bytes in RX-Fifo.
+  */
+ static void stm32h7_spi_disable(struct stm32_spi *spi)
+ {
+@@ -736,7 +755,7 @@ static void stm32h7_spi_disable(struct stm32_spi *spi)
+ 	}
+ 
+ 	if (!spi->cur_usedma && spi->rx_buf && (spi->rx_len > 0))
+-		stm32h7_spi_read_rxfifo(spi, true);
++		stm32h7_spi_read_rxfifo(spi);
+ 
+ 	if (spi->cur_usedma && spi->dma_tx)
+ 		dmaengine_terminate_all(spi->dma_tx);
+@@ -891,7 +910,7 @@ static irqreturn_t stm32h7_spi_irq_thread(int irq, void *dev_id)
+ {
+ 	struct spi_master *master = dev_id;
+ 	struct stm32_spi *spi = spi_master_get_devdata(master);
+-	u32 sr, ier, mask;
++	u32 sr, ier, mask, ifcr;
+ 	unsigned long flags;
+ 	bool end = false;
+ 
+@@ -899,77 +918,82 @@ static irqreturn_t stm32h7_spi_irq_thread(int irq, void *dev_id)
+ 
+ 	sr = readl_relaxed(spi->base + STM32H7_SPI_SR);
+ 	ier = readl_relaxed(spi->base + STM32H7_SPI_IER);
++	ifcr = 0;
+ 
+ 	mask = ier;
+-	/* EOTIE is triggered on EOT, SUSP and TXC events. */
++	/*
++	 * EOTIE enables irq from EOT, SUSP and TXC events. We need to set
++	 * SUSP to acknowledge it later. TXC is automatically cleared
++	 */
+ 	mask |= STM32H7_SPI_SR_SUSP;
+ 	/*
+-	 * When TXTF is set, DXPIE and TXPIE are cleared. So in case of
+-	 * Full-Duplex, need to poll RXP event to know if there are remaining
+-	 * data, before disabling SPI.
++	 * DXPIE is set in Full-Duplex, one IT will be raised if TXP and RXP
++	 * are set. So in case of Full-Duplex, need to poll TXP and RXP event.
+ 	 */
+-	if (spi->rx_buf && !spi->cur_usedma)
+-		mask |= STM32H7_SPI_SR_RXP;
++	if ((spi->cur_comm == SPI_FULL_DUPLEX) && (!spi->cur_usedma))
++		mask |= STM32H7_SPI_SR_TXP | STM32H7_SPI_SR_RXP;
+ 
+-	if (!(sr & mask)) {
+-		dev_dbg(spi->dev, "spurious IT (sr=0x%08x, ier=0x%08x)\n",
+-			sr, ier);
++	mask &= sr;
++
++	if (!mask) {
++		dev_warn(spi->dev, "spurious IT (sr=0x%08x, ier=0x%08x)\n",
++			 sr, ier);
+ 		spin_unlock_irqrestore(&spi->lock, flags);
+ 		return IRQ_NONE;
+ 	}
+ 
+-	if (sr & STM32H7_SPI_SR_SUSP) {
+-		dev_warn(spi->dev, "Communication suspended\n");
++	if (mask & STM32H7_SPI_SR_TSERF) {
++		stm32h7_spi_transfer_extension(spi);
++		ifcr |= STM32H7_SPI_SR_TSERF;
++	}
++
++	if (mask & STM32H7_SPI_SR_SUSP) {
++		dev_warn_once(spi->dev,
++			      "System too slow is limiting data throughput\n");
++
+ 		if (!spi->cur_usedma && (spi->rx_buf && (spi->rx_len > 0)))
+-			stm32h7_spi_read_rxfifo(spi, false);
+-		/*
+-		 * If communication is suspended while using DMA, it means
+-		 * that something went wrong, so stop the current transfer
+-		 */
+-		if (spi->cur_usedma)
+-			end = true;
++			stm32h7_spi_read_rxfifo(spi);
++
++		ifcr |= STM32H7_SPI_SR_SUSP;
+ 	}
+ 
+-	if (sr & STM32H7_SPI_SR_MODF) {
+-		dev_warn(spi->dev, "Mode fault: transfer aborted\n");
++	if (mask & STM32H7_SPI_SR_OVR) {
++		dev_err(spi->dev, "Overrun: RX data lost\n");
++		spi->xfer_status = -EIO;
+ 		end = true;
++		ifcr |= STM32H7_SPI_SR_OVR;
+ 	}
+ 
+-	if (sr & STM32H7_SPI_SR_OVR) {
+-		dev_warn(spi->dev, "Overrun: received value discarded\n");
+-		if (!spi->cur_usedma && (spi->rx_buf && (spi->rx_len > 0)))
+-			stm32h7_spi_read_rxfifo(spi, false);
+-		/*
+-		 * If overrun is detected while using DMA, it means that
+-		 * something went wrong, so stop the current transfer
+-		 */
+-		if (spi->cur_usedma)
+-			end = true;
+-	}
++	if (mask & STM32H7_SPI_SR_TXTF)
++		ifcr |= STM32H7_SPI_SR_TXTF;
+ 
+-	if (sr & STM32H7_SPI_SR_EOT) {
++	if (mask & STM32H7_SPI_SR_EOT) {
+ 		if (!spi->cur_usedma && (spi->rx_buf && (spi->rx_len > 0)))
+-			stm32h7_spi_read_rxfifo(spi, true);
++			stm32h7_spi_read_rxfifo(spi);
+ 		end = true;
++		ifcr |= STM32H7_SPI_SR_EOT;
+ 	}
+ 
+-	if (sr & STM32H7_SPI_SR_TXP)
++	if (mask & STM32H7_SPI_SR_TXP)
+ 		if (!spi->cur_usedma && (spi->tx_buf && (spi->tx_len > 0)))
+ 			stm32h7_spi_write_txfifo(spi);
+ 
+-	if (sr & STM32H7_SPI_SR_RXP)
++	if (mask & STM32H7_SPI_SR_RXP)
+ 		if (!spi->cur_usedma && (spi->rx_buf && (spi->rx_len > 0)))
+-			stm32h7_spi_read_rxfifo(spi, false);
+-
+-	writel_relaxed(mask, spi->base + STM32H7_SPI_IFCR);
+-
+-	spin_unlock_irqrestore(&spi->lock, flags);
++			stm32h7_spi_read_rxfifo(spi);
+ 
+ 	if (end) {
+-		spi_finalize_current_transfer(master);
+-		stm32h7_spi_disable(spi);
++		/* Disable interrupts and clear status flags */
++		writel_relaxed(0, spi->base + STM32H7_SPI_IER);
++		writel_relaxed(STM32H7_SPI_IFCR_ALL,
++			       spi->base + STM32H7_SPI_IFCR);
++
++		complete(&spi->xfer_completion);
++	} else {
++		writel_relaxed(ifcr, spi->base + STM32H7_SPI_IFCR);
+ 	}
+ 
++	spin_unlock_irqrestore(&spi->lock, flags);
+ 	return IRQ_HANDLED;
+ }
+ 
+@@ -1079,25 +1103,18 @@ static void stm32f4_spi_dma_rx_cb(void *data)
+ /**
+  * stm32h7_spi_dma_cb - dma callback
+  *
+- * DMA callback is called when the transfer is complete or when an error
+- * occurs. If the transfer is complete, EOT flag is raised.
++ * DMA callback is called when the transfer is complete.
+  */
+ static void stm32h7_spi_dma_cb(void *data)
+ {
+ 	struct stm32_spi *spi = data;
+ 	unsigned long flags;
+-	u32 sr;
+ 
+ 	spin_lock_irqsave(&spi->lock, flags);
+ 
+-	sr = readl_relaxed(spi->base + STM32H7_SPI_SR);
++	complete(&spi->dma_completion);
+ 
+ 	spin_unlock_irqrestore(&spi->lock, flags);
+-
+-	if (!(sr & STM32H7_SPI_SR_EOT))
+-		dev_warn(spi->dev, "DMA error (sr=0x%08x)\n", sr);
+-
+-	/* Now wait for EOT, or SUSP or OVR in case of error */
+ }
+ 
+ /**
+@@ -1190,9 +1207,6 @@ static int stm32f4_spi_transfer_one_irq(struct stm32_spi *spi)
+ /**
+  * stm32h7_spi_transfer_one_irq - transfer a single spi_transfer using
+  *				  interrupts
+- *
+- * It must returns 0 if the transfer is finished or 1 if the transfer is still
+- * in progress.
+  */
+ static int stm32h7_spi_transfer_one_irq(struct stm32_spi *spi)
+ {
+@@ -1209,7 +1223,9 @@ static int stm32h7_spi_transfer_one_irq(struct stm32_spi *spi)
+ 
+ 	/* Enable the interrupts relative to the end of transfer */
+ 	ier |= STM32H7_SPI_IER_EOTIE | STM32H7_SPI_IER_TXTFIE |
+-	       STM32H7_SPI_IER_OVRIE | STM32H7_SPI_IER_MODFIE;
++	       STM32H7_SPI_IER_OVRIE;
++	/* Enable the interrupt relative to transfer extension */
++	ier |= STM32H7_SPI_IER_TSERFIE;
+ 
+ 	spin_lock_irqsave(&spi->lock, flags);
+ 
+@@ -1225,15 +1241,19 @@ static int stm32h7_spi_transfer_one_irq(struct stm32_spi *spi)
+ 
+ 	spin_unlock_irqrestore(&spi->lock, flags);
+ 
+-	return 1;
++	return 0;
+ }
+ 
+ /**
+  * stm32f4_spi_transfer_one_dma_start - Set SPI driver registers to start
+  *					transfer using DMA
+  */
+-static void stm32f4_spi_transfer_one_dma_start(struct stm32_spi *spi)
++static int stm32f4_spi_transfer_one_dma_start(struct stm32_spi *spi)
+ {
++	unsigned long flags;
++
++	spin_lock_irqsave(&spi->lock, flags);
++
+ 	/* In DMA mode end of transfer is handled by DMA TX or RX callback. */
+ 	if (spi->cur_comm == SPI_SIMPLEX_RX || spi->cur_comm == SPI_3WIRE_RX ||
+ 	    spi->cur_comm == SPI_FULL_DUPLEX) {
+@@ -1246,40 +1266,58 @@ static void stm32f4_spi_transfer_one_dma_start(struct stm32_spi *spi)
+ 	}
+ 
+ 	stm32_spi_enable(spi);
++
++	spin_unlock_irqrestore(&spi->lock, flags);
++
++	return 1;
+ }
+ 
+ /**
+  * stm32h7_spi_transfer_one_dma_start - Set SPI driver registers to start
+  *					transfer using DMA
+  */
+-static void stm32h7_spi_transfer_one_dma_start(struct stm32_spi *spi)
++static int stm32h7_spi_transfer_one_dma_start(struct stm32_spi *spi)
+ {
++	unsigned long flags;
++
++	spin_lock_irqsave(&spi->lock, flags);
++
+ 	/* Enable the interrupts relative to the end of transfer */
+ 	stm32_spi_set_bits(spi, STM32H7_SPI_IER, STM32H7_SPI_IER_EOTIE |
+ 						 STM32H7_SPI_IER_TXTFIE |
+ 						 STM32H7_SPI_IER_OVRIE |
+-						 STM32H7_SPI_IER_MODFIE);
++						 /* transfer extension */
++						 STM32H7_SPI_IER_TSERFIE);
+ 
+ 	stm32_spi_enable(spi);
+ 
+ 	stm32_spi_set_bits(spi, STM32H7_SPI_CR1, STM32H7_SPI_CR1_CSTART);
++
++	spin_unlock_irqrestore(&spi->lock, flags);
++
++	return 0;
+ }
+ 
+ /**
+  * stm32_spi_transfer_one_dma - transfer a single spi_transfer using DMA
+- *
+- * It must returns 0 if the transfer is finished or 1 if the transfer is still
+- * in progress.
+  */
+ static int stm32_spi_transfer_one_dma(struct stm32_spi *spi,
+ 				      struct spi_transfer *xfer)
+ {
++	dma_async_tx_callback rx_done = NULL, tx_done = NULL;
+ 	struct dma_slave_config tx_dma_conf, rx_dma_conf;
+ 	struct dma_async_tx_descriptor *tx_dma_desc, *rx_dma_desc;
+ 	unsigned long flags;
+ 
+ 	spin_lock_irqsave(&spi->lock, flags);
+ 
++	if (spi->rx_buf)
++		rx_done = spi->cfg->dma_rx_cb;
++	else if (spi->tx_buf)
++		tx_done = spi->cfg->dma_tx_cb;
++
++	reinit_completion(&spi->dma_completion);
++
+ 	rx_dma_desc = NULL;
+ 	if (spi->rx_buf && spi->dma_rx) {
+ 		stm32_spi_dma_config(spi, &rx_dma_conf, DMA_DEV_TO_MEM);
+@@ -1316,7 +1354,7 @@ static int stm32_spi_transfer_one_dma(struct stm32_spi *spi,
+ 		goto dma_desc_error;
+ 
+ 	if (rx_dma_desc) {
+-		rx_dma_desc->callback = spi->cfg->dma_rx_cb;
++		rx_dma_desc->callback = rx_done;
+ 		rx_dma_desc->callback_param = spi;
+ 
+ 		if (dma_submit_error(dmaengine_submit(rx_dma_desc))) {
+@@ -1330,7 +1368,7 @@ static int stm32_spi_transfer_one_dma(struct stm32_spi *spi,
+ 	if (tx_dma_desc) {
+ 		if (spi->cur_comm == SPI_SIMPLEX_TX ||
+ 		    spi->cur_comm == SPI_3WIRE_TX) {
+-			tx_dma_desc->callback = spi->cfg->dma_tx_cb;
++			tx_dma_desc->callback = tx_done;
+ 			tx_dma_desc->callback_param = spi;
+ 		}
+ 
+@@ -1345,12 +1383,9 @@ static int stm32_spi_transfer_one_dma(struct stm32_spi *spi,
+ 		stm32_spi_set_bits(spi, spi->cfg->regs->dma_tx_en.reg,
+ 				   spi->cfg->regs->dma_tx_en.mask);
+ 	}
+-
+-	spi->cfg->transfer_one_dma_start(spi);
+-
+ 	spin_unlock_irqrestore(&spi->lock, flags);
+ 
+-	return 1;
++	return spi->cfg->transfer_one_dma_start(spi);
+ 
+ dma_submit_error:
+ 	if (spi->dma_rx)
+@@ -1392,15 +1427,13 @@ static void stm32h7_spi_set_bpw(struct stm32_spi *spi)
+ 	bpw = spi->cur_bpw - 1;
+ 
+ 	cfg1_clrb |= STM32H7_SPI_CFG1_DSIZE;
+-	cfg1_setb |= (bpw << STM32H7_SPI_CFG1_DSIZE_SHIFT) &
+-		     STM32H7_SPI_CFG1_DSIZE;
++	cfg1_setb |= FIELD_PREP(STM32H7_SPI_CFG1_DSIZE, bpw);
+ 
+-	spi->cur_fthlv = stm32h7_spi_prepare_fthlv(spi);
++	spi->cur_fthlv = stm32h7_spi_prepare_fthlv(spi, spi->cur_xferlen);
+ 	fthlv = spi->cur_fthlv - 1;
+ 
+ 	cfg1_clrb |= STM32H7_SPI_CFG1_FTHLV;
+-	cfg1_setb |= (fthlv << STM32H7_SPI_CFG1_FTHLV_SHIFT) &
+-		     STM32H7_SPI_CFG1_FTHLV;
++	cfg1_setb |= FIELD_PREP(STM32H7_SPI_CFG1_FTHLV, fthlv);
+ 
+ 	writel_relaxed(
+ 		(readl_relaxed(spi->base + STM32H7_SPI_CFG1) &
+@@ -1418,8 +1451,7 @@ static void stm32_spi_set_mbr(struct stm32_spi *spi, u32 mbrdiv)
+ 	u32 clrb = 0, setb = 0;
+ 
+ 	clrb |= spi->cfg->regs->br.mask;
+-	setb |= ((u32)mbrdiv << spi->cfg->regs->br.shift) &
+-		spi->cfg->regs->br.mask;
++	setb |= (mbrdiv << spi->cfg->regs->br.shift) & spi->cfg->regs->br.mask;
+ 
+ 	writel_relaxed((readl_relaxed(spi->base + spi->cfg->regs->br.reg) &
+ 			~clrb) | setb,
+@@ -1504,8 +1536,7 @@ static int stm32h7_spi_set_mode(struct stm32_spi *spi, unsigned int comm_type)
+ 	}
+ 
+ 	cfg2_clrb |= STM32H7_SPI_CFG2_COMM;
+-	cfg2_setb |= (mode << STM32H7_SPI_CFG2_COMM_SHIFT) &
+-		     STM32H7_SPI_CFG2_COMM;
++	cfg2_setb |= FIELD_PREP(STM32H7_SPI_CFG2_COMM, mode);
+ 
+ 	writel_relaxed(
+ 		(readl_relaxed(spi->base + STM32H7_SPI_CFG2) &
+@@ -1527,15 +1558,15 @@ static void stm32h7_spi_data_idleness(struct stm32_spi *spi, u32 len)
+ 
+ 	cfg2_clrb |= STM32H7_SPI_CFG2_MIDI;
+ 	if ((len > 1) && (spi->cur_midi > 0)) {
+-		u32 sck_period_ns = DIV_ROUND_UP(SPI_1HZ_NS, spi->cur_speed);
+-		u32 midi = min((u32)DIV_ROUND_UP(spi->cur_midi, sck_period_ns),
+-			       (u32)STM32H7_SPI_CFG2_MIDI >>
+-			       STM32H7_SPI_CFG2_MIDI_SHIFT);
++		u32 sck_period_ns = DIV_ROUND_UP(NSEC_PER_SEC, spi->cur_speed);
++		u32 midi = min_t(u32,
++				 DIV_ROUND_UP(spi->cur_midi, sck_period_ns),
++				 FIELD_GET(STM32H7_SPI_CFG2_MIDI,
++					   STM32H7_SPI_CFG2_MIDI));
+ 
+ 		dev_dbg(spi->dev, "period=%dns, midi=%d(=%dns)\n",
+ 			sck_period_ns, midi, midi * sck_period_ns);
+-		cfg2_setb |= (midi << STM32H7_SPI_CFG2_MIDI_SHIFT) &
+-			     STM32H7_SPI_CFG2_MIDI;
++		cfg2_setb |= FIELD_PREP(STM32H7_SPI_CFG2_MIDI, midi);
+ 	}
+ 
+ 	writel_relaxed((readl_relaxed(spi->base + STM32H7_SPI_CFG2) &
+@@ -1550,19 +1581,23 @@ static void stm32h7_spi_data_idleness(struct stm32_spi *spi, u32 len)
+  */
+ static int stm32h7_spi_number_of_data(struct stm32_spi *spi, u32 nb_words)
+ {
+-	u32 cr2_clrb = 0, cr2_setb = 0;
+-
+-	if (nb_words <= (STM32H7_SPI_CR2_TSIZE >>
+-			 STM32H7_SPI_CR2_TSIZE_SHIFT)) {
+-		cr2_clrb |= STM32H7_SPI_CR2_TSIZE;
+-		cr2_setb = nb_words << STM32H7_SPI_CR2_TSIZE_SHIFT;
+-		writel_relaxed((readl_relaxed(spi->base + STM32H7_SPI_CR2) &
+-				~cr2_clrb) | cr2_setb,
+-			       spi->base + STM32H7_SPI_CR2);
++	u32 tsize;
++
++	if (nb_words <= STM32H7_SPI_TSIZE_MAX) {
++		tsize = nb_words;
++		spi->cur_reload = 0;
+ 	} else {
+-		return -EMSGSIZE;
++		tsize = STM32H7_SPI_TSIZE_MAX;
++		tsize -= (STM32H7_SPI_TSIZE_MAX % spi->cur_fthlv);
++		spi->cur_reload = nb_words - tsize;
+ 	}
+ 
++	writel_relaxed(FIELD_PREP(STM32H7_SPI_CR2_TSIZE, tsize),
++		       spi->base + STM32H7_SPI_CR2);
++
++	if (spi->cur_reload > 0)
++		stm32h7_spi_transfer_extension(spi);
++
+ 	return 0;
+ }
+ 
+@@ -1578,39 +1613,33 @@ static int stm32_spi_transfer_one_setup(struct stm32_spi *spi,
+ 	unsigned long flags;
+ 	unsigned int comm_type;
+ 	int nb_words, ret = 0;
++	int mbr;
+ 
+ 	spin_lock_irqsave(&spi->lock, flags);
+ 
+-	if (spi->cur_bpw != transfer->bits_per_word) {
+-		spi->cur_bpw = transfer->bits_per_word;
+-		spi->cfg->set_bpw(spi);
+-	}
+-
+-	if (spi->cur_speed != transfer->speed_hz) {
+-		int mbr;
++	spi->cur_xferlen = transfer->len;
+ 
+-		/* Update spi->cur_speed with real clock speed */
+-		mbr = stm32_spi_prepare_mbr(spi, transfer->speed_hz,
+-					    spi->cfg->baud_rate_div_min,
+-					    spi->cfg->baud_rate_div_max);
+-		if (mbr < 0) {
+-			ret = mbr;
+-			goto out;
+-		}
++	spi->cur_bpw = transfer->bits_per_word;
++	spi->cfg->set_bpw(spi);
+ 
+-		transfer->speed_hz = spi->cur_speed;
+-		stm32_spi_set_mbr(spi, mbr);
++	/* Update spi->cur_speed with real clock speed */
++	mbr = stm32_spi_prepare_mbr(spi, transfer->speed_hz,
++				    spi->cfg->baud_rate_div_min,
++				    spi->cfg->baud_rate_div_max);
++	if (mbr < 0) {
++		ret = mbr;
++		goto out;
+ 	}
+ 
+-	comm_type = stm32_spi_communication_type(spi_dev, transfer);
+-	if (spi->cur_comm != comm_type) {
+-		ret = spi->cfg->set_mode(spi, comm_type);
++	transfer->speed_hz = spi->cur_speed;
++	stm32_spi_set_mbr(spi, mbr);
+ 
+-		if (ret < 0)
+-			goto out;
++	comm_type = stm32_spi_communication_type(spi_dev, transfer);
++	ret = spi->cfg->set_mode(spi, comm_type);
++	if (ret < 0)
++		goto out;
+ 
+-		spi->cur_comm = comm_type;
+-	}
++	spi->cur_comm = comm_type;
+ 
+ 	if (spi->cfg->set_data_idleness)
+ 		spi->cfg->set_data_idleness(spi, transfer->len);
+@@ -1628,8 +1657,6 @@ static int stm32_spi_transfer_one_setup(struct stm32_spi *spi,
+ 			goto out;
+ 	}
+ 
+-	spi->cur_xferlen = transfer->len;
+-
+ 	dev_dbg(spi->dev, "transfer communication mode set to %d\n",
+ 		spi->cur_comm);
+ 	dev_dbg(spi->dev,
+@@ -1658,6 +1685,8 @@ static int stm32_spi_transfer_one(struct spi_master *master,
+ 				  struct spi_transfer *transfer)
+ {
+ 	struct stm32_spi *spi = spi_master_get_devdata(master);
++	u32 xfer_time, midi_delay_ns;
++	unsigned long timeout;
+ 	int ret;
+ 
+ 	spi->tx_buf = transfer->tx_buf;
+@@ -1674,10 +1703,39 @@ static int stm32_spi_transfer_one(struct spi_master *master,
+ 		return ret;
+ 	}
+ 
++	reinit_completion(&spi->xfer_completion);
++	spi->xfer_status = 0;
++
+ 	if (spi->cur_usedma)
+-		return stm32_spi_transfer_one_dma(spi, transfer);
++		ret = stm32_spi_transfer_one_dma(spi, transfer);
+ 	else
+-		return spi->cfg->transfer_one_irq(spi);
++		ret = spi->cfg->transfer_one_irq(spi);
++
++	if (ret)
++		return ret;
++
++	/* Wait for transfer to complete */
++	xfer_time = spi->cur_xferlen * 8 * MSEC_PER_SEC / spi->cur_speed;
++	midi_delay_ns = spi->cur_xferlen * 8 / spi->cur_bpw * spi->cur_midi;
++	xfer_time += DIV_ROUND_UP(midi_delay_ns, NSEC_PER_MSEC);
++	xfer_time = max(2 * xfer_time, 100U);
++	timeout = msecs_to_jiffies(xfer_time);
++
++	timeout = wait_for_completion_timeout(&spi->xfer_completion, timeout);
++	if (timeout && spi->cur_usedma)
++		timeout = wait_for_completion_timeout(&spi->dma_completion,
++						      timeout);
++
++	if (!timeout) {
++		dev_err(spi->dev, "SPI transfer timeout (%u ms)\n", xfer_time);
++		spi->xfer_status = -ETIMEDOUT;
++	}
++
++	spi->cfg->disable(spi);
++
++	spi_finalize_current_transfer(master);
++
++	return spi->xfer_status;
+ }
+ 
+ /**
+@@ -1810,7 +1868,8 @@ static int stm32_spi_probe(struct platform_device *pdev)
+ 	struct spi_master *master;
+ 	struct stm32_spi *spi;
+ 	struct resource *res;
+-	int i, ret;
++	struct reset_control *rst;
++	int i, ret, num_cs, cs_gpio;
+ 
+ 	master = spi_alloc_master(&pdev->dev, sizeof(struct stm32_spi));
+ 	if (!master) {
+@@ -1823,6 +1882,8 @@ static int stm32_spi_probe(struct platform_device *pdev)
+ 	spi->dev = &pdev->dev;
+ 	spi->master = master;
+ 	spin_lock_init(&spi->lock);
++	init_completion(&spi->xfer_completion);
++	init_completion(&spi->dma_completion);
+ 
+ 	spi->cfg = (const struct stm32_spi_cfg *)
+ 		of_match_device(pdev->dev.driver->of_match_table,
+@@ -1873,11 +1934,20 @@ static int stm32_spi_probe(struct platform_device *pdev)
+ 		goto err_clk_disable;
+ 	}
+ 
+-	spi->rst = devm_reset_control_get_exclusive(&pdev->dev, NULL);
+-	if (!IS_ERR(spi->rst)) {
+-		reset_control_assert(spi->rst);
++	rst = devm_reset_control_get_optional_exclusive(&pdev->dev, NULL);
++	if (rst) {
++		if (IS_ERR(rst)) {
++			ret = PTR_ERR(rst);
++			if (ret != -EPROBE_DEFER)
++				dev_err(&pdev->dev, "reset get failed: %d\n",
++					ret);
++
++			goto err_clk_disable;
++		}
++
++		reset_control_assert(rst);
+ 		udelay(2);
+-		reset_control_deassert(spi->rst);
++		reset_control_deassert(rst);
+ 	}
+ 
+ 	if (spi->cfg->has_fifo)
+@@ -1903,17 +1973,29 @@ static int stm32_spi_probe(struct platform_device *pdev)
+ 	master->transfer_one = stm32_spi_transfer_one;
+ 	master->unprepare_message = stm32_spi_unprepare_msg;
+ 
+-	spi->dma_tx = dma_request_slave_channel(spi->dev, "tx");
+-	if (!spi->dma_tx)
+-		dev_warn(&pdev->dev, "failed to request tx dma channel\n");
+-	else
+-		master->dma_tx = spi->dma_tx;
++	spi->dma_tx = dma_request_chan(spi->dev, "tx");
++	if (IS_ERR(spi->dma_tx)) {
++		ret = PTR_ERR(spi->dma_tx);
++		spi->dma_tx = NULL;
++		if (ret == -EPROBE_DEFER)
++			goto err_dma_release;
++		else if (ret != -ENODEV)
++			dev_warn(&pdev->dev, "failed to request tx dma: %d\n",
++				 ret);
++	}
++	master->dma_tx = spi->dma_tx;
+ 
+-	spi->dma_rx = dma_request_slave_channel(spi->dev, "rx");
+-	if (!spi->dma_rx)
+-		dev_warn(&pdev->dev, "failed to request rx dma channel\n");
+-	else
+-		master->dma_rx = spi->dma_rx;
++	spi->dma_rx = dma_request_chan(spi->dev, "rx");
++	if (IS_ERR(spi->dma_rx)) {
++		ret = PTR_ERR(spi->dma_rx);
++		spi->dma_rx = NULL;
++		if (ret == -EPROBE_DEFER)
++			goto err_dma_release;
++		else if (ret != -ENODEV)
++			dev_warn(&pdev->dev, "failed to request rx dma: %d\n",
++				 ret);
++	}
++	master->dma_rx = spi->dma_rx;
+ 
+ 	if (spi->dma_tx || spi->dma_rx)
+ 		master->can_dma = stm32_spi_can_dma;
+@@ -1921,36 +2003,33 @@ static int stm32_spi_probe(struct platform_device *pdev)
+ 	pm_runtime_set_active(&pdev->dev);
+ 	pm_runtime_enable(&pdev->dev);
+ 
+-	ret = devm_spi_register_master(&pdev->dev, master);
+-	if (ret) {
+-		dev_err(&pdev->dev, "spi master registration failed: %d\n",
+-			ret);
+-		goto err_dma_release;
+-	}
+-
+-	if (!master->cs_gpios) {
+-		dev_err(&pdev->dev, "no CS gpios available\n");
+-		ret = -EINVAL;
+-		goto err_dma_release;
+-	}
++	num_cs = of_gpio_named_count(pdev->dev.of_node, "cs-gpios");
+ 
+-	for (i = 0; i < master->num_chipselect; i++) {
+-		if (!gpio_is_valid(master->cs_gpios[i])) {
+-			dev_err(&pdev->dev, "%i is not a valid gpio\n",
+-				master->cs_gpios[i]);
+-			ret = -EINVAL;
++	for (i = 0; i < num_cs; i++) {
++		cs_gpio = of_get_named_gpio(pdev->dev.of_node, "cs-gpios", i);
++		if (cs_gpio == -EPROBE_DEFER) {
++			ret = -EPROBE_DEFER;
+ 			goto err_dma_release;
+ 		}
+ 
+-		ret = devm_gpio_request(&pdev->dev, master->cs_gpios[i],
+-					DRIVER_NAME);
+-		if (ret) {
+-			dev_err(&pdev->dev, "can't get CS gpio %i\n",
+-				master->cs_gpios[i]);
+-			goto err_dma_release;
++		if (gpio_is_valid(cs_gpio)) {
++			ret = devm_gpio_request(&pdev->dev, cs_gpio,
++						DRIVER_NAME);
++			if (ret) {
++				dev_err(&pdev->dev, "can't get CS gpio %i\n",
++					cs_gpio);
++				goto err_dma_release;
++			}
+ 		}
+ 	}
+ 
++	ret = spi_register_master(master);
++	if (ret) {
++		dev_err(&pdev->dev, "spi master registration failed: %d\n",
++			ret);
++		goto err_dma_release;
++	}
++
+ 	dev_info(&pdev->dev, "driver initialized\n");
+ 
+ 	return 0;
+@@ -1975,6 +2054,9 @@ static int stm32_spi_remove(struct platform_device *pdev)
+ 	struct spi_master *master = platform_get_drvdata(pdev);
+ 	struct stm32_spi *spi = spi_master_get_devdata(master);
+ 
++	pm_runtime_get_sync(&pdev->dev);
++
++	spi_unregister_master(master);
+ 	spi->cfg->disable(spi);
+ 
+ 	if (master->dma_tx)
+@@ -1984,7 +2066,12 @@ static int stm32_spi_remove(struct platform_device *pdev)
+ 
+ 	clk_disable_unprepare(spi->clk);
+ 
++	pm_runtime_put_noidle(&pdev->dev);
+ 	pm_runtime_disable(&pdev->dev);
++	pm_runtime_set_suspended(&pdev->dev);
++	pm_runtime_dont_use_autosuspend(&pdev->dev);
++
++	pinctrl_pm_select_sleep_state(&pdev->dev);
+ 
+ 	return 0;
+ }
+@@ -1997,13 +2084,18 @@ static int stm32_spi_runtime_suspend(struct device *dev)
+ 
+ 	clk_disable_unprepare(spi->clk);
+ 
+-	return 0;
++	return pinctrl_pm_select_sleep_state(dev);
+ }
+ 
+ static int stm32_spi_runtime_resume(struct device *dev)
+ {
+ 	struct spi_master *master = dev_get_drvdata(dev);
+ 	struct stm32_spi *spi = spi_master_get_devdata(master);
++	int ret;
++
++	ret = pinctrl_pm_select_default_state(dev);
++	if (ret)
++		return ret;
+ 
+ 	return clk_prepare_enable(spi->clk);
+ }
+@@ -2033,10 +2125,23 @@ static int stm32_spi_resume(struct device *dev)
+ 		return ret;
+ 
+ 	ret = spi_master_resume(master);
+-	if (ret)
++	if (ret) {
+ 		clk_disable_unprepare(spi->clk);
++		return ret;
++	}
+ 
+-	return ret;
++	ret = pm_runtime_get_sync(dev);
++	if (ret) {
++		dev_err(dev, "Unable to power device:%d\n", ret);
++		return ret;
++	}
++
++	spi->cfg->config(spi);
++
++	pm_runtime_mark_last_busy(dev);
++	pm_runtime_put_autosuspend(dev);
++
++	return 0;
+ }
+ #endif
+ 
+-- 
+2.17.1
+

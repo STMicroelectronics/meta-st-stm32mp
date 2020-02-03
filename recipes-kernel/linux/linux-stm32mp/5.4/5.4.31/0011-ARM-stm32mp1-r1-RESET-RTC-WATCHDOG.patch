@@ -1,0 +1,471 @@
+From 835fe45ed0a3c0ef8cb2b74a900d227a124b4761 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@st.com>
+Date: Fri, 10 Apr 2020 14:44:22 +0200
+Subject: [PATCH 11/23] ARM-stm32mp1-r1-RESET-RTC-WATCHDOG
+
+---
+ drivers/reset/reset-stm32mp1.c |  83 +++++++++++------
+ drivers/rtc/Kconfig            |   1 +
+ drivers/rtc/rtc-stm32.c        | 159 +++++++++++++++++++++++++++------
+ drivers/watchdog/stm32_iwdg.c  |   6 +-
+ 4 files changed, 192 insertions(+), 57 deletions(-)
+
+diff --git a/drivers/reset/reset-stm32mp1.c b/drivers/reset/reset-stm32mp1.c
+index b221a2804..daf0e26b2 100644
+--- a/drivers/reset/reset-stm32mp1.c
++++ b/drivers/reset/reset-stm32mp1.c
+@@ -4,14 +4,21 @@
+  * Author: Gabriel Fernandez <gabriel.fernandez@st.com> for STMicroelectronics.
+  */
+ 
++#include <dt-bindings/reset/stm32mp1-resets.h>
++#include <linux/arm-smccc.h>
+ #include <linux/device.h>
+ #include <linux/err.h>
+ #include <linux/io.h>
++#include <linux/module.h>
+ #include <linux/of.h>
++#include <linux/of_address.h>
+ #include <linux/platform_device.h>
+ #include <linux/reset-controller.h>
++#include <linux/slab.h>
+ 
+-#define CLR_OFFSET 0x4
++#define STM32MP1_RESET_ID_MASK	GENMASK(15, 0)
++
++#define CLR_OFFSET		0x4
+ 
+ struct stm32_reset_data {
+ 	struct reset_controller_dev	rcdev;
+@@ -79,37 +86,57 @@ static const struct of_device_id stm32_reset_dt_ids[] = {
+ 	{ /* sentinel */ },
+ };
+ 
+-static int stm32_reset_probe(struct platform_device *pdev)
++static void __init stm32mp1_reset_init(struct device_node *np)
+ {
+-	struct device *dev = &pdev->dev;
+-	struct stm32_reset_data *data;
+-	void __iomem *membase;
+-	struct resource *res;
+-
+-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
++	void __iomem *base;
++	const struct of_device_id *match;
++	struct stm32_reset_data *data = NULL;
++	int ret;
++
++	base = of_iomap(np, 0);
++	if (!base) {
++		pr_err("%pOFn: unable to map resource", np);
++		of_node_put(np);
++		return;
++	}
++
++	match = of_match_node(stm32_reset_dt_ids, np);
++	if (!match) {
++		pr_err("%s: match data not found\n", __func__);
++		goto err;
++	}
++
++	data = kzalloc(sizeof(*data), GFP_KERNEL);
+ 	if (!data)
+-		return -ENOMEM;
+-
+-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+-	membase = devm_ioremap_resource(dev, res);
+-	if (IS_ERR(membase))
+-		return PTR_ERR(membase);
++		goto err;
+ 
+-	data->membase = membase;
++	data->membase = base;
+ 	data->rcdev.owner = THIS_MODULE;
+-	data->rcdev.nr_resets = resource_size(res) * BITS_PER_BYTE;
+ 	data->rcdev.ops = &stm32_reset_ops;
+-	data->rcdev.of_node = dev->of_node;
+-
+-	return devm_reset_controller_register(dev, &data->rcdev);
++	data->rcdev.of_node = np;
++	data->rcdev.nr_resets = STM32MP1_RESET_ID_MASK;
++
++	ret = reset_controller_register(&data->rcdev);
++	if (!ret)
++		return;
++
++err:
++	pr_err("stm32mp1 reset failed to initialize\n");
++	if (data)
++		kfree(data);
++	if (base)
++		iounmap(base);
++	of_node_put(np);
+ }
+ 
+-static struct platform_driver stm32_reset_driver = {
+-	.probe	= stm32_reset_probe,
+-	.driver = {
+-		.name		= "stm32mp1-reset",
+-		.of_match_table	= stm32_reset_dt_ids,
+-	},
+-};
+-
+-builtin_platform_driver(stm32_reset_driver);
++/*
++ * RCC reset and clock drivers bind to the same RCC node.
++ * Register RCC reset driver at init through clock of table,
++ * clock driver for RCC will register at probe time.
++ */
++static void __init stm32mp1_reset_of_init_drv(struct device_node *np)
++{
++	of_node_clear_flag(np, OF_POPULATED);
++	stm32mp1_reset_init(np);
++}
++OF_DECLARE_1(clk, stm32mp1_rcc, "st,stm32mp1-rcc", stm32mp1_reset_of_init_drv);
+diff --git a/drivers/rtc/Kconfig b/drivers/rtc/Kconfig
+index c5b980414..d590b4205 100644
+--- a/drivers/rtc/Kconfig
++++ b/drivers/rtc/Kconfig
+@@ -1862,6 +1862,7 @@ config RTC_DRV_R7301
+ config RTC_DRV_STM32
+ 	tristate "STM32 RTC"
+ 	select REGMAP_MMIO
++	depends on COMMON_CLK
+ 	depends on ARCH_STM32 || COMPILE_TEST
+ 	help
+ 	   If you say yes here you get support for the STM32 On-Chip
+diff --git a/drivers/rtc/rtc-stm32.c b/drivers/rtc/rtc-stm32.c
+index 2999e33a7..5bfe655c5 100644
+--- a/drivers/rtc/rtc-stm32.c
++++ b/drivers/rtc/rtc-stm32.c
+@@ -6,6 +6,8 @@
+ 
+ #include <linux/bcd.h>
+ #include <linux/clk.h>
++#include <linux/clk-provider.h>
++#include <linux/errno.h>
+ #include <linux/iopoll.h>
+ #include <linux/ioport.h>
+ #include <linux/mfd/syscon.h>
+@@ -15,6 +17,8 @@
+ #include <linux/regmap.h>
+ #include <linux/rtc.h>
+ 
++#include <dt-bindings/rtc/rtc-stm32.h>
++
+ #define DRIVER_NAME "stm32_rtc"
+ 
+ /* STM32_RTC_TR bit fields  */
+@@ -39,6 +43,12 @@
+ #define STM32_RTC_CR_FMT		BIT(6)
+ #define STM32_RTC_CR_ALRAE		BIT(8)
+ #define STM32_RTC_CR_ALRAIE		BIT(12)
++#define STM32_RTC_CR_COSEL		BIT(19)
++#define STM32_RTC_CR_OSEL_SHIFT		21
++#define STM32_RTC_CR_OSEL		GENMASK(22, 21)
++#define STM32_RTC_CR_COE		BIT(23)
++#define STM32_RTC_CR_TAMPOE		BIT(26)
++#define STM32_RTC_CR_OUT2EN		BIT(31)
+ 
+ /* STM32_RTC_ISR/STM32_RTC_ICSR bit fields */
+ #define STM32_RTC_ISR_ALRAWF		BIT(0)
+@@ -75,6 +85,11 @@
+ /* STM32_RTC_SR/_SCR bit fields */
+ #define STM32_RTC_SR_ALRA		BIT(0)
+ 
++/* STM32_RTC_CFGR bit fields */
++#define STM32_RTC_CFGR_OUT2_RMP		BIT(0)
++#define STM32_RTC_CFGR_LSCOEN_OUT1	1
++#define STM32_RTC_CFGR_LSCOEN_OUT2_RMP	2
++
+ /* STM32_RTC_VERR bit fields */
+ #define STM32_RTC_VERR_MINREV_SHIFT	0
+ #define STM32_RTC_VERR_MINREV		GENMASK(3, 0)
+@@ -101,6 +116,7 @@ struct stm32_rtc_registers {
+ 	u16 wpr;
+ 	u16 sr;
+ 	u16 scr;
++	u16 cfgr;
+ 	u16 verr;
+ };
+ 
+@@ -114,7 +130,7 @@ struct stm32_rtc_data {
+ 	void (*clear_events)(struct stm32_rtc *rtc, unsigned int flags);
+ 	bool has_pclk;
+ 	bool need_dbp;
+-	bool has_wakeirq;
++	bool has_lsco;
+ };
+ 
+ struct stm32_rtc {
+@@ -127,9 +143,87 @@ struct stm32_rtc {
+ 	struct clk *rtc_ck;
+ 	const struct stm32_rtc_data *data;
+ 	int irq_alarm;
+-	int wakeirq_alarm;
++	int lsco;
++	struct clk *clk_lsco;
+ };
+ 
++/*
++ *  -------------------------------------------------------------------------
++ * | TAMPOE | OSEL[1:0] | COE | OUT2EN |     RTC_OUT1     |     RTC_OUT2     |
++ * |	    |           |     |        |                  | or RTC_OUT2_RMP  |
++ * |-------------------------------------------------------------------------|
++ * |    0   |     00    |  0  | 0 or 1 |         -        |         -        |
++ * |--------|-----------|-----|--------|------------------|------------------|
++ * |    0   |     00    |  1  |    0   |      CALIB       |         -        |
++ * |--------|-----------|-----|--------|------------------|------------------|
++ * | 0 or 1 |    !=00   |  0  |    0   |     TAMPALRM     |         -        |
++ * |--------|-----------|-----|--------|------------------|------------------|
++ * |    0   |     00    |  1  |    1   |         -        |      CALIB       |
++ * |--------|-----------|-----|--------|------------------|------------------|
++ * | 0 or 1 |    !=00   |  0  |    1   |         -        |     TAMPALRM     |
++ * |--------|-----------|-----|--------|------------------|------------------|
++ * | 0 or 1 |    !=00   |  1  |    1   |     TAMPALRM     |      CALIB       |
++ *  -------------------------------------------------------------------------
++ */
++static int stm32_rtc_clk_lsco_check_availability(struct stm32_rtc *rtc)
++{
++	struct stm32_rtc_registers regs = rtc->data->regs;
++	unsigned int cr = readl_relaxed(rtc->base + regs.cr);
++	unsigned int cfgr = readl_relaxed(rtc->base + regs.cfgr);
++	unsigned int calib = STM32_RTC_CR_COE;
++	unsigned int tampalrm = STM32_RTC_CR_TAMPOE | STM32_RTC_CR_OSEL;
++
++	switch (rtc->lsco) {
++	case RTC_OUT1:
++		if ((!(cr & STM32_RTC_CR_OUT2EN) &&
++		     ((cr & calib) || cr & tampalrm)) ||
++		     ((cr & calib) && (cr & tampalrm)))
++			return -EBUSY;
++		break;
++	case RTC_OUT2_RMP:
++		if ((cr & STM32_RTC_CR_OUT2EN) &&
++		    (cfgr & STM32_RTC_CFGR_OUT2_RMP) &&
++		    ((cr & calib) || (cr & tampalrm)))
++			return -EBUSY;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	if (clk_get_rate(rtc->rtc_ck) != 32768)
++		return -ERANGE;
++
++	return 0;
++}
++
++static int stm32_rtc_clk_lsco_register(struct platform_device *pdev)
++{
++	struct stm32_rtc *rtc = platform_get_drvdata(pdev);
++	struct stm32_rtc_registers regs = rtc->data->regs;
++	u8 lscoen;
++	int ret;
++
++	ret = stm32_rtc_clk_lsco_check_availability(rtc);
++	if (ret)
++		return ret;
++
++	lscoen = (rtc->lsco == RTC_OUT1) ? STM32_RTC_CFGR_LSCOEN_OUT1 :
++					   STM32_RTC_CFGR_LSCOEN_OUT2_RMP;
++
++	rtc->clk_lsco = clk_register_gate(&pdev->dev, "rtc_lsco",
++					  __clk_get_name(rtc->rtc_ck),
++					  CLK_IGNORE_UNUSED | CLK_IS_CRITICAL,
++					  rtc->base + regs.cfgr, lscoen,
++					  0, NULL);
++	if (IS_ERR(rtc->clk_lsco))
++		return PTR_ERR(rtc->clk_lsco);
++
++	of_clk_add_provider(pdev->dev.of_node,
++			    of_clk_src_simple_get, rtc->clk_lsco);
++
++	return 0;
++}
++
+ static void stm32_rtc_wpr_unlock(struct stm32_rtc *rtc)
+ {
+ 	const struct stm32_rtc_registers *regs = &rtc->data->regs;
+@@ -547,7 +641,7 @@ static void stm32_rtc_clear_events(struct stm32_rtc *rtc,
+ static const struct stm32_rtc_data stm32_rtc_data = {
+ 	.has_pclk = false,
+ 	.need_dbp = true,
+-	.has_wakeirq = false,
++	.has_lsco = false,
+ 	.regs = {
+ 		.tr = 0x00,
+ 		.dr = 0x04,
+@@ -558,6 +652,7 @@ static const struct stm32_rtc_data stm32_rtc_data = {
+ 		.wpr = 0x24,
+ 		.sr = 0x0C, /* set to ISR offset to ease alarm management */
+ 		.scr = UNDEF_REG,
++		.cfgr = UNDEF_REG,
+ 		.verr = UNDEF_REG,
+ 	},
+ 	.events = {
+@@ -569,7 +664,7 @@ static const struct stm32_rtc_data stm32_rtc_data = {
+ static const struct stm32_rtc_data stm32h7_rtc_data = {
+ 	.has_pclk = true,
+ 	.need_dbp = true,
+-	.has_wakeirq = false,
++	.has_lsco = false,
+ 	.regs = {
+ 		.tr = 0x00,
+ 		.dr = 0x04,
+@@ -580,6 +675,7 @@ static const struct stm32_rtc_data stm32h7_rtc_data = {
+ 		.wpr = 0x24,
+ 		.sr = 0x0C, /* set to ISR offset to ease alarm management */
+ 		.scr = UNDEF_REG,
++		.cfgr = UNDEF_REG,
+ 		.verr = UNDEF_REG,
+ 	},
+ 	.events = {
+@@ -600,7 +696,7 @@ static void stm32mp1_rtc_clear_events(struct stm32_rtc *rtc,
+ static const struct stm32_rtc_data stm32mp1_data = {
+ 	.has_pclk = true,
+ 	.need_dbp = false,
+-	.has_wakeirq = true,
++	.has_lsco = true,
+ 	.regs = {
+ 		.tr = 0x00,
+ 		.dr = 0x04,
+@@ -611,6 +707,7 @@ static const struct stm32_rtc_data stm32mp1_data = {
+ 		.wpr = 0x24,
+ 		.sr = 0x50,
+ 		.scr = 0x5C,
++		.cfgr = 0x60,
+ 		.verr = 0x3F4,
+ 	},
+ 	.events = {
+@@ -738,13 +835,15 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+ 	} else {
+ 		rtc->pclk = devm_clk_get(&pdev->dev, "pclk");
+ 		if (IS_ERR(rtc->pclk)) {
+-			dev_err(&pdev->dev, "no pclk clock");
++			if (PTR_ERR(rtc->pclk) != -EPROBE_DEFER)
++				dev_err(&pdev->dev, "no pclk clock");
+ 			return PTR_ERR(rtc->pclk);
+ 		}
+ 		rtc->rtc_ck = devm_clk_get(&pdev->dev, "rtc_ck");
+ 	}
+ 	if (IS_ERR(rtc->rtc_ck)) {
+-		dev_err(&pdev->dev, "no rtc_ck clock");
++		if (PTR_ERR(rtc->pclk) != -EPROBE_DEFER)
++			dev_err(&pdev->dev, "no rtc_ck clock");
+ 		return PTR_ERR(rtc->rtc_ck);
+ 	}
+ 
+@@ -781,19 +880,12 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+ 	}
+ 
+ 	ret = device_init_wakeup(&pdev->dev, true);
+-	if (rtc->data->has_wakeirq) {
+-		rtc->wakeirq_alarm = platform_get_irq(pdev, 1);
+-		if (rtc->wakeirq_alarm > 0) {
+-			ret = dev_pm_set_dedicated_wake_irq(&pdev->dev,
+-							    rtc->wakeirq_alarm);
+-		} else {
+-			ret = rtc->wakeirq_alarm;
+-			if (rtc->wakeirq_alarm == -EPROBE_DEFER)
+-				goto err;
+-		}
+-	}
+ 	if (ret)
+-		dev_warn(&pdev->dev, "alarm can't wake up the system: %d", ret);
++		goto err;
++
++	ret = dev_pm_set_wake_irq(&pdev->dev, rtc->irq_alarm);
++	if (ret)
++		goto err;
+ 
+ 	platform_set_drvdata(pdev, rtc);
+ 
+@@ -816,6 +908,21 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+ 		goto err;
+ 	}
+ 
++	if (rtc->data->has_lsco) {
++		ret = of_property_read_s32(pdev->dev.of_node,
++					   "st,lsco", &rtc->lsco);
++		if (!ret) {
++			ret = stm32_rtc_clk_lsco_register(pdev);
++			if (ret)
++				dev_warn(&pdev->dev,
++					 "LSCO clock registration failed: %d\n",
++					 ret);
++		} else {
++			rtc->lsco = ret;
++			dev_dbg(&pdev->dev, "No LSCO clock: %d\n", ret);
++		}
++	}
++
+ 	/*
+ 	 * If INITS flag is reset (calendar year field set to 0x00), calendar
+ 	 * must be initialized
+@@ -852,6 +959,9 @@ static int stm32_rtc_remove(struct platform_device *pdev)
+ 	const struct stm32_rtc_registers *regs = &rtc->data->regs;
+ 	unsigned int cr;
+ 
++	if (!IS_ERR_OR_NULL(rtc->clk_lsco))
++		clk_unregister_gate(rtc->clk_lsco);
++
+ 	/* Disable interrupts */
+ 	stm32_rtc_wpr_unlock(rtc);
+ 	cr = readl_relaxed(rtc->base + regs->cr);
+@@ -881,9 +991,6 @@ static int stm32_rtc_suspend(struct device *dev)
+ 	if (rtc->data->has_pclk)
+ 		clk_disable_unprepare(rtc->pclk);
+ 
+-	if (device_may_wakeup(dev))
+-		return enable_irq_wake(rtc->irq_alarm);
+-
+ 	return 0;
+ }
+ 
+@@ -902,15 +1009,13 @@ static int stm32_rtc_resume(struct device *dev)
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	if (device_may_wakeup(dev))
+-		return disable_irq_wake(rtc->irq_alarm);
+-
+ 	return ret;
+ }
+ #endif
+ 
+-static SIMPLE_DEV_PM_OPS(stm32_rtc_pm_ops,
+-			 stm32_rtc_suspend, stm32_rtc_resume);
++static const struct dev_pm_ops stm32_rtc_pm_ops = {
++	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(stm32_rtc_suspend, stm32_rtc_resume)
++};
+ 
+ static struct platform_driver stm32_rtc_driver = {
+ 	.probe		= stm32_rtc_probe,
+diff --git a/drivers/watchdog/stm32_iwdg.c b/drivers/watchdog/stm32_iwdg.c
+index 25188d6bb..1b71c205c 100644
+--- a/drivers/watchdog/stm32_iwdg.c
++++ b/drivers/watchdog/stm32_iwdg.c
+@@ -163,7 +163,8 @@ static int stm32_iwdg_clk_init(struct platform_device *pdev,
+ 
+ 	wdt->clk_lsi = devm_clk_get(dev, "lsi");
+ 	if (IS_ERR(wdt->clk_lsi)) {
+-		dev_err(dev, "Unable to get lsi clock\n");
++		if (PTR_ERR(wdt->clk_lsi) != -EPROBE_DEFER)
++			dev_err(dev, "Unable to get lsi clock\n");
+ 		return PTR_ERR(wdt->clk_lsi);
+ 	}
+ 
+@@ -171,7 +172,8 @@ static int stm32_iwdg_clk_init(struct platform_device *pdev,
+ 	if (wdt->data->has_pclk) {
+ 		wdt->clk_pclk = devm_clk_get(dev, "pclk");
+ 		if (IS_ERR(wdt->clk_pclk)) {
+-			dev_err(dev, "Unable to get pclk clock\n");
++			if (PTR_ERR(wdt->clk_pclk) != -EPROBE_DEFER)
++				dev_err(dev, "Unable to get pclk clock\n");
+ 			return PTR_ERR(wdt->clk_pclk);
+ 		}
+ 
+-- 
+2.17.1
+

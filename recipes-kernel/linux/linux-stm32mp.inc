@@ -2,7 +2,7 @@ COMPATIBLE_MACHINE = "(stm32mpcommon)"
 
 inherit kernel
 
-DEPENDS += "openssl-native util-linux-native"
+DEPENDS += "openssl-native util-linux-native libyaml-native"
 
 B = "${WORKDIR}/build"
 # Configure build dir for externalsrc class usage through devtool
@@ -14,6 +14,21 @@ FILESEXTRAPATHS_prepend := "${THISDIR}:"
 # -------------------------------------------------------------
 # Do not deploy kernel module with specfic tarball
 MODULE_TARBALL_DEPLOY = "0"
+do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/kernel"
+
+#---------------------------------------------------------------
+# Module kernel signature
+KERNEL_SIGN_ENABLE ?= "0"
+EXTRA_OEMAKE += "${@oe.utils.ifelse(d.getVar('KERNEL_SIGN_ENABLE') == '1', 'INSTALL_MOD_STRIP=1','')}"
+
+#
+# Force task order for link creation
+#
+python () {
+    d.appendVarFlag("do_unpack", "postfuncs", " do_symlink_kernsrc")
+}
+do_symlink_kernsrc[noexec] = "1"
+
 
 # ---------------------------------------------------------------------
 # Defconfig
@@ -65,6 +80,11 @@ do_configure_prepend() {
 do_install_append() {
     # Install KERNEL_IMAGETYPE for kernel-imagebootfs package
     install -m 0644 ${KERNEL_OUTPUT_DIR}/${KERNEL_IMAGETYPE} ${D}/${KERNEL_IMAGEDEST}
+
+    if ${@bb.utils.contains('MACHINE_FEATURES','gpu','true','false',d)}; then
+        # when ACCEPT_EULA are filled
+        echo "blacklist etnaviv" > ${D}/${sysconfdir}/modprobe.d/blacklist.conf
+    fi
 }
 
 # ---------------------------------------------------------------------
@@ -79,3 +99,4 @@ PACKAGES =+ "${KERNEL_PACKAGE_NAME}-headers ${KERNEL_PACKAGE_NAME}-imagebootfs"
 FILES_${KERNEL_PACKAGE_NAME}-headers = "${exec_prefix}/src/linux*"
 FILES_${KERNEL_PACKAGE_NAME}-image  += "boot/ ${KERNEL_IMAGEDEST}"
 FILES_${KERNEL_PACKAGE_NAME}-imagebootfs = "boot/*.dtb boot/${KERNEL_IMAGETYPE}"
+FILES_${KERNEL_PACKAGE_NAME}-modules += "${sysconfdir}/modprobe.d"
