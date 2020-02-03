@@ -4,8 +4,6 @@ LIC_FILES_CHKSUM = "file://${TAR_FILENAME}/LICENSE;md5=dd36864f287701862a189a69f
 
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
-DEPENDS += " gcnano-driver-stm32mp "
-
 PROVIDES += "gcnano-userland virtual/libgles1 virtual/libgles2 virtual/egl virtual/libvg virtual/libgbm"
 
 TAR_FILENAME = "gcnano-userland-${BACKEND}-${PV}-${GCNANO_USERLAND_FB_TARBALL_DATE}"
@@ -13,17 +11,9 @@ TAR_FILENAME = "gcnano-userland-${BACKEND}-${PV}-${GCNANO_USERLAND_FB_TARBALL_DA
 SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries.git;protocol=https;branch=gcnano-6.2.4_p4-binaries"
 SRCREV = "c01642ed5e18cf09ecd905af193e935cb3be95ed"
 
-# service to create link at first boot
-SRC_URI += "file://gcnano-userland-make-link.service"
-
 PV = "6.2.4.p4"
 
 S = "${WORKDIR}/git"
-
-inherit systemd
-SYSTEMD_PACKAGES += " gcnano-userland-multi-binary-stm32mp "
-SYSTEMD_SERVICE_${PN} = "gcnano-userland-make-link.service"
-SYSTEMD_AUTO_ENABLE_${PN} = "enable"
 
 # Variable for using vendor directory instead of usr
 GCNANO_USERLAND_USE_VENDOR_DIR ?= "1"
@@ -81,6 +71,14 @@ clean_debug_file() {
 #------------------------------------------
 # Do install
 #
+create_link() {
+    prefix=$1
+    library_link=$2
+    library_src=$3
+    library_dst=$4
+    LINK=`readlink $prefix/$library_src/$library_link`
+    ln -sf $library_src/$LINK $prefix/$library_dst/$library_link
+}
 do_install() {
     if [ ${GCNANO_USERLAND_USE_VENDOR_DIR} -eq 1 ];
     then
@@ -89,21 +87,19 @@ do_install() {
         mv ${D}${libdir}/*.so* ${D}/${GCNANO_USERLAND_OUTPUT_LIBDIR}/
 
         cd ${D}${libdir}/
-        ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/gbm_viv.so ${D}${libdir}/gbm_viv.so
-        ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libEGL.so ${D}${libdir}/libEGL.so
-        ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGAL.so ${D}${libdir}/libGAL.so
-        ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm.so ${D}${libdir}/libgbm.so
-        ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm.so.1 ${D}${libdir}/libgbm.so.1
-        ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv1_CM.so ${D}${libdir}/libGLESv1_CM.so
-        ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv2.so ${D}${libdir}/libGLESv2.so
-        ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLSLC.so ${D}${libdir}/libGLSLC.so
-        ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libOpenVG.so ${D}${libdir}/libOpenVG.so
-        ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libVSC.so ${D}${libdir}/libVSC.so
-
-        LINK=`readlink ${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}/libEGL.so`
-        ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/$LINK ${D}${libdir}/libEGL.so.1
-        LINK=`readlink ${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv2.so`
-        ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/$LINK ${D}${libdir}/libGLESv2.so.2
+        if [ -e ${D}/${GCNANO_USERLAND_OUTPUT_LIBDIR}/gbm_viv.so ];
+        then
+            ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/gbm_viv.so ${D}${libdir}/gbm_viv.so
+        fi
+        if [ -e ${D}/${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm_viv.so ];
+        then
+            ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm_viv.so ${D}${libdir}/libgbm_viv.so
+        fi
+        for link in `find ${D}/${GCNANO_USERLAND_OUTPUT_LIBDIR} -type l`;
+        do
+            library_link=`basename $link`
+            create_link ${D} $library_link ${GCNANO_USERLAND_OUTPUT_LIBDIR} ${libdir}
+        done
 
         chown -R root.root ${D}/${GCNANO_USERLAND_OUTPUT_LIBDIR} ${D}${libdir}/
     else
@@ -115,12 +111,17 @@ do_install() {
     if test -f ${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}/libwayland-egl.so ;
     then
         rm ${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}/libwayland-egl.so*
+    fi
+    if test -L ${D}${libdir}/libwayland-egl.so ;
+    then
+        rm ${D}${libdir}/libwayland-egl.so*
+    fi
+    if test -f ${D}${libdir}/pkgconfig/wayland-egl.pc ;
+    then
         rm ${D}${libdir}/pkgconfig/wayland-egl.pc
     fi
-    chown -R root.root ${D}/${GCNANO_USERLAND_OUTPUT_LIBDIR} ${D}${libdir}/
 
-    install -d ${D}${systemd_unitdir}/system
-    install -m 0644 ${WORKDIR}/gcnano-userland-make-link.service ${D}${systemd_unitdir}/system
+    chown -R root.root ${D}/${GCNANO_USERLAND_OUTPUT_LIBDIR} ${D}${libdir}/
 }
 
 # Cannot split or strip last added firmwares
@@ -158,8 +159,9 @@ FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLSLC.so ${GCNANO_USERLAND_O
 FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm.so* ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm.*.${GCNANO_TYPE}.so*"
 FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libwayland-viv*.so*"
 FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/gbm_viv.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/gbm_viv.*.${GCNANO_TYPE}.so"
+FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm_viv.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm_viv.*.${GCNANO_TYPE}.so"
+
 FILES_${PN} += "${libdir}/"
-FILES_${PN} += "${systemd_unitdir}/system"
 
 SUMMARY_${PN}-dev = "${SUMMARY_${PN}} - Development files"
 FILES_${PN}-dev   = "${includedir} ${libdir}/pkgconfig/ ${libdir}/"
