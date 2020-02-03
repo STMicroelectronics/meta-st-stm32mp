@@ -87,50 +87,6 @@ UBOOT_EXTLINUX_KERNEL_IMAGE ?= "/${KERNEL_IMAGETYPE}"
 UBOOT_EXTLINUX_KERNEL_ARGS ?= "rootwait rw"
 UBOOT_EXTLINUX_TIMEOUT ?= "20"
 
-UBOOT_EXTLINUX_CONFIGURE_FILES ??= ""
-
-python update_extlinuxconf_targets() {
-    """
-    Append dynamically to UBOOT_EXTLINUX_TARGETS new target list generated from
-    config flag list (UBOOT_EXTLINUX_CONFIG_FLAGS) and supported devicetree list
-    for each flag (UBOOT_EXTLINUX_DEVICEFLAG_xxx)
-    """
-    import re
-
-    default_targets = d.getVar('UBOOT_EXTLINUX_CONFIGURED_TARGETS')
-    if not default_targets:
-        bb.fatal("UBOOT_EXTLINUX_CONFIGURED_TARGETS not defined, please update your config")
-    if not default_targets.strip():
-        bb.fatal("No UBOOT_EXTLINUX_CONFIGURED_TARGETS list defined, nothing to do")
-    bb.note('UBOOT_EXTLINUX_CONFIGURED_TARGETS: %s' % default_targets)
-
-    config_flags = d.getVar('UBOOT_EXTLINUX_CONFIG_FLAGS')
-    if not config_flags:
-        bb.fatal("UBOOT_EXTLINUX_CONFIG_FLAGS not defined, please update your config")
-    if not config_flags.strip():
-        bb.fatal("No UBOOT_EXTLINUX_CONFIG_FLAGS list defined, nothing to do")
-    bb.note('UBOOT_EXTLINUX_CONFIG_FLAGS: %s' % config_flags)
-
-    for config_label in config_flags.split():
-        bb.note('*** Loop for config_label: %s' % config_label)
-        devicetree_list = d.getVar('UBOOT_EXTLINUX_DEVICEFLAG_%s' % config_label) or ''
-        if devicetree_list is None:
-            continue
-        for devicetree in devicetree_list.split():
-            bb.note('*** Loop for devicetree: %s' % devicetree)
-            target_prefix = re.match('^stm32(.*)$', devicetree)
-            new_target = target_prefix.group(1) + '_' + config_label
-            bb.note('>>> New target label: %s' % new_target)
-            if not new_target in default_targets.split():
-                bb.note('Computed target: "%s" is not part of UBOOT_EXTLINUX_CONFIGURED_TARGETS: %s' % (new_target, default_targets))
-                bb.note('Target not append to UBOOT_EXTLINUX_TARGETS')
-                continue
-            # Append target to UBOOT_EXTLINUX_TARGETS list
-            d.appendVar('UBOOT_EXTLINUX_TARGETS', ' ' + new_target)
-            bb.note('>>> Append %s to UBOOT_EXTLINUX_TARGETS' % new_target)
-    bb.note('>>> UBOOT_EXTLINUX_TARGETS (updated): %s' % d.getVar('UBOOT_EXTLINUX_TARGETS'))
-}
-
 python do_create_multiextlinux_config() {
     targets = d.getVar('UBOOT_EXTLINUX_TARGETS')
     if not targets:
@@ -244,5 +200,11 @@ addtask create_multiextlinux_config before do_compile
 
 do_create_multiextlinux_config[dirs] += "${B}"
 do_create_multiextlinux_config[cleandirs] += "${B}"
-do_create_multiextlinux_config[prefuncs] += "update_extlinuxconf_targets"
-do_create_multiextlinux_config[file-checksums] += "${UBOOT_EXTLINUX_CONFIGURE_FILES}"
+# Manage specific var dependency:
+# Because of local overrides within create_multiextlinux_config() function, we
+# need to make sure to add each variables to the vardeps list.
+UBOOT_EXTLINUX_TARGET_VARS = "LABELS BOOTPREFIXES TIMEOUT DEFAULT_LABEL"
+do_create_multiextlinux_config[vardeps] += "${@' '.join(['UBOOT_EXTLINUX_%s_%s' % (v, l) for v in d.getVar('UBOOT_EXTLINUX_TARGET_VARS').split() for l in d.getVar('UBOOT_EXTLINUX_TARGETS').split()])}"
+UBOOT_EXTLINUX_LABELS_VARS = "CONSOLE MENU_DESCRIPTION ROOT KERNEL_IMAGE FDTDIR FDT KERNEL_ARGS INITRD"
+UBOOT_EXTLINUX_LABELS_CONFIGURED = "${@" ".join(map(lambda t: "%s" % d.getVar("UBOOT_EXTLINUX_LABELS_%s" % t), d.getVar('UBOOT_EXTLINUX_TARGETS').split()))}"
+do_create_multiextlinux_config[vardeps] += "${@' '.join(['UBOOT_EXTLINUX_%s_%s' % (v, l) for v in d.getVar('UBOOT_EXTLINUX_LABELS_VARS').split() for l in d.getVar('UBOOT_EXTLINUX_LABELS_CONFIGURED').split()])}"
