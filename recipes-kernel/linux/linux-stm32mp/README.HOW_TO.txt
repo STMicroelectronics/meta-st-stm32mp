@@ -218,7 +218,10 @@ Please refer to User guide for more details.
 ------------------------
 * kernel + devicetree
     $> cd <path to install_artifact dir>/install_artifact
-    $> ssh root@<ip of board> mount <device corresponding to bootfs> /boot
+    if bootfs are not monted on target, mount it
+        $> ssh root@<ip of board> df to see if there is a partition mounted on /boot
+    else
+        $> ssh root@<ip of board> mount <device corresponding to bootfs> /boot
     $> scp -r boot/* root@<ip of board>:/boot/
     $> ssh root@<ip of board> umount /boot
 

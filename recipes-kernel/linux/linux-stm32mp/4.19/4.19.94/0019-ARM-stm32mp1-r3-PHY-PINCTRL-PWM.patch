@@ -1,0 +1,5533 @@
+From 65b46b4c2bf2b5d86f210f337e1ca8471034019c Mon Sep 17 00:00:00 2001
+From: Lionel VITTE <lionel.vitte@st.com>
+Date: Fri, 8 Nov 2019 16:52:44 +0100
+Subject: [PATCH 19/31] ARM stm32mp1 r3 PHY PINCTRL PWM
+
+---
+ drivers/phy/st/phy-stm32-usbphyc.c          |  451 +++++++++--
+ drivers/pinctrl/Kconfig                     |   14 +
+ drivers/pinctrl/Makefile                    |    1 +
+ drivers/pinctrl/core.c                      |   28 +-
+ drivers/pinctrl/pinctrl-stmfx.c             |  858 +++++++++++++++++++++
+ drivers/pinctrl/stm32/pinctrl-stm32.c       |  435 +++++++++--
+ drivers/pinctrl/stm32/pinctrl-stm32.h       |   53 +-
+ drivers/pinctrl/stm32/pinctrl-stm32mp157.c  | 1095 ++++++++++++++++-----------
+ drivers/pwm/pwm-stm32-lp.c                  |   38 +
+ drivers/pwm/pwm-stm32.c                     |  105 ++-
+ drivers/pwm/sysfs.c                         |   11 +
+ include/dt-bindings/pinctrl/stm32-pinfunc.h |    7 +
+ include/linux/pinctrl/pinctrl.h             |    7 +
+ 13 files changed, 2498 insertions(+), 605 deletions(-)
+ create mode 100644 drivers/pinctrl/pinctrl-stmfx.c
+
+diff --git a/drivers/phy/st/phy-stm32-usbphyc.c b/drivers/phy/st/phy-stm32-usbphyc.c
+index 1255cd1..c9c3c3e 100644
+--- a/drivers/phy/st/phy-stm32-usbphyc.c
++++ b/drivers/phy/st/phy-stm32-usbphyc.c
+@@ -1,4 +1,4 @@
+-// SPDX-Licence-Identifier: GPL-2.0
++// SPDX-License-Identifier: GPL-2.0
+ /*
+  * STMicroelectronics STM32 USB PHY Controller driver
+  *
+@@ -7,6 +7,7 @@
+  */
+ #include <linux/bitfield.h>
+ #include <linux/clk.h>
++#include <linux/clk-provider.h>
+ #include <linux/delay.h>
+ #include <linux/io.h>
+ #include <linux/kernel.h>
+@@ -17,6 +18,7 @@
+ 
+ #define STM32_USBPHYC_PLL	0x0
+ #define STM32_USBPHYC_MISC	0x8
++#define STM32_USBPHYC_TUNE(X)	(0x10C + (X * 0x100))
+ #define STM32_USBPHYC_VERSION	0x3F4
+ 
+ /* STM32_USBPHYC_PLL bit fields */
+@@ -32,16 +34,86 @@
+ /* STM32_USBPHYC_MISC bit fields */
+ #define SWITHOST		BIT(0)
+ 
+-/* STM32_USBPHYC_VERSION bit fields */
+-#define MINREV			GENMASK(3, 0)
+-#define MAJREV			GENMASK(7, 4)
++/* STM32_USBPHYC_TUNE bit fields */
++#define INCURREN		BIT(0)
++#define INCURRINT		BIT(1)
++#define LFSCAPEN		BIT(2)
++#define HSDRVSLEW		BIT(3)
++#define HSDRVDCCUR		BIT(4)
++#define HSDRVDCLEV		BIT(5)
++#define HSDRVCURINCR		BIT(6)
++#define FSDRVRFADJ		BIT(7)
++#define HSDRVRFRED		BIT(8)
++#define HSDRVCHKITRM		GENMASK(12, 9)
++#define HSDRVCHKZTRM		GENMASK(14, 13)
++#define OTPCOMP			GENMASK(19, 15)
++#define SQLCHCTL		GENMASK(21, 20)
++#define HDRXGNEQEN		BIT(22)
++#define HSRXOFF			GENMASK(24, 23)
++#define HSFALLPREEM		BIT(25)
++#define SHTCCTCTLPROT		BIT(26)
++#define STAGSEL			BIT(27)
++
++enum boosting_vals {
++	BOOST_1_MA = 1,
++	BOOST_2_MA,
++	BOOST_MAX,
++};
++
++enum dc_level_vals {
++	DC_MINUS_5_TO_7_MV,
++	DC_PLUS_5_TO_7_MV,
++	DC_PLUS_10_TO_14_MV,
++	DC_MAX,
++};
+ 
+-static const char * const supplies_names[] = {
+-	"vdda1v1",	/* 1V1 */
+-	"vdda1v8",	/* 1V8 */
++enum current_trim {
++	CUR_NOMINAL,
++	CUR_PLUS_1_56_PCT,
++	CUR_PLUS_3_12_PCT,
++	CUR_PLUS_4_68_PCT,
++	CUR_PLUS_6_24_PCT,
++	CUR_PLUS_7_8_PCT,
++	CUR_PLUS_9_36_PCT,
++	CUR_PLUS_10_92_PCT,
++	CUR_PLUS_12_48_PCT,
++	CUR_PLUS_14_04_PCT,
++	CUR_PLUS_15_6_PCT,
++	CUR_PLUS_17_16_PCT,
++	CUR_PLUS_19_01_PCT,
++	CUR_PLUS_20_58_PCT,
++	CUR_PLUS_22_16_PCT,
++	CUR_PLUS_23_73_PCT,
++	CUR_MAX,
+ };
+ 
+-#define NUM_SUPPLIES		ARRAY_SIZE(supplies_names)
++enum impedance_trim {
++	IMP_NOMINAL,
++	IMP_MINUS_2_OHMS,
++	IMP_MINUS_4_OMHS,
++	IMP_MINUS_6_OHMS,
++	IMP_MAX,
++};
++
++enum squelch_level {
++	SQLCH_NOMINAL,
++	SQLCH_PLUS_7_MV,
++	SQLCH_MINUS_5_MV,
++	SQLCH_PLUS_14_MV,
++	SQLCH_MAX,
++};
++
++enum rx_offset {
++	NO_RX_OFFSET,
++	RX_OFFSET_PLUS_5_MV,
++	RX_OFFSET_PLUS_10_MV,
++	RX_OFFSET_MINUS_5_MV,
++	RX_OFFSET_MAX,
++};
++
++/* STM32_USBPHYC_VERSION bit fields */
++#define MINREV			GENMASK(3, 0)
++#define MAJREV			GENMASK(7, 4)
+ 
+ #define PLL_LOCK_TIME_US	100
+ #define PLL_PWR_DOWN_TIME_US	5
+@@ -58,7 +130,6 @@ struct pll_params {
+ struct stm32_usbphyc_phy {
+ 	struct phy *phy;
+ 	struct stm32_usbphyc *usbphyc;
+-	struct regulator_bulk_data supplies[NUM_SUPPLIES];
+ 	u32 index;
+ 	bool active;
+ };
+@@ -70,6 +141,10 @@ struct stm32_usbphyc {
+ 	struct reset_control *rst;
+ 	struct stm32_usbphyc_phy **phys;
+ 	int nphys;
++	struct regulator *vdda1v1;
++	struct regulator *vdda1v8;
++	struct regulator *vdd3v3;
++	struct clk_hw clk48_hw;
+ 	int switch_setup;
+ };
+ 
+@@ -83,6 +158,49 @@ static inline void stm32_usbphyc_clr_bits(void __iomem *reg, u32 bits)
+ 	writel_relaxed(readl_relaxed(reg) & ~bits, reg);
+ }
+ 
++static int stm32_usbphyc_regulators_enable(struct stm32_usbphyc *usbphyc)
++{
++	int ret;
++
++	ret = regulator_enable(usbphyc->vdda1v1);
++	if (ret)
++		return ret;
++
++	ret = regulator_enable(usbphyc->vdda1v8);
++	if (ret)
++		goto vdda1v1_disable;
++
++	ret = regulator_enable(usbphyc->vdd3v3);
++	if (ret)
++		goto vdda1v8_disable;
++
++	return 0;
++
++vdda1v8_disable:
++	regulator_disable(usbphyc->vdda1v8);
++vdda1v1_disable:
++	regulator_disable(usbphyc->vdda1v1);
++
++	return ret;
++}
++
++static int stm32_usbphyc_regulators_disable(struct stm32_usbphyc *usbphyc)
++{
++	int ret;
++
++	ret = regulator_disable(usbphyc->vdd3v3);
++	if (ret)
++		return ret;
++	ret = regulator_disable(usbphyc->vdda1v8);
++	if (ret)
++		return ret;
++	ret = regulator_disable(usbphyc->vdda1v1);
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
+ static void stm32_usbphyc_get_pll_params(u32 clk_rate,
+ 					 struct pll_params *pll_params)
+ {
+@@ -142,7 +260,7 @@ static int stm32_usbphyc_pll_init(struct stm32_usbphyc *usbphyc)
+ 	return 0;
+ }
+ 
+-static bool stm32_usbphyc_has_one_phy_active(struct stm32_usbphyc *usbphyc)
++static bool stm32_usbphyc_has_one_pll_consumer(struct stm32_usbphyc *usbphyc)
+ {
+ 	int i;
+ 
+@@ -150,60 +268,72 @@ static bool stm32_usbphyc_has_one_phy_active(struct stm32_usbphyc *usbphyc)
+ 		if (usbphyc->phys[i]->active)
+ 			return true;
+ 
++	if (clk_hw_is_enabled(&usbphyc->clk48_hw))
++		return true;
++
+ 	return false;
+ }
+ 
++static int stm32_usbphyc_pll_disable(struct stm32_usbphyc *usbphyc)
++{
++	void __iomem *pll_reg = usbphyc->base + STM32_USBPHYC_PLL;
++
++	/* Check if a phy port is still active or clk48 in use */
++	if (stm32_usbphyc_has_one_pll_consumer(usbphyc))
++		return 0;
++
++	stm32_usbphyc_clr_bits(pll_reg, PLLEN);
++	/* Wait for minimum width of powerdown pulse (ENABLE = Low) */
++	udelay(PLL_PWR_DOWN_TIME_US);
++
++	if (readl_relaxed(pll_reg) & PLLEN) {
++		dev_err(usbphyc->dev, "PLL not reset\n");
++		return -EIO;
++	}
++
++	return stm32_usbphyc_regulators_disable(usbphyc);
++}
++
+ static int stm32_usbphyc_pll_enable(struct stm32_usbphyc *usbphyc)
+ {
+ 	void __iomem *pll_reg = usbphyc->base + STM32_USBPHYC_PLL;
+-	bool pllen = (readl_relaxed(pll_reg) & PLLEN);
++	bool pllen = readl_relaxed(pll_reg) & PLLEN;
+ 	int ret;
+ 
+-	/* Check if one phy port has already configured the pll */
+-	if (pllen && stm32_usbphyc_has_one_phy_active(usbphyc))
++	/* Check if a phy port or clk48 enable has configured the pll */
++	if (pllen && stm32_usbphyc_has_one_pll_consumer(usbphyc))
+ 		return 0;
+ 
+ 	if (pllen) {
+-		stm32_usbphyc_clr_bits(pll_reg, PLLEN);
+-		/* Wait for minimum width of powerdown pulse (ENABLE = Low) */
+-		udelay(PLL_PWR_DOWN_TIME_US);
++		ret = stm32_usbphyc_pll_disable(usbphyc);
++		if (ret)
++			return ret;
+ 	}
+ 
+-	ret = stm32_usbphyc_pll_init(usbphyc);
++	ret = stm32_usbphyc_regulators_enable(usbphyc);
+ 	if (ret)
+ 		return ret;
+ 
+-	stm32_usbphyc_set_bits(pll_reg, PLLEN);
++	ret = stm32_usbphyc_pll_init(usbphyc);
++	if (ret)
++		goto reg_disable;
+ 
++	stm32_usbphyc_set_bits(pll_reg, PLLEN);
+ 	/* Wait for maximum lock time */
+ 	udelay(PLL_LOCK_TIME_US);
+ 
+ 	if (!(readl_relaxed(pll_reg) & PLLEN)) {
+ 		dev_err(usbphyc->dev, "PLLEN not set\n");
+-		return -EIO;
++		ret = -EIO;
++		goto reg_disable;
+ 	}
+ 
+ 	return 0;
+-}
+-
+-static int stm32_usbphyc_pll_disable(struct stm32_usbphyc *usbphyc)
+-{
+-	void __iomem *pll_reg = usbphyc->base + STM32_USBPHYC_PLL;
+-
+-	/* Check if other phy port active */
+-	if (stm32_usbphyc_has_one_phy_active(usbphyc))
+-		return 0;
+-
+-	stm32_usbphyc_clr_bits(pll_reg, PLLEN);
+-	/* Wait for minimum width of powerdown pulse (ENABLE = Low) */
+-	udelay(PLL_PWR_DOWN_TIME_US);
+ 
+-	if (readl_relaxed(pll_reg) & PLLEN) {
+-		dev_err(usbphyc->dev, "PLL not reset\n");
+-		return -EIO;
+-	}
++reg_disable:
++	stm32_usbphyc_regulators_disable(usbphyc);
+ 
+-	return 0;
++	return ret;
+ }
+ 
+ static int stm32_usbphyc_phy_init(struct phy *phy)
+@@ -231,28 +361,180 @@ static int stm32_usbphyc_phy_exit(struct phy *phy)
+ 	return stm32_usbphyc_pll_disable(usbphyc);
+ }
+ 
+-static int stm32_usbphyc_phy_power_on(struct phy *phy)
++static const struct phy_ops stm32_usbphyc_phy_ops = {
++	.init = stm32_usbphyc_phy_init,
++	.exit = stm32_usbphyc_phy_exit,
++	.owner = THIS_MODULE,
++};
++
++static int stm32_usbphyc_clk48_prepare(struct clk_hw *hw)
+ {
+-	struct stm32_usbphyc_phy *usbphyc_phy = phy_get_drvdata(phy);
++	struct stm32_usbphyc *usbphyc = container_of(hw, struct stm32_usbphyc,
++						     clk48_hw);
+ 
+-	return regulator_bulk_enable(NUM_SUPPLIES, usbphyc_phy->supplies);
++	return stm32_usbphyc_pll_enable(usbphyc);
+ }
+ 
+-static int stm32_usbphyc_phy_power_off(struct phy *phy)
++static void stm32_usbphyc_clk48_unprepare(struct clk_hw *hw)
+ {
+-	struct stm32_usbphyc_phy *usbphyc_phy = phy_get_drvdata(phy);
++	struct stm32_usbphyc *usbphyc = container_of(hw, struct stm32_usbphyc,
++						     clk48_hw);
+ 
+-	return regulator_bulk_disable(NUM_SUPPLIES, usbphyc_phy->supplies);
++	stm32_usbphyc_pll_disable(usbphyc);
+ }
+ 
+-static const struct phy_ops stm32_usbphyc_phy_ops = {
+-	.init = stm32_usbphyc_phy_init,
+-	.exit = stm32_usbphyc_phy_exit,
+-	.power_on = stm32_usbphyc_phy_power_on,
+-	.power_off = stm32_usbphyc_phy_power_off,
+-	.owner = THIS_MODULE,
++static int stm32_usbphyc_clk48_is_enabled(struct clk_hw *hw)
++{
++	struct stm32_usbphyc *usbphyc = container_of(hw, struct stm32_usbphyc,
++						     clk48_hw);
++
++	return readl_relaxed(usbphyc->base + STM32_USBPHYC_PLL) & PLLEN;
++}
++
++static unsigned long stm32_usbphyc_clk48_recalc_rate(struct clk_hw *hw,
++						     unsigned long parent_rate)
++{
++	return 48000000;
++}
++
++static const struct clk_ops usbphyc_clk48_ops = {
++	.prepare = stm32_usbphyc_clk48_prepare,
++	.unprepare = stm32_usbphyc_clk48_unprepare,
++	.is_enabled = stm32_usbphyc_clk48_is_enabled,
++	.recalc_rate = stm32_usbphyc_clk48_recalc_rate,
+ };
+ 
++static void stm32_usbphyc_clk48_unregister(void *data)
++{
++	struct stm32_usbphyc *usbphyc = data;
++
++	of_clk_del_provider(usbphyc->dev->of_node);
++	clk_hw_unregister(&usbphyc->clk48_hw);
++}
++
++static int stm32_usbphyc_clk48_register(struct stm32_usbphyc *usbphyc)
++{
++	struct device_node *node = usbphyc->dev->of_node;
++	struct clk_init_data init = { };
++	int ret = 0;
++
++	init.name = "ck_usbo_48m";
++	init.ops = &usbphyc_clk48_ops;
++
++	usbphyc->clk48_hw.init = &init;
++
++	ret = clk_hw_register(usbphyc->dev, &usbphyc->clk48_hw);
++	if (ret)
++		return ret;
++
++	ret = of_clk_add_hw_provider(node, of_clk_hw_simple_get,
++				     &usbphyc->clk48_hw);
++	if (ret)
++		return ret;
++
++	ret = devm_add_action(usbphyc->dev, stm32_usbphyc_clk48_unregister,
++			      usbphyc);
++
++	return ret;
++}
++
++static void stm32_usbphyc_phy_tuning(struct stm32_usbphyc *usbphyc,
++				     struct device_node *np, u32 index)
++{
++	struct device_node *tune_np;
++	u32 reg = STM32_USBPHYC_TUNE(index);
++	u32 otpcomp, val, tune = 0;
++	int ret;
++
++	tune_np = of_parse_phandle(np, "st,phy-tuning", 0);
++	if (!tune_np)
++		return;
++
++	/* Backup OTP compensation code */
++	otpcomp = FIELD_GET(OTPCOMP, readl_relaxed(usbphyc->base + reg));
++
++	ret = of_property_read_u32(tune_np, "st,current-boost", &val);
++	if (!ret && val < BOOST_MAX) {
++		val = (val == BOOST_2_MA) ? 1 : 0;
++		tune |= INCURREN | FIELD_PREP(INCURRINT, val);
++	} else if (ret != -EINVAL) {
++		dev_warn(usbphyc->dev,
++			 "phy%d: invalid st,current-boost value\n", index);
++	}
++
++	if (!of_property_read_bool(tune_np, "st,no-lsfs-fb-cap"))
++		tune |= LFSCAPEN;
++
++	if (of_property_read_bool(tune_np, "st,hs-slew-ctrl"))
++		tune |= HSDRVSLEW;
++
++	ret = of_property_read_u32(tune_np, "st,hs-dc-level", &val);
++	if (!ret && val < DC_MAX) {
++		if (val == DC_MINUS_5_TO_7_MV) {
++			tune |= HSDRVDCCUR;
++		} else {
++			val = (val == DC_PLUS_10_TO_14_MV) ? 1 : 0;
++			tune |= HSDRVCURINCR | FIELD_PREP(HSDRVDCLEV, val);
++		}
++	} else if (ret != -EINVAL) {
++		dev_warn(usbphyc->dev,
++			 "phy%d: invalid st,hs-dc-level value\n", index);
++	}
++
++	if (of_property_read_bool(tune_np, "st,fs-rftime-tuning"))
++		tune |= FSDRVRFADJ;
++
++	if (of_property_read_bool(tune_np, "st,hs-rftime-reduction"))
++		tune |= HSDRVRFRED;
++
++	ret = of_property_read_u32(tune_np, "st,hs-current-trim", &val);
++	if (!ret && val < CUR_MAX)
++		tune |= FIELD_PREP(HSDRVCHKITRM, val);
++	else if (ret != -EINVAL)
++		dev_warn(usbphyc->dev,
++			 "phy%d: invalid st,hs-current-trim value\n", index);
++
++	ret = of_property_read_u32(tune_np, "st,hs-impedance-trim", &val);
++	if (!ret && val < IMP_MAX)
++		tune |= FIELD_PREP(HSDRVCHKZTRM, val);
++	else if (ret != -EINVAL)
++		dev_warn(usbphyc->dev,
++			 "phy%d: invalid hs-impedance-trim value\n", index);
++
++	ret = of_property_read_u32(tune_np, "st,squelch-level", &val);
++	if (!ret && val < SQLCH_MAX)
++		tune |= FIELD_PREP(SQLCHCTL, val);
++	else if (ret != -EINVAL)
++		dev_warn(usbphyc->dev,
++			 "phy%d: invalid st,squelch-level value\n", index);
++
++	if (of_property_read_bool(tune_np, "st,hs-rx-gain-eq"))
++		tune |= HDRXGNEQEN;
++
++	ret = of_property_read_u32(tune_np, "st,hs-rx-offset", &val);
++	if (!ret && val < RX_OFFSET_MAX)
++		tune |= FIELD_PREP(HSRXOFF, val);
++	else if (ret != -EINVAL)
++		dev_warn(usbphyc->dev,
++			 "phy%d: invalid st,hs-rx-offset value\n", index);
++
++	if (of_property_read_bool(tune_np, "st,no-hs-ftime-ctrl"))
++		tune |= HSFALLPREEM;
++
++	if (!of_property_read_bool(tune_np, "st,no-lsfs-sc"))
++		tune |= SHTCCTCTLPROT;
++
++	if (of_property_read_bool(tune_np, "st,hs-tx-staggering"))
++		tune |= STAGSEL;
++
++	of_node_put(tune_np);
++
++	/* Restore OTP compensation code */
++	tune |= FIELD_PREP(OTPCOMP, otpcomp);
++
++	writel_relaxed(tune, usbphyc->base + reg);
++}
++
+ static void stm32_usbphyc_switch_setup(struct stm32_usbphyc *usbphyc,
+ 				       u32 utmi_switch)
+ {
+@@ -345,7 +627,16 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
+ 		reset_control_assert(usbphyc->rst);
+ 		udelay(2);
+ 		reset_control_deassert(usbphyc->rst);
++	} else {
++		stm32_usbphyc_clr_bits(usbphyc->base + STM32_USBPHYC_PLL,
++				       PLLEN);
+ 	}
++	/* Wait for minimum width of powerdown pulse (ENABLE = Low) */
++	udelay(PLL_PWR_DOWN_TIME_US);
++
++	/* We have to ensure the PLL is disabled before phys initialization */
++	if (readl_relaxed(usbphyc->base + STM32_USBPHYC_PLL) & PLLEN)
++		return -EPROBE_DEFER;
+ 
+ 	usbphyc->switch_setup = -EINVAL;
+ 	usbphyc->nphys = of_get_child_count(np);
+@@ -356,11 +647,34 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
+ 		goto clk_disable;
+ 	}
+ 
++	usbphyc->vdda1v1 = devm_regulator_get(dev, "vdda1v1");
++	if (IS_ERR(usbphyc->vdda1v1)) {
++		ret = PTR_ERR(usbphyc->vdda1v1);
++		if (ret != -EPROBE_DEFER)
++			dev_err(dev, "failed to get vdda1v1 supply: %d\n", ret);
++		goto clk_disable;
++	}
++
++	usbphyc->vdda1v8 = devm_regulator_get(dev, "vdda1v8");
++	if (IS_ERR(usbphyc->vdda1v8)) {
++		ret = PTR_ERR(usbphyc->vdda1v8);
++		if (ret != -EPROBE_DEFER)
++			dev_err(dev, "failed to get vdda1v8 supply: %d\n", ret);
++		goto clk_disable;
++	}
++
++	usbphyc->vdd3v3 = devm_regulator_get(dev, "vdd3v3");
++	if (IS_ERR(usbphyc->vdd3v3)) {
++		ret = PTR_ERR(usbphyc->vdd3v3);
++		if (ret != -EPROBE_DEFER)
++			dev_err(dev, "failed to get vdd3v3 supply: %d\n", ret);
++		goto clk_disable;
++	}
++
+ 	for_each_child_of_node(np, child) {
+ 		struct stm32_usbphyc_phy *usbphyc_phy;
+ 		struct phy *phy;
+ 		u32 index;
+-		int i;
+ 
+ 		phy = devm_phy_create(dev, child, &stm32_usbphyc_phy_ops);
+ 		if (IS_ERR(phy)) {
+@@ -378,24 +692,15 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
+ 			goto put_child;
+ 		}
+ 
+-		for (i = 0; i < NUM_SUPPLIES; i++)
+-			usbphyc_phy->supplies[i].supply = supplies_names[i];
+-
+-		ret = devm_regulator_bulk_get(&phy->dev, NUM_SUPPLIES,
+-					      usbphyc_phy->supplies);
+-		if (ret) {
+-			if (ret != -EPROBE_DEFER)
+-				dev_err(&phy->dev,
+-					"failed to get regulators: %d\n", ret);
+-			goto put_child;
+-		}
+-
+ 		ret = of_property_read_u32(child, "reg", &index);
+ 		if (ret || index > usbphyc->nphys) {
+ 			dev_err(&phy->dev, "invalid reg property: %d\n", ret);
+ 			goto put_child;
+ 		}
+ 
++		/* Configure phy tuning */
++		stm32_usbphyc_phy_tuning(usbphyc, child, index);
++
+ 		usbphyc->phys[port] = usbphyc_phy;
+ 		phy_set_bus_width(phy, 8);
+ 		phy_set_drvdata(phy, usbphyc_phy);
+@@ -416,6 +721,13 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
+ 		goto clk_disable;
+ 	}
+ 
++	ret = stm32_usbphyc_clk48_register(usbphyc);
++	if (ret) {
++		dev_err(dev,
++			"failed to register ck_usbo_48m clock: %d\n", ret);
++		goto clk_disable;
++	}
++
+ 	version = readl_relaxed(usbphyc->base + STM32_USBPHYC_VERSION);
+ 	dev_info(dev, "registered rev:%lu.%lu\n",
+ 		 FIELD_GET(MAJREV, version), FIELD_GET(MINREV, version));
+@@ -439,6 +751,20 @@ static int stm32_usbphyc_remove(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
++#ifdef CONFIG_PM_SLEEP
++static int stm32_usbphyc_resume(struct device *dev)
++{
++	struct stm32_usbphyc *usbphyc = dev_get_drvdata(dev);
++
++	if (usbphyc->switch_setup >= 0)
++		stm32_usbphyc_switch_setup(usbphyc, usbphyc->switch_setup);
++
++	return 0;
++}
++#endif
++
++static SIMPLE_DEV_PM_OPS(stm32_usbphyc_pm_ops, NULL, stm32_usbphyc_resume);
++
+ static const struct of_device_id stm32_usbphyc_of_match[] = {
+ 	{ .compatible = "st,stm32mp1-usbphyc", },
+ 	{ },
+@@ -451,6 +777,7 @@ static struct platform_driver stm32_usbphyc_driver = {
+ 	.driver = {
+ 		.of_match_table = stm32_usbphyc_of_match,
+ 		.name = "stm32-usbphyc",
++		.pm = &stm32_usbphyc_pm_ops,
+ 	}
+ };
+ module_platform_driver(stm32_usbphyc_driver);
+diff --git a/drivers/pinctrl/Kconfig b/drivers/pinctrl/Kconfig
+index e86752b..70ea304 100644
+--- a/drivers/pinctrl/Kconfig
++++ b/drivers/pinctrl/Kconfig
+@@ -244,6 +244,20 @@ config PINCTRL_ST
+ 	select PINCONF
+ 	select GPIOLIB_IRQCHIP
+ 
++config PINCTRL_STMFX
++	tristate "STMicroelectronics STMFX GPIO expander pinctrl driver"
++	depends on I2C
++	depends on OF_GPIO
++	select GENERIC_PINCONF
++	select GPIOLIB_IRQCHIP
++	select MFD_STMFX
++	help
++	  Driver for STMicroelectronics Multi-Function eXpander (STMFX)
++	  GPIO expander.
++	  This provides a GPIO interface supporting inputs and outputs,
++	  and configuring push-pull, open-drain, and can also be used as
++	  interrupt-controller.
++
+ config PINCTRL_U300
+ 	bool "U300 pin controller driver"
+ 	depends on ARCH_U300
+diff --git a/drivers/pinctrl/Makefile b/drivers/pinctrl/Makefile
+index 46ef9bd..9abcaa59 100644
+--- a/drivers/pinctrl/Makefile
++++ b/drivers/pinctrl/Makefile
+@@ -38,6 +38,7 @@ obj-$(CONFIG_PINCTRL_LANTIQ)	+= pinctrl-lantiq.o
+ obj-$(CONFIG_PINCTRL_LPC18XX)	+= pinctrl-lpc18xx.o
+ obj-$(CONFIG_PINCTRL_TB10X)	+= pinctrl-tb10x.o
+ obj-$(CONFIG_PINCTRL_ST) 	+= pinctrl-st.o
++obj-$(CONFIG_PINCTRL_STMFX) 	+= pinctrl-stmfx.o
+ obj-$(CONFIG_PINCTRL_ZYNQ)	+= pinctrl-zynq.o
+ obj-$(CONFIG_PINCTRL_INGENIC)	+= pinctrl-ingenic.o
+ obj-$(CONFIG_PINCTRL_RK805)	+= pinctrl-rk805.o
+diff --git a/drivers/pinctrl/core.c b/drivers/pinctrl/core.c
+index c6ff4d5..7e747ac 100644
+--- a/drivers/pinctrl/core.c
++++ b/drivers/pinctrl/core.c
+@@ -1216,6 +1216,15 @@ struct pinctrl_state *pinctrl_lookup_state(struct pinctrl *p,
+ }
+ EXPORT_SYMBOL_GPL(pinctrl_lookup_state);
+ 
++static void pinctrl_link_add(struct pinctrl_dev *pctldev,
++			     struct device *consumer)
++{
++	if (pctldev->desc->link_consumers)
++		device_link_add(consumer, pctldev->dev,
++				DL_FLAG_PM_RUNTIME |
++				DL_FLAG_AUTOREMOVE_CONSUMER);
++}
++
+ /**
+  * pinctrl_commit_state() - select/activate/program a pinctrl state to HW
+  * @p: the pinctrl handle for the device that requests configuration
+@@ -1261,6 +1270,10 @@ static int pinctrl_commit_state(struct pinctrl *p, struct pinctrl_state *state)
+ 		if (ret < 0) {
+ 			goto unapply_new_state;
+ 		}
++
++		/* Do not link hogs (circular dependency) */
++		if (p != setting->pctldev->p)
++			pinctrl_link_add(setting->pctldev, p->dev);
+ 	}
+ 
+ 	p->state = state;
+@@ -1992,7 +2005,7 @@ pinctrl_init_controller(struct pinctrl_desc *pctldesc, struct device *dev,
+ 	return ERR_PTR(ret);
+ }
+ 
+-static int pinctrl_claim_hogs(struct pinctrl_dev *pctldev)
++int pinctrl_claim_hogs(struct pinctrl_dev *pctldev)
+ {
+ 	pctldev->p = create_pinctrl(pctldev->dev, pctldev);
+ 	if (PTR_ERR(pctldev->p) == -ENODEV) {
+@@ -2030,21 +2043,10 @@ static int pinctrl_claim_hogs(struct pinctrl_dev *pctldev)
+ 
+ 	return 0;
+ }
++EXPORT_SYMBOL_GPL(pinctrl_claim_hogs);
+ 
+ int pinctrl_enable(struct pinctrl_dev *pctldev)
+ {
+-	int error;
+-
+-	error = pinctrl_claim_hogs(pctldev);
+-	if (error) {
+-		dev_err(pctldev->dev, "could not claim hogs: %i\n",
+-			error);
+-		mutex_destroy(&pctldev->mutex);
+-		kfree(pctldev);
+-
+-		return error;
+-	}
+-
+ 	mutex_lock(&pinctrldev_list_mutex);
+ 	list_add_tail(&pctldev->node, &pinctrldev_list);
+ 	mutex_unlock(&pinctrldev_list_mutex);
+diff --git a/drivers/pinctrl/pinctrl-stmfx.c b/drivers/pinctrl/pinctrl-stmfx.c
+new file mode 100644
+index 0000000..b4c232a
+--- /dev/null
++++ b/drivers/pinctrl/pinctrl-stmfx.c
+@@ -0,0 +1,858 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Driver for STMicroelectronics Multi-Function eXpander (STMFX) GPIO expander
++ *
++ * Copyright (C) 2019 STMicroelectronics
++ * Author(s): Amelie Delaunay <amelie.delaunay@st.com>.
++ */
++#include <linux/gpio/driver.h>
++#include <linux/interrupt.h>
++#include <linux/mfd/stmfx.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/pinctrl/pinconf.h>
++#include <linux/pinctrl/pinmux.h>
++
++#include "core.h"
++#include "pinctrl-utils.h"
++
++/* GPIOs expander */
++/* GPIO_STATE1 0x10, GPIO_STATE2 0x11, GPIO_STATE3 0x12 */
++#define STMFX_REG_GPIO_STATE		STMFX_REG_GPIO_STATE1 /* R */
++/* GPIO_DIR1 0x60, GPIO_DIR2 0x61, GPIO_DIR3 0x63 */
++#define STMFX_REG_GPIO_DIR		STMFX_REG_GPIO_DIR1 /* RW */
++/* GPIO_TYPE1 0x64, GPIO_TYPE2 0x65, GPIO_TYPE3 0x66 */
++#define STMFX_REG_GPIO_TYPE		STMFX_REG_GPIO_TYPE1 /* RW */
++/* GPIO_PUPD1 0x68, GPIO_PUPD2 0x69, GPIO_PUPD3 0x6A */
++#define STMFX_REG_GPIO_PUPD		STMFX_REG_GPIO_PUPD1 /* RW */
++/* GPO_SET1 0x6C, GPO_SET2 0x6D, GPO_SET3 0x6E */
++#define STMFX_REG_GPO_SET		STMFX_REG_GPO_SET1 /* RW */
++/* GPO_CLR1 0x70, GPO_CLR2 0x71, GPO_CLR3 0x72 */
++#define STMFX_REG_GPO_CLR		STMFX_REG_GPO_CLR1 /* RW */
++/* IRQ_GPI_SRC1 0x48, IRQ_GPI_SRC2 0x49, IRQ_GPI_SRC3 0x4A */
++#define STMFX_REG_IRQ_GPI_SRC		STMFX_REG_IRQ_GPI_SRC1 /* RW */
++/* IRQ_GPI_EVT1 0x4C, IRQ_GPI_EVT2 0x4D, IRQ_GPI_EVT3 0x4E */
++#define STMFX_REG_IRQ_GPI_EVT		STMFX_REG_IRQ_GPI_EVT1 /* RW */
++/* IRQ_GPI_TYPE1 0x50, IRQ_GPI_TYPE2 0x51, IRQ_GPI_TYPE3 0x52 */
++#define STMFX_REG_IRQ_GPI_TYPE		STMFX_REG_IRQ_GPI_TYPE1 /* RW */
++/* IRQ_GPI_PENDING1 0x0C, IRQ_GPI_PENDING2 0x0D, IRQ_GPI_PENDING3 0x0E*/
++#define STMFX_REG_IRQ_GPI_PENDING	STMFX_REG_IRQ_GPI_PENDING1 /* R */
++/* IRQ_GPI_ACK1 0x54, IRQ_GPI_ACK2 0x55, IRQ_GPI_ACK3 0x56 */
++#define STMFX_REG_IRQ_GPI_ACK		STMFX_REG_IRQ_GPI_ACK1 /* RW */
++
++#define NR_GPIO_REGS			3
++#define NR_GPIOS_PER_REG		8
++#define get_reg(offset)			((offset) / NR_GPIOS_PER_REG)
++#define get_shift(offset)		((offset) % NR_GPIOS_PER_REG)
++#define get_mask(offset)		(BIT(get_shift(offset)))
++
++/*
++ * STMFX pinctrl can have up to 24 pins if STMFX other functions are not used.
++ * Pins availability is managed thanks to gpio-ranges property.
++ */
++static const struct pinctrl_pin_desc stmfx_pins[] = {
++	PINCTRL_PIN(0, "gpio0"),
++	PINCTRL_PIN(1, "gpio1"),
++	PINCTRL_PIN(2, "gpio2"),
++	PINCTRL_PIN(3, "gpio3"),
++	PINCTRL_PIN(4, "gpio4"),
++	PINCTRL_PIN(5, "gpio5"),
++	PINCTRL_PIN(6, "gpio6"),
++	PINCTRL_PIN(7, "gpio7"),
++	PINCTRL_PIN(8, "gpio8"),
++	PINCTRL_PIN(9, "gpio9"),
++	PINCTRL_PIN(10, "gpio10"),
++	PINCTRL_PIN(11, "gpio11"),
++	PINCTRL_PIN(12, "gpio12"),
++	PINCTRL_PIN(13, "gpio13"),
++	PINCTRL_PIN(14, "gpio14"),
++	PINCTRL_PIN(15, "gpio15"),
++	PINCTRL_PIN(16, "agpio0"),
++	PINCTRL_PIN(17, "agpio1"),
++	PINCTRL_PIN(18, "agpio2"),
++	PINCTRL_PIN(19, "agpio3"),
++	PINCTRL_PIN(20, "agpio4"),
++	PINCTRL_PIN(21, "agpio5"),
++	PINCTRL_PIN(22, "agpio6"),
++	PINCTRL_PIN(23, "agpio7"),
++};
++
++struct stmfx_pinctrl {
++	struct device *dev;
++	struct stmfx *stmfx;
++	struct pinctrl_dev *pctl_dev;
++	struct pinctrl_desc pctl_desc;
++	struct gpio_chip gpio_chip;
++	struct irq_chip irq_chip;
++	struct mutex lock; /* IRQ bus lock */
++	unsigned long gpio_valid_mask;
++	/* Cache of IRQ_GPI_* registers for bus_lock */
++	u8 irq_gpi_src[NR_GPIO_REGS];
++	u8 irq_gpi_type[NR_GPIO_REGS];
++	u8 irq_gpi_evt[NR_GPIO_REGS];
++	u8 irq_toggle_edge[NR_GPIO_REGS];
++#ifdef CONFIG_PM
++	/* Backup of GPIO_* registers for suspend/resume */
++	u8 bkp_gpio_state[NR_GPIO_REGS];
++	u8 bkp_gpio_dir[NR_GPIO_REGS];
++	u8 bkp_gpio_type[NR_GPIO_REGS];
++	u8 bkp_gpio_pupd[NR_GPIO_REGS];
++#endif
++};
++
++static int stmfx_gpio_get(struct gpio_chip *gc, unsigned int offset)
++{
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gc);
++	u32 reg = STMFX_REG_GPIO_STATE + get_reg(offset);
++	u32 mask = get_mask(offset);
++	u32 value;
++	int ret;
++
++	ret = regmap_read(pctl->stmfx->map, reg, &value);
++
++	return ret ? ret : !!(value & mask);
++}
++
++static void stmfx_gpio_set(struct gpio_chip *gc, unsigned int offset, int value)
++{
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gc);
++	u32 reg = value ? STMFX_REG_GPO_SET : STMFX_REG_GPO_CLR;
++	u32 mask = get_mask(offset);
++
++	regmap_write_bits(pctl->stmfx->map, reg + get_reg(offset),
++			  mask, mask);
++}
++
++static int stmfx_gpio_get_direction(struct gpio_chip *gc, unsigned int offset)
++{
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gc);
++	u32 reg = STMFX_REG_GPIO_DIR + get_reg(offset);
++	u32 mask = get_mask(offset);
++	u32 val;
++	int ret;
++
++	ret = regmap_read(pctl->stmfx->map, reg, &val);
++	/*
++	 * On stmfx, gpio pins direction is (0)input, (1)output.
++	 * .get_direction returns 0=out, 1=in
++	 */
++
++	return ret ? ret : !(val & mask);
++}
++
++static int stmfx_gpio_direction_input(struct gpio_chip *gc, unsigned int offset)
++{
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gc);
++	u32 reg = STMFX_REG_GPIO_DIR + get_reg(offset);
++	u32 mask = get_mask(offset);
++
++	return regmap_write_bits(pctl->stmfx->map, reg, mask, 0);
++}
++
++static int stmfx_gpio_direction_output(struct gpio_chip *gc,
++				       unsigned int offset, int value)
++{
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gc);
++	u32 reg = STMFX_REG_GPIO_DIR + get_reg(offset);
++	u32 mask = get_mask(offset);
++
++	stmfx_gpio_set(gc, offset, value);
++
++	return regmap_write_bits(pctl->stmfx->map, reg, mask, mask);
++}
++
++static int stmfx_pinconf_get_pupd(struct stmfx_pinctrl *pctl,
++				  unsigned int offset)
++{
++	u32 reg = STMFX_REG_GPIO_PUPD + get_reg(offset);
++	u32 pupd, mask = get_mask(offset);
++	int ret;
++
++	ret = regmap_read(pctl->stmfx->map, reg, &pupd);
++	if (ret)
++		return ret;
++
++	return !!(pupd & mask);
++}
++
++static int stmfx_pinconf_set_pupd(struct stmfx_pinctrl *pctl,
++				  unsigned int offset, u32 pupd)
++{
++	u32 reg = STMFX_REG_GPIO_PUPD + get_reg(offset);
++	u32 mask = get_mask(offset);
++
++	return regmap_write_bits(pctl->stmfx->map, reg, mask, pupd ? mask : 0);
++}
++
++static int stmfx_pinconf_get_type(struct stmfx_pinctrl *pctl,
++				  unsigned int offset)
++{
++	u32 reg = STMFX_REG_GPIO_TYPE + get_reg(offset);
++	u32 type, mask = get_mask(offset);
++	int ret;
++
++	ret = regmap_read(pctl->stmfx->map, reg, &type);
++	if (ret)
++		return ret;
++
++	return !!(type & mask);
++}
++
++static int stmfx_pinconf_set_type(struct stmfx_pinctrl *pctl,
++				  unsigned int offset, u32 type)
++{
++	u32 reg = STMFX_REG_GPIO_TYPE + get_reg(offset);
++	u32 mask = get_mask(offset);
++
++	return regmap_write_bits(pctl->stmfx->map, reg, mask, type ? mask : 0);
++}
++
++static int stmfx_pinconf_get(struct pinctrl_dev *pctldev,
++			     unsigned int pin, unsigned long *config)
++{
++	struct stmfx_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++	u32 param = pinconf_to_config_param(*config);
++	struct pinctrl_gpio_range *range;
++	u32 arg = 0;
++	int ret, dir, type, pupd;
++
++	range = pinctrl_find_gpio_range_from_pin_nolock(pctldev, pin);
++	if (!range)
++		return -EINVAL;
++
++	dir = stmfx_gpio_get_direction(&pctl->gpio_chip, pin);
++	if (dir < 0)
++		return dir;
++	type = stmfx_pinconf_get_type(pctl, pin);
++	if (type < 0)
++		return type;
++	pupd = stmfx_pinconf_get_pupd(pctl, pin);
++	if (pupd < 0)
++		return pupd;
++
++	switch (param) {
++	case PIN_CONFIG_BIAS_DISABLE:
++		if ((!dir && (!type || !pupd)) || (dir && !type))
++			arg = 1;
++		break;
++	case PIN_CONFIG_BIAS_PULL_DOWN:
++		if (dir && type && !pupd)
++			arg = 1;
++		break;
++	case PIN_CONFIG_BIAS_PULL_UP:
++		if (type && pupd)
++			arg = 1;
++		break;
++	case PIN_CONFIG_DRIVE_OPEN_DRAIN:
++		if ((!dir && type) || (dir && !type))
++			arg = 1;
++		break;
++	case PIN_CONFIG_DRIVE_PUSH_PULL:
++		if ((!dir && !type) || (dir && type))
++			arg = 1;
++		break;
++	case PIN_CONFIG_OUTPUT:
++		if (dir)
++			return -EINVAL;
++
++		ret = stmfx_gpio_get(&pctl->gpio_chip, pin);
++		if (ret < 0)
++			return ret;
++
++		arg = ret;
++		break;
++	default:
++		return -ENOTSUPP;
++	}
++
++	*config = pinconf_to_config_packed(param, arg);
++
++	return 0;
++}
++
++static int stmfx_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
++			     unsigned long *configs, unsigned int num_configs)
++{
++	struct stmfx_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++	struct pinctrl_gpio_range *range;
++	enum pin_config_param param;
++	u32 arg;
++	int dir, i, ret;
++
++	range = pinctrl_find_gpio_range_from_pin_nolock(pctldev, pin);
++	if (!range) {
++		dev_err(pctldev->dev, "pin %d is not available\n", pin);
++		return -EINVAL;
++	}
++
++	dir = stmfx_gpio_get_direction(&pctl->gpio_chip, pin);
++	if (dir < 0)
++		return dir;
++
++	for (i = 0; i < num_configs; i++) {
++		param = pinconf_to_config_param(configs[i]);
++		arg = pinconf_to_config_argument(configs[i]);
++
++		switch (param) {
++		case PIN_CONFIG_BIAS_PULL_PIN_DEFAULT:
++		case PIN_CONFIG_BIAS_DISABLE:
++		case PIN_CONFIG_DRIVE_PUSH_PULL:
++			ret = stmfx_pinconf_set_type(pctl, pin, 0);
++			if (ret)
++				return ret;
++			break;
++		case PIN_CONFIG_BIAS_PULL_DOWN:
++			ret = stmfx_pinconf_set_type(pctl, pin, 1);
++			if (ret)
++				return ret;
++			ret = stmfx_pinconf_set_pupd(pctl, pin, 0);
++			if (ret)
++				return ret;
++			break;
++		case PIN_CONFIG_BIAS_PULL_UP:
++			ret = stmfx_pinconf_set_type(pctl, pin, 1);
++			if (ret)
++				return ret;
++			ret = stmfx_pinconf_set_pupd(pctl, pin, 1);
++			if (ret)
++				return ret;
++			break;
++		case PIN_CONFIG_DRIVE_OPEN_DRAIN:
++			ret = stmfx_pinconf_set_type(pctl, pin, 1);
++			if (ret)
++				return ret;
++			break;
++		case PIN_CONFIG_OUTPUT:
++			ret = stmfx_gpio_direction_output(&pctl->gpio_chip,
++							  pin, arg);
++			if (ret)
++				return ret;
++			break;
++		default:
++			return -ENOTSUPP;
++		}
++	}
++
++	return 0;
++}
++
++static void stmfx_pinconf_dbg_show(struct pinctrl_dev *pctldev,
++				   struct seq_file *s, unsigned int offset)
++{
++	struct stmfx_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++	struct pinctrl_gpio_range *range;
++	int dir, type, pupd, val;
++
++	range = pinctrl_find_gpio_range_from_pin_nolock(pctldev, offset);
++	if (!range)
++		return;
++
++	dir = stmfx_gpio_get_direction(&pctl->gpio_chip, offset);
++	if (dir < 0)
++		return;
++	type = stmfx_pinconf_get_type(pctl, offset);
++	if (type < 0)
++		return;
++	pupd = stmfx_pinconf_get_pupd(pctl, offset);
++	if (pupd < 0)
++		return;
++	val = stmfx_gpio_get(&pctl->gpio_chip, offset);
++	if (val < 0)
++		return;
++
++	if (!dir) {
++		seq_printf(s, "output %s ", val ? "high" : "low");
++		if (type)
++			seq_printf(s, "open drain %s internal pull-up ",
++				   pupd ? "with" : "without");
++		else
++			seq_puts(s, "push pull no pull ");
++	} else {
++		seq_printf(s, "input %s ", val ? "high" : "low");
++		if (type)
++			seq_printf(s, "with internal pull-%s ",
++				   pupd ? "up" : "down");
++		else
++			seq_printf(s, "%s ", pupd ? "floating" : "analog");
++	}
++}
++
++static const struct pinconf_ops stmfx_pinconf_ops = {
++	.pin_config_get		= stmfx_pinconf_get,
++	.pin_config_set		= stmfx_pinconf_set,
++	.pin_config_dbg_show	= stmfx_pinconf_dbg_show,
++};
++
++static int stmfx_pinctrl_get_groups_count(struct pinctrl_dev *pctldev)
++{
++	return 0;
++}
++
++static const char *stmfx_pinctrl_get_group_name(struct pinctrl_dev *pctldev,
++						unsigned int selector)
++{
++	return NULL;
++}
++
++static int stmfx_pinctrl_get_group_pins(struct pinctrl_dev *pctldev,
++					unsigned int selector,
++					const unsigned int **pins,
++					unsigned int *num_pins)
++{
++	return -ENOTSUPP;
++}
++
++static const struct pinctrl_ops stmfx_pinctrl_ops = {
++	.get_groups_count = stmfx_pinctrl_get_groups_count,
++	.get_group_name = stmfx_pinctrl_get_group_name,
++	.get_group_pins = stmfx_pinctrl_get_group_pins,
++	.dt_node_to_map = pinconf_generic_dt_node_to_map_pin,
++	.dt_free_map = pinctrl_utils_free_map,
++};
++
++static void stmfx_pinctrl_irq_mask(struct irq_data *data)
++{
++	struct gpio_chip *gpio_chip = irq_data_get_irq_chip_data(data);
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gpio_chip);
++	u32 reg = get_reg(data->hwirq);
++	u32 mask = get_mask(data->hwirq);
++
++	pctl->irq_gpi_src[reg] &= ~mask;
++}
++
++static void stmfx_pinctrl_irq_unmask(struct irq_data *data)
++{
++	struct gpio_chip *gpio_chip = irq_data_get_irq_chip_data(data);
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gpio_chip);
++	u32 reg = get_reg(data->hwirq);
++	u32 mask = get_mask(data->hwirq);
++
++	pctl->irq_gpi_src[reg] |= mask;
++}
++
++static int stmfx_pinctrl_irq_set_type(struct irq_data *data, unsigned int type)
++{
++	struct gpio_chip *gpio_chip = irq_data_get_irq_chip_data(data);
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gpio_chip);
++	u32 reg = get_reg(data->hwirq);
++	u32 mask = get_mask(data->hwirq);
++
++	if (type == IRQ_TYPE_NONE)
++		return -EINVAL;
++
++	if (type & IRQ_TYPE_EDGE_BOTH) {
++		pctl->irq_gpi_evt[reg] |= mask;
++		irq_set_handler_locked(data, handle_edge_irq);
++	} else {
++		pctl->irq_gpi_evt[reg] &= ~mask;
++		irq_set_handler_locked(data, handle_level_irq);
++	}
++
++	if ((type & IRQ_TYPE_EDGE_RISING) || (type & IRQ_TYPE_LEVEL_HIGH))
++		pctl->irq_gpi_type[reg] |= mask;
++	else
++		pctl->irq_gpi_type[reg] &= ~mask;
++
++	/*
++	 * In case of (type & IRQ_TYPE_EDGE_BOTH), we need to know current
++	 * GPIO value to set the right edge trigger. But in atomic context
++	 * here we can't access registers over I2C. That's why (type &
++	 * IRQ_TYPE_EDGE_BOTH) will be managed in .irq_sync_unlock.
++	 */
++
++	if ((type & IRQ_TYPE_EDGE_BOTH) == IRQ_TYPE_EDGE_BOTH)
++		pctl->irq_toggle_edge[reg] |= mask;
++	else
++		pctl->irq_toggle_edge[reg] &= mask;
++
++	return 0;
++}
++
++static void stmfx_pinctrl_irq_bus_lock(struct irq_data *data)
++{
++	struct gpio_chip *gpio_chip = irq_data_get_irq_chip_data(data);
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gpio_chip);
++
++	mutex_lock(&pctl->lock);
++}
++
++static void stmfx_pinctrl_irq_bus_sync_unlock(struct irq_data *data)
++{
++	struct gpio_chip *gpio_chip = irq_data_get_irq_chip_data(data);
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gpio_chip);
++	u32 reg = get_reg(data->hwirq);
++	u32 mask = get_mask(data->hwirq);
++
++	/*
++	 * In case of IRQ_TYPE_EDGE_BOTH), read the current GPIO value
++	 * (this couldn't be done in .irq_set_type because of atomic context)
++	 * to set the right irq trigger type.
++	 */
++	if (pctl->irq_toggle_edge[reg] & mask) {
++		if (stmfx_gpio_get(gpio_chip, data->hwirq))
++			pctl->irq_gpi_type[reg] &= ~mask;
++		else
++			pctl->irq_gpi_type[reg] |= mask;
++	}
++
++	regmap_bulk_write(pctl->stmfx->map, STMFX_REG_IRQ_GPI_EVT,
++			  pctl->irq_gpi_evt, NR_GPIO_REGS);
++	regmap_bulk_write(pctl->stmfx->map, STMFX_REG_IRQ_GPI_TYPE,
++			  pctl->irq_gpi_type, NR_GPIO_REGS);
++	regmap_bulk_write(pctl->stmfx->map, STMFX_REG_IRQ_GPI_SRC,
++			  pctl->irq_gpi_src, NR_GPIO_REGS);
++
++	mutex_unlock(&pctl->lock);
++}
++
++static int stmfx_gpio_irq_request_resources(struct irq_data *data)
++{
++	struct gpio_chip *gpio_chip = irq_data_get_irq_chip_data(data);
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gpio_chip);
++	int ret;
++
++	ret = stmfx_gpio_direction_input(&pctl->gpio_chip, data->hwirq);
++	if (ret)
++		return ret;
++
++	ret = gpiochip_lock_as_irq(&pctl->gpio_chip, data->hwirq);
++	if (ret) {
++		dev_err(pctl->dev, "Unable to lock gpio %lu as IRQ: %d\n",
++			data->hwirq, ret);
++		return ret;
++	}
++
++	return 0;
++}
++
++static void stmfx_gpio_irq_release_resources(struct irq_data *data)
++{
++	struct gpio_chip *gpio_chip = irq_data_get_irq_chip_data(data);
++	struct stmfx_pinctrl *pctl = gpiochip_get_data(gpio_chip);
++
++	gpiochip_unlock_as_irq(&pctl->gpio_chip, data->hwirq);
++}
++
++static void stmfx_pinctrl_irq_toggle_trigger(struct stmfx_pinctrl *pctl,
++					     unsigned int offset)
++{
++	u32 reg = get_reg(offset);
++	u32 mask = get_mask(offset);
++	int val;
++
++	if (!(pctl->irq_toggle_edge[reg] & mask))
++		return;
++
++	val = stmfx_gpio_get(&pctl->gpio_chip, offset);
++	if (val < 0)
++		return;
++
++	if (val) {
++		pctl->irq_gpi_type[reg] &= mask;
++		regmap_write_bits(pctl->stmfx->map,
++				  STMFX_REG_IRQ_GPI_TYPE + reg,
++				  mask, 0);
++
++	} else {
++		pctl->irq_gpi_type[reg] |= mask;
++		regmap_write_bits(pctl->stmfx->map,
++				  STMFX_REG_IRQ_GPI_TYPE + reg,
++				  mask, mask);
++	}
++}
++
++static irqreturn_t stmfx_pinctrl_irq_thread_fn(int irq, void *dev_id)
++{
++	struct stmfx_pinctrl *pctl = (struct stmfx_pinctrl *)dev_id;
++	struct gpio_chip *gc = &pctl->gpio_chip;
++	u8 pending[NR_GPIO_REGS];
++	u8 src[NR_GPIO_REGS] = {0, 0, 0};
++	unsigned long n, status;
++	int ret;
++
++	ret = regmap_bulk_read(pctl->stmfx->map, STMFX_REG_IRQ_GPI_PENDING,
++			       &pending, NR_GPIO_REGS);
++	if (ret)
++		return IRQ_NONE;
++
++	regmap_bulk_write(pctl->stmfx->map, STMFX_REG_IRQ_GPI_SRC,
++			  src, NR_GPIO_REGS);
++
++	status = *(unsigned long *)pending;
++	for_each_set_bit(n, &status, gc->ngpio) {
++		handle_nested_irq(irq_find_mapping(gc->irq.domain, n));
++		stmfx_pinctrl_irq_toggle_trigger(pctl, n);
++	}
++
++	regmap_bulk_write(pctl->stmfx->map, STMFX_REG_IRQ_GPI_SRC,
++			  pctl->irq_gpi_src, NR_GPIO_REGS);
++
++	return IRQ_HANDLED;
++}
++
++static int stmfx_pinctrl_gpio_function_enable(struct stmfx_pinctrl *pctl)
++{
++	struct pinctrl_gpio_range *gpio_range;
++	struct pinctrl_dev *pctl_dev = pctl->pctl_dev;
++	u32 func = STMFX_FUNC_GPIO;
++
++	pctl->gpio_valid_mask = GENMASK(15, 0);
++
++	gpio_range = pinctrl_find_gpio_range_from_pin(pctl_dev, 16);
++	if (gpio_range) {
++		func |= STMFX_FUNC_ALTGPIO_LOW;
++		pctl->gpio_valid_mask |= GENMASK(19, 16);
++	}
++
++	gpio_range = pinctrl_find_gpio_range_from_pin(pctl_dev, 20);
++	if (gpio_range) {
++		func |= STMFX_FUNC_ALTGPIO_HIGH;
++		pctl->gpio_valid_mask |= GENMASK(23, 20);
++	}
++
++	return stmfx_function_enable(pctl->stmfx, func);
++}
++
++static int stmfx_pinctrl_probe(struct platform_device *pdev)
++{
++	struct stmfx *stmfx = dev_get_drvdata(pdev->dev.parent);
++	struct device_node *np = pdev->dev.of_node;
++	struct stmfx_pinctrl *pctl;
++	u32 n;
++	int irq, ret;
++
++	pctl = devm_kzalloc(stmfx->dev, sizeof(*pctl), GFP_KERNEL);
++	if (!pctl)
++		return -ENOMEM;
++
++	platform_set_drvdata(pdev, pctl);
++
++	pctl->dev = &pdev->dev;
++	pctl->stmfx = stmfx;
++
++	if (!of_find_property(np, "gpio-ranges", NULL)) {
++		dev_err(pctl->dev, "missing required gpio-ranges property\n");
++		return -EINVAL;
++	}
++
++	irq = platform_get_irq(pdev, 0);
++	if (irq <= 0) {
++		dev_err(pctl->dev, "failed to get irq\n");
++		return -ENXIO;
++	}
++
++	mutex_init(&pctl->lock);
++
++	/* Register pin controller */
++	pctl->pctl_desc.name = "stmfx-pinctrl";
++	pctl->pctl_desc.pctlops = &stmfx_pinctrl_ops;
++	pctl->pctl_desc.confops = &stmfx_pinconf_ops;
++	pctl->pctl_desc.pins = stmfx_pins;
++	pctl->pctl_desc.npins = ARRAY_SIZE(stmfx_pins);
++	pctl->pctl_desc.owner = THIS_MODULE;
++	pctl->pctl_desc.link_consumers = true;
++
++	ret = devm_pinctrl_register_and_init(pctl->dev, &pctl->pctl_desc,
++					     pctl, &pctl->pctl_dev);
++	if (ret) {
++		dev_err(pctl->dev, "pinctrl registration failed\n");
++		return ret;
++	}
++
++	ret = pinctrl_enable(pctl->pctl_dev);
++	if (ret) {
++		dev_err(pctl->dev, "pinctrl enable failed\n");
++		return ret;
++	}
++
++	/* Register gpio controller */
++	pctl->gpio_chip.label = "stmfx-gpio";
++	pctl->gpio_chip.parent = pctl->dev;
++	pctl->gpio_chip.get_direction = stmfx_gpio_get_direction;
++	pctl->gpio_chip.direction_input = stmfx_gpio_direction_input;
++	pctl->gpio_chip.direction_output = stmfx_gpio_direction_output;
++	pctl->gpio_chip.get = stmfx_gpio_get;
++	pctl->gpio_chip.set = stmfx_gpio_set;
++	pctl->gpio_chip.set_config = gpiochip_generic_config;
++	pctl->gpio_chip.base = -1;
++	pctl->gpio_chip.ngpio = pctl->pctl_desc.npins;
++	pctl->gpio_chip.can_sleep = true;
++	pctl->gpio_chip.of_node = np;
++	pctl->gpio_chip.need_valid_mask = true;
++
++	ret = devm_gpiochip_add_data(pctl->dev, &pctl->gpio_chip, pctl);
++	if (ret) {
++		dev_err(pctl->dev, "gpio_chip registration failed\n");
++		return ret;
++	}
++
++	ret = stmfx_pinctrl_gpio_function_enable(pctl);
++	if (ret)
++		return ret;
++
++	/*
++	 * Claim hogs after enabling gpio function, otherwise pin
++	 * configuration will not apply
++	 */
++	ret = pinctrl_claim_hogs(pctl->pctl_dev);
++	if (ret)
++		return ret;
++
++	pctl->irq_chip.name = dev_name(pctl->dev);
++	pctl->irq_chip.irq_mask = stmfx_pinctrl_irq_mask;
++	pctl->irq_chip.irq_unmask = stmfx_pinctrl_irq_unmask;
++	pctl->irq_chip.irq_set_type = stmfx_pinctrl_irq_set_type;
++	pctl->irq_chip.irq_bus_lock = stmfx_pinctrl_irq_bus_lock;
++	pctl->irq_chip.irq_bus_sync_unlock = stmfx_pinctrl_irq_bus_sync_unlock;
++	pctl->irq_chip.irq_request_resources = stmfx_gpio_irq_request_resources;
++	pctl->irq_chip.irq_release_resources = stmfx_gpio_irq_release_resources;
++	for_each_clear_bit(n, &pctl->gpio_valid_mask, pctl->gpio_chip.ngpio)
++		clear_bit(n, pctl->gpio_chip.valid_mask);
++
++	ret = gpiochip_irqchip_add_nested(&pctl->gpio_chip, &pctl->irq_chip,
++					  0, handle_bad_irq, IRQ_TYPE_NONE);
++	if (ret) {
++		dev_err(pctl->dev, "cannot add irqchip to gpiochip\n");
++		return ret;
++	}
++
++	ret = devm_request_threaded_irq(pctl->dev, irq, NULL,
++					stmfx_pinctrl_irq_thread_fn,
++					IRQF_ONESHOT,
++					pctl->irq_chip.name, pctl);
++	if (ret) {
++		dev_err(pctl->dev, "cannot request irq%d\n", irq);
++		return ret;
++	}
++
++	gpiochip_set_nested_irqchip(&pctl->gpio_chip, &pctl->irq_chip, irq);
++
++	dev_info(pctl->dev,
++		 "%ld GPIOs available\n", hweight_long(pctl->gpio_valid_mask));
++
++	return 0;
++}
++
++static int stmfx_pinctrl_remove(struct platform_device *pdev)
++{
++	struct stmfx *stmfx = dev_get_drvdata(pdev->dev.parent);
++
++	return stmfx_function_disable(stmfx,
++				      STMFX_FUNC_GPIO |
++				      STMFX_FUNC_ALTGPIO_LOW |
++				      STMFX_FUNC_ALTGPIO_HIGH);
++}
++
++#ifdef CONFIG_PM_SLEEP
++static int stmfx_pinctrl_backup_regs(struct stmfx_pinctrl *pctl)
++{
++	int ret;
++
++	ret = regmap_bulk_read(pctl->stmfx->map, STMFX_REG_GPIO_STATE,
++			       &pctl->bkp_gpio_state, NR_GPIO_REGS);
++	if (ret)
++		return ret;
++	ret = regmap_bulk_read(pctl->stmfx->map, STMFX_REG_GPIO_DIR,
++			       &pctl->bkp_gpio_dir, NR_GPIO_REGS);
++	if (ret)
++		return ret;
++	ret = regmap_bulk_read(pctl->stmfx->map, STMFX_REG_GPIO_TYPE,
++			       &pctl->bkp_gpio_type, NR_GPIO_REGS);
++	if (ret)
++		return ret;
++	ret = regmap_bulk_read(pctl->stmfx->map, STMFX_REG_GPIO_PUPD,
++			       &pctl->bkp_gpio_pupd, NR_GPIO_REGS);
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
++static int stmfx_pinctrl_restore_regs(struct stmfx_pinctrl *pctl)
++{
++	int ret;
++
++	ret = regmap_bulk_write(pctl->stmfx->map, STMFX_REG_GPIO_DIR,
++				pctl->bkp_gpio_dir, NR_GPIO_REGS);
++	if (ret)
++		return ret;
++	ret = regmap_bulk_write(pctl->stmfx->map, STMFX_REG_GPIO_TYPE,
++				pctl->bkp_gpio_type, NR_GPIO_REGS);
++	if (ret)
++		return ret;
++	ret = regmap_bulk_write(pctl->stmfx->map, STMFX_REG_GPIO_PUPD,
++				pctl->bkp_gpio_pupd, NR_GPIO_REGS);
++	if (ret)
++		return ret;
++	ret = regmap_bulk_write(pctl->stmfx->map, STMFX_REG_GPO_SET,
++				pctl->bkp_gpio_state, NR_GPIO_REGS);
++	if (ret)
++		return ret;
++	ret = regmap_bulk_write(pctl->stmfx->map, STMFX_REG_IRQ_GPI_EVT,
++				pctl->irq_gpi_evt, NR_GPIO_REGS);
++	if (ret)
++		return ret;
++	ret = regmap_bulk_write(pctl->stmfx->map, STMFX_REG_IRQ_GPI_TYPE,
++				pctl->irq_gpi_type, NR_GPIO_REGS);
++	if (ret)
++		return ret;
++	ret = regmap_bulk_write(pctl->stmfx->map, STMFX_REG_IRQ_GPI_SRC,
++				pctl->irq_gpi_src, NR_GPIO_REGS);
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
++static int stmfx_pinctrl_suspend(struct device *dev)
++{
++	struct stmfx_pinctrl *pctl = dev_get_drvdata(dev);
++	int ret;
++
++	ret = stmfx_pinctrl_backup_regs(pctl);
++	if (ret) {
++		dev_err(pctl->dev, "registers backup failure\n");
++		return ret;
++	}
++
++	return 0;
++}
++
++static int stmfx_pinctrl_resume(struct device *dev)
++{
++	struct stmfx_pinctrl *pctl = dev_get_drvdata(dev);
++	int ret;
++
++	ret = stmfx_pinctrl_restore_regs(pctl);
++	if (ret) {
++		dev_err(pctl->dev, "registers restoration failure\n");
++		return ret;
++	}
++
++	return 0;
++}
++#endif
++
++static SIMPLE_DEV_PM_OPS(stmfx_pinctrl_dev_pm_ops,
++			 stmfx_pinctrl_suspend, stmfx_pinctrl_resume);
++
++static const struct of_device_id stmfx_pinctrl_of_match[] = {
++	{ .compatible = "st,stmfx-0300-pinctrl", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, stmfx_pinctrl_of_match);
++
++static struct platform_driver stmfx_pinctrl_driver = {
++	.driver = {
++		.name = "stmfx-pinctrl",
++		.of_match_table = stmfx_pinctrl_of_match,
++		.pm = &stmfx_pinctrl_dev_pm_ops,
++	},
++	.probe = stmfx_pinctrl_probe,
++	.remove = stmfx_pinctrl_remove,
++};
++module_platform_driver(stmfx_pinctrl_driver);
++
++MODULE_DESCRIPTION("STMFX pinctrl/GPIO driver");
++MODULE_AUTHOR("Amelie Delaunay <amelie.delaunay@st.com>");
++MODULE_LICENSE("GPL v2");
+diff --git a/drivers/pinctrl/stm32/pinctrl-stm32.c b/drivers/pinctrl/stm32/pinctrl-stm32.c
+index 14dfbbd..4f2676b 100644
+--- a/drivers/pinctrl/stm32/pinctrl-stm32.c
++++ b/drivers/pinctrl/stm32/pinctrl-stm32.c
+@@ -7,7 +7,9 @@
+  * Heavily based on Mediatek's pinctrl driver
+  */
+ #include <linux/clk.h>
++#include <linux/delay.h>
+ #include <linux/gpio/driver.h>
++#include <linux/hwspinlock.h>
+ #include <linux/io.h>
+ #include <linux/irq.h>
+ #include <linux/mfd/syscon.h>
+@@ -31,6 +33,7 @@
+ #include "../pinconf.h"
+ #include "../pinctrl-utils.h"
+ #include "pinctrl-stm32.h"
++#include "../pinmux.h"
+ 
+ #define STM32_GPIO_MODER	0x00
+ #define STM32_GPIO_TYPER	0x04
+@@ -43,6 +46,18 @@
+ #define STM32_GPIO_AFRL		0x20
+ #define STM32_GPIO_AFRH		0x24
+ 
++/* custom bitfield to backup pin status */
++#define STM32_GPIO_BKP_MODE_SHIFT		0
++#define STM32_GPIO_BKP_MODE_MASK	GENMASK(1, 0)
++#define STM32_GPIO_BKP_ALT_SHIFT		2
++#define STM32_GPIO_BKP_ALT_MASK		GENMASK(5, 2)
++#define STM32_GPIO_BKP_SPEED_SHIFT		6
++#define STM32_GPIO_BKP_SPEED_MASK	GENMASK(7, 6)
++#define STM32_GPIO_BKP_PUPD_SHIFT		8
++#define STM32_GPIO_BKP_PUPD_MASK	GENMASK(9, 8)
++#define STM32_GPIO_BKP_TYPE		10
++#define STM32_GPIO_BKP_VAL		11
++
+ #define STM32_GPIO_PINS_PER_BANK 16
+ #define STM32_GPIO_IRQ_LINE	 16
+ 
+@@ -51,6 +66,9 @@
+ #define gpio_range_to_bank(chip) \
+ 		container_of(chip, struct stm32_gpio_bank, range)
+ 
++#define HWSPNLCK_TIMEOUT	1000 /* usec */
++#define HWSPNLCK_RETRY_DELAY	100  /* usec */
++
+ static const char * const stm32_gpio_functions[] = {
+ 	"gpio", "af0", "af1",
+ 	"af2", "af3", "af4",
+@@ -58,6 +76,7 @@ static const char * const stm32_gpio_functions[] = {
+ 	"af8", "af9", "af10",
+ 	"af11", "af12", "af13",
+ 	"af14", "af15", "analog",
++	"reserved",
+ };
+ 
+ struct stm32_pinctrl_group {
+@@ -76,6 +95,9 @@ struct stm32_gpio_bank {
+ 	struct irq_domain *domain;
+ 	u32 bank_nr;
+ 	u32 bank_ioport_nr;
++#ifdef CONFIG_PM
++	u32 pin_backup[STM32_GPIO_PINS_PER_BANK];
++#endif
+ };
+ 
+ struct stm32_pinctrl {
+@@ -91,6 +113,13 @@ struct stm32_pinctrl {
+ 	struct irq_domain	*domain;
+ 	struct regmap		*regmap;
+ 	struct regmap_field	*irqmux[STM32_GPIO_PINS_PER_BANK];
++	u16 irqmux_map;
++	spinlock_t irqmux_lock;		/* interrupt mux lock */
++	struct stm32_desc_pin *pins;
++	u32 npins;
++	u32 pkg;
++	u32 pin_base_shift;
++	struct hwspinlock *hwlock;
+ };
+ 
+ static inline int stm32_gpio_pin(int gpio)
+@@ -126,11 +155,33 @@ static inline u32 stm32_gpio_get_alt(u32 function)
+ 	return 0;
+ }
+ 
++static int stm32_pctrl_hwspin_lock_timeout(struct hwspinlock *hwlock)
++{
++	int ret, timeout = 0;
++
++	/*
++	 * Use the x_raw API since we are under spin_lock protection and do not
++	 * use the x_timeout API because we are under irq_disable mode
++	 */
++	do {
++		ret = hwspin_trylock_raw(hwlock);
++		if (!ret)
++			return ret;
++
++		udelay(HWSPNLCK_RETRY_DELAY);
++		timeout += HWSPNLCK_RETRY_DELAY;
++	} while (timeout < HWSPNLCK_TIMEOUT);
++
++	return ret == -EBUSY ? -ETIMEDOUT : ret;
++}
++
+ /* GPIO functions */
+ 
+ static inline void __stm32_gpio_set(struct stm32_gpio_bank *bank,
+ 	unsigned offset, int value)
+ {
++	stm32_gpio_backup_value(bank, offset, value);
++
+ 	if (!value)
+ 		offset += STM32_GPIO_PINS_PER_BANK;
+ 
+@@ -300,9 +351,40 @@ static int stm32_gpio_domain_activate(struct irq_domain *d,
+ {
+ 	struct stm32_gpio_bank *bank = d->host_data;
+ 	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
++	unsigned long flags;
++	int ret = 0;
++
++	/*
++	 * gpio irq mux is shared between several banks, a lock has to be done
++	 * to avoid overriding.
++	 */
++	spin_lock_irqsave(&pctl->irqmux_lock, flags);
++
++	if (pctl->irqmux_map & BIT(irq_data->hwirq)) {
++		dev_err(pctl->dev, "irq line %ld already requested.\n",
++			irq_data->hwirq);
++		ret = -EBUSY;
++		goto unlock;
++	} else {
++		pctl->irqmux_map |= BIT(irq_data->hwirq);
++	}
+ 
+ 	regmap_field_write(pctl->irqmux[irq_data->hwirq], bank->bank_ioport_nr);
+-	return 0;
++unlock:
++	spin_unlock_irqrestore(&pctl->irqmux_lock, flags);
++	return ret;
++}
++
++static void stm32_gpio_domain_deactivate(struct irq_domain *d,
++					 struct irq_data *irq_data)
++{
++	struct stm32_gpio_bank *bank = d->host_data;
++	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
++	unsigned long flags;
++
++	spin_lock_irqsave(&pctl->irqmux_lock, flags);
++	pctl->irqmux_map &= ~BIT(irq_data->hwirq);
++	spin_unlock_irqrestore(&pctl->irqmux_lock, flags);
+ }
+ 
+ static int stm32_gpio_domain_alloc(struct irq_domain *d,
+@@ -331,6 +413,7 @@ static const struct irq_domain_ops stm32_gpio_domain_ops = {
+ 	.alloc          = stm32_gpio_domain_alloc,
+ 	.free           = irq_domain_free_irqs_common,
+ 	.activate	= stm32_gpio_domain_activate,
++	.deactivate	= stm32_gpio_domain_deactivate,
+ };
+ 
+ /* Pinctrl functions */
+@@ -352,16 +435,19 @@ stm32_pctrl_find_group_by_pin(struct stm32_pinctrl *pctl, u32 pin)
+ static bool stm32_pctrl_is_function_valid(struct stm32_pinctrl *pctl,
+ 		u32 pin_num, u32 fnum)
+ {
+-	int i;
++	int i, k;
+ 
+-	for (i = 0; i < pctl->match_data->npins; i++) {
+-		const struct stm32_desc_pin *pin = pctl->match_data->pins + i;
++	for (i = 0; i < pctl->npins; i++) {
++		const struct stm32_desc_pin *pin = pctl->pins + i;
+ 		const struct stm32_desc_function *func = pin->functions;
+ 
+ 		if (pin->pin.number != pin_num)
+ 			continue;
+ 
+-		while (func && func->name) {
++		if (fnum == STM32_PIN_RSVD)
++			return true;
++
++		for (k = 0; k < STM32_CONFIG_NUM; k++) {
+ 			if (func->num == fnum)
+ 				return true;
+ 			func++;
+@@ -579,17 +665,27 @@ static int stm32_pmx_get_func_groups(struct pinctrl_dev *pctldev,
+ 	return 0;
+ }
+ 
+-static void stm32_pmx_set_mode(struct stm32_gpio_bank *bank,
+-		int pin, u32 mode, u32 alt)
++static int stm32_pmx_set_mode(struct stm32_gpio_bank *bank,
++			      int pin, u32 mode, u32 alt)
+ {
++	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
+ 	u32 val;
+ 	int alt_shift = (pin % 8) * 4;
+ 	int alt_offset = STM32_GPIO_AFRL + (pin / 8) * 4;
+ 	unsigned long flags;
++	int err = 0;
+ 
+ 	clk_enable(bank->clk);
+ 	spin_lock_irqsave(&bank->lock, flags);
+ 
++	if (pctl->hwlock) {
++		err = stm32_pctrl_hwspin_lock_timeout(pctl->hwlock);
++		if (err) {
++			dev_err(pctl->dev, "Can't get hwspinlock\n");
++			goto unlock;
++		}
++	}
++
+ 	val = readl_relaxed(bank->base + alt_offset);
+ 	val &= ~GENMASK(alt_shift + 3, alt_shift);
+ 	val |= (alt << alt_shift);
+@@ -600,8 +696,15 @@ static void stm32_pmx_set_mode(struct stm32_gpio_bank *bank,
+ 	val |= mode << (pin * 2);
+ 	writel_relaxed(val, bank->base + STM32_GPIO_MODER);
+ 
++	stm32_gpio_backup_mode(bank, pin, mode, alt);
++
++	if (pctl->hwlock)
++		hwspin_unlock_raw(pctl->hwlock);
++
++unlock:
+ 	spin_unlock_irqrestore(&bank->lock, flags);
+ 	clk_disable(bank->clk);
++	return err;
+ }
+ 
+ void stm32_pmx_get_mode(struct stm32_gpio_bank *bank, int pin, u32 *mode,
+@@ -652,15 +755,18 @@ static int stm32_pmx_set_mux(struct pinctrl_dev *pctldev,
+ 		return -EINVAL;
+ 	}
+ 
++	if (function == STM32_PIN_RSVD) {
++		dev_dbg(pctl->dev, "Reserved pins, skipping HW update.\n");
++		return 0;
++	}
++
+ 	bank = gpiochip_get_data(range->gc);
+ 	pin = stm32_gpio_pin(g->pin);
+ 
+ 	mode = stm32_gpio_get_mode(function);
+ 	alt = stm32_gpio_get_alt(function);
+ 
+-	stm32_pmx_set_mode(bank, pin, mode, alt);
+-
+-	return 0;
++	return stm32_pmx_set_mode(bank, pin, mode, alt);
+ }
+ 
+ static int stm32_pmx_gpio_set_direction(struct pinctrl_dev *pctldev,
+@@ -670,9 +776,7 @@ static int stm32_pmx_gpio_set_direction(struct pinctrl_dev *pctldev,
+ 	struct stm32_gpio_bank *bank = gpiochip_get_data(range->gc);
+ 	int pin = stm32_gpio_pin(gpio);
+ 
+-	stm32_pmx_set_mode(bank, pin, !input, 0);
+-
+-	return 0;
++	return stm32_pmx_set_mode(bank, pin, !input, 0);
+ }
+ 
+ static const struct pinmux_ops stm32_pmx_ops = {
+@@ -686,22 +790,39 @@ static const struct pinmux_ops stm32_pmx_ops = {
+ 
+ /* Pinconf functions */
+ 
+-static void stm32_pconf_set_driving(struct stm32_gpio_bank *bank,
+-	unsigned offset, u32 drive)
++static int stm32_pconf_set_driving(struct stm32_gpio_bank *bank,
++				   unsigned offset, u32 drive)
+ {
++	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
+ 	unsigned long flags;
+ 	u32 val;
++	int err = 0;
+ 
+ 	clk_enable(bank->clk);
+ 	spin_lock_irqsave(&bank->lock, flags);
+ 
++	if (pctl->hwlock) {
++		err = stm32_pctrl_hwspin_lock_timeout(pctl->hwlock);
++		if (err) {
++			dev_err(pctl->dev, "Can't get hwspinlock\n");
++			goto unlock;
++		}
++	}
++
+ 	val = readl_relaxed(bank->base + STM32_GPIO_TYPER);
+ 	val &= ~BIT(offset);
+ 	val |= drive << offset;
+ 	writel_relaxed(val, bank->base + STM32_GPIO_TYPER);
+ 
++	stm32_gpio_backup_driving(bank, offset, drive);
++
++	if (pctl->hwlock)
++		hwspin_unlock_raw(pctl->hwlock);
++
++unlock:
+ 	spin_unlock_irqrestore(&bank->lock, flags);
+ 	clk_disable(bank->clk);
++	return err;
+ }
+ 
+ static u32 stm32_pconf_get_driving(struct stm32_gpio_bank *bank,
+@@ -722,22 +843,39 @@ static u32 stm32_pconf_get_driving(struct stm32_gpio_bank *bank,
+ 	return (val >> offset);
+ }
+ 
+-static void stm32_pconf_set_speed(struct stm32_gpio_bank *bank,
+-	unsigned offset, u32 speed)
++static int stm32_pconf_set_speed(struct stm32_gpio_bank *bank,
++				 unsigned offset, u32 speed)
+ {
++	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
+ 	unsigned long flags;
+ 	u32 val;
++	int err = 0;
+ 
+ 	clk_enable(bank->clk);
+ 	spin_lock_irqsave(&bank->lock, flags);
+ 
++	if (pctl->hwlock) {
++		err = stm32_pctrl_hwspin_lock_timeout(pctl->hwlock);
++		if (err) {
++			dev_err(pctl->dev, "Can't get hwspinlock\n");
++			goto unlock;
++		}
++	}
++
+ 	val = readl_relaxed(bank->base + STM32_GPIO_SPEEDR);
+ 	val &= ~GENMASK(offset * 2 + 1, offset * 2);
+ 	val |= speed << (offset * 2);
+ 	writel_relaxed(val, bank->base + STM32_GPIO_SPEEDR);
+ 
++	stm32_gpio_backup_speed(bank, offset, speed);
++
++	if (pctl->hwlock)
++		hwspin_unlock_raw(pctl->hwlock);
++
++unlock:
+ 	spin_unlock_irqrestore(&bank->lock, flags);
+ 	clk_disable(bank->clk);
++	return err;
+ }
+ 
+ static u32 stm32_pconf_get_speed(struct stm32_gpio_bank *bank,
+@@ -758,22 +896,39 @@ static u32 stm32_pconf_get_speed(struct stm32_gpio_bank *bank,
+ 	return (val >> (offset * 2));
+ }
+ 
+-static void stm32_pconf_set_bias(struct stm32_gpio_bank *bank,
+-	unsigned offset, u32 bias)
++static int stm32_pconf_set_bias(struct stm32_gpio_bank *bank,
++				unsigned offset, u32 bias)
+ {
++	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
+ 	unsigned long flags;
+ 	u32 val;
++	int err = 0;
+ 
+ 	clk_enable(bank->clk);
+ 	spin_lock_irqsave(&bank->lock, flags);
+ 
++	if (pctl->hwlock) {
++		err = stm32_pctrl_hwspin_lock_timeout(pctl->hwlock);
++		if (err) {
++			dev_err(pctl->dev, "Can't get hwspinlock\n");
++			goto unlock;
++		}
++	}
++
+ 	val = readl_relaxed(bank->base + STM32_GPIO_PUPDR);
+ 	val &= ~GENMASK(offset * 2 + 1, offset * 2);
+ 	val |= bias << (offset * 2);
+ 	writel_relaxed(val, bank->base + STM32_GPIO_PUPDR);
+ 
++	stm32_gpio_backup_bias(bank, offset, bias);
++
++	if (pctl->hwlock)
++		hwspin_unlock_raw(pctl->hwlock);
++
++unlock:
+ 	spin_unlock_irqrestore(&bank->lock, flags);
+ 	clk_disable(bank->clk);
++	return err;
+ }
+ 
+ static u32 stm32_pconf_get_bias(struct stm32_gpio_bank *bank,
+@@ -836,22 +991,22 @@ static int stm32_pconf_parse_conf(struct pinctrl_dev *pctldev,
+ 
+ 	switch (param) {
+ 	case PIN_CONFIG_DRIVE_PUSH_PULL:
+-		stm32_pconf_set_driving(bank, offset, 0);
++		ret = stm32_pconf_set_driving(bank, offset, 0);
+ 		break;
+ 	case PIN_CONFIG_DRIVE_OPEN_DRAIN:
+-		stm32_pconf_set_driving(bank, offset, 1);
++		ret = stm32_pconf_set_driving(bank, offset, 1);
+ 		break;
+ 	case PIN_CONFIG_SLEW_RATE:
+-		stm32_pconf_set_speed(bank, offset, arg);
++		ret = stm32_pconf_set_speed(bank, offset, arg);
+ 		break;
+ 	case PIN_CONFIG_BIAS_DISABLE:
+-		stm32_pconf_set_bias(bank, offset, 0);
++		ret = stm32_pconf_set_bias(bank, offset, 0);
+ 		break;
+ 	case PIN_CONFIG_BIAS_PULL_UP:
+-		stm32_pconf_set_bias(bank, offset, 1);
++		ret = stm32_pconf_set_bias(bank, offset, 1);
+ 		break;
+ 	case PIN_CONFIG_BIAS_PULL_DOWN:
+-		stm32_pconf_set_bias(bank, offset, 2);
++		ret = stm32_pconf_set_bias(bank, offset, 2);
+ 		break;
+ 	case PIN_CONFIG_OUTPUT:
+ 		__stm32_gpio_set(bank, offset, arg);
+@@ -899,6 +1054,8 @@ static void stm32_pconf_dbg_show(struct pinctrl_dev *pctldev,
+ 				 struct seq_file *s,
+ 				 unsigned int pin)
+ {
++	struct stm32_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++	const struct stm32_desc_pin *pin_desc;
+ 	struct pinctrl_gpio_range *range;
+ 	struct stm32_gpio_bank *bank;
+ 	int offset;
+@@ -948,7 +1105,9 @@ static void stm32_pconf_dbg_show(struct pinctrl_dev *pctldev,
+ 	case 2:
+ 		drive = stm32_pconf_get_driving(bank, offset);
+ 		speed = stm32_pconf_get_speed(bank, offset);
+-		seq_printf(s, "%d - %s - %s - %s %s", alt,
++		pin_desc = pctl->pins + (pin - pctl->pin_base_shift);
++		seq_printf(s, "%d (%s) - %s - %s - %s %s", alt,
++			   pin_desc->functions[alt + 1].name,
+ 			   drive ? "open drain" : "push pull",
+ 			   biasing[bias],
+ 			   speeds[speed], "speed");
+@@ -1055,23 +1214,35 @@ static int stm32_gpiolib_register_bank(struct stm32_pinctrl *pctl,
+ 	return 0;
+ }
+ 
++static struct irq_domain *stm32_pctrl_get_irq_domain(struct device_node *np)
++{
++	struct device_node *parent;
++	struct irq_domain *domain;
++
++	if (!of_find_property(np, "interrupt-parent", NULL))
++		return NULL;
++
++	parent = of_irq_find_parent(np);
++	if (!parent)
++		return ERR_PTR(-ENXIO);
++
++	domain = irq_find_host(parent);
++	if (!domain)
++		/* domain not registered yet */
++		return ERR_PTR(-EPROBE_DEFER);
++
++	return domain;
++}
++
+ static int stm32_pctrl_dt_setup_irq(struct platform_device *pdev,
+ 			   struct stm32_pinctrl *pctl)
+ {
+-	struct device_node *np = pdev->dev.of_node, *parent;
++	struct device_node *np = pdev->dev.of_node;
+ 	struct device *dev = &pdev->dev;
+ 	struct regmap *rm;
+ 	int offset, ret, i;
+ 	int mask, mask_width;
+ 
+-	parent = of_irq_find_parent(np);
+-	if (!parent)
+-		return -ENXIO;
+-
+-	pctl->domain = irq_find_host(parent);
+-	if (!pctl->domain)
+-		return -ENXIO;
+-
+ 	pctl->regmap = syscon_regmap_lookup_by_phandle(np, "st,syscfg");
+ 	if (IS_ERR(pctl->regmap))
+ 		return PTR_ERR(pctl->regmap);
+@@ -1111,7 +1282,7 @@ static int stm32_pctrl_build_state(struct platform_device *pdev)
+ 	struct stm32_pinctrl *pctl = platform_get_drvdata(pdev);
+ 	int i;
+ 
+-	pctl->ngroups = pctl->match_data->npins;
++	pctl->ngroups = pctl->npins;
+ 
+ 	/* Allocate groups */
+ 	pctl->groups = devm_kcalloc(&pdev->dev, pctl->ngroups,
+@@ -1125,19 +1296,51 @@ static int stm32_pctrl_build_state(struct platform_device *pdev)
+ 	if (!pctl->grp_names)
+ 		return -ENOMEM;
+ 
+-	for (i = 0; i < pctl->match_data->npins; i++) {
+-		const struct stm32_desc_pin *pin = pctl->match_data->pins + i;
++	for (i = 0; i < pctl->npins; i++) {
++		const struct stm32_desc_pin *pin = pctl->pins + i;
+ 		struct stm32_pinctrl_group *group = pctl->groups + i;
+ 
+ 		group->name = pin->pin.name;
+ 		group->pin = pin->pin.number;
+-
+ 		pctl->grp_names[i] = pin->pin.name;
+ 	}
+ 
+ 	return 0;
+ }
+ 
++static int stm32_pctrl_create_pins_tab(struct stm32_pinctrl *pctl,
++				       struct stm32_desc_pin *pins)
++{
++	const struct stm32_desc_pin *p;
++	int i, nb_pins_available = 0;
++
++	for (i = 0; i < pctl->match_data->npins; i++) {
++		p = pctl->match_data->pins + i;
++		if (pctl->pkg && !(pctl->pkg & p->pkg))
++			continue;
++		pins->pin = p->pin;
++		memcpy((struct stm32_desc_pin *)pins->functions, p->functions,
++		       STM32_CONFIG_NUM * sizeof(struct stm32_desc_function));
++		pins++;
++		nb_pins_available++;
++	}
++
++	pctl->npins = nb_pins_available;
++
++	return 0;
++}
++
++static void stm32_pctl_get_package(struct device_node *np,
++				   struct stm32_pinctrl *pctl)
++{
++	if (of_property_read_u32(np, "st,package", &pctl->pkg)) {
++		pctl->pkg = 0;
++		dev_warn(pctl->dev, "No package detected, use default one\n");
++	} else {
++		dev_dbg(pctl->dev, "package detected: %x\n", pctl->pkg);
++	}
++}
++
+ int stm32_pctl_probe(struct platform_device *pdev)
+ {
+ 	struct device_node *np = pdev->dev.of_node;
+@@ -1146,7 +1349,7 @@ int stm32_pctl_probe(struct platform_device *pdev)
+ 	struct device *dev = &pdev->dev;
+ 	struct stm32_pinctrl *pctl;
+ 	struct pinctrl_pin_desc *pins;
+-	int i, ret, banks = 0;
++	int i, ret, hwlock_id, banks = 0;
+ 
+ 	if (!np)
+ 		return -EINVAL;
+@@ -1166,36 +1369,66 @@ int stm32_pctl_probe(struct platform_device *pdev)
+ 
+ 	platform_set_drvdata(pdev, pctl);
+ 
++	/* check for IRQ controller (may require deferred probe) */
++	pctl->domain = stm32_pctrl_get_irq_domain(np);
++	if (IS_ERR(pctl->domain))
++		return PTR_ERR(pctl->domain);
++
++	/* hwspinlock is optional */
++	hwlock_id = of_hwspin_lock_get_id(pdev->dev.of_node, 0);
++	if (hwlock_id < 0) {
++		if (hwlock_id == -EPROBE_DEFER)
++			return hwlock_id;
++	} else {
++		pctl->hwlock = hwspin_lock_request_specific(hwlock_id);
++	}
++
++	spin_lock_init(&pctl->irqmux_lock);
++
+ 	pctl->dev = dev;
+ 	pctl->match_data = match->data;
++
++	/*  get package information */
++	stm32_pctl_get_package(np, pctl);
++
++	pctl->pins = devm_kcalloc(pctl->dev, pctl->match_data->npins,
++				  sizeof(*pctl->pins), GFP_KERNEL);
++	if (!pctl->pins)
++		return -ENOMEM;
++
++	ret = stm32_pctrl_create_pins_tab(pctl, pctl->pins);
++	if (ret)
++		return ret;
++
+ 	ret = stm32_pctrl_build_state(pdev);
+ 	if (ret) {
+ 		dev_err(dev, "build state failed: %d\n", ret);
+ 		return -EINVAL;
+ 	}
+ 
+-	if (of_find_property(np, "interrupt-parent", NULL)) {
++	if (pctl->domain) {
+ 		ret = stm32_pctrl_dt_setup_irq(pdev, pctl);
+ 		if (ret)
+ 			return ret;
+ 	}
+ 
+-	pins = devm_kcalloc(&pdev->dev, pctl->match_data->npins, sizeof(*pins),
++	pins = devm_kcalloc(&pdev->dev, pctl->npins, sizeof(*pins),
+ 			    GFP_KERNEL);
+ 	if (!pins)
+ 		return -ENOMEM;
+ 
+-	for (i = 0; i < pctl->match_data->npins; i++)
+-		pins[i] = pctl->match_data->pins[i].pin;
++	for (i = 0; i < pctl->npins; i++)
++		pins[i] = pctl->pins[i].pin;
+ 
+ 	pctl->pctl_desc.name = dev_name(&pdev->dev);
+ 	pctl->pctl_desc.owner = THIS_MODULE;
+ 	pctl->pctl_desc.pins = pins;
+-	pctl->pctl_desc.npins = pctl->match_data->npins;
++	pctl->pctl_desc.npins = pctl->npins;
+ 	pctl->pctl_desc.confops = &stm32_pconf_ops;
+ 	pctl->pctl_desc.pctlops = &stm32_pctrl_ops;
+ 	pctl->pctl_desc.pmxops = &stm32_pmx_ops;
+ 	pctl->dev = &pdev->dev;
++	pctl->pin_base_shift = pctl->match_data->pin_base_shift;
+ 
+ 	pctl->pctl_dev = devm_pinctrl_register(&pdev->dev, &pctl->pctl_desc,
+ 					       pctl);
+@@ -1233,3 +1466,115 @@ int stm32_pctl_probe(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
++#ifdef CONFIG_PM
++void stm32_gpio_backup_value(struct stm32_gpio_bank *bank,
++			     u32 offset, u32 value)
++{
++	bank->pin_backup[offset] &= ~BIT(STM32_GPIO_BKP_VAL);
++	bank->pin_backup[offset] |= value << STM32_GPIO_BKP_VAL;
++}
++
++void stm32_gpio_backup_mode(struct stm32_gpio_bank *bank,
++			    u32 offset, u32 mode, u32 alt)
++{
++	bank->pin_backup[offset] &= ~(STM32_GPIO_BKP_MODE_MASK |
++				      STM32_GPIO_BKP_ALT_MASK);
++	bank->pin_backup[offset] |= mode << STM32_GPIO_BKP_MODE_SHIFT;
++	bank->pin_backup[offset] |= alt << STM32_GPIO_BKP_ALT_SHIFT;
++}
++
++void stm32_gpio_backup_driving(struct stm32_gpio_bank *bank,
++			       u32 offset, u32 drive)
++{
++	bank->pin_backup[offset] &= ~BIT(STM32_GPIO_BKP_TYPE);
++	bank->pin_backup[offset] |= drive << STM32_GPIO_BKP_TYPE;
++}
++
++void stm32_gpio_backup_speed(struct stm32_gpio_bank *bank,
++			     u32 offset, u32 speed)
++{
++	bank->pin_backup[offset] &= ~STM32_GPIO_BKP_SPEED_MASK;
++	bank->pin_backup[offset] |= speed << STM32_GPIO_BKP_SPEED_SHIFT;
++}
++
++void stm32_gpio_backup_bias(struct stm32_gpio_bank *bank,
++			    u32 offset, u32 bias)
++{
++	bank->pin_backup[offset] &= ~STM32_GPIO_BKP_PUPD_MASK;
++	bank->pin_backup[offset] |= bias << STM32_GPIO_BKP_PUPD_SHIFT;
++}
++
++static int stm32_pinctrl_restore_gpio_regs(struct stm32_pinctrl *pctl, u32 pin)
++{
++	const struct pin_desc *desc = pin_desc_get(pctl->pctl_dev, pin);
++	struct pinctrl_gpio_range *range;
++	struct stm32_gpio_bank *bank;
++	u32 val, alt, mode, offset = stm32_gpio_pin(pin);
++	bool pin_is_irq;
++	int ret;
++
++	range = pinctrl_find_gpio_range_from_pin(pctl->pctl_dev, pin);
++	if (!range)
++		return 0;
++
++	pin_is_irq = gpiochip_line_is_irq(range->gc, offset);
++
++	if (!desc || (!pin_is_irq && !desc->gpio_owner))
++		return 0;
++
++	bank = gpiochip_get_data(range->gc);
++
++	alt = bank->pin_backup[offset] & STM32_GPIO_BKP_ALT_MASK;
++	alt >>= STM32_GPIO_BKP_ALT_SHIFT;
++	mode = bank->pin_backup[offset] & STM32_GPIO_BKP_MODE_MASK;
++	mode >>= STM32_GPIO_BKP_MODE_SHIFT;
++
++	ret = stm32_pmx_set_mode(bank, offset, mode, alt);
++	if (ret)
++		return ret;
++
++	if (mode == 1) {
++		val = bank->pin_backup[offset] & BIT(STM32_GPIO_BKP_VAL);
++		val = val >> STM32_GPIO_BKP_VAL;
++		__stm32_gpio_set(bank, offset, val);
++	}
++
++	val = bank->pin_backup[offset] & BIT(STM32_GPIO_BKP_TYPE);
++	val >>= STM32_GPIO_BKP_TYPE;
++	ret = stm32_pconf_set_driving(bank, offset, val);
++	if (ret)
++		return ret;
++
++	val = bank->pin_backup[offset] & STM32_GPIO_BKP_SPEED_MASK;
++	val >>= STM32_GPIO_BKP_SPEED_SHIFT;
++	ret = stm32_pconf_set_speed(bank, offset, val);
++	if (ret)
++		return ret;
++
++	val = bank->pin_backup[offset] & STM32_GPIO_BKP_PUPD_MASK;
++	val >>= STM32_GPIO_BKP_PUPD_SHIFT;
++	ret = stm32_pconf_set_bias(bank, offset, val);
++	if (ret)
++		return ret;
++
++	if (pin_is_irq)
++		regmap_field_write(pctl->irqmux[offset], bank->bank_ioport_nr);
++
++	return 0;
++}
++
++int stm32_pinctrl_resume(struct device *dev)
++{
++	struct stm32_pinctrl *pctl = dev_get_drvdata(dev);
++	struct stm32_pinctrl_group *g = pctl->groups;
++	int i, ret;
++
++	for (i = g->pin; i < g->pin + pctl->ngroups; i++) {
++		ret = stm32_pinctrl_restore_gpio_regs(pctl, i);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++#endif /*  CONFIG_PM */
+diff --git a/drivers/pinctrl/stm32/pinctrl-stm32.h b/drivers/pinctrl/stm32/pinctrl-stm32.h
+index 473a623..bc77a58 100644
+--- a/drivers/pinctrl/stm32/pinctrl-stm32.h
++++ b/drivers/pinctrl/stm32/pinctrl-stm32.h
+@@ -17,6 +17,16 @@
+ #define STM32_PIN_GPIO		0
+ #define STM32_PIN_AF(x)		((x) + 1)
+ #define STM32_PIN_ANALOG	(STM32_PIN_AF(15) + 1)
++#define STM32_PIN_RSVD		(STM32_PIN_ANALOG + 1)
++#define STM32_CONFIG_NUM	(STM32_PIN_RSVD + 1)
++
++/*  package information */
++#define STM32MP157CAA		BIT(0)
++#define STM32MP157CAB		BIT(1)
++#define STM32MP157CAC		BIT(2)
++#define STM32MP157CAD		BIT(3)
++
++#define STM32MP157_Z_BASE_SHIFT	400
+ 
+ struct stm32_desc_function {
+ 	const char *name;
+@@ -25,7 +35,8 @@ struct stm32_desc_function {
+ 
+ struct stm32_desc_pin {
+ 	struct pinctrl_pin_desc pin;
+-	const struct stm32_desc_function *functions;
++	const struct stm32_desc_function functions[STM32_CONFIG_NUM];
++	const unsigned int pkg;
+ };
+ 
+ #define STM32_PIN(_pin, ...)					\
+@@ -35,8 +46,15 @@ struct stm32_desc_pin {
+ 			__VA_ARGS__, { } },			\
+ 	}
+ 
+-#define STM32_FUNCTION(_num, _name)		\
++#define STM32_PIN_PKG(_pin, _pkg, ...)					\
+ 	{							\
++		.pin = _pin,					\
++		.pkg  = _pkg,				\
++		.functions = {	\
++			__VA_ARGS__},			\
++	}
++#define STM32_FUNCTION(_num, _name)		\
++	[_num] = {						\
+ 		.num = _num,					\
+ 		.name = _name,					\
+ 	}
+@@ -44,6 +62,7 @@ struct stm32_desc_pin {
+ struct stm32_pinctrl_match_data {
+ 	const struct stm32_desc_pin *pins;
+ 	const unsigned int npins;
++	const unsigned int pin_base_shift;
+ };
+ 
+ struct stm32_gpio_bank;
+@@ -51,5 +70,35 @@ struct stm32_gpio_bank;
+ int stm32_pctl_probe(struct platform_device *pdev);
+ void stm32_pmx_get_mode(struct stm32_gpio_bank *bank,
+ 			int pin, u32 *mode, u32 *alt);
++
++#ifdef CONFIG_PM
++void stm32_gpio_backup_value(struct stm32_gpio_bank *bank,
++			     u32 offset, u32 value);
++void stm32_gpio_backup_driving(struct stm32_gpio_bank *bank,
++			       u32 offset, u32 drive);
++void stm32_gpio_backup_speed(struct stm32_gpio_bank *bank,
++			     u32 offset, u32 speed);
++void stm32_gpio_backup_mode(struct stm32_gpio_bank *bank,
++			    u32 offset, u32 mode, u32 alt);
++void stm32_gpio_backup_bias(struct stm32_gpio_bank *bank,
++			    u32 offset, u32 bias);
++int stm32_pinctrl_resume(struct device *dev);
++#else
++static void stm32_gpio_backup_value(struct stm32_gpio_bank *bank,
++				    u32 offset, u32 value)
++{}
++static void stm32_gpio_backup_driving(struct stm32_gpio_bank *bank,
++				      u32 offset, u32 drive)
++{}
++static void stm32_gpio_backup_speed(struct stm32_gpio_bank *bank,
++				    u32 offset, u32 speed)
++{}
++static void stm32_gpio_backup_mode(struct stm32_gpio_bank *bank,
++				   u32 offset, u32 mode, u32 alt)
++{}
++static void stm32_gpio_backup_bias(struct stm32_gpio_bank *bank,
++				   u32 offset, u32 bias)
++{}
++#endif /*  CONFIG_PM */
+ #endif /* __PINCTRL_STM32_H */
+ 
+diff --git a/drivers/pinctrl/stm32/pinctrl-stm32mp157.c b/drivers/pinctrl/stm32/pinctrl-stm32mp157.c
+index 7c7d628..e1a8a89 100644
+--- a/drivers/pinctrl/stm32/pinctrl-stm32mp157.c
++++ b/drivers/pinctrl/stm32/pinctrl-stm32mp157.c
+@@ -10,77 +10,82 @@
+ #include "pinctrl-stm32.h"
+ 
+ static const struct stm32_desc_pin stm32mp157_pins[] = {
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(0, "PA0"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA0"),
+ 		STM32_FUNCTION(2, "TIM2_CH1 TIM2_ETR"),
+ 		STM32_FUNCTION(3, "TIM5_CH1"),
+ 		STM32_FUNCTION(4, "TIM8_ETR"),
+ 		STM32_FUNCTION(5, "TIM15_BKIN"),
+-		STM32_FUNCTION(8, "USART2_CTS_NSS USART_BOOT2_CTS_NSS"),
++		STM32_FUNCTION(8, "USART2_CTS USART2_NSS"),
+ 		STM32_FUNCTION(9, "UART4_TX"),
+ 		STM32_FUNCTION(10, "SDMMC2_CMD"),
+ 		STM32_FUNCTION(11, "SAI2_SD_B"),
+-		STM32_FUNCTION(12, "ETH_GMII_CRS ETH_MII_CRS"),
++		STM32_FUNCTION(12, "ETH1_GMII_CRS ETH1_MII_CRS"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(1, "PA1"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA1"),
+ 		STM32_FUNCTION(1, "ETH_CLK"),
+ 		STM32_FUNCTION(2, "TIM2_CH2"),
+ 		STM32_FUNCTION(3, "TIM5_CH2"),
+ 		STM32_FUNCTION(4, "LPTIM3_OUT"),
+ 		STM32_FUNCTION(5, "TIM15_CH1N"),
+-		STM32_FUNCTION(8, "USART2_RTS USART_BOOT2_RTS"),
++		STM32_FUNCTION(8, "USART2_RTS USART2_DE"),
+ 		STM32_FUNCTION(9, "UART4_RX"),
+-		STM32_FUNCTION(10, "QUADSPI_BK1_IO3 QUADSPI_BOOTBK1_IO3"),
++		STM32_FUNCTION(10, "QUADSPI_BK1_IO3"),
+ 		STM32_FUNCTION(11, "SAI2_MCLK_B"),
+-		STM32_FUNCTION(12, "ETH_GMII_RX_CLK ETH_MII_RX_CLK ETH_RGMII_RX_CLK ETH_RMII_REF_CLK"),
++		STM32_FUNCTION(12, "ETH1_GMII_RX_CLK ETH1_MII_RX_CLK ETH1_RGMII_RX_CLK ETH1_RMII_REF_CLK"),
+ 		STM32_FUNCTION(15, "LCD_R2"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(2, "PA2"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA2"),
+ 		STM32_FUNCTION(2, "TIM2_CH3"),
+ 		STM32_FUNCTION(3, "TIM5_CH3"),
+ 		STM32_FUNCTION(4, "LPTIM4_OUT"),
+ 		STM32_FUNCTION(5, "TIM15_CH1"),
+-		STM32_FUNCTION(8, "USART2_TX USART_BOOT2_TX"),
++		STM32_FUNCTION(8, "USART2_TX"),
+ 		STM32_FUNCTION(9, "SAI2_SCK_B"),
+-		STM32_FUNCTION(11, "SDMMC2_D0DIR SDMMC_BOOT2_D0DIR"),
+-		STM32_FUNCTION(12, "ETH_MDIO"),
++		STM32_FUNCTION(11, "SDMMC2_D0DIR"),
++		STM32_FUNCTION(12, "ETH1_MDIO"),
+ 		STM32_FUNCTION(13, "MDIOS_MDIO"),
+ 		STM32_FUNCTION(15, "LCD_R1"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(3, "PA3"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA3"),
+ 		STM32_FUNCTION(2, "TIM2_CH4"),
+ 		STM32_FUNCTION(3, "TIM5_CH4"),
+ 		STM32_FUNCTION(4, "LPTIM5_OUT"),
+ 		STM32_FUNCTION(5, "TIM15_CH2"),
+-		STM32_FUNCTION(8, "USART2_RX USART_BOOT2_RX"),
++		STM32_FUNCTION(8, "USART2_RX"),
+ 		STM32_FUNCTION(10, "LCD_B2"),
+-		STM32_FUNCTION(12, "ETH_GMII_COL ETH_MII_COL"),
++		STM32_FUNCTION(12, "ETH1_GMII_COL ETH1_MII_COL"),
+ 		STM32_FUNCTION(15, "LCD_B5"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(4, "PA4"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA4"),
+ 		STM32_FUNCTION(1, "HDP0"),
+ 		STM32_FUNCTION(3, "TIM5_ETR"),
+ 		STM32_FUNCTION(5, "SAI4_D2"),
+ 		STM32_FUNCTION(6, "SPI1_NSS I2S1_WS"),
+ 		STM32_FUNCTION(7, "SPI3_NSS I2S3_WS"),
+-		STM32_FUNCTION(8, "USART2_CK USART_BOOT2_CK"),
++		STM32_FUNCTION(8, "USART2_CK"),
+ 		STM32_FUNCTION(9, "SPI6_NSS"),
+ 		STM32_FUNCTION(13, "SAI4_FS_A"),
+ 		STM32_FUNCTION(14, "DCMI_HSYNC"),
+@@ -88,8 +93,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(5, "PA5"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA5"),
+ 		STM32_FUNCTION(2, "TIM2_CH1 TIM2_ETR"),
+ 		STM32_FUNCTION(4, "TIM8_CH1N"),
+@@ -101,8 +107,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(6, "PA6"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA6"),
+ 		STM32_FUNCTION(2, "TIM1_BKIN"),
+ 		STM32_FUNCTION(3, "TIM3_CH1"),
+@@ -118,8 +125,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(7, "PA7"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA7"),
+ 		STM32_FUNCTION(2, "TIM1_CH1N"),
+ 		STM32_FUNCTION(3, "TIM3_CH2"),
+@@ -129,13 +137,14 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(9, "SPI6_MOSI"),
+ 		STM32_FUNCTION(10, "TIM14_CH1"),
+ 		STM32_FUNCTION(11, "QUADSPI_CLK"),
+-		STM32_FUNCTION(12, "ETH_GMII_RX_DV ETH_MII_RX_DV ETH_RGMII_RX_CTL ETH_RMII_CRS_DV"),
++		STM32_FUNCTION(12, "ETH1_GMII_RX_DV ETH1_MII_RX_DV ETH1_RGMII_RX_CTL ETH1_RMII_CRS_DV"),
+ 		STM32_FUNCTION(13, "SAI4_SD_A"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(8, "PA8"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA8"),
+ 		STM32_FUNCTION(1, "MCO1"),
+ 		STM32_FUNCTION(2, "TIM1_CH1"),
+@@ -143,37 +152,37 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(5, "I2C3_SCL"),
+ 		STM32_FUNCTION(6, "SPI3_MOSI I2S3_SDO"),
+ 		STM32_FUNCTION(8, "USART1_CK"),
+-		STM32_FUNCTION(9, "SDMMC2_CKIN SDMMC_BOOT2_CKIN"),
+-		STM32_FUNCTION(10, "SDMMC2_D4 SDMMC_BOOT2_D4"),
+-		STM32_FUNCTION(11, "USBO_SOF"),
++		STM32_FUNCTION(9, "SDMMC2_CKIN"),
++		STM32_FUNCTION(10, "SDMMC2_D4"),
++		STM32_FUNCTION(11, "OTG_FS_SOF OTG_HS_SOF"),
+ 		STM32_FUNCTION(13, "SAI4_SD_B"),
+ 		STM32_FUNCTION(14, "UART7_RX"),
+ 		STM32_FUNCTION(15, "LCD_R6"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(9, "PA9"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA9"),
+ 		STM32_FUNCTION(2, "TIM1_CH2"),
+ 		STM32_FUNCTION(5, "I2C3_SMBA"),
+ 		STM32_FUNCTION(6, "SPI2_SCK I2S2_CK"),
+ 		STM32_FUNCTION(8, "USART1_TX"),
+-		STM32_FUNCTION(9, "SDMMC2_CDIR SDMMC_BOOT2_CDIR"),
+-		STM32_FUNCTION(10, "CAN1_RXFD"),
+-		STM32_FUNCTION(11, "SDMMC2_D5 SDMMC_BOOT2_D5"),
++		STM32_FUNCTION(9, "SDMMC2_CDIR"),
++		STM32_FUNCTION(11, "SDMMC2_D5"),
+ 		STM32_FUNCTION(14, "DCMI_D0"),
+ 		STM32_FUNCTION(15, "LCD_R5"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(10, "PA10"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA10"),
+ 		STM32_FUNCTION(2, "TIM1_CH3"),
+ 		STM32_FUNCTION(6, "SPI3_NSS I2S3_WS"),
+ 		STM32_FUNCTION(8, "USART1_RX"),
+-		STM32_FUNCTION(10, "CAN1_TXFD"),
+ 		STM32_FUNCTION(12, "MDIOS_MDIO"),
+ 		STM32_FUNCTION(13, "SAI4_FS_B"),
+ 		STM32_FUNCTION(14, "DCMI_D1"),
+@@ -181,37 +190,39 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(11, "PA11"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA11"),
+ 		STM32_FUNCTION(2, "TIM1_CH4"),
+ 		STM32_FUNCTION(3, "I2C6_SCL"),
+ 		STM32_FUNCTION(5, "I2C5_SCL"),
+ 		STM32_FUNCTION(6, "SPI2_NSS I2S2_WS"),
+ 		STM32_FUNCTION(7, "UART4_RX"),
+-		STM32_FUNCTION(8, "USART1_CTS_NSS"),
+-		STM32_FUNCTION(10, "CAN1_RX"),
++		STM32_FUNCTION(8, "USART1_CTS USART1_NSS"),
++		STM32_FUNCTION(10, "FDCAN1_RX"),
+ 		STM32_FUNCTION(15, "LCD_R4"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(12, "PA12"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA12"),
+ 		STM32_FUNCTION(2, "TIM1_ETR"),
+ 		STM32_FUNCTION(3, "I2C6_SDA"),
+ 		STM32_FUNCTION(5, "I2C5_SDA"),
+-		STM32_FUNCTION(6, "SPI2_SCK I2S2_CK"),
+ 		STM32_FUNCTION(7, "UART4_TX"),
+-		STM32_FUNCTION(8, "USART1_RTS"),
++		STM32_FUNCTION(8, "USART1_RTS USART1_DE"),
+ 		STM32_FUNCTION(9, "SAI2_FS_B"),
+-		STM32_FUNCTION(10, "CAN1_TX"),
++		STM32_FUNCTION(10, "FDCAN1_TX"),
+ 		STM32_FUNCTION(15, "LCD_R5"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(13, "PA13"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA13"),
+ 		STM32_FUNCTION(1, "DBTRGO"),
+ 		STM32_FUNCTION(2, "DBTRGI"),
+@@ -220,8 +231,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(14, "PA14"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA14"),
+ 		STM32_FUNCTION(1, "DBTRGO"),
+ 		STM32_FUNCTION(2, "DBTRGI"),
+@@ -229,73 +241,79 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(15, "PA15"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOA15"),
+ 		STM32_FUNCTION(1, "DBTRGI"),
+ 		STM32_FUNCTION(2, "TIM2_CH1 TIM2_ETR"),
+ 		STM32_FUNCTION(3, "SAI4_D2"),
+ 		STM32_FUNCTION(4, "SDMMC1_CDIR"),
+-		STM32_FUNCTION(5, "HDMI_CEC"),
++		STM32_FUNCTION(5, "CEC"),
+ 		STM32_FUNCTION(6, "SPI1_NSS I2S1_WS"),
+ 		STM32_FUNCTION(7, "SPI3_NSS I2S3_WS"),
+ 		STM32_FUNCTION(8, "SPI6_NSS"),
+-		STM32_FUNCTION(9, "UART4_RTS UART_BOOT4_RTS"),
+-		STM32_FUNCTION(10, "SDMMC2_D5 SDMMC_BOOT2_D5"),
+-		STM32_FUNCTION(11, "SDMMC2_CDIR SDMMC_BOOT2_CDIR"),
+-		STM32_FUNCTION(12, "SDMMC1_D5 SDMMC_BOOT1_D5"),
++		STM32_FUNCTION(9, "UART4_RTS UART4_DE"),
++		STM32_FUNCTION(10, "SDMMC2_D5"),
++		STM32_FUNCTION(11, "SDMMC2_CDIR"),
++		STM32_FUNCTION(12, "SDMMC1_D5"),
+ 		STM32_FUNCTION(13, "SAI4_FS_A"),
+ 		STM32_FUNCTION(14, "UART7_TX"),
++		STM32_FUNCTION(15, "LCD_R1"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(16, "PB0"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB0"),
+ 		STM32_FUNCTION(2, "TIM1_CH2N"),
+ 		STM32_FUNCTION(3, "TIM3_CH3"),
+ 		STM32_FUNCTION(4, "TIM8_CH2N"),
+-		STM32_FUNCTION(7, "DFSDM_CKOUT"),
+-		STM32_FUNCTION(9, "UART4_CTS UART_BOOT4_CTS"),
++		STM32_FUNCTION(7, "DFSDM1_CKOUT"),
++		STM32_FUNCTION(9, "UART4_CTS"),
+ 		STM32_FUNCTION(10, "LCD_R3"),
+-		STM32_FUNCTION(12, "ETH_GMII_RXD2 ETH_MII_RXD2 ETH_RGMII_RXD2"),
++		STM32_FUNCTION(12, "ETH1_GMII_RXD2 ETH1_MII_RXD2 ETH1_RGMII_RXD2"),
+ 		STM32_FUNCTION(13, "MDIOS_MDIO"),
+ 		STM32_FUNCTION(15, "LCD_G1"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(17, "PB1"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB1"),
+ 		STM32_FUNCTION(2, "TIM1_CH3N"),
+ 		STM32_FUNCTION(3, "TIM3_CH4"),
+ 		STM32_FUNCTION(4, "TIM8_CH3N"),
+-		STM32_FUNCTION(7, "DFSDM_DATA1"),
++		STM32_FUNCTION(7, "DFSDM1_DATIN1"),
+ 		STM32_FUNCTION(10, "LCD_R6"),
+-		STM32_FUNCTION(12, "ETH_GMII_RXD3 ETH_MII_RXD3 ETH_RGMII_RXD3"),
++		STM32_FUNCTION(12, "ETH1_GMII_RXD3 ETH1_MII_RXD3 ETH1_RGMII_RXD3"),
+ 		STM32_FUNCTION(13, "MDIOS_MDC"),
+ 		STM32_FUNCTION(15, "LCD_G0"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(18, "PB2"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB2"),
+ 		STM32_FUNCTION(1, "TRACED4"),
+ 		STM32_FUNCTION(2, "RTC_OUT2"),
+ 		STM32_FUNCTION(3, "SAI1_D1"),
+-		STM32_FUNCTION(4, "DFSDM_CK1"),
++		STM32_FUNCTION(4, "DFSDM1_CKIN1"),
+ 		STM32_FUNCTION(5, "USART1_RX"),
+ 		STM32_FUNCTION(6, "I2S_CKIN"),
+ 		STM32_FUNCTION(7, "SAI1_SD_A"),
+ 		STM32_FUNCTION(8, "SPI3_MOSI I2S3_SDO"),
+-		STM32_FUNCTION(9, "UART4_RX UART_BOOT4_RX"),
++		STM32_FUNCTION(9, "UART4_RX"),
+ 		STM32_FUNCTION(10, "QUADSPI_CLK"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(19, "PB3"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB3"),
+ 		STM32_FUNCTION(1, "TRACED9"),
+ 		STM32_FUNCTION(2, "TIM2_CH2"),
+@@ -303,14 +321,15 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(6, "SPI1_SCK I2S1_CK"),
+ 		STM32_FUNCTION(7, "SPI3_SCK I2S3_CK"),
+ 		STM32_FUNCTION(9, "SPI6_SCK"),
+-		STM32_FUNCTION(10, "SDMMC2_D2 SDMMC_BOOT2_D2"),
++		STM32_FUNCTION(10, "SDMMC2_D2"),
+ 		STM32_FUNCTION(13, "SAI4_MCLK_A"),
+ 		STM32_FUNCTION(14, "UART7_RX"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(20, "PB4"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB4"),
+ 		STM32_FUNCTION(1, "TRACED8"),
+ 		STM32_FUNCTION(2, "TIM16_BKIN"),
+@@ -320,14 +339,15 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(7, "SPI3_MISO I2S3_SDI"),
+ 		STM32_FUNCTION(8, "SPI2_NSS I2S2_WS"),
+ 		STM32_FUNCTION(9, "SPI6_MISO"),
+-		STM32_FUNCTION(10, "SDMMC2_D3 SDMMC_BOOT2_D3"),
++		STM32_FUNCTION(10, "SDMMC2_D3"),
+ 		STM32_FUNCTION(13, "SAI4_SCK_A"),
+ 		STM32_FUNCTION(14, "UART7_TX"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(21, "PB5"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB5"),
+ 		STM32_FUNCTION(1, "ETH_CLK"),
+ 		STM32_FUNCTION(2, "TIM17_BKIN"),
+@@ -338,166 +358,175 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(7, "I2C4_SMBA"),
+ 		STM32_FUNCTION(8, "SPI3_MOSI I2S3_SDO"),
+ 		STM32_FUNCTION(9, "SPI6_MOSI"),
+-		STM32_FUNCTION(10, "CAN2_RX"),
++		STM32_FUNCTION(10, "FDCAN2_RX"),
+ 		STM32_FUNCTION(11, "SAI4_SD_A"),
+-		STM32_FUNCTION(12, "ETH_PPS_OUT"),
+-		STM32_FUNCTION(13, "UART5_RX UART_BOOT5_RX"),
++		STM32_FUNCTION(12, "ETH1_PPS_OUT"),
++		STM32_FUNCTION(13, "UART5_RX"),
+ 		STM32_FUNCTION(14, "DCMI_D10"),
+ 		STM32_FUNCTION(15, "LCD_G7"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(22, "PB6"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB6"),
+ 		STM32_FUNCTION(2, "TIM16_CH1N"),
+ 		STM32_FUNCTION(3, "TIM4_CH1"),
+ 		STM32_FUNCTION(5, "I2C1_SCL"),
+-		STM32_FUNCTION(6, "HDMI_CEC"),
++		STM32_FUNCTION(6, "CEC"),
+ 		STM32_FUNCTION(7, "I2C4_SCL"),
+ 		STM32_FUNCTION(8, "USART1_TX"),
+-		STM32_FUNCTION(10, "CAN2_TX"),
+-		STM32_FUNCTION(11, "QUADSPI_BK1_NCS QUADSPI_BOOTBK1_NCS"),
+-		STM32_FUNCTION(12, "DFSDM_DATA5"),
++		STM32_FUNCTION(10, "FDCAN2_TX"),
++		STM32_FUNCTION(11, "QUADSPI_BK1_NCS"),
++		STM32_FUNCTION(12, "DFSDM1_DATIN5"),
+ 		STM32_FUNCTION(13, "UART5_TX"),
+ 		STM32_FUNCTION(14, "DCMI_D5"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(23, "PB7"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB7"),
+ 		STM32_FUNCTION(2, "TIM17_CH1N"),
+ 		STM32_FUNCTION(3, "TIM4_CH2"),
+ 		STM32_FUNCTION(5, "I2C1_SDA"),
+ 		STM32_FUNCTION(7, "I2C4_SDA"),
+ 		STM32_FUNCTION(8, "USART1_RX"),
+-		STM32_FUNCTION(10, "CAN2_TXFD"),
+-		STM32_FUNCTION(11, "SDMMC2_D1 SDMMC_BOOT2_D1"),
+-		STM32_FUNCTION(12, "DFSDM_CK5"),
++		STM32_FUNCTION(11, "SDMMC2_D1"),
++		STM32_FUNCTION(12, "DFSDM1_CKIN5"),
+ 		STM32_FUNCTION(13, "FMC_NL"),
+ 		STM32_FUNCTION(14, "DCMI_VSYNC"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(24, "PB8"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB8"),
+ 		STM32_FUNCTION(1, "HDP6"),
+ 		STM32_FUNCTION(2, "TIM16_CH1"),
+ 		STM32_FUNCTION(3, "TIM4_CH3"),
+-		STM32_FUNCTION(4, "DFSDM_CK7"),
++		STM32_FUNCTION(4, "DFSDM1_CKIN7"),
+ 		STM32_FUNCTION(5, "I2C1_SCL"),
+-		STM32_FUNCTION(6, "SDMMC1_CKIN SDMMC_BOOT1_CKIN"),
++		STM32_FUNCTION(6, "SDMMC1_CKIN"),
+ 		STM32_FUNCTION(7, "I2C4_SCL"),
+-		STM32_FUNCTION(8, "SDMMC2_CKIN SDMMC_BOOT2_CKIN"),
++		STM32_FUNCTION(8, "SDMMC2_CKIN"),
+ 		STM32_FUNCTION(9, "UART4_RX"),
+-		STM32_FUNCTION(10, "CAN1_RX"),
+-		STM32_FUNCTION(11, "SDMMC2_D4 SDMMC_BOOT2_D4"),
+-		STM32_FUNCTION(12, "ETH_GMII_TXD3 ETH_MII_TXD3 ETH_RGMII_TXD3"),
+-		STM32_FUNCTION(13, "SDMMC1_D4 SDMMC_BOOT1_D4"),
++		STM32_FUNCTION(10, "FDCAN1_RX"),
++		STM32_FUNCTION(11, "SDMMC2_D4"),
++		STM32_FUNCTION(12, "ETH1_GMII_TXD3 ETH1_MII_TXD3 ETH1_RGMII_TXD3"),
++		STM32_FUNCTION(13, "SDMMC1_D4"),
+ 		STM32_FUNCTION(14, "DCMI_D6"),
+ 		STM32_FUNCTION(15, "LCD_B6"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(25, "PB9"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB9"),
+ 		STM32_FUNCTION(1, "HDP7"),
+ 		STM32_FUNCTION(2, "TIM17_CH1"),
+ 		STM32_FUNCTION(3, "TIM4_CH4"),
+-		STM32_FUNCTION(4, "DFSDM_DATA7"),
++		STM32_FUNCTION(4, "DFSDM1_DATIN7"),
+ 		STM32_FUNCTION(5, "I2C1_SDA"),
+ 		STM32_FUNCTION(6, "SPI2_NSS I2S2_WS"),
+ 		STM32_FUNCTION(7, "I2C4_SDA"),
+-		STM32_FUNCTION(8, "SDMMC2_CDIR SDMMC_BOOT2_CDIR"),
++		STM32_FUNCTION(8, "SDMMC2_CDIR"),
+ 		STM32_FUNCTION(9, "UART4_TX"),
+-		STM32_FUNCTION(10, "CAN1_TX"),
+-		STM32_FUNCTION(11, "SDMMC2_D5 SDMMC_BOOT2_D5"),
+-		STM32_FUNCTION(12, "SDMMC1_CDIR SDMMC_BOOT1_CDIR"),
+-		STM32_FUNCTION(13, "SDMMC1_D5 SDMMC_BOOT1_D5"),
++		STM32_FUNCTION(10, "FDCAN1_TX"),
++		STM32_FUNCTION(11, "SDMMC2_D5"),
++		STM32_FUNCTION(12, "SDMMC1_CDIR"),
++		STM32_FUNCTION(13, "SDMMC1_D5"),
+ 		STM32_FUNCTION(14, "DCMI_D7"),
+ 		STM32_FUNCTION(15, "LCD_B7"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(26, "PB10"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB10"),
+ 		STM32_FUNCTION(2, "TIM2_CH3"),
+ 		STM32_FUNCTION(4, "LPTIM2_IN1"),
+ 		STM32_FUNCTION(5, "I2C2_SCL"),
+ 		STM32_FUNCTION(6, "SPI2_SCK I2S2_CK"),
+-		STM32_FUNCTION(7, "DFSDM_DATA7"),
+-		STM32_FUNCTION(8, "USART3_TX USART_BOOT3_TX"),
++		STM32_FUNCTION(7, "DFSDM1_DATIN7"),
++		STM32_FUNCTION(8, "USART3_TX"),
+ 		STM32_FUNCTION(10, "QUADSPI_BK1_NCS"),
+-		STM32_FUNCTION(12, "ETH_GMII_RX_ER ETH_MII_RX_ER"),
++		STM32_FUNCTION(12, "ETH1_GMII_RX_ER ETH1_MII_RX_ER"),
+ 		STM32_FUNCTION(15, "LCD_G4"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(27, "PB11"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB11"),
+ 		STM32_FUNCTION(2, "TIM2_CH4"),
+ 		STM32_FUNCTION(4, "LPTIM2_ETR"),
+ 		STM32_FUNCTION(5, "I2C2_SDA"),
+-		STM32_FUNCTION(7, "DFSDM_CK7"),
++		STM32_FUNCTION(7, "DFSDM1_CKIN7"),
+ 		STM32_FUNCTION(8, "USART3_RX"),
+-		STM32_FUNCTION(12, "ETH_GMII_TX_EN ETH_MII_TX_EN ETH_RGMII_TX_CTL ETH_RMII_TX_EN"),
++		STM32_FUNCTION(12, "ETH1_GMII_TX_EN ETH1_MII_TX_EN ETH1_RGMII_TX_CTL ETH1_RMII_TX_EN"),
+ 		STM32_FUNCTION(14, "DSI_TE"),
+ 		STM32_FUNCTION(15, "LCD_G5"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(28, "PB12"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB12"),
+ 		STM32_FUNCTION(2, "TIM1_BKIN"),
+ 		STM32_FUNCTION(3, "I2C6_SMBA"),
+ 		STM32_FUNCTION(5, "I2C2_SMBA"),
+ 		STM32_FUNCTION(6, "SPI2_NSS I2S2_WS"),
+-		STM32_FUNCTION(7, "DFSDM_DATA1"),
+-		STM32_FUNCTION(8, "USART3_CK USART_BOOT3_CK"),
+-		STM32_FUNCTION(9, "USART3_RX USART_BOOT3_RX"),
+-		STM32_FUNCTION(10, "CAN2_RX"),
+-		STM32_FUNCTION(12, "ETH_GMII_TXD0 ETH_MII_TXD0 ETH_RGMII_TXD0 ETH_RMII_TXD0"),
++		STM32_FUNCTION(7, "DFSDM1_DATIN1"),
++		STM32_FUNCTION(8, "USART3_CK"),
++		STM32_FUNCTION(9, "USART3_RX"),
++		STM32_FUNCTION(10, "FDCAN2_RX"),
++		STM32_FUNCTION(12, "ETH1_GMII_TXD0 ETH1_MII_TXD0 ETH1_RGMII_TXD0 ETH1_RMII_TXD0"),
+ 		STM32_FUNCTION(15, "UART5_RX"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(29, "PB13"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB13"),
+ 		STM32_FUNCTION(2, "TIM1_CH1N"),
+-		STM32_FUNCTION(4, "DFSDM_CKOUT"),
++		STM32_FUNCTION(4, "DFSDM1_CKOUT"),
+ 		STM32_FUNCTION(5, "LPTIM2_OUT"),
+ 		STM32_FUNCTION(6, "SPI2_SCK I2S2_CK"),
+-		STM32_FUNCTION(7, "DFSDM_CK1"),
+-		STM32_FUNCTION(8, "USART3_CTS_NSS USART_BOOT3_CTS_NSS"),
+-		STM32_FUNCTION(10, "CAN2_TX"),
+-		STM32_FUNCTION(12, "ETH_GMII_TXD1 ETH_MII_TXD1 ETH_RGMII_TXD1 ETH_RMII_TXD1"),
+-		STM32_FUNCTION(15, "UART5_TX UART_BOOT5_TX"),
++		STM32_FUNCTION(7, "DFSDM1_CKIN1"),
++		STM32_FUNCTION(8, "USART3_CTS USART3_NSS"),
++		STM32_FUNCTION(10, "FDCAN2_TX"),
++		STM32_FUNCTION(12, "ETH1_GMII_TXD1 ETH1_MII_TXD1 ETH1_RGMII_TXD1 ETH1_RMII_TXD1"),
++		STM32_FUNCTION(15, "UART5_TX"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(30, "PB14"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB14"),
+ 		STM32_FUNCTION(2, "TIM1_CH2N"),
+ 		STM32_FUNCTION(3, "TIM12_CH1"),
+ 		STM32_FUNCTION(4, "TIM8_CH2N"),
+ 		STM32_FUNCTION(5, "USART1_TX"),
+ 		STM32_FUNCTION(6, "SPI2_MISO I2S2_SDI"),
+-		STM32_FUNCTION(7, "DFSDM_DATA2"),
+-		STM32_FUNCTION(8, "USART3_RTS USART_BOOT3_RTS"),
+-		STM32_FUNCTION(10, "SDMMC2_D0 SDMMC_BOOT2_D0"),
++		STM32_FUNCTION(7, "DFSDM1_DATIN2"),
++		STM32_FUNCTION(8, "USART3_RTS USART3_DE"),
++		STM32_FUNCTION(10, "SDMMC2_D0"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(31, "PB15"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOB15"),
+ 		STM32_FUNCTION(1, "RTC_REFIN"),
+ 		STM32_FUNCTION(2, "TIM1_CH3N"),
+@@ -505,523 +534,557 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(4, "TIM8_CH3N"),
+ 		STM32_FUNCTION(5, "USART1_RX"),
+ 		STM32_FUNCTION(6, "SPI2_MOSI I2S2_SDO"),
+-		STM32_FUNCTION(7, "DFSDM_CK2"),
+-		STM32_FUNCTION(10, "SDMMC2_D1 SDMMC_BOOT2_D1"),
++		STM32_FUNCTION(7, "DFSDM1_CKIN2"),
++		STM32_FUNCTION(10, "SDMMC2_D1"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(32, "PC0"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC0"),
+-		STM32_FUNCTION(4, "DFSDM_CK0"),
++		STM32_FUNCTION(4, "DFSDM1_CKIN0"),
+ 		STM32_FUNCTION(5, "LPTIM2_IN2"),
+-		STM32_FUNCTION(7, "DFSDM_DATA4"),
++		STM32_FUNCTION(7, "DFSDM1_DATIN4"),
+ 		STM32_FUNCTION(9, "SAI2_FS_B"),
+-		STM32_FUNCTION(11, "QUADSPI_BK2_NCS QUADSPI_BOOTBK2_NCS"),
++		STM32_FUNCTION(11, "QUADSPI_BK2_NCS"),
+ 		STM32_FUNCTION(15, "LCD_R5"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(33, "PC1"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC1"),
+ 		STM32_FUNCTION(1, "TRACED0"),
+ 		STM32_FUNCTION(3, "SAI1_D1"),
+-		STM32_FUNCTION(4, "DFSDM_DATA0"),
+-		STM32_FUNCTION(5, "DFSDM_CK4"),
++		STM32_FUNCTION(4, "DFSDM1_DATIN0"),
++		STM32_FUNCTION(5, "DFSDM1_CKIN4"),
+ 		STM32_FUNCTION(6, "SPI2_MOSI I2S2_SDO"),
+ 		STM32_FUNCTION(7, "SAI1_SD_A"),
+ 		STM32_FUNCTION(10, "SDMMC2_CK"),
+-		STM32_FUNCTION(12, "ETH_MDC"),
++		STM32_FUNCTION(12, "ETH1_MDC"),
+ 		STM32_FUNCTION(13, "MDIOS_MDC"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(34, "PC2"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC2"),
+-		STM32_FUNCTION(4, "DFSDM_CK1"),
++		STM32_FUNCTION(4, "DFSDM1_CKIN1"),
+ 		STM32_FUNCTION(6, "SPI2_MISO I2S2_SDI"),
+-		STM32_FUNCTION(7, "DFSDM_CKOUT"),
+-		STM32_FUNCTION(12, "ETH_GMII_TXD2 ETH_MII_TXD2 ETH_RGMII_TXD2"),
++		STM32_FUNCTION(7, "DFSDM1_CKOUT"),
++		STM32_FUNCTION(12, "ETH1_GMII_TXD2 ETH1_MII_TXD2 ETH1_RGMII_TXD2"),
++		STM32_FUNCTION(14, "DCMI_PIXCLK"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(35, "PC3"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC3"),
+ 		STM32_FUNCTION(1, "TRACECLK"),
+-		STM32_FUNCTION(4, "DFSDM_DATA1"),
++		STM32_FUNCTION(4, "DFSDM1_DATIN1"),
+ 		STM32_FUNCTION(6, "SPI2_MOSI I2S2_SDO"),
+-		STM32_FUNCTION(12, "ETH_GMII_TX_CLK ETH_MII_TX_CLK"),
++		STM32_FUNCTION(12, "ETH1_GMII_TX_CLK ETH1_MII_TX_CLK"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(36, "PC4"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC4"),
+-		STM32_FUNCTION(4, "DFSDM_CK2"),
++		STM32_FUNCTION(4, "DFSDM1_CKIN2"),
+ 		STM32_FUNCTION(6, "I2S1_MCK"),
+-		STM32_FUNCTION(10, "SPDIF_IN2"),
+-		STM32_FUNCTION(12, "ETH_GMII_RXD0 ETH_MII_RXD0 ETH_RGMII_RXD0 ETH_RMII_RXD0"),
++		STM32_FUNCTION(10, "SPDIFRX_IN2"),
++		STM32_FUNCTION(12, "ETH1_GMII_RXD0 ETH1_MII_RXD0 ETH1_RGMII_RXD0 ETH1_RMII_RXD0"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(37, "PC5"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC5"),
+ 		STM32_FUNCTION(3, "SAI1_D3"),
+-		STM32_FUNCTION(4, "DFSDM_DATA2"),
++		STM32_FUNCTION(4, "DFSDM1_DATIN2"),
+ 		STM32_FUNCTION(5, "SAI4_D4"),
+ 		STM32_FUNCTION(7, "SAI1_D4"),
+-		STM32_FUNCTION(10, "SPDIF_IN3"),
+-		STM32_FUNCTION(12, "ETH_GMII_RXD1 ETH_MII_RXD1 ETH_RGMII_RXD1 ETH_RMII_RXD1"),
++		STM32_FUNCTION(10, "SPDIFRX_IN3"),
++		STM32_FUNCTION(12, "ETH1_GMII_RXD1 ETH1_MII_RXD1 ETH1_RGMII_RXD1 ETH1_RMII_RXD1"),
+ 		STM32_FUNCTION(13, "SAI4_D3"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(38, "PC6"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC6"),
+ 		STM32_FUNCTION(1, "HDP1"),
+ 		STM32_FUNCTION(3, "TIM3_CH1"),
+ 		STM32_FUNCTION(4, "TIM8_CH1"),
+-		STM32_FUNCTION(5, "DFSDM_CK3"),
++		STM32_FUNCTION(5, "DFSDM1_CKIN3"),
+ 		STM32_FUNCTION(6, "I2S2_MCK"),
+-		STM32_FUNCTION(8, "USART6_TX USART_BOOT6_TX"),
+-		STM32_FUNCTION(9, "SDMMC1_D0DIR SDMMC_BOOT1_D0DIR"),
+-		STM32_FUNCTION(10, "SDMMC2_D0DIR SDMMC_BOOT2_D0DIR"),
+-		STM32_FUNCTION(11, "SDMMC2_D6 SDMMC_BOOT2_D6"),
++		STM32_FUNCTION(8, "USART6_TX"),
++		STM32_FUNCTION(9, "SDMMC1_D0DIR"),
++		STM32_FUNCTION(10, "SDMMC2_D0DIR"),
++		STM32_FUNCTION(11, "SDMMC2_D6"),
+ 		STM32_FUNCTION(12, "DSI_TE"),
+-		STM32_FUNCTION(13, "SDMMC1_D6 SDMMC_BOOT1_D6"),
++		STM32_FUNCTION(13, "SDMMC1_D6"),
+ 		STM32_FUNCTION(14, "DCMI_D0"),
+ 		STM32_FUNCTION(15, "LCD_HSYNC"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(39, "PC7"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC7"),
+ 		STM32_FUNCTION(1, "HDP4"),
+ 		STM32_FUNCTION(3, "TIM3_CH2"),
+ 		STM32_FUNCTION(4, "TIM8_CH2"),
+-		STM32_FUNCTION(5, "DFSDM_DATA3"),
++		STM32_FUNCTION(5, "DFSDM1_DATIN3"),
+ 		STM32_FUNCTION(7, "I2S3_MCK"),
+-		STM32_FUNCTION(8, "USART6_RX USART_BOOT6_RX"),
+-		STM32_FUNCTION(9, "SDMMC1_D123DIR SDMMC_BOOT1_D123DIR"),
+-		STM32_FUNCTION(10, "SDMMC2_D123DIR SDMMC_BOOT2_D123DIR"),
+-		STM32_FUNCTION(11, "SDMMC2_D7 SDMMC_BOOT2_D7"),
+-		STM32_FUNCTION(13, "SDMMC1_D7 SDMMC_BOOT1_D7"),
++		STM32_FUNCTION(8, "USART6_RX"),
++		STM32_FUNCTION(9, "SDMMC1_D123DIR"),
++		STM32_FUNCTION(10, "SDMMC2_D123DIR"),
++		STM32_FUNCTION(11, "SDMMC2_D7"),
++		STM32_FUNCTION(13, "SDMMC1_D7"),
+ 		STM32_FUNCTION(14, "DCMI_D1"),
+ 		STM32_FUNCTION(15, "LCD_G6"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(40, "PC8"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC8"),
+ 		STM32_FUNCTION(1, "TRACED0"),
+ 		STM32_FUNCTION(3, "TIM3_CH3"),
+ 		STM32_FUNCTION(4, "TIM8_CH3"),
+ 		STM32_FUNCTION(7, "UART4_TX"),
+-		STM32_FUNCTION(8, "USART6_CK USART_BOOT6_CK"),
+-		STM32_FUNCTION(9, "UART5_RTS UART_BOOT5_RTS"),
+-		STM32_FUNCTION(13, "SDMMC1_D0 SDMMC_BOOT1_D0"),
++		STM32_FUNCTION(8, "USART6_CK"),
++		STM32_FUNCTION(9, "UART5_RTS UART5_DE"),
++		STM32_FUNCTION(13, "SDMMC1_D0"),
+ 		STM32_FUNCTION(14, "DCMI_D2"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(41, "PC9"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC9"),
+ 		STM32_FUNCTION(1, "TRACED1"),
+ 		STM32_FUNCTION(3, "TIM3_CH4"),
+ 		STM32_FUNCTION(4, "TIM8_CH4"),
+ 		STM32_FUNCTION(5, "I2C3_SDA"),
+ 		STM32_FUNCTION(6, "I2S_CKIN"),
+-		STM32_FUNCTION(9, "UART5_CTS UART_BOOT5_CTS"),
++		STM32_FUNCTION(9, "UART5_CTS"),
+ 		STM32_FUNCTION(10, "QUADSPI_BK1_IO0"),
+-		STM32_FUNCTION(13, "SDMMC1_D1 SDMMC_BOOT1_D1"),
++		STM32_FUNCTION(13, "SDMMC1_D1"),
+ 		STM32_FUNCTION(14, "DCMI_D3"),
+ 		STM32_FUNCTION(15, "LCD_B2"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(42, "PC10"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC10"),
+ 		STM32_FUNCTION(1, "TRACED2"),
+-		STM32_FUNCTION(4, "DFSDM_CK5"),
++		STM32_FUNCTION(4, "DFSDM1_CKIN5"),
+ 		STM32_FUNCTION(7, "SPI3_SCK I2S3_CK"),
+ 		STM32_FUNCTION(8, "USART3_TX"),
+ 		STM32_FUNCTION(9, "UART4_TX"),
+ 		STM32_FUNCTION(10, "QUADSPI_BK1_IO1"),
+ 		STM32_FUNCTION(11, "SAI4_MCLK_B"),
+-		STM32_FUNCTION(13, "SDMMC1_D2 SDMMC_BOOT1_D2"),
++		STM32_FUNCTION(13, "SDMMC1_D2"),
+ 		STM32_FUNCTION(14, "DCMI_D8"),
+ 		STM32_FUNCTION(15, "LCD_R2"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(43, "PC11"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC11"),
+ 		STM32_FUNCTION(1, "TRACED3"),
+-		STM32_FUNCTION(4, "DFSDM_DATA5"),
++		STM32_FUNCTION(4, "DFSDM1_DATIN5"),
+ 		STM32_FUNCTION(7, "SPI3_MISO I2S3_SDI"),
+ 		STM32_FUNCTION(8, "USART3_RX"),
+ 		STM32_FUNCTION(9, "UART4_RX"),
+-		STM32_FUNCTION(10, "QUADSPI_BK2_NCS QUADSPI_BOOTBK2_NCS"),
++		STM32_FUNCTION(10, "QUADSPI_BK2_NCS"),
+ 		STM32_FUNCTION(11, "SAI4_SCK_B"),
+-		STM32_FUNCTION(13, "SDMMC1_D3 SDMMC_BOOT1_D3"),
++		STM32_FUNCTION(13, "SDMMC1_D3"),
+ 		STM32_FUNCTION(14, "DCMI_D4"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(44, "PC12"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC12"),
+ 		STM32_FUNCTION(1, "TRACECLK"),
+ 		STM32_FUNCTION(2, "MCO2"),
+ 		STM32_FUNCTION(3, "SAI4_D3"),
+ 		STM32_FUNCTION(7, "SPI3_MOSI I2S3_SDO"),
+-		STM32_FUNCTION(8, "USART3_CK USART_BOOT3_CK"),
++		STM32_FUNCTION(8, "USART3_CK"),
+ 		STM32_FUNCTION(9, "UART5_TX"),
+ 		STM32_FUNCTION(11, "SAI4_SD_B"),
+-		STM32_FUNCTION(13, "SDMMC1_CK SDMMC_BOOT1_CK"),
++		STM32_FUNCTION(13, "SDMMC1_CK"),
+ 		STM32_FUNCTION(14, "DCMI_D9"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(45, "PC13"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC13"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(46, "PC14"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC14"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(47, "PC15"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOC15"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(48, "PD0"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD0"),
+ 		STM32_FUNCTION(3, "I2C6_SDA"),
+-		STM32_FUNCTION(4, "DFSDM_CK6"),
++		STM32_FUNCTION(4, "DFSDM1_CKIN6"),
+ 		STM32_FUNCTION(5, "I2C5_SDA"),
+ 		STM32_FUNCTION(7, "SAI3_SCK_A"),
+ 		STM32_FUNCTION(9, "UART4_RX"),
+-		STM32_FUNCTION(10, "CAN1_RX"),
++		STM32_FUNCTION(10, "FDCAN1_RX"),
+ 		STM32_FUNCTION(11, "SDMMC3_CMD"),
+-		STM32_FUNCTION(12, "DFSDM_DATA7"),
+-		STM32_FUNCTION(13, "FMC_D2"),
++		STM32_FUNCTION(12, "DFSDM1_DATIN7"),
++		STM32_FUNCTION(13, "FMC_D2 FMC_DA2"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(49, "PD1"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD1"),
+ 		STM32_FUNCTION(3, "I2C6_SCL"),
+-		STM32_FUNCTION(4, "DFSDM_DATA6"),
++		STM32_FUNCTION(4, "DFSDM1_DATIN6"),
+ 		STM32_FUNCTION(5, "I2C5_SCL"),
+ 		STM32_FUNCTION(7, "SAI3_SD_A"),
+ 		STM32_FUNCTION(9, "UART4_TX"),
+-		STM32_FUNCTION(10, "CAN1_TX"),
++		STM32_FUNCTION(10, "FDCAN1_TX"),
+ 		STM32_FUNCTION(11, "SDMMC3_D0"),
+-		STM32_FUNCTION(12, "DFSDM_CK7"),
+-		STM32_FUNCTION(13, "FMC_D3"),
++		STM32_FUNCTION(12, "DFSDM1_CKIN7"),
++		STM32_FUNCTION(13, "FMC_D3 FMC_DA3"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(50, "PD2"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD2"),
+ 		STM32_FUNCTION(3, "TIM3_ETR"),
+ 		STM32_FUNCTION(5, "I2C5_SMBA"),
+ 		STM32_FUNCTION(7, "UART4_RX"),
+ 		STM32_FUNCTION(9, "UART5_RX"),
+-		STM32_FUNCTION(13, "SDMMC1_CMD SDMMC_BOOT1_CMD"),
++		STM32_FUNCTION(13, "SDMMC1_CMD"),
+ 		STM32_FUNCTION(14, "DCMI_D11"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(51, "PD3"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD3"),
+ 		STM32_FUNCTION(1, "HDP5"),
+-		STM32_FUNCTION(4, "DFSDM_CKOUT"),
++		STM32_FUNCTION(4, "DFSDM1_CKOUT"),
+ 		STM32_FUNCTION(6, "SPI2_SCK I2S2_CK"),
+-		STM32_FUNCTION(7, "DFSDM_DATA0"),
+-		STM32_FUNCTION(8, "USART2_CTS_NSS USART_BOOT2_CTS_NSS"),
+-		STM32_FUNCTION(9, "SDMMC1_D123DIR SDMMC_BOOT1_D123DIR"),
+-		STM32_FUNCTION(10, "SDMMC2_D7 SDMMC_BOOT2_D7"),
+-		STM32_FUNCTION(11, "SDMMC2_D123DIR SDMMC_BOOT2_D123DIR"),
+-		STM32_FUNCTION(12, "SDMMC1_D7 SDMMC_BOOT1_D7"),
++		STM32_FUNCTION(7, "DFSDM1_DATIN0"),
++		STM32_FUNCTION(8, "USART2_CTS USART2_NSS"),
++		STM32_FUNCTION(9, "SDMMC1_D123DIR"),
++		STM32_FUNCTION(10, "SDMMC2_D7"),
++		STM32_FUNCTION(11, "SDMMC2_D123DIR"),
++		STM32_FUNCTION(12, "SDMMC1_D7"),
+ 		STM32_FUNCTION(13, "FMC_CLK"),
+ 		STM32_FUNCTION(14, "DCMI_D5"),
+ 		STM32_FUNCTION(15, "LCD_G7"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(52, "PD4"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD4"),
+ 		STM32_FUNCTION(7, "SAI3_FS_A"),
+-		STM32_FUNCTION(8, "USART2_RTS USART_BOOT2_RTS"),
+-		STM32_FUNCTION(10, "CAN1_RXFD"),
++		STM32_FUNCTION(8, "USART2_RTS USART2_DE"),
+ 		STM32_FUNCTION(11, "SDMMC3_D1"),
+-		STM32_FUNCTION(12, "DFSDM_CK0"),
++		STM32_FUNCTION(12, "DFSDM1_CKIN0"),
+ 		STM32_FUNCTION(13, "FMC_NOE"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(53, "PD5"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD5"),
+ 		STM32_FUNCTION(8, "USART2_TX"),
+-		STM32_FUNCTION(10, "CAN1_TXFD"),
+ 		STM32_FUNCTION(11, "SDMMC3_D2"),
+ 		STM32_FUNCTION(13, "FMC_NWE"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(54, "PD6"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD6"),
+ 		STM32_FUNCTION(2, "TIM16_CH1N"),
+ 		STM32_FUNCTION(3, "SAI1_D1"),
+-		STM32_FUNCTION(4, "DFSDM_CK4"),
+-		STM32_FUNCTION(5, "DFSDM_DATA1"),
++		STM32_FUNCTION(4, "DFSDM1_CKIN4"),
++		STM32_FUNCTION(5, "DFSDM1_DATIN1"),
+ 		STM32_FUNCTION(6, "SPI3_MOSI I2S3_SDO"),
+ 		STM32_FUNCTION(7, "SAI1_SD_A"),
+ 		STM32_FUNCTION(8, "USART2_RX"),
+-		STM32_FUNCTION(10, "CAN2_RXFD"),
+-		STM32_FUNCTION(11, "FMC_INT"),
+ 		STM32_FUNCTION(13, "FMC_NWAIT"),
+ 		STM32_FUNCTION(14, "DCMI_D10"),
+ 		STM32_FUNCTION(15, "LCD_B2"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(55, "PD7"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD7"),
+ 		STM32_FUNCTION(1, "TRACED6"),
+-		STM32_FUNCTION(4, "DFSDM_DATA4"),
++		STM32_FUNCTION(4, "DFSDM1_DATIN4"),
+ 		STM32_FUNCTION(5, "I2C2_SCL"),
+-		STM32_FUNCTION(7, "DFSDM_CK1"),
+-		STM32_FUNCTION(8, "USART2_CK USART_BOOT2_CK"),
+-		STM32_FUNCTION(10, "SPDIF_IN0"),
++		STM32_FUNCTION(7, "DFSDM1_CKIN1"),
++		STM32_FUNCTION(8, "USART2_CK"),
++		STM32_FUNCTION(10, "SPDIFRX_IN0"),
+ 		STM32_FUNCTION(11, "SDMMC3_D3"),
+ 		STM32_FUNCTION(13, "FMC_NE1"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(56, "PD8"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD8"),
+-		STM32_FUNCTION(4, "DFSDM_CK3"),
++		STM32_FUNCTION(4, "DFSDM1_CKIN3"),
+ 		STM32_FUNCTION(7, "SAI3_SCK_B"),
+ 		STM32_FUNCTION(8, "USART3_TX"),
+-		STM32_FUNCTION(10, "SPDIF_IN1"),
+-		STM32_FUNCTION(13, "FMC_D13"),
++		STM32_FUNCTION(10, "SPDIFRX_IN1"),
++		STM32_FUNCTION(13, "FMC_D13 FMC_DA13"),
+ 		STM32_FUNCTION(15, "LCD_B7"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(57, "PD9"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD9"),
+-		STM32_FUNCTION(4, "DFSDM_DATA3"),
++		STM32_FUNCTION(4, "DFSDM1_DATIN3"),
+ 		STM32_FUNCTION(7, "SAI3_SD_B"),
+ 		STM32_FUNCTION(8, "USART3_RX"),
+-		STM32_FUNCTION(10, "CAN2_RXFD"),
+-		STM32_FUNCTION(13, "FMC_D14"),
++		STM32_FUNCTION(13, "FMC_D14 FMC_DA14"),
++		STM32_FUNCTION(14, "DCMI_HSYNC"),
+ 		STM32_FUNCTION(15, "LCD_B0"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(58, "PD10"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD10"),
+ 		STM32_FUNCTION(1, "RTC_REFIN"),
+ 		STM32_FUNCTION(2, "TIM16_BKIN"),
+-		STM32_FUNCTION(4, "DFSDM_CKOUT"),
++		STM32_FUNCTION(4, "DFSDM1_CKOUT"),
+ 		STM32_FUNCTION(5, "I2C5_SMBA"),
+ 		STM32_FUNCTION(6, "SPI3_MISO I2S3_SDI"),
+ 		STM32_FUNCTION(7, "SAI3_FS_B"),
+-		STM32_FUNCTION(8, "USART3_CK USART_BOOT3_CK"),
+-		STM32_FUNCTION(10, "CAN2_TXFD"),
+-		STM32_FUNCTION(13, "FMC_D15"),
++		STM32_FUNCTION(8, "USART3_CK"),
++		STM32_FUNCTION(13, "FMC_D15 FMC_DA15"),
+ 		STM32_FUNCTION(15, "LCD_B3"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(59, "PD11"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD11"),
+ 		STM32_FUNCTION(4, "LPTIM2_IN2"),
+ 		STM32_FUNCTION(5, "I2C4_SMBA"),
+ 		STM32_FUNCTION(6, "I2C1_SMBA"),
+-		STM32_FUNCTION(8, "USART3_CTS_NSS USART_BOOT3_CTS_NSS"),
++		STM32_FUNCTION(8, "USART3_CTS USART3_NSS"),
+ 		STM32_FUNCTION(10, "QUADSPI_BK1_IO0"),
+ 		STM32_FUNCTION(11, "SAI2_SD_A"),
+-		STM32_FUNCTION(13, "FMC_A16 FMC_CLE"),
++		STM32_FUNCTION(13, "FMC_CLE FMC_A16"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(60, "PD12"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD12"),
+ 		STM32_FUNCTION(2, "LPTIM1_IN1"),
+ 		STM32_FUNCTION(3, "TIM4_CH1"),
+ 		STM32_FUNCTION(4, "LPTIM2_IN1"),
+ 		STM32_FUNCTION(5, "I2C4_SCL"),
+ 		STM32_FUNCTION(6, "I2C1_SCL"),
+-		STM32_FUNCTION(8, "USART3_RTS USART_BOOT3_RTS"),
++		STM32_FUNCTION(8, "USART3_RTS USART3_DE"),
+ 		STM32_FUNCTION(10, "QUADSPI_BK1_IO1"),
+ 		STM32_FUNCTION(11, "SAI2_FS_A"),
+-		STM32_FUNCTION(13, "FMC_A17 FMC_ALE"),
++		STM32_FUNCTION(13, "FMC_ALE FMC_A17"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(61, "PD13"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD13"),
+ 		STM32_FUNCTION(2, "LPTIM1_OUT"),
+ 		STM32_FUNCTION(3, "TIM4_CH2"),
+ 		STM32_FUNCTION(5, "I2C4_SDA"),
+ 		STM32_FUNCTION(6, "I2C1_SDA"),
+ 		STM32_FUNCTION(7, "I2S3_MCK"),
+-		STM32_FUNCTION(10, "QUADSPI_BK1_IO3 QUADSPI_BOOTBK1_IO3"),
++		STM32_FUNCTION(10, "QUADSPI_BK1_IO3"),
+ 		STM32_FUNCTION(11, "SAI2_SCK_A"),
+ 		STM32_FUNCTION(13, "FMC_A18"),
+ 		STM32_FUNCTION(14, "DSI_TE"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(62, "PD14"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD14"),
+ 		STM32_FUNCTION(3, "TIM4_CH3"),
+ 		STM32_FUNCTION(7, "SAI3_MCLK_B"),
+-		STM32_FUNCTION(9, "UART8_CTS UART_BOOT8_CTS"),
+-		STM32_FUNCTION(13, "FMC_D0"),
++		STM32_FUNCTION(9, "UART8_CTS"),
++		STM32_FUNCTION(13, "FMC_D0 FMC_DA0"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(63, "PD15"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOD15"),
+ 		STM32_FUNCTION(3, "TIM4_CH4"),
+ 		STM32_FUNCTION(7, "SAI3_MCLK_A"),
+-		STM32_FUNCTION(9, "UART8_CTS UART_BOOT8_CTS"),
+-		STM32_FUNCTION(13, "FMC_D1"),
++		STM32_FUNCTION(9, "UART8_CTS"),
++		STM32_FUNCTION(13, "FMC_D1 FMC_DA1"),
++		STM32_FUNCTION(15, "LCD_R1"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(64, "PE0"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE0"),
+ 		STM32_FUNCTION(2, "LPTIM1_ETR"),
+ 		STM32_FUNCTION(3, "TIM4_ETR"),
+ 		STM32_FUNCTION(5, "LPTIM2_ETR"),
+ 		STM32_FUNCTION(6, "SPI3_SCK I2S3_CK"),
+ 		STM32_FUNCTION(7, "SAI4_MCLK_B"),
+-		STM32_FUNCTION(9, "UART8_RX UART_BOOT8_RX"),
+-		STM32_FUNCTION(10, "CAN1_RXFD"),
++		STM32_FUNCTION(9, "UART8_RX"),
+ 		STM32_FUNCTION(11, "SAI2_MCLK_A"),
+ 		STM32_FUNCTION(13, "FMC_NBL0"),
+ 		STM32_FUNCTION(14, "DCMI_D2"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(65, "PE1"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE1"),
+ 		STM32_FUNCTION(2, "LPTIM1_IN2"),
+ 		STM32_FUNCTION(6, "I2S2_MCK"),
+ 		STM32_FUNCTION(7, "SAI3_SD_B"),
+-		STM32_FUNCTION(9, "UART8_TX UART_BOOT8_TX"),
+-		STM32_FUNCTION(10, "CAN1_TXFD"),
++		STM32_FUNCTION(9, "UART8_TX"),
+ 		STM32_FUNCTION(13, "FMC_NBL1"),
+ 		STM32_FUNCTION(14, "DCMI_D3"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(66, "PE2"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE2"),
+ 		STM32_FUNCTION(1, "TRACECLK"),
+ 		STM32_FUNCTION(3, "SAI1_CK1"),
+ 		STM32_FUNCTION(5, "I2C4_SCL"),
+ 		STM32_FUNCTION(6, "SPI4_SCK"),
+ 		STM32_FUNCTION(7, "SAI1_MCLK_A"),
+-		STM32_FUNCTION(10, "QUADSPI_BK1_IO2 QUADSPI_BOOTBK1_IO2"),
+-		STM32_FUNCTION(12, "ETH_GMII_TXD3 ETH_MII_TXD3 ETH_RGMII_TXD3"),
++		STM32_FUNCTION(10, "QUADSPI_BK1_IO2"),
++		STM32_FUNCTION(12, "ETH1_GMII_TXD3 ETH1_MII_TXD3 ETH1_RGMII_TXD3"),
+ 		STM32_FUNCTION(13, "FMC_A23"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(67, "PE3"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE3"),
+ 		STM32_FUNCTION(1, "TRACED0"),
+ 		STM32_FUNCTION(5, "TIM15_BKIN"),
+ 		STM32_FUNCTION(7, "SAI1_SD_B"),
+-		STM32_FUNCTION(10, "SDMMC2_CK SDMMC_BOOT2_CK"),
++		STM32_FUNCTION(10, "SDMMC2_CK"),
+ 		STM32_FUNCTION(13, "FMC_A19"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(68, "PE4"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE4"),
+ 		STM32_FUNCTION(1, "TRACED1"),
+ 		STM32_FUNCTION(3, "SAI1_D2"),
+-		STM32_FUNCTION(4, "DFSDM_DATA3"),
++		STM32_FUNCTION(4, "DFSDM1_DATIN3"),
+ 		STM32_FUNCTION(5, "TIM15_CH1N"),
+ 		STM32_FUNCTION(6, "SPI4_NSS"),
+ 		STM32_FUNCTION(7, "SAI1_FS_A"),
+-		STM32_FUNCTION(8, "SDMMC2_CKIN SDMMC_BOOT2_CKIN"),
+-		STM32_FUNCTION(9, "SDMMC1_CKIN SDMMC_BOOT1_CKIN"),
+-		STM32_FUNCTION(10, "SDMMC2_D4 SDMMC_BOOT2_D4"),
+-		STM32_FUNCTION(12, "SDMMC1_D4 SDMMC_BOOT1_D4"),
++		STM32_FUNCTION(8, "SDMMC2_CKIN"),
++		STM32_FUNCTION(9, "SDMMC1_CKIN"),
++		STM32_FUNCTION(10, "SDMMC2_D4"),
++		STM32_FUNCTION(12, "SDMMC1_D4"),
+ 		STM32_FUNCTION(13, "FMC_A20"),
+ 		STM32_FUNCTION(14, "DCMI_D4"),
+ 		STM32_FUNCTION(15, "LCD_B0"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(69, "PE5"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE5"),
+ 		STM32_FUNCTION(1, "TRACED3"),
+ 		STM32_FUNCTION(3, "SAI1_CK2"),
+-		STM32_FUNCTION(4, "DFSDM_CK3"),
++		STM32_FUNCTION(4, "DFSDM1_CKIN3"),
+ 		STM32_FUNCTION(5, "TIM15_CH1"),
+ 		STM32_FUNCTION(6, "SPI4_MISO"),
+ 		STM32_FUNCTION(7, "SAI1_SCK_A"),
+-		STM32_FUNCTION(8, "SDMMC2_D0DIR SDMMC_BOOT2_D0DIR"),
+-		STM32_FUNCTION(9, "SDMMC1_D0DIR SDMMC_BOOT1_D0DIR"),
+-		STM32_FUNCTION(10, "SDMMC2_D6 SDMMC_BOOT2_D6"),
+-		STM32_FUNCTION(12, "SDMMC1_D6 SDMMC_BOOT1_D6"),
++		STM32_FUNCTION(8, "SDMMC2_D0DIR"),
++		STM32_FUNCTION(9, "SDMMC1_D0DIR"),
++		STM32_FUNCTION(10, "SDMMC2_D6"),
++		STM32_FUNCTION(12, "SDMMC1_D6"),
+ 		STM32_FUNCTION(13, "FMC_A21"),
+ 		STM32_FUNCTION(14, "DCMI_D6"),
+ 		STM32_FUNCTION(15, "LCD_G0"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(70, "PE6"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE6"),
+ 		STM32_FUNCTION(1, "TRACED2"),
+ 		STM32_FUNCTION(2, "TIM1_BKIN2"),
+@@ -1030,7 +1093,7 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(6, "SPI4_MOSI"),
+ 		STM32_FUNCTION(7, "SAI1_SD_A"),
+ 		STM32_FUNCTION(8, "SDMMC2_D0"),
+-		STM32_FUNCTION(9, "SDMMC1_D2 SDMMC_BOOT1_D2"),
++		STM32_FUNCTION(9, "SDMMC1_D2"),
+ 		STM32_FUNCTION(11, "SAI2_MCLK_B"),
+ 		STM32_FUNCTION(13, "FMC_A22"),
+ 		STM32_FUNCTION(14, "DCMI_D7"),
+@@ -1038,119 +1101,132 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(71, "PE7"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE7"),
+ 		STM32_FUNCTION(2, "TIM1_ETR"),
+ 		STM32_FUNCTION(3, "TIM3_ETR"),
+-		STM32_FUNCTION(4, "DFSDM_DATA2"),
++		STM32_FUNCTION(4, "DFSDM1_DATIN2"),
+ 		STM32_FUNCTION(8, "UART7_RX"),
+-		STM32_FUNCTION(11, "QUADSPI_BK2_IO0 QUADSPI_BOOTBK2_IO0"),
+-		STM32_FUNCTION(13, "FMC_D4"),
++		STM32_FUNCTION(11, "QUADSPI_BK2_IO0"),
++		STM32_FUNCTION(13, "FMC_D4 FMC_DA4"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(72, "PE8"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE8"),
+ 		STM32_FUNCTION(2, "TIM1_CH1N"),
+-		STM32_FUNCTION(4, "DFSDM_CK2"),
++		STM32_FUNCTION(4, "DFSDM1_CKIN2"),
+ 		STM32_FUNCTION(8, "UART7_TX"),
+-		STM32_FUNCTION(11, "QUADSPI_BK2_IO1 QUADSPI_BOOTBK2_IO1"),
+-		STM32_FUNCTION(13, "FMC_D5"),
++		STM32_FUNCTION(11, "QUADSPI_BK2_IO1"),
++		STM32_FUNCTION(13, "FMC_D5 FMC_DA5"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(73, "PE9"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE9"),
+ 		STM32_FUNCTION(2, "TIM1_CH1"),
+-		STM32_FUNCTION(4, "DFSDM_CKOUT"),
+-		STM32_FUNCTION(8, "UART7_RTS UART_BOOT7_RTS"),
+-		STM32_FUNCTION(11, "QUADSPI_BK2_IO2 QUADSPI_BOOTBK2_IO2"),
+-		STM32_FUNCTION(13, "FMC_D6"),
++		STM32_FUNCTION(4, "DFSDM1_CKOUT"),
++		STM32_FUNCTION(8, "UART7_RTS UART7_DE"),
++		STM32_FUNCTION(11, "QUADSPI_BK2_IO2"),
++		STM32_FUNCTION(13, "FMC_D6 FMC_DA6"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(74, "PE10"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE10"),
+ 		STM32_FUNCTION(2, "TIM1_CH2N"),
+-		STM32_FUNCTION(4, "DFSDM_DATA4"),
+-		STM32_FUNCTION(8, "UART7_CTS UART_BOOT7_CTS"),
+-		STM32_FUNCTION(11, "QUADSPI_BK2_IO3 QUADSPI_BOOTBK2_IO3"),
+-		STM32_FUNCTION(13, "FMC_D7"),
++		STM32_FUNCTION(4, "DFSDM1_DATIN4"),
++		STM32_FUNCTION(8, "UART7_CTS"),
++		STM32_FUNCTION(11, "QUADSPI_BK2_IO3"),
++		STM32_FUNCTION(13, "FMC_D7 FMC_DA7"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(75, "PE11"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE11"),
+ 		STM32_FUNCTION(2, "TIM1_CH2"),
+-		STM32_FUNCTION(4, "DFSDM_CK4"),
++		STM32_FUNCTION(4, "DFSDM1_CKIN4"),
+ 		STM32_FUNCTION(6, "SPI4_NSS"),
+-		STM32_FUNCTION(8, "USART6_CK USART_BOOT6_CK"),
++		STM32_FUNCTION(8, "USART6_CK"),
+ 		STM32_FUNCTION(11, "SAI2_SD_B"),
+-		STM32_FUNCTION(13, "FMC_D8"),
++		STM32_FUNCTION(13, "FMC_D8 FMC_DA8"),
++		STM32_FUNCTION(14, "DCMI_D4"),
+ 		STM32_FUNCTION(15, "LCD_G3"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(76, "PE12"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE12"),
+ 		STM32_FUNCTION(2, "TIM1_CH3N"),
+-		STM32_FUNCTION(4, "DFSDM_DATA5"),
++		STM32_FUNCTION(4, "DFSDM1_DATIN5"),
+ 		STM32_FUNCTION(6, "SPI4_SCK"),
+-		STM32_FUNCTION(9, "SDMMC1_D0DIR SDMMC_BOOT1_D0DIR"),
++		STM32_FUNCTION(9, "SDMMC1_D0DIR"),
+ 		STM32_FUNCTION(11, "SAI2_SCK_B"),
+-		STM32_FUNCTION(13, "FMC_D9"),
++		STM32_FUNCTION(13, "FMC_D9 FMC_DA9"),
+ 		STM32_FUNCTION(15, "LCD_B4"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(77, "PE13"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE13"),
+ 		STM32_FUNCTION(1, "HDP2"),
+ 		STM32_FUNCTION(2, "TIM1_CH3"),
+-		STM32_FUNCTION(4, "DFSDM_CK5"),
++		STM32_FUNCTION(4, "DFSDM1_CKIN5"),
+ 		STM32_FUNCTION(6, "SPI4_MISO"),
+ 		STM32_FUNCTION(11, "SAI2_FS_B"),
+-		STM32_FUNCTION(13, "FMC_D10"),
++		STM32_FUNCTION(13, "FMC_D10 FMC_DA10"),
++		STM32_FUNCTION(14, "DCMI_D6"),
+ 		STM32_FUNCTION(15, "LCD_DE"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(78, "PE14"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE14"),
+ 		STM32_FUNCTION(2, "TIM1_CH4"),
+ 		STM32_FUNCTION(6, "SPI4_MOSI"),
+-		STM32_FUNCTION(9, "UART8_RTS UART_BOOT8_RTS"),
++		STM32_FUNCTION(9, "UART8_RTS UART8_DE"),
+ 		STM32_FUNCTION(11, "SAI2_MCLK_B"),
+-		STM32_FUNCTION(12, "SDMMC1_D123DIR SDMMC_BOOT1_D123DIR"),
+-		STM32_FUNCTION(13, "FMC_D11"),
++		STM32_FUNCTION(12, "SDMMC1_D123DIR"),
++		STM32_FUNCTION(13, "FMC_D11 FMC_DA11"),
+ 		STM32_FUNCTION(14, "LCD_G0"),
+ 		STM32_FUNCTION(15, "LCD_CLK"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(79, "PE15"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOE15"),
+ 		STM32_FUNCTION(1, "HDP3"),
+ 		STM32_FUNCTION(2, "TIM1_BKIN"),
+ 		STM32_FUNCTION(5, "TIM15_BKIN"),
+-		STM32_FUNCTION(8, "USART2_CTS_NSS USART_BOOT2_CTS_NSS"),
+-		STM32_FUNCTION(9, "UART8_CTS UART_BOOT8_CTS"),
+-		STM32_FUNCTION(13, "FMC_D12"),
++		STM32_FUNCTION(8, "USART2_CTS USART2_NSS"),
++		STM32_FUNCTION(9, "UART8_CTS"),
++		STM32_FUNCTION(11, "FMC_NCE2"),
++		STM32_FUNCTION(13, "FMC_D12 FMC_DA12"),
+ 		STM32_FUNCTION(15, "LCD_R7"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(80, "PF0"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOF0"),
+ 		STM32_FUNCTION(5, "I2C2_SDA"),
+ 		STM32_FUNCTION(10, "SDMMC3_D0"),
+@@ -1159,8 +1235,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(81, "PF1"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOF1"),
+ 		STM32_FUNCTION(5, "I2C2_SCL"),
+ 		STM32_FUNCTION(10, "SDMMC3_CMD"),
+@@ -1169,27 +1246,30 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(82, "PF2"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOF2"),
+ 		STM32_FUNCTION(5, "I2C2_SMBA"),
+-		STM32_FUNCTION(10, "SDMMC2_D0DIR SDMMC_BOOT2_D0DIR"),
++		STM32_FUNCTION(10, "SDMMC2_D0DIR"),
+ 		STM32_FUNCTION(11, "SDMMC3_D0DIR"),
+-		STM32_FUNCTION(12, "SDMMC1_D0DIR SDMMC_BOOT1_D0DIR"),
++		STM32_FUNCTION(12, "SDMMC1_D0DIR"),
+ 		STM32_FUNCTION(13, "FMC_A2"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(83, "PF3"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOF3"),
+-		STM32_FUNCTION(12, "ETH_GMII_TX_ER ETH_MII_TX_ER"),
++		STM32_FUNCTION(12, "ETH1_GMII_TX_ER ETH1_MII_TX_ER"),
+ 		STM32_FUNCTION(13, "FMC_A3"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(84, "PF4"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOF4"),
+ 		STM32_FUNCTION(8, "USART2_RX"),
+ 		STM32_FUNCTION(10, "SDMMC3_D1"),
+@@ -1198,8 +1278,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(85, "PF5"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOF5"),
+ 		STM32_FUNCTION(8, "USART2_TX"),
+ 		STM32_FUNCTION(10, "SDMMC3_D2"),
+@@ -1207,71 +1288,77 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(86, "PF6"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOF6"),
+ 		STM32_FUNCTION(2, "TIM16_CH1"),
+ 		STM32_FUNCTION(6, "SPI5_NSS"),
+ 		STM32_FUNCTION(7, "SAI1_SD_B"),
+-		STM32_FUNCTION(8, "UART7_RX UART_BOOT7_RX"),
+-		STM32_FUNCTION(10, "QUADSPI_BK1_IO3 QUADSPI_BOOTBK1_IO3"),
++		STM32_FUNCTION(8, "UART7_RX"),
++		STM32_FUNCTION(10, "QUADSPI_BK1_IO3"),
+ 		STM32_FUNCTION(13, "SAI4_SCK_B"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(87, "PF7"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOF7"),
+ 		STM32_FUNCTION(2, "TIM17_CH1"),
+ 		STM32_FUNCTION(6, "SPI5_SCK"),
+ 		STM32_FUNCTION(7, "SAI1_MCLK_B"),
+-		STM32_FUNCTION(8, "UART7_TX UART_BOOT7_TX"),
+-		STM32_FUNCTION(10, "QUADSPI_BK1_IO2 QUADSPI_BOOTBK1_IO2"),
++		STM32_FUNCTION(8, "UART7_TX"),
++		STM32_FUNCTION(10, "QUADSPI_BK1_IO2"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(88, "PF8"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOF8"),
+ 		STM32_FUNCTION(1, "TRACED12"),
+ 		STM32_FUNCTION(2, "TIM16_CH1N"),
+ 		STM32_FUNCTION(6, "SPI5_MISO"),
+ 		STM32_FUNCTION(7, "SAI1_SCK_B"),
+-		STM32_FUNCTION(8, "UART7_RTS UART_BOOT7_RTS"),
++		STM32_FUNCTION(8, "UART7_RTS UART7_DE"),
+ 		STM32_FUNCTION(10, "TIM13_CH1"),
+-		STM32_FUNCTION(11, "QUADSPI_BK1_IO0 QUADSPI_BOOTBK1_IO0"),
++		STM32_FUNCTION(11, "QUADSPI_BK1_IO0"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(89, "PF9"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOF9"),
+ 		STM32_FUNCTION(1, "TRACED13"),
+ 		STM32_FUNCTION(2, "TIM17_CH1N"),
+ 		STM32_FUNCTION(6, "SPI5_MOSI"),
+ 		STM32_FUNCTION(7, "SAI1_FS_B"),
+-		STM32_FUNCTION(8, "UART7_CTS UART_BOOT7_CTS"),
++		STM32_FUNCTION(8, "UART7_CTS"),
+ 		STM32_FUNCTION(10, "TIM14_CH1"),
+-		STM32_FUNCTION(11, "QUADSPI_BK1_IO1 QUADSPI_BOOTBK1_IO1"),
++		STM32_FUNCTION(11, "QUADSPI_BK1_IO1"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(90, "PF10"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOF10"),
+ 		STM32_FUNCTION(2, "TIM16_BKIN"),
+ 		STM32_FUNCTION(3, "SAI1_D3"),
+ 		STM32_FUNCTION(4, "SAI4_D4"),
+ 		STM32_FUNCTION(7, "SAI1_D4"),
+-		STM32_FUNCTION(10, "QUADSPI_CLK QUADSPI_BOOTCLK"),
++		STM32_FUNCTION(10, "QUADSPI_CLK"),
+ 		STM32_FUNCTION(13, "SAI4_D3"),
+ 		STM32_FUNCTION(14, "DCMI_D11"),
+ 		STM32_FUNCTION(15, "LCD_DE"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(91, "PF11"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOF11"),
+ 		STM32_FUNCTION(6, "SPI5_MOSI"),
+ 		STM32_FUNCTION(11, "SAI2_SD_B"),
+@@ -1280,138 +1367,151 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(92, "PF12"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOF12"),
+ 		STM32_FUNCTION(1, "TRACED4"),
+-		STM32_FUNCTION(12, "ETH_GMII_RXD4"),
++		STM32_FUNCTION(12, "ETH1_GMII_RXD4"),
+ 		STM32_FUNCTION(13, "FMC_A6"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(93, "PF13"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOF13"),
+ 		STM32_FUNCTION(1, "TRACED5"),
+-		STM32_FUNCTION(4, "DFSDM_DATA6"),
++		STM32_FUNCTION(4, "DFSDM1_DATIN6"),
+ 		STM32_FUNCTION(5, "I2C4_SMBA"),
+ 		STM32_FUNCTION(6, "I2C1_SMBA"),
+-		STM32_FUNCTION(7, "DFSDM_DATA3"),
+-		STM32_FUNCTION(12, "ETH_GMII_RXD5"),
++		STM32_FUNCTION(7, "DFSDM1_DATIN3"),
++		STM32_FUNCTION(12, "ETH1_GMII_RXD5"),
+ 		STM32_FUNCTION(13, "FMC_A7"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(94, "PF14"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOF14"),
+ 		STM32_FUNCTION(1, "TRACED6"),
+-		STM32_FUNCTION(4, "DFSDM_CK6"),
++		STM32_FUNCTION(4, "DFSDM1_CKIN6"),
+ 		STM32_FUNCTION(5, "I2C4_SCL"),
+ 		STM32_FUNCTION(6, "I2C1_SCL"),
+-		STM32_FUNCTION(12, "ETH_GMII_RXD6"),
++		STM32_FUNCTION(12, "ETH1_GMII_RXD6"),
+ 		STM32_FUNCTION(13, "FMC_A8"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(95, "PF15"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOF15"),
+ 		STM32_FUNCTION(1, "TRACED7"),
+ 		STM32_FUNCTION(5, "I2C4_SDA"),
+ 		STM32_FUNCTION(6, "I2C1_SDA"),
+-		STM32_FUNCTION(12, "ETH_GMII_RXD7"),
++		STM32_FUNCTION(12, "ETH1_GMII_RXD7"),
+ 		STM32_FUNCTION(13, "FMC_A9"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(96, "PG0"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOG0"),
+ 		STM32_FUNCTION(1, "TRACED0"),
+-		STM32_FUNCTION(4, "DFSDM_DATA0"),
+-		STM32_FUNCTION(12, "ETH_GMII_TXD4"),
++		STM32_FUNCTION(4, "DFSDM1_DATIN0"),
++		STM32_FUNCTION(12, "ETH1_GMII_TXD4"),
+ 		STM32_FUNCTION(13, "FMC_A10"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(97, "PG1"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOG1"),
+ 		STM32_FUNCTION(1, "TRACED1"),
+-		STM32_FUNCTION(12, "ETH_GMII_TXD5"),
++		STM32_FUNCTION(12, "ETH1_GMII_TXD5"),
+ 		STM32_FUNCTION(13, "FMC_A11"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(98, "PG2"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOG2"),
+ 		STM32_FUNCTION(1, "TRACED2"),
+ 		STM32_FUNCTION(2, "MCO2"),
+ 		STM32_FUNCTION(4, "TIM8_BKIN"),
+-		STM32_FUNCTION(12, "ETH_GMII_TXD6"),
++		STM32_FUNCTION(12, "ETH1_GMII_TXD6"),
+ 		STM32_FUNCTION(13, "FMC_A12"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(99, "PG3"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOG3"),
+ 		STM32_FUNCTION(1, "TRACED3"),
+ 		STM32_FUNCTION(4, "TIM8_BKIN2"),
+-		STM32_FUNCTION(5, "DFSDM_CK1"),
+-		STM32_FUNCTION(12, "ETH_GMII_TXD7"),
++		STM32_FUNCTION(5, "DFSDM1_CKIN1"),
++		STM32_FUNCTION(12, "ETH1_GMII_TXD7"),
+ 		STM32_FUNCTION(13, "FMC_A13"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(100, "PG4"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOG4"),
+ 		STM32_FUNCTION(2, "TIM1_BKIN2"),
+-		STM32_FUNCTION(12, "ETH_GMII_GTX_CLK ETH_RGMII_GTX_CLK"),
++		STM32_FUNCTION(12, "ETH1_GMII_GTX_CLK ETH1_RGMII_GTX_CLK"),
+ 		STM32_FUNCTION(13, "FMC_A14"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(101, "PG5"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOG5"),
+ 		STM32_FUNCTION(2, "TIM1_ETR"),
+-		STM32_FUNCTION(12, "ETH_GMII_CLK125 ETH_RGMII_CLK125"),
++		STM32_FUNCTION(12, "ETH1_GMII_CLK125 ETH1_RGMII_CLK125"),
+ 		STM32_FUNCTION(13, "FMC_A15"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(102, "PG6"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOG6"),
+ 		STM32_FUNCTION(1, "TRACED14"),
+ 		STM32_FUNCTION(2, "TIM17_BKIN"),
+-		STM32_FUNCTION(11, "SDMMC2_CMD SDMMC_BOOT2_CMD"),
++		STM32_FUNCTION(11, "SDMMC2_CMD"),
+ 		STM32_FUNCTION(14, "DCMI_D12"),
+ 		STM32_FUNCTION(15, "LCD_R7"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(103, "PG7"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOG7"),
+ 		STM32_FUNCTION(1, "TRACED5"),
+ 		STM32_FUNCTION(7, "SAI1_MCLK_A"),
+-		STM32_FUNCTION(8, "USART6_CK USART_BOOT6_CK"),
+-		STM32_FUNCTION(9, "UART8_RTS UART_BOOT8_RTS"),
++		STM32_FUNCTION(8, "USART6_CK"),
++		STM32_FUNCTION(9, "UART8_RTS UART8_DE"),
+ 		STM32_FUNCTION(10, "QUADSPI_CLK"),
+-		STM32_FUNCTION(12, "QUADSPI_BK2_IO3 QUADSPI_BOOTBK2_IO3"),
++		STM32_FUNCTION(12, "QUADSPI_BK2_IO3"),
+ 		STM32_FUNCTION(13, "FMC_INT"),
+ 		STM32_FUNCTION(14, "DCMI_D13"),
+ 		STM32_FUNCTION(15, "LCD_CLK"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(104, "PG8"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOG8"),
+ 		STM32_FUNCTION(1, "TRACED15"),
+ 		STM32_FUNCTION(2, "TIM2_CH1 TIM2_ETR"),
+@@ -1419,73 +1519,79 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(4, "TIM8_ETR"),
+ 		STM32_FUNCTION(6, "SPI6_NSS"),
+ 		STM32_FUNCTION(7, "SAI4_D2"),
+-		STM32_FUNCTION(8, "USART6_RTS USART_BOOT6_RTS"),
+-		STM32_FUNCTION(9, "USART3_RTS"),
+-		STM32_FUNCTION(10, "SPDIF_IN2"),
++		STM32_FUNCTION(8, "USART6_RTS USART6_DE"),
++		STM32_FUNCTION(9, "USART3_RTS USART3_DE"),
++		STM32_FUNCTION(10, "SPDIFRX_IN2"),
+ 		STM32_FUNCTION(11, "SAI4_FS_A"),
+-		STM32_FUNCTION(12, "ETH_PPS_OUT"),
++		STM32_FUNCTION(12, "ETH1_PPS_OUT"),
+ 		STM32_FUNCTION(15, "LCD_G7"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(105, "PG9"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOG9"),
+ 		STM32_FUNCTION(1, "DBTRGO"),
+ 		STM32_FUNCTION(8, "USART6_RX"),
+-		STM32_FUNCTION(9, "SPDIF_IN3"),
+-		STM32_FUNCTION(10, "QUADSPI_BK2_IO2 QUADSPI_BOOTBK2_IO2"),
++		STM32_FUNCTION(9, "SPDIFRX_IN3"),
++		STM32_FUNCTION(10, "QUADSPI_BK2_IO2"),
+ 		STM32_FUNCTION(11, "SAI2_FS_B"),
+-		STM32_FUNCTION(13, "FMC_NE2 FMC_NCE"),
++		STM32_FUNCTION(13, "FMC_NCE FMC_NE2"),
+ 		STM32_FUNCTION(14, "DCMI_VSYNC"),
++		STM32_FUNCTION(15, "LCD_R1"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(106, "PG10"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOG10"),
+ 		STM32_FUNCTION(1, "TRACED10"),
+-		STM32_FUNCTION(9, "UART8_CTS UART_BOOT8_CTS"),
++		STM32_FUNCTION(9, "UART8_CTS"),
+ 		STM32_FUNCTION(10, "LCD_G3"),
+ 		STM32_FUNCTION(11, "SAI2_SD_B"),
+-		STM32_FUNCTION(12, "QUADSPI_BK2_IO2 QUADSPI_BOOTBK2_IO2"),
++		STM32_FUNCTION(12, "QUADSPI_BK2_IO2"),
+ 		STM32_FUNCTION(13, "FMC_NE3"),
+ 		STM32_FUNCTION(14, "DCMI_D2"),
+ 		STM32_FUNCTION(15, "LCD_B2"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(107, "PG11"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOG11"),
+ 		STM32_FUNCTION(1, "TRACED11"),
+ 		STM32_FUNCTION(5, "USART1_TX"),
+-		STM32_FUNCTION(7, "UART4_TX UART_BOOT4_TX"),
+-		STM32_FUNCTION(9, "SPDIF_IN0"),
+-		STM32_FUNCTION(12, "ETH_GMII_TX_EN ETH_MII_TX_EN ETH_RGMII_TX_CTL ETH_RMII_TX_EN"),
++		STM32_FUNCTION(7, "UART4_TX"),
++		STM32_FUNCTION(9, "SPDIFRX_IN0"),
++		STM32_FUNCTION(12, "ETH1_GMII_TX_EN ETH1_MII_TX_EN ETH1_RGMII_TX_CTL ETH1_RMII_TX_EN"),
+ 		STM32_FUNCTION(14, "DCMI_D3"),
+ 		STM32_FUNCTION(15, "LCD_B3"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(108, "PG12"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOG12"),
+ 		STM32_FUNCTION(2, "LPTIM1_IN1"),
+ 		STM32_FUNCTION(6, "SPI6_MISO"),
+ 		STM32_FUNCTION(7, "SAI4_CK2"),
+-		STM32_FUNCTION(8, "USART6_RTS USART_BOOT6_RTS"),
+-		STM32_FUNCTION(9, "SPDIF_IN1"),
++		STM32_FUNCTION(8, "USART6_RTS USART6_DE"),
++		STM32_FUNCTION(9, "SPDIFRX_IN1"),
+ 		STM32_FUNCTION(10, "LCD_B4"),
+ 		STM32_FUNCTION(11, "SAI4_SCK_A"),
+-		STM32_FUNCTION(12, "ETH_PHY_INTN"),
++		STM32_FUNCTION(12, "ETH1_PHY_INTN"),
+ 		STM32_FUNCTION(13, "FMC_NE4"),
+ 		STM32_FUNCTION(15, "LCD_B1"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(109, "PG13"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOG13"),
+ 		STM32_FUNCTION(1, "TRACED0"),
+ 		STM32_FUNCTION(2, "LPTIM1_OUT"),
+@@ -1493,79 +1599,86 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(5, "SAI4_CK1"),
+ 		STM32_FUNCTION(6, "SPI6_SCK"),
+ 		STM32_FUNCTION(7, "SAI1_SCK_A"),
+-		STM32_FUNCTION(8, "USART6_CTS_NSS USART_BOOT6_CTS_NSS"),
++		STM32_FUNCTION(8, "USART6_CTS USART6_NSS"),
+ 		STM32_FUNCTION(11, "SAI4_MCLK_A"),
+-		STM32_FUNCTION(12, "ETH_GMII_TXD0 ETH_MII_TXD0 ETH_RGMII_TXD0 ETH_RMII_TXD0"),
++		STM32_FUNCTION(12, "ETH1_GMII_TXD0 ETH1_MII_TXD0 ETH1_RGMII_TXD0 ETH1_RMII_TXD0"),
+ 		STM32_FUNCTION(13, "FMC_A24"),
+ 		STM32_FUNCTION(15, "LCD_R0"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(110, "PG14"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOG14"),
+ 		STM32_FUNCTION(1, "TRACED1"),
+ 		STM32_FUNCTION(2, "LPTIM1_ETR"),
+ 		STM32_FUNCTION(6, "SPI6_MOSI"),
+ 		STM32_FUNCTION(7, "SAI4_D1"),
+ 		STM32_FUNCTION(8, "USART6_TX"),
+-		STM32_FUNCTION(10, "QUADSPI_BK2_IO3 QUADSPI_BOOTBK2_IO3"),
++		STM32_FUNCTION(10, "QUADSPI_BK2_IO3"),
+ 		STM32_FUNCTION(11, "SAI4_SD_A"),
+-		STM32_FUNCTION(12, "ETH_GMII_TXD1 ETH_MII_TXD1 ETH_RGMII_TXD1 ETH_RMII_TXD1"),
++		STM32_FUNCTION(12, "ETH1_GMII_TXD1 ETH1_MII_TXD1 ETH1_RGMII_TXD1 ETH1_RMII_TXD1"),
+ 		STM32_FUNCTION(13, "FMC_A25"),
+ 		STM32_FUNCTION(15, "LCD_B0"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(111, "PG15"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOG15"),
+ 		STM32_FUNCTION(1, "TRACED7"),
+ 		STM32_FUNCTION(3, "SAI1_D2"),
+ 		STM32_FUNCTION(5, "I2C2_SDA"),
+ 		STM32_FUNCTION(7, "SAI1_FS_A"),
+-		STM32_FUNCTION(8, "USART6_CTS_NSS USART_BOOT6_CTS_NSS"),
++		STM32_FUNCTION(8, "USART6_CTS USART6_NSS"),
+ 		STM32_FUNCTION(11, "SDMMC3_CK"),
+ 		STM32_FUNCTION(14, "DCMI_D13"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(112, "PH0"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOH0"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(113, "PH1"),
++		STM32MP157CAA | STM32MP157CAC | STM32MP157CAB | STM32MP157CAD,
+ 		STM32_FUNCTION(0, "GPIOH1"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(114, "PH2"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOH2"),
+ 		STM32_FUNCTION(2, "LPTIM1_IN2"),
+-		STM32_FUNCTION(10, "QUADSPI_BK2_IO0 QUADSPI_BOOTBK2_IO0"),
++		STM32_FUNCTION(10, "QUADSPI_BK2_IO0"),
+ 		STM32_FUNCTION(11, "SAI2_SCK_B"),
+-		STM32_FUNCTION(12, "ETH_GMII_CRS ETH_MII_CRS"),
++		STM32_FUNCTION(12, "ETH1_GMII_CRS ETH1_MII_CRS"),
+ 		STM32_FUNCTION(15, "LCD_R0"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(115, "PH3"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOH3"),
+-		STM32_FUNCTION(4, "DFSDM_CK4"),
+-		STM32_FUNCTION(10, "QUADSPI_BK2_IO1 QUADSPI_BOOTBK2_IO1"),
++		STM32_FUNCTION(4, "DFSDM1_CKIN4"),
++		STM32_FUNCTION(10, "QUADSPI_BK2_IO1"),
+ 		STM32_FUNCTION(11, "SAI2_MCLK_B"),
+-		STM32_FUNCTION(12, "ETH_GMII_COL ETH_MII_COL"),
++		STM32_FUNCTION(12, "ETH1_GMII_COL ETH1_MII_COL"),
+ 		STM32_FUNCTION(15, "LCD_R1"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(116, "PH4"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOH4"),
+ 		STM32_FUNCTION(5, "I2C2_SCL"),
+ 		STM32_FUNCTION(10, "LCD_G5"),
+@@ -1573,8 +1686,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(117, "PH5"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOH5"),
+ 		STM32_FUNCTION(5, "I2C2_SDA"),
+ 		STM32_FUNCTION(6, "SPI5_NSS"),
+@@ -1582,31 +1696,34 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(118, "PH6"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOH6"),
+ 		STM32_FUNCTION(3, "TIM12_CH1"),
+ 		STM32_FUNCTION(5, "I2C2_SMBA"),
+ 		STM32_FUNCTION(6, "SPI5_SCK"),
+-		STM32_FUNCTION(12, "ETH_GMII_RXD2 ETH_MII_RXD2 ETH_RGMII_RXD2"),
++		STM32_FUNCTION(12, "ETH1_GMII_RXD2 ETH1_MII_RXD2 ETH1_RGMII_RXD2"),
+ 		STM32_FUNCTION(13, "MDIOS_MDIO"),
+ 		STM32_FUNCTION(14, "DCMI_D8"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(119, "PH7"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOH7"),
+ 		STM32_FUNCTION(5, "I2C3_SCL"),
+ 		STM32_FUNCTION(6, "SPI5_MISO"),
+-		STM32_FUNCTION(12, "ETH_GMII_RXD3 ETH_MII_RXD3 ETH_RGMII_RXD3"),
++		STM32_FUNCTION(12, "ETH1_GMII_RXD3 ETH1_MII_RXD3 ETH1_RGMII_RXD3"),
+ 		STM32_FUNCTION(13, "MDIOS_MDC"),
+ 		STM32_FUNCTION(14, "DCMI_D9"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(120, "PH8"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOH8"),
+ 		STM32_FUNCTION(3, "TIM5_ETR"),
+ 		STM32_FUNCTION(5, "I2C3_SDA"),
+@@ -1615,8 +1732,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(121, "PH9"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOH9"),
+ 		STM32_FUNCTION(3, "TIM12_CH2"),
+ 		STM32_FUNCTION(5, "I2C3_SMBA"),
+@@ -1625,8 +1743,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(122, "PH10"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOH10"),
+ 		STM32_FUNCTION(3, "TIM5_CH1"),
+ 		STM32_FUNCTION(5, "I2C4_SMBA"),
+@@ -1636,8 +1755,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(123, "PH11"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOH11"),
+ 		STM32_FUNCTION(3, "TIM5_CH2"),
+ 		STM32_FUNCTION(5, "I2C4_SCL"),
+@@ -1647,8 +1767,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(124, "PH12"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOH12"),
+ 		STM32_FUNCTION(1, "HDP2"),
+ 		STM32_FUNCTION(3, "TIM5_CH3"),
+@@ -1659,50 +1780,53 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(125, "PH13"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOH13"),
+ 		STM32_FUNCTION(4, "TIM8_CH1N"),
+ 		STM32_FUNCTION(9, "UART4_TX"),
+-		STM32_FUNCTION(10, "CAN1_TX"),
++		STM32_FUNCTION(10, "FDCAN1_TX"),
+ 		STM32_FUNCTION(15, "LCD_G2"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(126, "PH14"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOH14"),
+ 		STM32_FUNCTION(4, "TIM8_CH2N"),
+ 		STM32_FUNCTION(9, "UART4_RX"),
+-		STM32_FUNCTION(10, "CAN1_RX"),
++		STM32_FUNCTION(10, "FDCAN1_RX"),
+ 		STM32_FUNCTION(14, "DCMI_D4"),
+ 		STM32_FUNCTION(15, "LCD_G3"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(127, "PH15"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOH15"),
+ 		STM32_FUNCTION(4, "TIM8_CH3N"),
+-		STM32_FUNCTION(10, "CAN1_TXFD"),
+ 		STM32_FUNCTION(14, "DCMI_D11"),
+ 		STM32_FUNCTION(15, "LCD_G4"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(128, "PI0"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOI0"),
+ 		STM32_FUNCTION(3, "TIM5_CH4"),
+ 		STM32_FUNCTION(6, "SPI2_NSS I2S2_WS"),
+-		STM32_FUNCTION(10, "CAN1_RXFD"),
+ 		STM32_FUNCTION(14, "DCMI_D13"),
+ 		STM32_FUNCTION(15, "LCD_G5"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(129, "PI1"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOI1"),
+ 		STM32_FUNCTION(4, "TIM8_BKIN2"),
+ 		STM32_FUNCTION(6, "SPI2_SCK I2S2_CK"),
+@@ -1711,8 +1835,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(130, "PI2"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOI2"),
+ 		STM32_FUNCTION(4, "TIM8_CH4"),
+ 		STM32_FUNCTION(6, "SPI2_MISO I2S2_SDI"),
+@@ -1721,8 +1846,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(131, "PI3"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOI3"),
+ 		STM32_FUNCTION(4, "TIM8_ETR"),
+ 		STM32_FUNCTION(6, "SPI2_MOSI I2S2_SDO"),
+@@ -1730,8 +1856,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(132, "PI4"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOI4"),
+ 		STM32_FUNCTION(4, "TIM8_BKIN"),
+ 		STM32_FUNCTION(11, "SAI2_MCLK_A"),
+@@ -1740,8 +1867,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(133, "PI5"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOI5"),
+ 		STM32_FUNCTION(4, "TIM8_CH1"),
+ 		STM32_FUNCTION(11, "SAI2_SCK_A"),
+@@ -1750,8 +1878,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(134, "PI6"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOI6"),
+ 		STM32_FUNCTION(4, "TIM8_CH2"),
+ 		STM32_FUNCTION(11, "SAI2_SD_A"),
+@@ -1760,8 +1889,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(135, "PI7"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOI7"),
+ 		STM32_FUNCTION(4, "TIM8_CH3"),
+ 		STM32_FUNCTION(11, "SAI2_FS_A"),
+@@ -1770,35 +1900,38 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(136, "PI8"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOI8"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(137, "PI9"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOI9"),
+ 		STM32_FUNCTION(1, "HDP1"),
+ 		STM32_FUNCTION(9, "UART4_RX"),
+-		STM32_FUNCTION(10, "CAN1_RX"),
++		STM32_FUNCTION(10, "FDCAN1_RX"),
+ 		STM32_FUNCTION(15, "LCD_VSYNC"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(138, "PI10"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOI10"),
+ 		STM32_FUNCTION(1, "HDP0"),
+-		STM32_FUNCTION(9, "USART3_CTS_NSS USART_BOOT3_CTS_NSS"),
+-		STM32_FUNCTION(10, "CAN1_RXFD"),
+-		STM32_FUNCTION(12, "ETH_GMII_RX_ER ETH_MII_RX_ER"),
++		STM32_FUNCTION(9, "USART3_CTS USART3_NSS"),
++		STM32_FUNCTION(12, "ETH1_GMII_RX_ER ETH1_MII_RX_ER"),
+ 		STM32_FUNCTION(15, "LCD_HSYNC"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(139, "PI11"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOI11"),
+ 		STM32_FUNCTION(1, "MCO1"),
+ 		STM32_FUNCTION(6, "I2S_CKIN"),
+@@ -1806,8 +1939,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(140, "PI12"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOI12"),
+ 		STM32_FUNCTION(1, "TRACED0"),
+ 		STM32_FUNCTION(3, "HDP0"),
+@@ -1815,8 +1949,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(141, "PI13"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOI13"),
+ 		STM32_FUNCTION(1, "TRACED1"),
+ 		STM32_FUNCTION(3, "HDP1"),
+@@ -1824,24 +1959,27 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(142, "PI14"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOI14"),
+ 		STM32_FUNCTION(1, "TRACECLK"),
+ 		STM32_FUNCTION(15, "LCD_CLK"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(143, "PI15"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOI15"),
+ 		STM32_FUNCTION(10, "LCD_G2"),
+ 		STM32_FUNCTION(15, "LCD_R0"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(144, "PJ0"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ0"),
+ 		STM32_FUNCTION(1, "TRACED8"),
+ 		STM32_FUNCTION(10, "LCD_R7"),
+@@ -1849,16 +1987,18 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(145, "PJ1"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ1"),
+ 		STM32_FUNCTION(1, "TRACED9"),
+ 		STM32_FUNCTION(15, "LCD_R2"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(146, "PJ2"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ2"),
+ 		STM32_FUNCTION(1, "TRACED10"),
+ 		STM32_FUNCTION(14, "DSI_TE"),
+@@ -1866,24 +2006,27 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(147, "PJ3"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ3"),
+ 		STM32_FUNCTION(1, "TRACED11"),
+ 		STM32_FUNCTION(15, "LCD_R4"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(148, "PJ4"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ4"),
+ 		STM32_FUNCTION(1, "TRACED12"),
+ 		STM32_FUNCTION(15, "LCD_R5"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(149, "PJ5"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ5"),
+ 		STM32_FUNCTION(1, "TRACED2"),
+ 		STM32_FUNCTION(3, "HDP2"),
+@@ -1891,8 +2034,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(150, "PJ6"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ6"),
+ 		STM32_FUNCTION(1, "TRACED3"),
+ 		STM32_FUNCTION(3, "HDP3"),
+@@ -1901,8 +2045,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(151, "PJ7"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ7"),
+ 		STM32_FUNCTION(1, "TRACED13"),
+ 		STM32_FUNCTION(4, "TIM8_CH2N"),
+@@ -1910,8 +2055,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(152, "PJ8"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ8"),
+ 		STM32_FUNCTION(1, "TRACED14"),
+ 		STM32_FUNCTION(2, "TIM1_CH3N"),
+@@ -1921,8 +2067,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(153, "PJ9"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ9"),
+ 		STM32_FUNCTION(1, "TRACED15"),
+ 		STM32_FUNCTION(2, "TIM1_CH3"),
+@@ -1932,8 +2079,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(154, "PJ10"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ10"),
+ 		STM32_FUNCTION(2, "TIM1_CH2N"),
+ 		STM32_FUNCTION(4, "TIM8_CH2"),
+@@ -1942,8 +2090,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(155, "PJ11"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ11"),
+ 		STM32_FUNCTION(2, "TIM1_CH2"),
+ 		STM32_FUNCTION(4, "TIM8_CH2N"),
+@@ -1952,38 +2101,43 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(156, "PJ12"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ12"),
+ 		STM32_FUNCTION(10, "LCD_G3"),
+ 		STM32_FUNCTION(15, "LCD_B0"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(157, "PJ13"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ13"),
+ 		STM32_FUNCTION(10, "LCD_G4"),
+ 		STM32_FUNCTION(15, "LCD_B1"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(158, "PJ14"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ14"),
+ 		STM32_FUNCTION(15, "LCD_B2"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(159, "PJ15"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOJ15"),
+ 		STM32_FUNCTION(15, "LCD_B3"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(160, "PK0"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOK0"),
+ 		STM32_FUNCTION(2, "TIM1_CH1N"),
+ 		STM32_FUNCTION(4, "TIM8_CH3"),
+@@ -1992,8 +2146,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(161, "PK1"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOK1"),
+ 		STM32_FUNCTION(1, "TRACED4"),
+ 		STM32_FUNCTION(2, "TIM1_CH1"),
+@@ -2004,8 +2159,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(162, "PK2"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOK2"),
+ 		STM32_FUNCTION(1, "TRACED5"),
+ 		STM32_FUNCTION(2, "TIM1_BKIN"),
+@@ -2015,22 +2171,25 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(163, "PK3"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOK3"),
+ 		STM32_FUNCTION(15, "LCD_B4"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(164, "PK4"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOK4"),
+ 		STM32_FUNCTION(15, "LCD_B5"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(165, "PK5"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOK5"),
+ 		STM32_FUNCTION(1, "TRACED6"),
+ 		STM32_FUNCTION(3, "HDP6"),
+@@ -2038,8 +2197,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(166, "PK6"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOK6"),
+ 		STM32_FUNCTION(1, "TRACED7"),
+ 		STM32_FUNCTION(3, "HDP7"),
+@@ -2047,8 +2207,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(167, "PK7"),
++		STM32MP157CAA,
+ 		STM32_FUNCTION(0, "GPIOK7"),
+ 		STM32_FUNCTION(15, "LCD_DE"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+@@ -2057,8 +2218,9 @@ static const struct stm32_desc_pin stm32mp157_pins[] = {
+ };
+ 
+ static const struct stm32_desc_pin stm32mp157_z_pins[] = {
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(400, "PZ0"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOZ0"),
+ 		STM32_FUNCTION(3, "I2C6_SCL"),
+ 		STM32_FUNCTION(4, "I2C2_SCL"),
+@@ -2068,8 +2230,9 @@ static const struct stm32_desc_pin stm32mp157_z_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(401, "PZ1"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOZ1"),
+ 		STM32_FUNCTION(3, "I2C6_SDA"),
+ 		STM32_FUNCTION(4, "I2C2_SDA"),
+@@ -2081,8 +2244,9 @@ static const struct stm32_desc_pin stm32mp157_z_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(402, "PZ2"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOZ2"),
+ 		STM32_FUNCTION(3, "I2C6_SCL"),
+ 		STM32_FUNCTION(4, "I2C2_SCL"),
+@@ -2094,21 +2258,23 @@ static const struct stm32_desc_pin stm32mp157_z_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(403, "PZ3"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOZ3"),
+ 		STM32_FUNCTION(3, "I2C6_SDA"),
+ 		STM32_FUNCTION(4, "I2C2_SDA"),
+ 		STM32_FUNCTION(5, "I2C5_SDA"),
+ 		STM32_FUNCTION(6, "SPI1_NSS I2S1_WS"),
+ 		STM32_FUNCTION(7, "I2C4_SDA"),
+-		STM32_FUNCTION(8, "USART1_CTS_NSS"),
++		STM32_FUNCTION(8, "USART1_CTS USART1_NSS"),
+ 		STM32_FUNCTION(9, "SPI6_NSS"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(404, "PZ4"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOZ4"),
+ 		STM32_FUNCTION(3, "I2C6_SCL"),
+ 		STM32_FUNCTION(4, "I2C2_SCL"),
+@@ -2117,19 +2283,21 @@ static const struct stm32_desc_pin stm32mp157_z_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(405, "PZ5"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOZ5"),
+ 		STM32_FUNCTION(3, "I2C6_SDA"),
+ 		STM32_FUNCTION(4, "I2C2_SDA"),
+ 		STM32_FUNCTION(5, "I2C5_SDA"),
+ 		STM32_FUNCTION(7, "I2C4_SDA"),
+-		STM32_FUNCTION(8, "USART1_RTS"),
++		STM32_FUNCTION(8, "USART1_RTS USART1_DE"),
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(406, "PZ6"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOZ6"),
+ 		STM32_FUNCTION(3, "I2C6_SCL"),
+ 		STM32_FUNCTION(4, "I2C2_SCL"),
+@@ -2140,8 +2308,9 @@ static const struct stm32_desc_pin stm32mp157_z_pins[] = {
+ 		STM32_FUNCTION(16, "EVENTOUT"),
+ 		STM32_FUNCTION(17, "ANALOG")
+ 	),
+-	STM32_PIN(
++	STM32_PIN_PKG(
+ 		PINCTRL_PIN(407, "PZ7"),
++		STM32MP157CAA | STM32MP157CAC,
+ 		STM32_FUNCTION(0, "GPIOZ7"),
+ 		STM32_FUNCTION(3, "I2C6_SDA"),
+ 		STM32_FUNCTION(4, "I2C2_SDA"),
+@@ -2159,6 +2328,7 @@ static struct stm32_pinctrl_match_data stm32mp157_match_data = {
+ static struct stm32_pinctrl_match_data stm32mp157_z_match_data = {
+ 	.pins = stm32mp157_z_pins,
+ 	.npins = ARRAY_SIZE(stm32mp157_z_pins),
++	.pin_base_shift = STM32MP157_Z_BASE_SHIFT,
+ };
+ 
+ static const struct of_device_id stm32mp157_pctrl_match[] = {
+@@ -2173,11 +2343,16 @@ static const struct of_device_id stm32mp157_pctrl_match[] = {
+ 	{ }
+ };
+ 
++static const struct dev_pm_ops stm32_pinctrl_dev_pm_ops = {
++	 SET_LATE_SYSTEM_SLEEP_PM_OPS(NULL, stm32_pinctrl_resume)
++};
++
+ static struct platform_driver stm32mp157_pinctrl_driver = {
+ 	.probe = stm32_pctl_probe,
+ 	.driver = {
+ 		.name = "stm32mp157-pinctrl",
+ 		.of_match_table = stm32mp157_pctrl_match,
++		.pm = &stm32_pinctrl_dev_pm_ops,
+ 	},
+ };
+ 
+diff --git a/drivers/pwm/pwm-stm32-lp.c b/drivers/pwm/pwm-stm32-lp.c
+index 28e1f64..b461412 100644
+--- a/drivers/pwm/pwm-stm32-lp.c
++++ b/drivers/pwm/pwm-stm32-lp.c
+@@ -13,6 +13,7 @@
+ #include <linux/mfd/stm32-lptimer.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
++#include <linux/pinctrl/consumer.h>
+ #include <linux/platform_device.h>
+ #include <linux/pwm.h>
+ 
+@@ -20,6 +21,8 @@ struct stm32_pwm_lp {
+ 	struct pwm_chip chip;
+ 	struct clk *clk;
+ 	struct regmap *regmap;
++	struct pwm_state suspend;
++	bool suspended;
+ };
+ 
+ static inline struct stm32_pwm_lp *to_stm32_pwm_lp(struct pwm_chip *chip)
+@@ -229,6 +232,40 @@ static int stm32_pwm_lp_remove(struct platform_device *pdev)
+ 	return pwmchip_remove(&priv->chip);
+ }
+ 
++#ifdef CONFIG_PM_SLEEP
++static int stm32_pwm_lp_suspend(struct device *dev)
++{
++	struct stm32_pwm_lp *priv = dev_get_drvdata(dev);
++
++	pwm_get_state(&priv->chip.pwms[0], &priv->suspend);
++	priv->suspended = priv->suspend.enabled;
++
++	/* safe to call pwm_disable() for already disabled pwm */
++	pwm_disable(&priv->chip.pwms[0]);
++
++	return pinctrl_pm_select_sleep_state(dev);
++}
++
++static int stm32_pwm_lp_resume(struct device *dev)
++{
++	struct stm32_pwm_lp *priv = dev_get_drvdata(dev);
++	int ret;
++
++	ret = pinctrl_pm_select_default_state(dev);
++	if (ret)
++		return ret;
++
++	/* Only restore suspended pwm, not to disrupt other MFD child */
++	if (!priv->suspended)
++		return 0;
++
++	return pwm_apply_state(&priv->chip.pwms[0], &priv->suspend);
++}
++#endif
++
++static SIMPLE_DEV_PM_OPS(stm32_pwm_lp_pm_ops, stm32_pwm_lp_suspend,
++			 stm32_pwm_lp_resume);
++
+ static const struct of_device_id stm32_pwm_lp_of_match[] = {
+ 	{ .compatible = "st,stm32-pwm-lp", },
+ 	{},
+@@ -241,6 +278,7 @@ static struct platform_driver stm32_pwm_lp_driver = {
+ 	.driver	= {
+ 		.name = "stm32-pwm-lp",
+ 		.of_match_table = of_match_ptr(stm32_pwm_lp_of_match),
++		.pm = &stm32_pwm_lp_pm_ops,
+ 	},
+ };
+ module_platform_driver(stm32_pwm_lp_driver);
+diff --git a/drivers/pwm/pwm-stm32.c b/drivers/pwm/pwm-stm32.c
+index 4f84255..4688425 100644
+--- a/drivers/pwm/pwm-stm32.c
++++ b/drivers/pwm/pwm-stm32.c
+@@ -12,6 +12,7 @@
+ #include <linux/mfd/stm32-timers.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
++#include <linux/pinctrl/consumer.h>
+ #include <linux/platform_device.h>
+ #include <linux/pwm.h>
+ 
+@@ -19,6 +20,12 @@
+ #define CCMR_CHANNEL_MASK  0xFF
+ #define MAX_BREAKINPUT 2
+ 
++struct stm32_breakinput {
++	u32 index;
++	u32 level;
++	u32 filter;
++};
++
+ struct stm32_pwm {
+ 	struct pwm_chip chip;
+ 	struct mutex lock; /* protect pwm config/enable */
+@@ -26,15 +33,13 @@ struct stm32_pwm {
+ 	struct regmap *regmap;
+ 	u32 max_arr;
+ 	bool have_complementary_output;
++	struct stm32_breakinput breakinput[MAX_BREAKINPUT];
++	unsigned int nbreakinput;
++	struct pwm_state suspend[4];
++	bool suspended[4];
+ 	u32 capture[4] ____cacheline_aligned; /* DMA'able buffer */
+ };
+ 
+-struct stm32_breakinput {
+-	u32 index;
+-	u32 level;
+-	u32 filter;
+-};
+-
+ static inline struct stm32_pwm *to_stm32_pwm_dev(struct pwm_chip *chip)
+ {
+ 	return container_of(chip, struct stm32_pwm, chip);
+@@ -374,9 +379,7 @@ static int stm32_pwm_config(struct stm32_pwm *priv, int ch,
+ 	else
+ 		regmap_update_bits(priv->regmap, TIM_CCMR2, mask, ccmr);
+ 
+-	regmap_update_bits(priv->regmap, TIM_BDTR,
+-			   TIM_BDTR_MOE | TIM_BDTR_AOE,
+-			   TIM_BDTR_MOE | TIM_BDTR_AOE);
++	regmap_update_bits(priv->regmap, TIM_BDTR, TIM_BDTR_MOE, TIM_BDTR_MOE);
+ 
+ 	return 0;
+ }
+@@ -512,15 +515,27 @@ static int stm32_pwm_set_breakinput(struct stm32_pwm *priv,
+ 	return (bdtr & bke) ? 0 : -EINVAL;
+ }
+ 
+-static int stm32_pwm_apply_breakinputs(struct stm32_pwm *priv,
++static int stm32_pwm_apply_breakinputs(struct stm32_pwm *priv)
++{
++	int i, ret = 0;
++
++	for (i = 0; i < priv->nbreakinput && !ret; i++) {
++		ret = stm32_pwm_set_breakinput(priv,
++					       priv->breakinput[i].index,
++					       priv->breakinput[i].level,
++					       priv->breakinput[i].filter);
++	}
++
++	return ret;
++}
++
++static int stm32_pwm_probe_breakinputs(struct stm32_pwm *priv,
+ 				       struct device_node *np)
+ {
+-	struct stm32_breakinput breakinput[MAX_BREAKINPUT];
+-	int nb, ret, i, array_size;
++	int nb, ret, array_size;
+ 
+ 	nb = of_property_count_elems_of_size(np, "st,breakinput",
+ 					     sizeof(struct stm32_breakinput));
+-
+ 	/*
+ 	 * Because "st,breakinput" parameter is optional do not make probe
+ 	 * failed if it doesn't exist.
+@@ -531,20 +546,14 @@ static int stm32_pwm_apply_breakinputs(struct stm32_pwm *priv,
+ 	if (nb > MAX_BREAKINPUT)
+ 		return -EINVAL;
+ 
++	priv->nbreakinput = nb;
+ 	array_size = nb * sizeof(struct stm32_breakinput) / sizeof(u32);
+ 	ret = of_property_read_u32_array(np, "st,breakinput",
+-					 (u32 *)breakinput, array_size);
++					 (u32 *)priv->breakinput, array_size);
+ 	if (ret)
+ 		return ret;
+ 
+-	for (i = 0; i < nb && !ret; i++) {
+-		ret = stm32_pwm_set_breakinput(priv,
+-					       breakinput[i].index,
+-					       breakinput[i].level,
+-					       breakinput[i].filter);
+-	}
+-
+-	return ret;
++	return stm32_pwm_apply_breakinputs(priv);
+ }
+ 
+ static void stm32_pwm_detect_complementary(struct stm32_pwm *priv)
+@@ -608,11 +617,13 @@ static int stm32_pwm_probe(struct platform_device *pdev)
+ 	priv->regmap = ddata->regmap;
+ 	priv->clk = ddata->clk;
+ 	priv->max_arr = ddata->max_arr;
++	priv->chip.of_xlate = of_pwm_xlate_with_flags;
++	priv->chip.of_pwm_n_cells = 3;
+ 
+ 	if (!priv->regmap || !priv->clk)
+ 		return -EINVAL;
+ 
+-	ret = stm32_pwm_apply_breakinputs(priv, np);
++	ret = stm32_pwm_probe_breakinputs(priv, np);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -645,6 +656,53 @@ static int stm32_pwm_remove(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
++#ifdef CONFIG_PM_SLEEP
++static int stm32_pwm_suspend(struct device *dev)
++{
++	struct stm32_pwm *priv = dev_get_drvdata(dev);
++	unsigned int i;
++
++	for (i = 0; i < priv->chip.npwm; i++) {
++		pwm_get_state(&priv->chip.pwms[i], &priv->suspend[i]);
++		priv->suspended[i] = priv->suspend[i].enabled;
++
++		/* safe to call pwm_disable() for already disabled pwm */
++		pwm_disable(&priv->chip.pwms[i]);
++	}
++
++	return pinctrl_pm_select_sleep_state(dev);
++}
++
++static int stm32_pwm_resume(struct device *dev)
++{
++	struct stm32_pwm *priv = dev_get_drvdata(dev);
++	unsigned int i;
++	int ret;
++
++	ret = pinctrl_pm_select_default_state(dev);
++	if (ret)
++		return ret;
++
++	ret = stm32_pwm_apply_breakinputs(priv);
++	if (ret)
++		return ret;
++
++	for (i = 0; i < priv->chip.npwm; i++) {
++		/* Only resume active pwm, not to disrupt other MFD child */
++		if (!priv->suspended[i])
++			continue;
++
++		ret = pwm_apply_state(&priv->chip.pwms[i], &priv->suspend[i]);
++		if (ret)
++			break;
++	}
++
++	return ret;
++}
++#endif
++
++static SIMPLE_DEV_PM_OPS(stm32_pwm_pm_ops, stm32_pwm_suspend, stm32_pwm_resume);
++
+ static const struct of_device_id stm32_pwm_of_match[] = {
+ 	{ .compatible = "st,stm32-pwm",	},
+ 	{ /* end node */ },
+@@ -657,6 +715,7 @@ static struct platform_driver stm32_pwm_driver = {
+ 	.driver	= {
+ 		.name = "stm32-pwm",
+ 		.of_match_table = stm32_pwm_of_match,
++		.pm = &stm32_pwm_pm_ops,
+ 	},
+ };
+ module_platform_driver(stm32_pwm_driver);
+diff --git a/drivers/pwm/sysfs.c b/drivers/pwm/sysfs.c
+index 72bdda4..13d9bd5 100644
+--- a/drivers/pwm/sysfs.c
++++ b/drivers/pwm/sysfs.c
+@@ -249,6 +249,7 @@ static void pwm_export_release(struct device *child)
+ static int pwm_export_child(struct device *parent, struct pwm_device *pwm)
+ {
+ 	struct pwm_export *export;
++	char *pwm_prop[2];
+ 	int ret;
+ 
+ 	if (test_and_set_bit(PWMF_EXPORTED, &pwm->flags))
+@@ -276,6 +277,10 @@ static int pwm_export_child(struct device *parent, struct pwm_device *pwm)
+ 		export = NULL;
+ 		return ret;
+ 	}
++	pwm_prop[0] = kasprintf(GFP_KERNEL, "EXPORT=pwm%u", pwm->hwpwm);
++	pwm_prop[1] = NULL;
++	kobject_uevent_env(&parent->kobj, KOBJ_CHANGE, pwm_prop);
++	kfree(pwm_prop[0]);
+ 
+ 	return 0;
+ }
+@@ -288,6 +293,7 @@ static int pwm_unexport_match(struct device *child, void *data)
+ static int pwm_unexport_child(struct device *parent, struct pwm_device *pwm)
+ {
+ 	struct device *child;
++	char *pwm_prop[2];
+ 
+ 	if (!test_and_clear_bit(PWMF_EXPORTED, &pwm->flags))
+ 		return -ENODEV;
+@@ -296,6 +302,11 @@ static int pwm_unexport_child(struct device *parent, struct pwm_device *pwm)
+ 	if (!child)
+ 		return -ENODEV;
+ 
++	pwm_prop[0] = kasprintf(GFP_KERNEL, "UNEXPORT=pwm%u", pwm->hwpwm);
++	pwm_prop[1] = NULL;
++	kobject_uevent_env(&parent->kobj, KOBJ_CHANGE, pwm_prop);
++	kfree(pwm_prop[0]);
++
+ 	/* for device_find_child() */
+ 	put_device(child);
+ 	device_unregister(child);
+diff --git a/include/dt-bindings/pinctrl/stm32-pinfunc.h b/include/dt-bindings/pinctrl/stm32-pinfunc.h
+index b5a2174..e3b45a8 100644
+--- a/include/dt-bindings/pinctrl/stm32-pinfunc.h
++++ b/include/dt-bindings/pinctrl/stm32-pinfunc.h
+@@ -26,11 +26,18 @@
+ #define AF14	0xf
+ #define AF15	0x10
+ #define ANALOG	0x11
++#define RSVD	0x12
+ 
+ /* define Pins number*/
+ #define PIN_NO(port, line)	(((port) - 'A') * 0x10 + (line))
+ 
+ #define STM32_PINMUX(port, line, mode) (((PIN_NO(port, line)) << 8) | (mode))
+ 
++/*  package information */
++#define STM32MP157CAA	0x1
++#define STM32MP157CAB	0x2
++#define STM32MP157CAC	0x4
++#define STM32MP157CAD	0x8
++
+ #endif /* _DT_BINDINGS_STM32_PINFUNC_H */
+ 
+diff --git a/include/linux/pinctrl/pinctrl.h b/include/linux/pinctrl/pinctrl.h
+index 8f5dbb8..4349124 100644
+--- a/include/linux/pinctrl/pinctrl.h
++++ b/include/linux/pinctrl/pinctrl.h
+@@ -125,6 +125,10 @@ struct pinctrl_ops {
+  *	the hardware description
+  * @custom_conf_items: Information how to print @params in debugfs, must be
+  *	the same size as the @custom_params, i.e. @num_custom_params
++ * @link_consumers: If true create a device link between pinctrl and its
++ *	consumers (i.e. the devices requesting pin control states). This is
++ *	sometimes necessary to ascertain the right suspend/resume order for
++ *	example.
+  */
+ struct pinctrl_desc {
+ 	const char *name;
+@@ -139,6 +143,7 @@ struct pinctrl_desc {
+ 	const struct pinconf_generic_params *custom_params;
+ 	const struct pin_config_item *custom_conf_items;
+ #endif
++	bool link_consumers;
+ };
+ 
+ /* External interface to pin controller */
+@@ -148,6 +153,8 @@ extern int pinctrl_register_and_init(struct pinctrl_desc *pctldesc,
+ 				     struct pinctrl_dev **pctldev);
+ extern int pinctrl_enable(struct pinctrl_dev *pctldev);
+ 
++extern int pinctrl_claim_hogs(struct pinctrl_dev *pctldev);
++
+ /* Please use pinctrl_register_and_init() and pinctrl_enable() instead */
+ extern struct pinctrl_dev *pinctrl_register(struct pinctrl_desc *pctldesc,
+ 				struct device *dev, void *driver_data);
+-- 
+2.7.4
+
