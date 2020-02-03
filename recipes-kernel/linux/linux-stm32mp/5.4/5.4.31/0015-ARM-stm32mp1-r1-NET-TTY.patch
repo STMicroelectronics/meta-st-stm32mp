@@ -1,0 +1,2124 @@
+From d367a94623ae3c7e9707fe10e25ab06a8b0ea00b Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@st.com>
+Date: Fri, 10 Apr 2020 14:46:34 +0200
+Subject: [PATCH 15/23] ARM-stm32mp1-r1-NET-TTY
+
+---
+ .../net/ethernet/stmicro/stmmac/dwmac-stm32.c |  98 +-
+ .../net/ethernet/stmicro/stmmac/dwmac4_lib.c  |   2 +-
+ .../ethernet/stmicro/stmmac/stmmac_ethtool.c  |   2 +-
+ .../net/ethernet/stmicro/stmmac/stmmac_main.c |  29 +-
+ .../ethernet/stmicro/stmmac/stmmac_platform.c |   4 +-
+ drivers/net/phy/realtek.c                     |   5 +
+ .../broadcom/brcm80211/brcmfmac/bcmsdh.c      |   6 +
+ drivers/tty/serial/stm32-usart.c              | 996 +++++++++++-------
+ drivers/tty/serial/stm32-usart.h              |  20 +-
+ 9 files changed, 728 insertions(+), 434 deletions(-)
+
+diff --git a/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c b/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
+index 4ef041bdf..f67842bfc 100644
+--- a/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
++++ b/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
+@@ -95,7 +95,6 @@ struct stm32_dwmac {
+ 	struct clk *syscfg_clk;
+ 	int eth_clk_sel_reg;
+ 	int eth_ref_clk_sel_reg;
+-	int irq_pwr_wakeup;
+ 	u32 mode_reg;		 /* MAC glue-logic mode register */
+ 	struct regmap *regmap;
+ 	u32 speed;
+@@ -152,30 +151,39 @@ static int stm32mp1_clk_prepare(struct stm32_dwmac *dwmac, bool prepare)
+ 	int ret = 0;
+ 
+ 	if (prepare) {
+-		ret = clk_prepare_enable(dwmac->syscfg_clk);
+-		if (ret)
+-			return ret;
+-
++		if (dwmac->syscfg_clk) {
++			ret = clk_prepare_enable(dwmac->syscfg_clk);
++			if (ret)
++				return ret;
++		}
+ 		if (dwmac->clk_eth_ck) {
+ 			ret = clk_prepare_enable(dwmac->clk_eth_ck);
+ 			if (ret) {
+-				clk_disable_unprepare(dwmac->syscfg_clk);
++				if (dwmac->syscfg_clk)
++					goto unprepare_syscfg;
+ 				return ret;
+ 			}
+ 		}
+ 	} else {
+-		clk_disable_unprepare(dwmac->syscfg_clk);
++		if (dwmac->syscfg_clk)
++			clk_disable_unprepare(dwmac->syscfg_clk);
++
+ 		if (dwmac->clk_eth_ck)
+ 			clk_disable_unprepare(dwmac->clk_eth_ck);
+ 	}
+ 	return ret;
++
++unprepare_syscfg:
++	clk_disable_unprepare(dwmac->syscfg_clk);
++
++	return ret;
+ }
+ 
+ static int stm32mp1_set_mode(struct plat_stmmacenet_data *plat_dat)
+ {
+ 	struct stm32_dwmac *dwmac = plat_dat->bsp_priv;
+ 	u32 reg = dwmac->mode_reg;
+-	int val, ret;
++	int val;
+ 
+ 	switch (plat_dat->interface) {
+ 	case PHY_INTERFACE_MODE_MII:
+@@ -211,7 +219,7 @@ static int stm32mp1_set_mode(struct plat_stmmacenet_data *plat_dat)
+ 	}
+ 
+ 	/* Need to update PMCCLRR (clear register) */
+-	ret = regmap_write(dwmac->regmap, reg + SYSCFG_PMCCLRR_OFFSET,
++	regmap_write(dwmac->regmap, reg + SYSCFG_PMCCLRR_OFFSET,
+ 			   dwmac->ops->syscfg_eth_mask);
+ 
+ 	/* Update PMCSETR (set register) */
+@@ -294,9 +302,8 @@ static int stm32_dwmac_parse_data(struct stm32_dwmac *dwmac,
+ static int stm32mp1_parse_data(struct stm32_dwmac *dwmac,
+ 			       struct device *dev)
+ {
+-	struct platform_device *pdev = to_platform_device(dev);
+ 	struct device_node *np = dev->of_node;
+-	int err = 0;
++	int err;
+ 
+ 	/* Gigabit Ethernet 125MHz clock selection. */
+ 	dwmac->eth_clk_sel_reg = of_property_read_bool(np, "st,eth-clk-sel");
+@@ -308,7 +315,7 @@ static int stm32mp1_parse_data(struct stm32_dwmac *dwmac,
+ 	/*  Get ETH_CLK clocks */
+ 	dwmac->clk_eth_ck = devm_clk_get(dev, "eth-ck");
+ 	if (IS_ERR(dwmac->clk_eth_ck)) {
+-		dev_warn(dev, "No phy clock provided...\n");
++		dev_info(dev, "No phy clock provided...\n");
+ 		dwmac->clk_eth_ck = NULL;
+ 	}
+ 
+@@ -320,38 +327,36 @@ static int stm32mp1_parse_data(struct stm32_dwmac *dwmac,
+ 		return PTR_ERR(dwmac->clk_ethstp);
+ 	}
+ 
+-	/*  Clock for sysconfig */
++	/*  Optional Clock for sysconfig */
+ 	dwmac->syscfg_clk = devm_clk_get(dev, "syscfg-clk");
+ 	if (IS_ERR(dwmac->syscfg_clk)) {
+-		dev_err(dev, "No syscfg clock provided...\n");
+-		return PTR_ERR(dwmac->syscfg_clk);
+-	}
+-
+-	/* Get IRQ information early to have an ability to ask for deferred
+-	 * probe if needed before we went too far with resource allocation.
+-	 */
+-	dwmac->irq_pwr_wakeup = platform_get_irq_byname(pdev,
+-							"stm32_pwr_wakeup");
+-	if (dwmac->irq_pwr_wakeup == -EPROBE_DEFER)
+-		return -EPROBE_DEFER;
+-
+-	if (!dwmac->clk_eth_ck && dwmac->irq_pwr_wakeup >= 0) {
+-		err = device_init_wakeup(&pdev->dev, true);
+-		if (err) {
+-			dev_err(&pdev->dev, "Failed to init wake up irq\n");
++		err = PTR_ERR(dwmac->syscfg_clk);
++		if (err != -ENOENT)
+ 			return err;
+-		}
+-		err = dev_pm_set_dedicated_wake_irq(&pdev->dev,
+-						    dwmac->irq_pwr_wakeup);
+-		if (err) {
+-			dev_err(&pdev->dev, "Failed to set wake up irq\n");
+-			device_init_wakeup(&pdev->dev, false);
+-		}
+-		device_set_wakeup_enable(&pdev->dev, false);
++		dwmac->syscfg_clk = NULL;
++		err = 0;
+ 	}
++
+ 	return err;
+ }
+ 
++static int stm32_dwmac_wake_init(struct device *dev,
++				 struct stmmac_resources *stmmac_res)
++{
++	int err;
++
++	device_set_wakeup_capable(dev, true);
++
++	err = dev_pm_set_wake_irq(dev, stmmac_res->wol_irq);
++	if (err) {
++		dev_err(dev, "Failed to set wake up irq\n");
++		device_set_wakeup_capable(dev, false);
++		return err;
++	}
++
++	return 0;
++}
++
+ static int stm32_dwmac_probe(struct platform_device *pdev)
+ {
+ 	struct plat_stmmacenet_data *plat_dat;
+@@ -390,6 +395,12 @@ static int stm32_dwmac_probe(struct platform_device *pdev)
+ 		goto err_remove_config_dt;
+ 	}
+ 
++	if (stmmac_res.wol_irq && !dwmac->clk_eth_ck) {
++		ret = stm32_dwmac_wake_init(&pdev->dev, &stmmac_res);
++		if (ret)
++			return ret;
++	}
++
+ 	plat_dat->bsp_priv = dwmac;
+ 
+ 	ret = stm32_dwmac_init(plat_dat);
+@@ -415,14 +426,14 @@ static int stm32_dwmac_remove(struct platform_device *pdev)
+ 	struct net_device *ndev = platform_get_drvdata(pdev);
+ 	struct stmmac_priv *priv = netdev_priv(ndev);
+ 	int ret = stmmac_dvr_remove(&pdev->dev);
+-	struct stm32_dwmac *dwmac = priv->plat->bsp_priv;
++
++	if (ret)
++		return ret;
+ 
+ 	stm32_dwmac_clk_disable(priv->plat->bsp_priv);
+ 
+-	if (dwmac->irq_pwr_wakeup >= 0) {
+-		dev_pm_clear_wake_irq(&pdev->dev);
+-		device_init_wakeup(&pdev->dev, false);
+-	}
++	dev_pm_clear_wake_irq(&pdev->dev);
++	ret = device_init_wakeup(&pdev->dev, false);
+ 
+ 	return ret;
+ }
+@@ -436,7 +447,8 @@ static int stm32mp1_suspend(struct stm32_dwmac *dwmac)
+ 		return ret;
+ 
+ 	clk_disable_unprepare(dwmac->clk_tx);
+-	clk_disable_unprepare(dwmac->syscfg_clk);
++	if (dwmac->syscfg_clk)
++		clk_disable_unprepare(dwmac->syscfg_clk);
+ 	if (dwmac->clk_eth_ck)
+ 		clk_disable_unprepare(dwmac->clk_eth_ck);
+ 
+diff --git a/drivers/net/ethernet/stmicro/stmmac/dwmac4_lib.c b/drivers/net/ethernet/stmicro/stmmac/dwmac4_lib.c
+index f2a29a90e..2df6705cd 100644
+--- a/drivers/net/ethernet/stmicro/stmmac/dwmac4_lib.c
++++ b/drivers/net/ethernet/stmicro/stmmac/dwmac4_lib.c
+@@ -19,7 +19,7 @@ int dwmac4_dma_reset(void __iomem *ioaddr)
+ 	/* DMA SW reset */
+ 	value |= DMA_BUS_MODE_SFT_RESET;
+ 	writel(value, ioaddr + DMA_BUS_MODE);
+-	limit = 10;
++	limit = 100;
+ 	while (limit--) {
+ 		if (!(readl(ioaddr + DMA_BUS_MODE) & DMA_BUS_MODE_SFT_RESET))
+ 			break;
+diff --git a/drivers/net/ethernet/stmicro/stmmac/stmmac_ethtool.c b/drivers/net/ethernet/stmicro/stmmac/stmmac_ethtool.c
+index 1a768837c..43532e207 100644
+--- a/drivers/net/ethernet/stmicro/stmmac/stmmac_ethtool.c
++++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_ethtool.c
+@@ -706,7 +706,7 @@ static u32 stmmac_riwt2usec(u32 riwt, struct stmmac_priv *priv)
+ 			return 0;
+ 	}
+ 
+-	return (riwt * 256) / (clk / 1000000);
++	return DIV_ROUND_UP(riwt * 256, clk / 1000000);
+ }
+ 
+ static int stmmac_get_coalesce(struct net_device *dev,
+diff --git a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
+index 89a6ae2b1..413b6f234 100644
+--- a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
++++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
+@@ -4846,6 +4846,7 @@ int stmmac_resume(struct device *dev)
+ {
+ 	struct net_device *ndev = dev_get_drvdata(dev);
+ 	struct stmmac_priv *priv = netdev_priv(ndev);
++	int ret;
+ 
+ 	if (!netif_running(ndev))
+ 		return 0;
+@@ -4879,7 +4880,25 @@ int stmmac_resume(struct device *dev)
+ 
+ 	stmmac_reset_queues_param(priv);
+ 
+-	stmmac_clear_descriptors(priv);
++	/* Stop TX/RX DMA and clear the descriptors */
++	stmmac_stop_all_dma(priv);
++
++	/* Release and free the Rx/Tx resources */
++	free_dma_desc_resources(priv);
++
++	ret = alloc_dma_desc_resources(priv);
++	if (ret < 0) {
++		netdev_err(priv->dev, "%s: DMA descriptors allocation failed\n",
++			   __func__);
++		goto dma_desc_error;
++	}
++
++	ret = init_dma_desc_rings(ndev, GFP_KERNEL);
++	if (ret < 0) {
++		netdev_err(priv->dev, "%s: DMA descriptors initialization failed\n",
++			   __func__);
++		goto init_error;
++	}
+ 
+ 	stmmac_hw_setup(ndev, false);
+ 	stmmac_init_coalesce(priv);
+@@ -4900,6 +4919,14 @@ int stmmac_resume(struct device *dev)
+ 	phylink_mac_change(priv->phylink, true);
+ 
+ 	return 0;
++init_error:
++	free_dma_desc_resources(priv);
++dma_desc_error:
++	if (ndev->phydev)
++		phy_disconnect(ndev->phydev);
++	mutex_unlock(&priv->lock);
++
++	return -1;
+ }
+ EXPORT_SYMBOL_GPL(stmmac_resume);
+ 
+diff --git a/drivers/net/ethernet/stmicro/stmmac/stmmac_platform.c b/drivers/net/ethernet/stmicro/stmmac/stmmac_platform.c
+index 5150551c2..a6225534a 100644
+--- a/drivers/net/ethernet/stmicro/stmmac/stmmac_platform.c
++++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_platform.c
+@@ -588,7 +588,7 @@ stmmac_probe_config_dt(struct platform_device *pdev, const char **mac)
+ 	if (IS_ERR(plat->clk_ptp_ref)) {
+ 		plat->clk_ptp_rate = clk_get_rate(plat->stmmac_clk);
+ 		plat->clk_ptp_ref = NULL;
+-		dev_warn(&pdev->dev, "PTP uses main clock\n");
++		dev_info(&pdev->dev, "PTP uses main clock\n");
+ 	} else {
+ 		plat->clk_ptp_rate = clk_get_rate(plat->clk_ptp_ref);
+ 		dev_dbg(&pdev->dev, "PTP rate %d\n", plat->clk_ptp_rate);
+@@ -670,7 +670,7 @@ int stmmac_get_platform_resources(struct platform_device *pdev,
+ 		stmmac_res->wol_irq = stmmac_res->irq;
+ 	}
+ 
+-	stmmac_res->lpi_irq = platform_get_irq_byname(pdev, "eth_lpi");
++	stmmac_res->lpi_irq = platform_get_irq_byname_optional(pdev, "eth_lpi");
+ 	if (stmmac_res->lpi_irq == -EPROBE_DEFER)
+ 		return -EPROBE_DEFER;
+ 
+diff --git a/drivers/net/phy/realtek.c b/drivers/net/phy/realtek.c
+index c76df51dd..45a112016 100644
+--- a/drivers/net/phy/realtek.c
++++ b/drivers/net/phy/realtek.c
+@@ -175,6 +175,11 @@ static int rtl8211f_config_init(struct phy_device *phydev)
+ 	u16 val;
+ 	int ret;
+ 
++	/* Set green LED for Link, yellow LED for Active */
++	phy_write(phydev, RTL821x_PAGE_SELECT, 0xd04);
++	phy_write(phydev, 0x10, 0x617f);
++	phy_write(phydev, RTL821x_PAGE_SELECT, 0x0);
++
+ 	/* enable TX-delay for rgmii-{id,txid}, and disable it for rgmii and
+ 	 * rgmii-rxid. The RX-delay can be enabled by the external RXDLY pin.
+ 	 */
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c
+index fc12598b2..041a215aa 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c
+@@ -1128,7 +1128,10 @@ static int brcmf_ops_sdio_suspend(struct device *dev)
+ 			enable_irq_wake(sdiodev->settings->bus.sdio.oob_irq_nr);
+ 		else
+ 			sdio_flags |= MMC_PM_WAKE_SDIO_IRQ;
++	} else {
++		brcmf_sdiod_intr_unregister(sdiodev);
+ 	}
++
+ 	if (sdio_set_host_pm_flags(sdiodev->func1, sdio_flags))
+ 		brcmf_err("Failed to set pm_flags %x\n", sdio_flags);
+ 	return 0;
+@@ -1144,6 +1147,9 @@ static int brcmf_ops_sdio_resume(struct device *dev)
+ 	if (func->num != 2)
+ 		return 0;
+ 
++	if (!sdiodev->wowl_enabled)
++		brcmf_sdiod_intr_register(sdiodev);
++
+ 	brcmf_sdiod_freezer_off(sdiodev);
+ 	return 0;
+ }
+diff --git a/drivers/tty/serial/stm32-usart.c b/drivers/tty/serial/stm32-usart.c
+index 2f72514d6..6592e5cdb 100644
+--- a/drivers/tty/serial/stm32-usart.c
++++ b/drivers/tty/serial/stm32-usart.c
+@@ -4,6 +4,7 @@
+  * Copyright (C) STMicroelectronics SA 2017
+  * Authors:  Maxime Coquelin <mcoquelin.stm32@gmail.com>
+  *	     Gerald Baeza <gerald.baeza@st.com>
++ *	     Erwan Le Ray <erwan.leray@st.com>
+  *
+  * Inspired by st-asc.c from STMicroelectronics (c)
+  */
+@@ -37,15 +38,15 @@
+ 
+ #include "stm32-usart.h"
+ 
+-static void stm32_stop_tx(struct uart_port *port);
+-static void stm32_transmit_chars(struct uart_port *port);
++static void stm32_usart_stop_tx(struct uart_port *port);
++static void stm32_usart_transmit_chars(struct uart_port *port);
+ 
+ static inline struct stm32_port *to_stm32_port(struct uart_port *port)
+ {
+ 	return container_of(port, struct stm32_port, port);
+ }
+ 
+-static void stm32_set_bits(struct uart_port *port, u32 reg, u32 bits)
++static void stm32_usart_set_bits(struct uart_port *port, u32 reg, u32 bits)
+ {
+ 	u32 val;
+ 
+@@ -54,7 +55,7 @@ static void stm32_set_bits(struct uart_port *port, u32 reg, u32 bits)
+ 	writel_relaxed(val, port->membase + reg);
+ }
+ 
+-static void stm32_clr_bits(struct uart_port *port, u32 reg, u32 bits)
++static void stm32_usart_clr_bits(struct uart_port *port, u32 reg, u32 bits)
+ {
+ 	u32 val;
+ 
+@@ -63,8 +64,8 @@ static void stm32_clr_bits(struct uart_port *port, u32 reg, u32 bits)
+ 	writel_relaxed(val, port->membase + reg);
+ }
+ 
+-static void stm32_config_reg_rs485(u32 *cr1, u32 *cr3, u32 delay_ADE,
+-				   u32 delay_DDE, u32 baud)
++static void stm32_usart_config_reg_rs485(u32 *cr1, u32 *cr3, u32 delay_ADE,
++					 u32 delay_DDE, u32 baud)
+ {
+ 	u32 rs485_deat_dedt;
+ 	u32 rs485_deat_dedt_max = (USART_CR1_DEAT_MASK >> USART_CR1_DEAT_SHIFT);
+@@ -98,8 +99,8 @@ static void stm32_config_reg_rs485(u32 *cr1, u32 *cr3, u32 delay_ADE,
+ 	*cr1 |= rs485_deat_dedt;
+ }
+ 
+-static int stm32_config_rs485(struct uart_port *port,
+-			      struct serial_rs485 *rs485conf)
++static int stm32_usart_config_rs485(struct uart_port *port,
++				    struct serial_rs485 *rs485conf)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+@@ -107,7 +108,7 @@ static int stm32_config_rs485(struct uart_port *port,
+ 	u32 usartdiv, baud, cr1, cr3;
+ 	bool over8;
+ 
+-	stm32_clr_bits(port, ofs->cr1, BIT(cfg->uart_enable_bit));
++	stm32_usart_clr_bits(port, ofs->cr1, BIT(cfg->uart_enable_bit));
+ 
+ 	port->rs485 = *rs485conf;
+ 
+@@ -125,9 +126,10 @@ static int stm32_config_rs485(struct uart_port *port,
+ 				   << USART_BRR_04_R_SHIFT;
+ 
+ 		baud = DIV_ROUND_CLOSEST(port->uartclk, usartdiv);
+-		stm32_config_reg_rs485(&cr1, &cr3,
+-				       rs485conf->delay_rts_before_send,
+-				       rs485conf->delay_rts_after_send, baud);
++		stm32_usart_config_reg_rs485(&cr1, &cr3,
++					     rs485conf->delay_rts_before_send,
++					     rs485conf->delay_rts_after_send,
++					     baud);
+ 
+ 		if (rs485conf->flags & SER_RS485_RTS_ON_SEND) {
+ 			cr3 &= ~USART_CR3_DEP;
+@@ -140,18 +142,19 @@ static int stm32_config_rs485(struct uart_port *port,
+ 		writel_relaxed(cr3, port->membase + ofs->cr3);
+ 		writel_relaxed(cr1, port->membase + ofs->cr1);
+ 	} else {
+-		stm32_clr_bits(port, ofs->cr3, USART_CR3_DEM | USART_CR3_DEP);
+-		stm32_clr_bits(port, ofs->cr1,
+-			       USART_CR1_DEDT_MASK | USART_CR1_DEAT_MASK);
++		stm32_usart_clr_bits(port, ofs->cr3,
++				     USART_CR3_DEM | USART_CR3_DEP);
++		stm32_usart_clr_bits(port, ofs->cr1,
++				     USART_CR1_DEDT_MASK | USART_CR1_DEAT_MASK);
+ 	}
+ 
+-	stm32_set_bits(port, ofs->cr1, BIT(cfg->uart_enable_bit));
++	stm32_usart_set_bits(port, ofs->cr1, BIT(cfg->uart_enable_bit));
+ 
+ 	return 0;
+ }
+ 
+-static int stm32_init_rs485(struct uart_port *port,
+-			    struct platform_device *pdev)
++static int stm32_usart_init_rs485(struct uart_port *port,
++				  struct platform_device *pdev)
+ {
+ 	struct serial_rs485 *rs485conf = &port->rs485;
+ 
+@@ -167,64 +170,66 @@ static int stm32_init_rs485(struct uart_port *port,
+ 	return 0;
+ }
+ 
+-static int stm32_pending_rx(struct uart_port *port, u32 *sr, int *last_res,
+-			    bool threaded)
++static bool stm32_usart_rx_dma_enabled(struct uart_port *port)
++{
++	struct stm32_port *stm32_port = to_stm32_port(port);
++	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
++
++	if (!stm32_port->rx_ch)
++		return false;
++
++	return !!(readl_relaxed(port->membase + ofs->cr3) & USART_CR3_DMAR);
++}
++
++/*
++ * Return true when data is pending (in pio mode), and false when no data is
++ * pending.
++ */
++static bool stm32_usart_pending_rx_pio(struct uart_port *port, u32 *sr)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+-	enum dma_status status;
+-	struct dma_tx_state state;
+ 
+ 	*sr = readl_relaxed(port->membase + ofs->isr);
++	/* Get pending characters in RDR or FIFO */
++	if (*sr & USART_SR_RXNE) {
++		/*
++		 * Get all pending characters from the RDR or the FIFO when
++		 * using interrupts
++		 */
++		if (!stm32_usart_rx_dma_enabled(port))
++			return true;
+ 
+-	if (threaded && stm32_port->rx_ch) {
+-		status = dmaengine_tx_status(stm32_port->rx_ch,
+-					     stm32_port->rx_ch->cookie,
+-					     &state);
+-		if ((status == DMA_IN_PROGRESS) &&
+-		    (*last_res != state.residue))
+-			return 1;
+-		else
+-			return 0;
+-	} else if (*sr & USART_SR_RXNE) {
+-		return 1;
++		/* Handle only RX data errors when using DMA */
++		if (*sr & USART_SR_ERR_MASK)
++			return true;
+ 	}
+-	return 0;
++
++	return false;
+ }
+ 
+-static unsigned long stm32_get_char(struct uart_port *port, u32 *sr,
+-				    int *last_res)
++static unsigned long stm32_usart_get_char_pio(struct uart_port *port)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+ 	unsigned long c;
+ 
+-	if (stm32_port->rx_ch) {
+-		c = stm32_port->rx_buf[RX_BUF_L - (*last_res)--];
+-		if ((*last_res) == 0)
+-			*last_res = RX_BUF_L;
+-	} else {
+-		c = readl_relaxed(port->membase + ofs->rdr);
+-		/* apply RDR data mask */
+-		c &= stm32_port->rdr_mask;
+-	}
++	c = readl_relaxed(port->membase + ofs->rdr);
++	/* Apply RDR data mask */
++	c &= stm32_port->rdr_mask;
+ 
+ 	return c;
+ }
+ 
+-static void stm32_receive_chars(struct uart_port *port, bool threaded)
++static void stm32_usart_receive_chars_pio(struct uart_port *port)
+ {
+-	struct tty_port *tport = &port->state->port;
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+ 	unsigned long c;
+ 	u32 sr;
+ 	char flag;
+ 
+-	if (irqd_is_wakeup_set(irq_get_irq_data(port->irq)))
+-		pm_wakeup_event(tport->tty->dev, 0);
+-
+-	while (stm32_pending_rx(port, &sr, &stm32_port->last_res, threaded)) {
++	while (stm32_usart_pending_rx_pio(port, &sr)) {
+ 		sr |= USART_SR_DUMMY_RX;
+ 		flag = TTY_NORMAL;
+ 
+@@ -243,7 +248,7 @@ static void stm32_receive_chars(struct uart_port *port, bool threaded)
+ 			writel_relaxed(sr & USART_SR_ERR_MASK,
+ 				       port->membase + ofs->icr);
+ 
+-		c = stm32_get_char(port, &sr, &stm32_port->last_res);
++		c = stm32_usart_get_char_pio(port);
+ 		port->icount.rx++;
+ 		if (sr & USART_SR_ERR_MASK) {
+ 			if (sr & USART_SR_ORE) {
+@@ -277,26 +282,116 @@ static void stm32_receive_chars(struct uart_port *port, bool threaded)
+ 			continue;
+ 		uart_insert_char(port, sr, USART_SR_ORE, c, flag);
+ 	}
++}
++
++static void stm32_usart_push_buffer_dma(struct uart_port *port,
++					unsigned int dma_size)
++{
++	struct stm32_port *stm32_port = to_stm32_port(port);
++	struct tty_port *ttyport = &stm32_port->port.state->port;
++	unsigned char *dma_start;
++	int dma_count;
++
++	dma_start = stm32_port->rx_buf + (RX_BUF_L - stm32_port->last_res);
++	dma_count = tty_insert_flip_string(ttyport, dma_start, dma_size);
++	port->icount.rx += dma_count;
++	stm32_port->last_res -= dma_count;
++	if (stm32_port->last_res == 0)
++		stm32_port->last_res = RX_BUF_L;
++}
++
++static void stm32_usart_receive_chars_dma(struct uart_port *port)
++{
++	struct stm32_port *stm32_port = to_stm32_port(port);
++	unsigned int dma_size;
++
++	/*
++	 * DMA buffer is configured in cyclic mode and handles the rollback of
++	 * the buffer.
++	 */
++	if (stm32_port->state.residue > stm32_port->last_res) {
++		/* Conditional first part: from last_res to end of DMA buffer */
++		dma_size = stm32_port->last_res;
++		stm32_usart_push_buffer_dma(port, dma_size);
++	}
++
++	dma_size = stm32_port->last_res - stm32_port->state.residue;
++	stm32_usart_push_buffer_dma(port, dma_size);
++}
++
++static void stm32_usart_receive_chars(struct uart_port *port, bool threaded)
++{
++	struct tty_port *tport = &port->state->port;
++	struct stm32_port *stm32_port = to_stm32_port(port);
++	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
++	unsigned long flags = 0;
++	u32 sr;
++
++	if (threaded)
++		spin_lock_irqsave(&port->lock, flags);
++	else
++		spin_lock(&port->lock);
++
++	if (stm32_usart_rx_dma_enabled(port)) {
++		stm32_port->status =
++			dmaengine_tx_status(stm32_port->rx_ch,
++					    stm32_port->rx_ch->cookie,
++					    &stm32_port->state);
++		if (stm32_port->status == DMA_IN_PROGRESS) {
++			/* Empty DMA buffer */
++			stm32_usart_receive_chars_dma(port);
++			sr = readl_relaxed(port->membase + ofs->isr);
++			if (sr & USART_SR_ERR_MASK) {
++				/* Disable DMA request line */
++				stm32_usart_clr_bits(port, ofs->cr3,
++						     USART_CR3_DMAR);
++
++				/* Switch to PIO mode to handle the errors */
++				stm32_usart_receive_chars_pio(port);
++
++				/* Switch back to DMA mode */
++				stm32_usart_set_bits(port, ofs->cr3,
++						     USART_CR3_DMAR);
++			}
++		} else {
++			/* Disable RX DMA */
++			dmaengine_terminate_async(stm32_port->rx_ch);
++			stm32_usart_clr_bits(port, ofs->cr3, USART_CR3_DMAR);
++			/* Fall back to interrupt mode */
++			dev_dbg(port->dev,
++				"DMA error, fallback to irq mode\n");
++			stm32_usart_receive_chars_pio(port);
++		}
++	} else {
++		stm32_usart_receive_chars_pio(port);
++	}
++
++	if (threaded)
++		spin_unlock_irqrestore(&port->lock, flags);
++	else
++		spin_unlock(&port->lock);
+ 
+-	spin_unlock(&port->lock);
+ 	tty_flip_buffer_push(tport);
+-	spin_lock(&port->lock);
+ }
+ 
+-static void stm32_tx_dma_complete(void *arg)
++static void stm32_usart_tx_dma_complete(void *arg)
+ {
+ 	struct uart_port *port = arg;
+ 	struct stm32_port *stm32port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32port->info->ofs;
++	unsigned long flags;
+ 
+-	stm32_clr_bits(port, ofs->cr3, USART_CR3_DMAT);
++	dmaengine_terminate_async(stm32port->tx_ch);
++	stm32_usart_clr_bits(port, ofs->cr3, USART_CR3_DMAT);
+ 	stm32port->tx_dma_busy = false;
+ 
+ 	/* Let's see if we have pending data to send */
+-	stm32_transmit_chars(port);
++	spin_lock_irqsave(&port->lock, flags);
++	stm32_usart_transmit_chars(port);
++	spin_unlock_irqrestore(&port->lock, flags);
+ }
+ 
+-static void stm32_tx_interrupt_enable(struct uart_port *port)
++static void stm32_usart_tx_interrupt_enable(struct uart_port *port)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+@@ -306,30 +401,37 @@ static void stm32_tx_interrupt_enable(struct uart_port *port)
+ 	 * or TX empty irq when FIFO is disabled
+ 	 */
+ 	if (stm32_port->fifoen)
+-		stm32_set_bits(port, ofs->cr3, USART_CR3_TXFTIE);
++		stm32_usart_set_bits(port, ofs->cr3, USART_CR3_TXFTIE);
+ 	else
+-		stm32_set_bits(port, ofs->cr1, USART_CR1_TXEIE);
++		stm32_usart_set_bits(port, ofs->cr1, USART_CR1_TXEIE);
++}
++
++static void stm32_usart_rx_dma_complete(void *arg)
++{
++	struct uart_port *port = arg;
++
++	stm32_usart_receive_chars(port, true);
+ }
+ 
+-static void stm32_tx_interrupt_disable(struct uart_port *port)
++static void stm32_usart_tx_interrupt_disable(struct uart_port *port)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+ 
+ 	if (stm32_port->fifoen)
+-		stm32_clr_bits(port, ofs->cr3, USART_CR3_TXFTIE);
++		stm32_usart_clr_bits(port, ofs->cr3, USART_CR3_TXFTIE);
+ 	else
+-		stm32_clr_bits(port, ofs->cr1, USART_CR1_TXEIE);
++		stm32_usart_clr_bits(port, ofs->cr1, USART_CR1_TXEIE);
+ }
+ 
+-static void stm32_transmit_chars_pio(struct uart_port *port)
++static void stm32_usart_transmit_chars_pio(struct uart_port *port)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+ 	struct circ_buf *xmit = &port->state->xmit;
+ 
+ 	if (stm32_port->tx_dma_busy) {
+-		stm32_clr_bits(port, ofs->cr3, USART_CR3_DMAT);
++		stm32_usart_clr_bits(port, ofs->cr3, USART_CR3_DMAT);
+ 		stm32_port->tx_dma_busy = false;
+ 	}
+ 
+@@ -344,19 +446,19 @@ static void stm32_transmit_chars_pio(struct uart_port *port)
+ 
+ 	/* rely on TXE irq (mask or unmask) for sending remaining data */
+ 	if (uart_circ_empty(xmit))
+-		stm32_tx_interrupt_disable(port);
++		stm32_usart_tx_interrupt_disable(port);
+ 	else
+-		stm32_tx_interrupt_enable(port);
++		stm32_usart_tx_interrupt_enable(port);
+ }
+ 
+-static void stm32_transmit_chars_dma(struct uart_port *port)
++static void stm32_usart_transmit_chars_dma(struct uart_port *port)
+ {
+ 	struct stm32_port *stm32port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32port->info->ofs;
+ 	struct circ_buf *xmit = &port->state->xmit;
+ 	struct dma_async_tx_descriptor *desc = NULL;
+ 	dma_cookie_t cookie;
+-	unsigned int count, i;
++	unsigned int count, i, ret;
+ 
+ 	if (stm32port->tx_dma_busy)
+ 		return;
+@@ -389,28 +491,36 @@ static void stm32_transmit_chars_dma(struct uart_port *port)
+ 					   DMA_MEM_TO_DEV,
+ 					   DMA_PREP_INTERRUPT);
+ 
+-	if (!desc) {
+-		for (i = count; i > 0; i--)
+-			stm32_transmit_chars_pio(port);
+-		return;
+-	}
++	if (!desc)
++		goto fallback_err;
+ 
+-	desc->callback = stm32_tx_dma_complete;
++	desc->callback = stm32_usart_tx_dma_complete;
+ 	desc->callback_param = port;
+ 
+ 	/* Push current DMA TX transaction in the pending queue */
+ 	cookie = dmaengine_submit(desc);
++	ret = dma_submit_error(cookie);
++	if (ret) {
++		/* dma no yet started, safe to free resources */
++		dmaengine_terminate_async(stm32port->tx_ch);
++		goto fallback_err;
++	}
+ 
+ 	/* Issue pending DMA TX requests */
+ 	dma_async_issue_pending(stm32port->tx_ch);
+ 
+-	stm32_set_bits(port, ofs->cr3, USART_CR3_DMAT);
++	stm32_usart_set_bits(port, ofs->cr3, USART_CR3_DMAT);
+ 
+ 	xmit->tail = (xmit->tail + count) & (UART_XMIT_SIZE - 1);
+ 	port->icount.tx += count;
++	return;
++
++fallback_err:
++	for (i = count; i > 0; i--)
++		stm32_usart_transmit_chars_pio(port);
+ }
+ 
+-static void stm32_transmit_chars(struct uart_port *port)
++static void stm32_usart_transmit_chars(struct uart_port *port)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+@@ -418,211 +528,276 @@ static void stm32_transmit_chars(struct uart_port *port)
+ 
+ 	if (port->x_char) {
+ 		if (stm32_port->tx_dma_busy)
+-			stm32_clr_bits(port, ofs->cr3, USART_CR3_DMAT);
++			stm32_usart_clr_bits(port, ofs->cr3, USART_CR3_DMAT);
+ 		writel_relaxed(port->x_char, port->membase + ofs->tdr);
+ 		port->x_char = 0;
+ 		port->icount.tx++;
+ 		if (stm32_port->tx_dma_busy)
+-			stm32_set_bits(port, ofs->cr3, USART_CR3_DMAT);
++			stm32_usart_set_bits(port, ofs->cr3, USART_CR3_DMAT);
+ 		return;
+ 	}
+ 
+ 	if (uart_circ_empty(xmit) || uart_tx_stopped(port)) {
+-		stm32_tx_interrupt_disable(port);
++		stm32_usart_tx_interrupt_disable(port);
+ 		return;
+ 	}
+ 
+ 	if (ofs->icr == UNDEF_REG)
+-		stm32_clr_bits(port, ofs->isr, USART_SR_TC);
++		stm32_usart_clr_bits(port, ofs->isr, USART_SR_TC);
+ 	else
+ 		writel_relaxed(USART_ICR_TCCF, port->membase + ofs->icr);
+ 
+ 	if (stm32_port->tx_ch)
+-		stm32_transmit_chars_dma(port);
++		stm32_usart_transmit_chars_dma(port);
+ 	else
+-		stm32_transmit_chars_pio(port);
++		stm32_usart_transmit_chars_pio(port);
+ 
+ 	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
+ 		uart_write_wakeup(port);
+ 
+ 	if (uart_circ_empty(xmit))
+-		stm32_tx_interrupt_disable(port);
++		stm32_usart_tx_interrupt_disable(port);
+ }
+ 
+-static irqreturn_t stm32_interrupt(int irq, void *ptr)
++static irqreturn_t stm32_usart_interrupt(int irq, void *ptr)
+ {
+ 	struct uart_port *port = ptr;
++	struct tty_port *tport = &port->state->port;
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+ 	u32 sr;
+ 
+-	spin_lock(&port->lock);
+-
+ 	sr = readl_relaxed(port->membase + ofs->isr);
+ 
+ 	if ((sr & USART_SR_RTOF) && ofs->icr != UNDEF_REG)
+ 		writel_relaxed(USART_ICR_RTOCF,
+ 			       port->membase + ofs->icr);
+ 
+-	if ((sr & USART_SR_WUF) && (ofs->icr != UNDEF_REG))
++	if ((sr & USART_SR_WUF) && ofs->icr != UNDEF_REG) {
++		/* Clear wake up flag and disable wake up interrupt */
+ 		writel_relaxed(USART_ICR_WUCF,
+ 			       port->membase + ofs->icr);
++		stm32_usart_clr_bits(port, ofs->cr3, USART_CR3_WUFIE);
++		if (irqd_is_wakeup_set(irq_get_irq_data(port->irq)))
++			pm_wakeup_event(tport->tty->dev, 0);
++	}
+ 
+-	if ((sr & USART_SR_RXNE) && !(stm32_port->rx_ch))
+-		stm32_receive_chars(port, false);
+-
+-	if ((sr & USART_SR_TXE) && !(stm32_port->tx_ch))
+-		stm32_transmit_chars(port);
++	/*
++	 * rx errors in dma mode has to be handled ASAP to avoid overrun as the
++	 * DMA request line has been masked by HW and rx data are stacking in
++	 * FIFO.
++	 */
++	if (((sr & USART_SR_RXNE) && !stm32_usart_rx_dma_enabled(port)) ||
++	    ((sr & USART_SR_ERR_MASK) && stm32_usart_rx_dma_enabled(port)))
++		stm32_usart_receive_chars(port, false);
+ 
+-	spin_unlock(&port->lock);
++	if ((sr & USART_SR_TXE) && !(stm32_port->tx_ch)) {
++		spin_lock(&port->lock);
++		stm32_usart_transmit_chars(port);
++		spin_unlock(&port->lock);
++	}
+ 
+-	if (stm32_port->rx_ch)
++	if (stm32_usart_rx_dma_enabled(port))
+ 		return IRQ_WAKE_THREAD;
+ 	else
+ 		return IRQ_HANDLED;
+ }
+ 
+-static irqreturn_t stm32_threaded_interrupt(int irq, void *ptr)
++static irqreturn_t stm32_usart_threaded_interrupt(int irq, void *ptr)
+ {
+ 	struct uart_port *port = ptr;
+-	struct stm32_port *stm32_port = to_stm32_port(port);
+-
+-	spin_lock(&port->lock);
+-
+-	if (stm32_port->rx_ch)
+-		stm32_receive_chars(port, true);
+ 
+-	spin_unlock(&port->lock);
++	/* Receiver timeout irq for DMA RX */
++	stm32_usart_receive_chars(port, true);
+ 
+ 	return IRQ_HANDLED;
+ }
+ 
+-static unsigned int stm32_tx_empty(struct uart_port *port)
++static unsigned int stm32_usart_tx_empty(struct uart_port *port)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+ 
+-	return readl_relaxed(port->membase + ofs->isr) & USART_SR_TXE;
++	if (readl_relaxed(port->membase + ofs->isr) & USART_SR_TC)
++		return TIOCSER_TEMT;
++
++	return 0;
+ }
+ 
+-static void stm32_set_mctrl(struct uart_port *port, unsigned int mctrl)
++static void stm32_usart_set_mctrl(struct uart_port *port, unsigned int mctrl)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+ 
+ 	if ((mctrl & TIOCM_RTS) && (port->status & UPSTAT_AUTORTS))
+-		stm32_set_bits(port, ofs->cr3, USART_CR3_RTSE);
++		stm32_usart_set_bits(port, ofs->cr3, USART_CR3_RTSE);
+ 	else
+-		stm32_clr_bits(port, ofs->cr3, USART_CR3_RTSE);
++		stm32_usart_clr_bits(port, ofs->cr3, USART_CR3_RTSE);
+ }
+ 
+-static unsigned int stm32_get_mctrl(struct uart_port *port)
++static unsigned int stm32_usart_get_mctrl(struct uart_port *port)
+ {
+ 	/* This routine is used to get signals of: DCD, DSR, RI, and CTS */
+ 	return TIOCM_CAR | TIOCM_DSR | TIOCM_CTS;
+ }
+ 
+ /* Transmit stop */
+-static void stm32_stop_tx(struct uart_port *port)
++static void stm32_usart_stop_tx(struct uart_port *port)
+ {
+-	stm32_tx_interrupt_disable(port);
++	struct stm32_port *stm32_port = to_stm32_port(port);
++	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
++
++	stm32_usart_tx_interrupt_disable(port);
++	if (stm32_port->tx_dma_busy) {
++		dmaengine_terminate_async(stm32_port->tx_ch);
++		stm32_usart_clr_bits(port, ofs->cr3, USART_CR3_DMAT);
++	}
+ }
+ 
+ /* There are probably characters waiting to be transmitted. */
+-static void stm32_start_tx(struct uart_port *port)
++static void stm32_usart_start_tx(struct uart_port *port)
+ {
+ 	struct circ_buf *xmit = &port->state->xmit;
+ 
+ 	if (uart_circ_empty(xmit))
+ 		return;
+ 
+-	stm32_transmit_chars(port);
++	stm32_usart_transmit_chars(port);
++}
++
++/* Flush the transmit buffer. */
++static void stm32_usart_flush_buffer(struct uart_port *port)
++{
++	struct stm32_port *stm32_port = to_stm32_port(port);
++	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
++
++	if (stm32_port->tx_ch) {
++		/* Avoid deadlock with the DMA engine callback */
++		spin_unlock(&port->lock);
++		dmaengine_terminate_async(stm32_port->tx_ch);
++		spin_lock(&port->lock);
++
++		stm32_usart_clr_bits(port, ofs->cr3, USART_CR3_DMAT);
++		stm32_port->tx_dma_busy = false;
++	}
+ }
+ 
+ /* Throttle the remote when input buffer is about to overflow. */
+-static void stm32_throttle(struct uart_port *port)
++static void stm32_usart_throttle(struct uart_port *port)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+ 	unsigned long flags;
+ 
+ 	spin_lock_irqsave(&port->lock, flags);
+-	stm32_clr_bits(port, ofs->cr1, stm32_port->cr1_irq);
++	stm32_usart_clr_bits(port, ofs->cr1, stm32_port->cr1_irq);
+ 	if (stm32_port->cr3_irq)
+-		stm32_clr_bits(port, ofs->cr3, stm32_port->cr3_irq);
++		stm32_usart_clr_bits(port, ofs->cr3, stm32_port->cr3_irq);
+ 
+ 	spin_unlock_irqrestore(&port->lock, flags);
+ }
+ 
+ /* Unthrottle the remote, the input buffer can now accept data. */
+-static void stm32_unthrottle(struct uart_port *port)
++static void stm32_usart_unthrottle(struct uart_port *port)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+ 	unsigned long flags;
+ 
+ 	spin_lock_irqsave(&port->lock, flags);
+-	stm32_set_bits(port, ofs->cr1, stm32_port->cr1_irq);
++	stm32_usart_set_bits(port, ofs->cr1, stm32_port->cr1_irq);
+ 	if (stm32_port->cr3_irq)
+-		stm32_set_bits(port, ofs->cr3, stm32_port->cr3_irq);
++		stm32_usart_set_bits(port, ofs->cr3, stm32_port->cr3_irq);
+ 
+ 	spin_unlock_irqrestore(&port->lock, flags);
+ }
+ 
+ /* Receive stop */
+-static void stm32_stop_rx(struct uart_port *port)
++static void stm32_usart_stop_rx(struct uart_port *port)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+ 
+-	stm32_clr_bits(port, ofs->cr1, stm32_port->cr1_irq);
++	stm32_usart_clr_bits(port, ofs->cr1, stm32_port->cr1_irq);
+ 	if (stm32_port->cr3_irq)
+-		stm32_clr_bits(port, ofs->cr3, stm32_port->cr3_irq);
+-
++		stm32_usart_clr_bits(port, ofs->cr3, stm32_port->cr3_irq);
+ }
+ 
+ /* Handle breaks - ignored by us */
+-static void stm32_break_ctl(struct uart_port *port, int break_state)
++static void stm32_usart_break_ctl(struct uart_port *port, int break_state)
++{
++}
++
++static int stm32_usart_start_rx_dma_cyclic(struct uart_port *port)
+ {
++	struct stm32_port *stm32_port = to_stm32_port(port);
++	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
++	struct dma_async_tx_descriptor *desc;
++	int ret;
++
++	stm32_port->last_res = RX_BUF_L;
++	/* Prepare a DMA cyclic transaction */
++	desc = dmaengine_prep_dma_cyclic(stm32_port->rx_ch,
++					 stm32_port->rx_dma_buf,
++					 RX_BUF_L, RX_BUF_P,
++					 DMA_DEV_TO_MEM,
++					 DMA_PREP_INTERRUPT);
++	if (!desc) {
++		dev_err(port->dev, "rx dma prep cyclic failed\n");
++		return -ENODEV;
++	}
++
++	desc->callback = stm32_usart_rx_dma_complete;
++	desc->callback_param = port;
++
++	/* Push current DMA transaction in the pending queue */
++	ret = dma_submit_error(dmaengine_submit(desc));
++	if (ret) {
++		dmaengine_terminate_sync(stm32_port->rx_ch);
++		return ret;
++	}
++
++	/* Issue pending DMA requests */
++	dma_async_issue_pending(stm32_port->rx_ch);
++	stm32_usart_set_bits(port, ofs->cr3, USART_CR3_DMAR);
++
++	return 0;
+ }
+ 
+-static int stm32_startup(struct uart_port *port)
++static int stm32_usart_startup(struct uart_port *port)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
++	struct stm32_usart_config *cfg = &stm32_port->info->cfg;
+ 	const char *name = to_platform_device(port->dev)->name;
+ 	u32 val;
+ 	int ret;
+ 
+-	ret = request_threaded_irq(port->irq, stm32_interrupt,
+-				   stm32_threaded_interrupt,
++	ret = request_threaded_irq(port->irq, stm32_usart_interrupt,
++				   stm32_usart_threaded_interrupt,
+ 				   IRQF_NO_SUSPEND, name, port);
+ 	if (ret)
+ 		return ret;
+ 
+ 	/* RX FIFO Flush */
+ 	if (ofs->rqr != UNDEF_REG)
+-		stm32_set_bits(port, ofs->rqr, USART_RQR_RXFRQ);
++		stm32_usart_set_bits(port, ofs->rqr, USART_RQR_RXFRQ);
+ 
+-	/* Tx and RX FIFO configuration */
+-	if (stm32_port->fifoen) {
+-		val = readl_relaxed(port->membase + ofs->cr3);
+-		val &= ~(USART_CR3_TXFTCFG_MASK | USART_CR3_RXFTCFG_MASK);
+-		val |= USART_CR3_TXFTCFG_HALF << USART_CR3_TXFTCFG_SHIFT;
+-		val |= USART_CR3_RXFTCFG_HALF << USART_CR3_RXFTCFG_SHIFT;
+-		writel_relaxed(val, port->membase + ofs->cr3);
++	if (stm32_port->rx_ch) {
++		ret = stm32_usart_start_rx_dma_cyclic(port);
++		if (ret) {
++			free_irq(port->irq, port);
++			return ret;
++		}
+ 	}
+-
+-	/* RX FIFO enabling */
+-	val = stm32_port->cr1_irq | USART_CR1_RE;
+-	if (stm32_port->fifoen)
+-		val |= USART_CR1_FIFOEN;
+-	stm32_set_bits(port, ofs->cr1, val);
++	/* RX enabling */
++	val = stm32_port->cr1_irq | USART_CR1_RE | BIT(cfg->uart_enable_bit);
++	stm32_usart_set_bits(port, ofs->cr1, val);
+ 
+ 	return 0;
+ }
+ 
+-static void stm32_shutdown(struct uart_port *port)
++static void stm32_usart_shutdown(struct uart_port *port)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+@@ -643,12 +818,17 @@ static void stm32_shutdown(struct uart_port *port)
+ 	if (ret)
+ 		dev_err(port->dev, "transmission complete not set\n");
+ 
+-	stm32_clr_bits(port, ofs->cr1, val);
++	stm32_usart_clr_bits(port, ofs->cr1, val);
++
++	if (stm32_port->rx_ch) {
++		stm32_usart_clr_bits(port, ofs->cr3, USART_CR3_DMAR);
++		dmaengine_terminate_sync(stm32_port->rx_ch);
++	}
+ 
+ 	free_irq(port->irq, port);
+ }
+ 
+-static unsigned int stm32_get_databits(struct ktermios *termios)
++static unsigned int stm32_usart_get_databits(struct ktermios *termios)
+ {
+ 	unsigned int bits;
+ 
+@@ -678,8 +858,9 @@ static unsigned int stm32_get_databits(struct ktermios *termios)
+ 	return bits;
+ }
+ 
+-static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
+-			    struct ktermios *old)
++static void stm32_usart_set_termios(struct uart_port *port,
++				    struct ktermios *termios,
++				    struct ktermios *old)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+@@ -688,8 +869,9 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
+ 	unsigned int baud, bits;
+ 	u32 usartdiv, mantissa, fraction, oversampling;
+ 	tcflag_t cflag = termios->c_cflag;
+-	u32 cr1, cr2, cr3;
++	u32 cr1, cr2, cr3, isr;
+ 	unsigned long flags;
++	int ret;
+ 
+ 	if (!stm32_port->hw_flow_control)
+ 		cflag &= ~CRTSCTS;
+@@ -698,26 +880,39 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
+ 
+ 	spin_lock_irqsave(&port->lock, flags);
+ 
++	ret = readl_relaxed_poll_timeout_atomic(port->membase + ofs->isr,
++						isr,
++						(isr & USART_SR_TC),
++						10, 100000);
++
++	if (ret)
++		dev_err(port->dev, "transmission complete not set\n");
++
+ 	/* Stop serial port and reset value */
+ 	writel_relaxed(0, port->membase + ofs->cr1);
+ 
+ 	/* flush RX & TX FIFO */
+ 	if (ofs->rqr != UNDEF_REG)
+-		stm32_set_bits(port, ofs->rqr,
+-			       USART_RQR_TXFRQ | USART_RQR_RXFRQ);
++		stm32_usart_set_bits(port, ofs->rqr,
++				     USART_RQR_TXFRQ | USART_RQR_RXFRQ);
+ 
+ 	cr1 = USART_CR1_TE | USART_CR1_RE;
+ 	if (stm32_port->fifoen)
+ 		cr1 |= USART_CR1_FIFOEN;
+ 	cr2 = 0;
++
++	/* Tx and RX FIFO configuration */
+ 	cr3 = readl_relaxed(port->membase + ofs->cr3);
+-	cr3 &= USART_CR3_TXFTIE | USART_CR3_RXFTCFG_MASK | USART_CR3_RXFTIE
+-		| USART_CR3_TXFTCFG_MASK;
++	cr3 &= USART_CR3_TXFTIE | USART_CR3_RXFTIE;
++	if (stm32_port->fifoen) {
++		cr3 |= USART_CR3_TXFTCFG_HALF << USART_CR3_TXFTCFG_SHIFT;
++		cr3 |= USART_CR3_RXFTCFG_HALF << USART_CR3_RXFTCFG_SHIFT;
++	}
+ 
+ 	if (cflag & CSTOPB)
+ 		cr2 |= USART_CR2_STOP_2B;
+ 
+-	bits = stm32_get_databits(termios);
++	bits = stm32_usart_get_databits(termios);
+ 	stm32_port->rdr_mask = (BIT(bits) - 1);
+ 
+ 	if (cflag & PARENB) {
+@@ -751,9 +946,12 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
+ 		stm32_port->cr1_irq = USART_CR1_RTOIE;
+ 		writel_relaxed(bits, port->membase + ofs->rtor);
+ 		cr2 |= USART_CR2_RTOEN;
+-		/* Not using dma, enable fifo threshold irq */
+-		if (!stm32_port->rx_ch)
+-			stm32_port->cr3_irq =  USART_CR3_RXFTIE;
++		/*
++		 * Enable fifo threshold irq in two cases, either when there
++		 * is no DMA, or when wake up over usart, from low power
++		 * state until the DMA gets re-enabled by resume.
++		 */
++		stm32_port->cr3_irq =  USART_CR3_RXFTIE;
+ 	}
+ 
+ 	cr1 |= stm32_port->cr1_irq;
+@@ -779,11 +977,11 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
+ 	if (usartdiv < 16) {
+ 		oversampling = 8;
+ 		cr1 |= USART_CR1_OVER8;
+-		stm32_set_bits(port, ofs->cr1, USART_CR1_OVER8);
++		stm32_usart_set_bits(port, ofs->cr1, USART_CR1_OVER8);
+ 	} else {
+ 		oversampling = 16;
+ 		cr1 &= ~USART_CR1_OVER8;
+-		stm32_clr_bits(port, ofs->cr1, USART_CR1_OVER8);
++		stm32_usart_clr_bits(port, ofs->cr1, USART_CR1_OVER8);
+ 	}
+ 
+ 	mantissa = (usartdiv / oversampling) << USART_BRR_DIV_M_SHIFT;
+@@ -816,13 +1014,22 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
+ 	if ((termios->c_cflag & CREAD) == 0)
+ 		port->ignore_status_mask |= USART_SR_DUMMY_RX;
+ 
+-	if (stm32_port->rx_ch)
++	if (stm32_port->rx_ch) {
++		/*
++		 * Setup DMA to collect only valid data and enable error irqs.
++		 * This also enables break reception when using DMA.
++		 */
++		cr1 |= USART_CR1_PEIE;
++		cr3 |= USART_CR3_EIE;
+ 		cr3 |= USART_CR3_DMAR;
++		cr3 |= USART_CR3_DDRE;
++	}
+ 
+ 	if (rs485conf->flags & SER_RS485_ENABLED) {
+-		stm32_config_reg_rs485(&cr1, &cr3,
+-				       rs485conf->delay_rts_before_send,
+-				       rs485conf->delay_rts_after_send, baud);
++		stm32_usart_config_reg_rs485(&cr1, &cr3,
++					     rs485conf->delay_rts_before_send,
++					     rs485conf->delay_rts_after_send,
++					     baud);
+ 		if (rs485conf->flags & SER_RS485_RTS_ON_SEND) {
+ 			cr3 &= ~USART_CR3_DEP;
+ 			rs485conf->flags &= ~SER_RS485_RTS_AFTER_SEND;
+@@ -836,43 +1043,49 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
+ 		cr1 &= ~(USART_CR1_DEDT_MASK | USART_CR1_DEAT_MASK);
+ 	}
+ 
++	/* Enable wake up from low power on start bit detection */
++	if (stm32_port->wakeup_src) {
++		cr3 &= ~USART_CR3_WUS_MASK;
++		cr3 |= USART_CR3_WUS_START_BIT;
++	}
++
+ 	writel_relaxed(cr3, port->membase + ofs->cr3);
+ 	writel_relaxed(cr2, port->membase + ofs->cr2);
+ 	writel_relaxed(cr1, port->membase + ofs->cr1);
+ 
+-	stm32_set_bits(port, ofs->cr1, BIT(cfg->uart_enable_bit));
++	stm32_usart_set_bits(port, ofs->cr1, BIT(cfg->uart_enable_bit));
+ 	spin_unlock_irqrestore(&port->lock, flags);
+ }
+ 
+-static const char *stm32_type(struct uart_port *port)
++static const char *stm32_usart_type(struct uart_port *port)
+ {
+ 	return (port->type == PORT_STM32) ? DRIVER_NAME : NULL;
+ }
+ 
+-static void stm32_release_port(struct uart_port *port)
++static void stm32_usart_release_port(struct uart_port *port)
+ {
+ }
+ 
+-static int stm32_request_port(struct uart_port *port)
++static int stm32_usart_request_port(struct uart_port *port)
+ {
+ 	return 0;
+ }
+ 
+-static void stm32_config_port(struct uart_port *port, int flags)
++static void stm32_usart_config_port(struct uart_port *port, int flags)
+ {
+ 	if (flags & UART_CONFIG_TYPE)
+ 		port->type = PORT_STM32;
+ }
+ 
+ static int
+-stm32_verify_port(struct uart_port *port, struct serial_struct *ser)
++stm32_usart_verify_port(struct uart_port *port, struct serial_struct *ser)
+ {
+ 	/* No user changeable parameters */
+ 	return -EINVAL;
+ }
+ 
+-static void stm32_pm(struct uart_port *port, unsigned int state,
+-		unsigned int oldstate)
++static void stm32_usart_pm(struct uart_port *port, unsigned int state,
++			   unsigned int oldstate)
+ {
+ 	struct stm32_port *stm32port = container_of(port,
+ 			struct stm32_port, port);
+@@ -886,7 +1099,7 @@ static void stm32_pm(struct uart_port *port, unsigned int state,
+ 		break;
+ 	case UART_PM_STATE_OFF:
+ 		spin_lock_irqsave(&port->lock, flags);
+-		stm32_clr_bits(port, ofs->cr1, BIT(cfg->uart_enable_bit));
++		stm32_usart_clr_bits(port, ofs->cr1, BIT(cfg->uart_enable_bit));
+ 		spin_unlock_irqrestore(&port->lock, flags);
+ 		pm_runtime_put_sync(port->dev);
+ 		break;
+@@ -894,53 +1107,56 @@ static void stm32_pm(struct uart_port *port, unsigned int state,
+ }
+ 
+ static const struct uart_ops stm32_uart_ops = {
+-	.tx_empty	= stm32_tx_empty,
+-	.set_mctrl	= stm32_set_mctrl,
+-	.get_mctrl	= stm32_get_mctrl,
+-	.stop_tx	= stm32_stop_tx,
+-	.start_tx	= stm32_start_tx,
+-	.throttle	= stm32_throttle,
+-	.unthrottle	= stm32_unthrottle,
+-	.stop_rx	= stm32_stop_rx,
+-	.break_ctl	= stm32_break_ctl,
+-	.startup	= stm32_startup,
+-	.shutdown	= stm32_shutdown,
+-	.set_termios	= stm32_set_termios,
+-	.pm		= stm32_pm,
+-	.type		= stm32_type,
+-	.release_port	= stm32_release_port,
+-	.request_port	= stm32_request_port,
+-	.config_port	= stm32_config_port,
+-	.verify_port	= stm32_verify_port,
++	.tx_empty	= stm32_usart_tx_empty,
++	.set_mctrl	= stm32_usart_set_mctrl,
++	.get_mctrl	= stm32_usart_get_mctrl,
++	.stop_tx	= stm32_usart_stop_tx,
++	.start_tx	= stm32_usart_start_tx,
++	.throttle	= stm32_usart_throttle,
++	.unthrottle	= stm32_usart_unthrottle,
++	.stop_rx	= stm32_usart_stop_rx,
++	.break_ctl	= stm32_usart_break_ctl,
++	.startup	= stm32_usart_startup,
++	.shutdown	= stm32_usart_shutdown,
++	.flush_buffer	= stm32_usart_flush_buffer,
++	.set_termios	= stm32_usart_set_termios,
++	.pm		= stm32_usart_pm,
++	.type		= stm32_usart_type,
++	.release_port	= stm32_usart_release_port,
++	.request_port	= stm32_usart_request_port,
++	.config_port	= stm32_usart_config_port,
++	.verify_port	= stm32_usart_verify_port,
+ };
+ 
+-static int stm32_init_port(struct stm32_port *stm32port,
+-			  struct platform_device *pdev)
++static void stm32_usart_deinit_port(struct stm32_port *stm32port)
++{
++	clk_disable_unprepare(stm32port->clk);
++}
++
++static int stm32_usart_init_port(struct stm32_port *stm32port,
++				 struct platform_device *pdev)
+ {
+ 	struct uart_port *port = &stm32port->port;
+ 	struct resource *res;
+ 	int ret;
+ 
++	ret = platform_get_irq(pdev, 0);
++	if (ret <= 0)
++		return ret ? : -ENODEV;
++
+ 	port->iotype	= UPIO_MEM;
+ 	port->flags	= UPF_BOOT_AUTOCONF;
+ 	port->ops	= &stm32_uart_ops;
+ 	port->dev	= &pdev->dev;
+ 	port->fifosize	= stm32port->info->cfg.fifosize;
+-
+-	ret = platform_get_irq(pdev, 0);
+-	if (ret <= 0)
+-		return ret ? : -ENODEV;
+ 	port->irq = ret;
++	port->rs485_config = stm32_usart_config_rs485;
+ 
+-	port->rs485_config = stm32_config_rs485;
++	stm32_usart_init_rs485(port, pdev);
+ 
+-	stm32_init_rs485(port, pdev);
+-
+-	if (stm32port->info->cfg.has_wakeup) {
+-		stm32port->wakeirq = platform_get_irq(pdev, 1);
+-		if (stm32port->wakeirq <= 0 && stm32port->wakeirq != -ENXIO)
+-			return stm32port->wakeirq ? : -ENODEV;
+-	}
++	if (stm32port->info->cfg.has_wakeup)
++		stm32port->wakeup_src = of_property_read_bool(pdev->dev.of_node,
++							      "wakeup-source");
+ 
+ 	stm32port->fifoen = stm32port->info->cfg.has_fifo;
+ 
+@@ -970,7 +1186,7 @@ static int stm32_init_port(struct stm32_port *stm32port,
+ 	return ret;
+ }
+ 
+-static struct stm32_port *stm32_of_get_stm32_port(struct platform_device *pdev)
++static struct stm32_port *stm32_usart_of_get_port(struct platform_device *pdev)
+ {
+ 	struct device_node *np = pdev->dev.of_node;
+ 	int id;
+@@ -987,12 +1203,14 @@ static struct stm32_port *stm32_of_get_stm32_port(struct platform_device *pdev)
+ 	if (WARN_ON(id >= STM32_MAX_PORTS))
+ 		return NULL;
+ 
+-	stm32_ports[id].hw_flow_control = of_property_read_bool(np,
+-							"st,hw-flow-ctrl");
++	stm32_ports[id].hw_flow_control =
++		of_property_read_bool(np, "uart-has-rtscts");
+ 	stm32_ports[id].port.line = id;
+ 	stm32_ports[id].cr1_irq = USART_CR1_RXNEIE;
+ 	stm32_ports[id].cr3_irq = 0;
+ 	stm32_ports[id].last_res = RX_BUF_L;
++	stm32_ports[id].rx_dma_buf = 0;
++	stm32_ports[id].tx_dma_buf = 0;
+ 	return &stm32_ports[id];
+ }
+ 
+@@ -1007,30 +1225,28 @@ static const struct of_device_id stm32_match[] = {
+ MODULE_DEVICE_TABLE(of, stm32_match);
+ #endif
+ 
+-static int stm32_of_dma_rx_probe(struct stm32_port *stm32port,
+-				 struct platform_device *pdev)
++static void stm32_usart_of_dma_rx_remove(struct stm32_port *stm32port,
++					 struct platform_device *pdev)
++{
++	if (stm32port->rx_buf)
++		dma_free_coherent(&pdev->dev, RX_BUF_L, stm32port->rx_buf,
++				  stm32port->rx_dma_buf);
++}
++
++static int stm32_usart_of_dma_rx_probe(struct stm32_port *stm32port,
++				       struct platform_device *pdev)
+ {
+ 	struct stm32_usart_offsets *ofs = &stm32port->info->ofs;
+ 	struct uart_port *port = &stm32port->port;
+ 	struct device *dev = &pdev->dev;
+ 	struct dma_slave_config config;
+-	struct dma_async_tx_descriptor *desc = NULL;
+-	dma_cookie_t cookie;
+ 	int ret;
+ 
+-	/* Request DMA RX channel */
+-	stm32port->rx_ch = dma_request_slave_channel(dev, "rx");
+-	if (!stm32port->rx_ch) {
+-		dev_info(dev, "rx dma alloc failed\n");
+-		return -ENODEV;
+-	}
+ 	stm32port->rx_buf = dma_alloc_coherent(&pdev->dev, RX_BUF_L,
+-						 &stm32port->rx_dma_buf,
+-						 GFP_KERNEL);
+-	if (!stm32port->rx_buf) {
+-		ret = -ENOMEM;
+-		goto alloc_err;
+-	}
++					       &stm32port->rx_dma_buf,
++					       GFP_KERNEL);
++	if (!stm32port->rx_buf)
++		return -ENOMEM;
+ 
+ 	/* Configure DMA channel */
+ 	memset(&config, 0, sizeof(config));
+@@ -1040,47 +1256,23 @@ static int stm32_of_dma_rx_probe(struct stm32_port *stm32port,
+ 	ret = dmaengine_slave_config(stm32port->rx_ch, &config);
+ 	if (ret < 0) {
+ 		dev_err(dev, "rx dma channel config failed\n");
+-		ret = -ENODEV;
+-		goto config_err;
+-	}
+-
+-	/* Prepare a DMA cyclic transaction */
+-	desc = dmaengine_prep_dma_cyclic(stm32port->rx_ch,
+-					 stm32port->rx_dma_buf,
+-					 RX_BUF_L, RX_BUF_P, DMA_DEV_TO_MEM,
+-					 DMA_PREP_INTERRUPT);
+-	if (!desc) {
+-		dev_err(dev, "rx dma prep cyclic failed\n");
+-		ret = -ENODEV;
+-		goto config_err;
++		stm32_usart_of_dma_rx_remove(stm32port, pdev);
++		return ret;
+ 	}
+ 
+-	/* No callback as dma buffer is drained on usart interrupt */
+-	desc->callback = NULL;
+-	desc->callback_param = NULL;
+-
+-	/* Push current DMA transaction in the pending queue */
+-	cookie = dmaengine_submit(desc);
+-
+-	/* Issue pending DMA requests */
+-	dma_async_issue_pending(stm32port->rx_ch);
+-
+ 	return 0;
++}
+ 
+-config_err:
+-	dma_free_coherent(&pdev->dev,
+-			  RX_BUF_L, stm32port->rx_buf,
+-			  stm32port->rx_dma_buf);
+-
+-alloc_err:
+-	dma_release_channel(stm32port->rx_ch);
+-	stm32port->rx_ch = NULL;
+-
+-	return ret;
++static void stm32_usart_of_dma_tx_remove(struct stm32_port *stm32port,
++					 struct platform_device *pdev)
++{
++	if (stm32port->tx_buf)
++		dma_free_coherent(&pdev->dev, TX_BUF_L, stm32port->tx_buf,
++				  stm32port->tx_dma_buf);
+ }
+ 
+-static int stm32_of_dma_tx_probe(struct stm32_port *stm32port,
+-				 struct platform_device *pdev)
++static int stm32_usart_of_dma_tx_probe(struct stm32_port *stm32port,
++				       struct platform_device *pdev)
+ {
+ 	struct stm32_usart_offsets *ofs = &stm32port->info->ofs;
+ 	struct uart_port *port = &stm32port->port;
+@@ -1090,19 +1282,11 @@ static int stm32_of_dma_tx_probe(struct stm32_port *stm32port,
+ 
+ 	stm32port->tx_dma_busy = false;
+ 
+-	/* Request DMA TX channel */
+-	stm32port->tx_ch = dma_request_slave_channel(dev, "tx");
+-	if (!stm32port->tx_ch) {
+-		dev_info(dev, "tx dma alloc failed\n");
+-		return -ENODEV;
+-	}
+ 	stm32port->tx_buf = dma_alloc_coherent(&pdev->dev, TX_BUF_L,
+-						 &stm32port->tx_dma_buf,
+-						 GFP_KERNEL);
+-	if (!stm32port->tx_buf) {
+-		ret = -ENOMEM;
+-		goto alloc_err;
+-	}
++					       &stm32port->tx_dma_buf,
++					       GFP_KERNEL);
++	if (!stm32port->tx_buf)
++		return -ENOMEM;
+ 
+ 	/* Configure DMA channel */
+ 	memset(&config, 0, sizeof(config));
+@@ -1112,31 +1296,20 @@ static int stm32_of_dma_tx_probe(struct stm32_port *stm32port,
+ 	ret = dmaengine_slave_config(stm32port->tx_ch, &config);
+ 	if (ret < 0) {
+ 		dev_err(dev, "tx dma channel config failed\n");
+-		ret = -ENODEV;
+-		goto config_err;
++		stm32_usart_of_dma_tx_remove(stm32port, pdev);
++		return ret;
+ 	}
+ 
+ 	return 0;
+-
+-config_err:
+-	dma_free_coherent(&pdev->dev,
+-			  TX_BUF_L, stm32port->tx_buf,
+-			  stm32port->tx_dma_buf);
+-
+-alloc_err:
+-	dma_release_channel(stm32port->tx_ch);
+-	stm32port->tx_ch = NULL;
+-
+-	return ret;
+ }
+ 
+-static int stm32_serial_probe(struct platform_device *pdev)
++static int stm32_usart_serial_probe(struct platform_device *pdev)
+ {
+ 	const struct of_device_id *match;
+ 	struct stm32_port *stm32port;
+ 	int ret;
+ 
+-	stm32port = stm32_of_get_stm32_port(pdev);
++	stm32port = stm32_usart_of_get_port(pdev);
+ 	if (!stm32port)
+ 		return -ENODEV;
+ 
+@@ -1146,105 +1319,145 @@ static int stm32_serial_probe(struct platform_device *pdev)
+ 	else
+ 		return -EINVAL;
+ 
+-	ret = stm32_init_port(stm32port, pdev);
++	ret = stm32_usart_init_port(stm32port, pdev);
+ 	if (ret)
+ 		return ret;
+ 
+-	if (stm32port->wakeirq > 0) {
+-		ret = device_init_wakeup(&pdev->dev, true);
++	if (stm32port->wakeup_src) {
++		device_set_wakeup_capable(&pdev->dev, true);
++		ret = dev_pm_set_wake_irq(&pdev->dev, stm32port->port.irq);
+ 		if (ret)
+-			goto err_uninit;
+-
+-		ret = dev_pm_set_dedicated_wake_irq(&pdev->dev,
+-						    stm32port->wakeirq);
+-		if (ret)
+-			goto err_nowup;
+-
+-		device_set_wakeup_enable(&pdev->dev, false);
++			goto err_deinit_port;
+ 	}
+ 
+-	ret = uart_add_one_port(&stm32_usart_driver, &stm32port->port);
+-	if (ret)
+-		goto err_wirq;
++	stm32port->rx_ch = dma_request_chan_linked(&pdev->dev, "rx");
++	if (PTR_ERR(stm32port->rx_ch) == -EPROBE_DEFER) {
++		ret = -EPROBE_DEFER;
++		goto err_wakeirq;
++	}
++	/* Fall back in interrupt mode for any non-deferral error */
++	if (IS_ERR(stm32port->rx_ch))
++		stm32port->rx_ch = NULL;
++
++	stm32port->tx_ch = dma_request_chan(&pdev->dev, "tx");
++	if (PTR_ERR(stm32port->tx_ch) == -EPROBE_DEFER) {
++		ret = -EPROBE_DEFER;
++		goto err_dma_rx;
++	}
++	/* Fall back in interrupt mode for any non-deferral error */
++	if (IS_ERR(stm32port->tx_ch))
++		stm32port->tx_ch = NULL;
++
++	if (stm32port->rx_ch && stm32_usart_of_dma_rx_probe(stm32port, pdev)) {
++		/* Fall back in interrupt mode */
++		dma_release_chan_linked(&pdev->dev, stm32port->rx_ch);
++		stm32port->rx_ch = NULL;
++	}
+ 
+-	ret = stm32_of_dma_rx_probe(stm32port, pdev);
+-	if (ret)
+-		dev_info(&pdev->dev, "interrupt mode used for rx (no dma)\n");
++	if (stm32port->tx_ch && stm32_usart_of_dma_tx_probe(stm32port, pdev)) {
++		/* Fall back in interrupt mode */
++		dma_release_channel(stm32port->tx_ch);
++		stm32port->tx_ch = NULL;
++	}
+ 
+-	ret = stm32_of_dma_tx_probe(stm32port, pdev);
+-	if (ret)
+-		dev_info(&pdev->dev, "interrupt mode used for tx (no dma)\n");
++	if (!stm32port->rx_ch)
++		dev_info(&pdev->dev, "interrupt mode for rx (no dma)\n");
++	if (!stm32port->tx_ch)
++		dev_info(&pdev->dev, "interrupt mode for tx (no dma)\n");
+ 
+ 	platform_set_drvdata(pdev, &stm32port->port);
+ 
+ 	pm_runtime_get_noresume(&pdev->dev);
+ 	pm_runtime_set_active(&pdev->dev);
+ 	pm_runtime_enable(&pdev->dev);
++
++	ret = uart_add_one_port(&stm32_usart_driver, &stm32port->port);
++	if (ret)
++		goto err_port;
++
+ 	pm_runtime_put_sync(&pdev->dev);
+ 
+ 	return 0;
+ 
+-err_wirq:
+-	if (stm32port->wakeirq > 0)
++err_port:
++	pm_runtime_disable(&pdev->dev);
++	pm_runtime_set_suspended(&pdev->dev);
++	pm_runtime_put_noidle(&pdev->dev);
++
++	if (stm32port->tx_ch) {
++		stm32_usart_of_dma_tx_remove(stm32port, pdev);
++		dma_release_channel(stm32port->tx_ch);
++	}
++
++	if (stm32port->rx_ch)
++		stm32_usart_of_dma_rx_remove(stm32port, pdev);
++
++err_dma_rx:
++	if (stm32port->rx_ch)
++		dma_release_chan_linked(&pdev->dev, stm32port->rx_ch);
++
++err_wakeirq:
++	if (stm32port->wakeup_src)
+ 		dev_pm_clear_wake_irq(&pdev->dev);
+ 
+-err_nowup:
+-	if (stm32port->wakeirq > 0)
+-		device_init_wakeup(&pdev->dev, false);
++err_deinit_port:
++	if (stm32port->wakeup_src)
++		device_set_wakeup_capable(&pdev->dev, false);
+ 
+-err_uninit:
+-	clk_disable_unprepare(stm32port->clk);
++	stm32_usart_deinit_port(stm32port);
+ 
+ 	return ret;
+ }
+ 
+-static int stm32_serial_remove(struct platform_device *pdev)
++static int stm32_usart_serial_remove(struct platform_device *pdev)
+ {
+ 	struct uart_port *port = platform_get_drvdata(pdev);
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+ 	int err;
++	u32 cr3;
+ 
+ 	pm_runtime_get_sync(&pdev->dev);
++	err = uart_remove_one_port(&stm32_usart_driver, port);
++	if (err)
++		return(err);
+ 
+-	stm32_clr_bits(port, ofs->cr3, USART_CR3_DMAR);
+-
+-	if (stm32_port->rx_ch)
+-		dma_release_channel(stm32_port->rx_ch);
+-
+-	if (stm32_port->rx_dma_buf)
+-		dma_free_coherent(&pdev->dev,
+-				  RX_BUF_L, stm32_port->rx_buf,
+-				  stm32_port->rx_dma_buf);
++	pm_runtime_disable(&pdev->dev);
++	pm_runtime_set_suspended(&pdev->dev);
++	pm_runtime_put_noidle(&pdev->dev);
+ 
+-	stm32_clr_bits(port, ofs->cr3, USART_CR3_DMAT);
++	stm32_usart_clr_bits(port, ofs->cr1, USART_CR1_PEIE);
++	cr3 = readl_relaxed(port->membase + ofs->cr3);
++	cr3 &= ~USART_CR3_EIE;
++	cr3 &= ~USART_CR3_DMAR;
++	cr3 &= ~USART_CR3_DDRE;
++	writel_relaxed(cr3, port->membase + ofs->cr3);
+ 
+-	if (stm32_port->tx_ch)
++	if (stm32_port->tx_ch) {
++		dmaengine_terminate_async(stm32_port->tx_ch);
++		stm32_usart_of_dma_tx_remove(stm32_port, pdev);
+ 		dma_release_channel(stm32_port->tx_ch);
++	}
+ 
+-	if (stm32_port->tx_dma_buf)
+-		dma_free_coherent(&pdev->dev,
+-				  TX_BUF_L, stm32_port->tx_buf,
+-				  stm32_port->tx_dma_buf);
++	if (stm32_port->rx_ch) {
++		stm32_usart_of_dma_rx_remove(stm32_port, pdev);
++		dma_release_chan_linked(&pdev->dev, stm32_port->rx_ch);
++	}
+ 
+-	if (stm32_port->wakeirq > 0) {
++	stm32_usart_clr_bits(port, ofs->cr3, USART_CR3_DMAT);
++
++	if (stm32_port->wakeup_src) {
+ 		dev_pm_clear_wake_irq(&pdev->dev);
+ 		device_init_wakeup(&pdev->dev, false);
+ 	}
+ 
+-	clk_disable_unprepare(stm32_port->clk);
+-
+-	err = uart_remove_one_port(&stm32_usart_driver, port);
+-
+-	pm_runtime_disable(&pdev->dev);
+-	pm_runtime_put_noidle(&pdev->dev);
++	stm32_usart_deinit_port(stm32_port);
+ 
+-	return err;
++	return 0;
+ }
+ 
+-
+ #ifdef CONFIG_SERIAL_STM32_CONSOLE
+-static void stm32_console_putchar(struct uart_port *port, int ch)
++static void stm32_usart_console_putchar(struct uart_port *port, int ch)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+@@ -1255,7 +1468,8 @@ static void stm32_console_putchar(struct uart_port *port, int ch)
+ 	writel_relaxed(ch, port->membase + ofs->tdr);
+ }
+ 
+-static void stm32_console_write(struct console *co, const char *s, unsigned cnt)
++static void stm32_usart_console_write(struct console *co, const char *s,
++				      unsigned int cnt)
+ {
+ 	struct uart_port *port = &stm32_ports[co->index].port;
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+@@ -1279,7 +1493,7 @@ static void stm32_console_write(struct console *co, const char *s, unsigned cnt)
+ 	new_cr1 |=  USART_CR1_TE | BIT(cfg->uart_enable_bit);
+ 	writel_relaxed(new_cr1, port->membase + ofs->cr1);
+ 
+-	uart_console_write(port, s, cnt, stm32_console_putchar);
++	uart_console_write(port, s, cnt, stm32_usart_console_putchar);
+ 
+ 	/* Restore interrupt state */
+ 	writel_relaxed(old_cr1, port->membase + ofs->cr1);
+@@ -1289,7 +1503,7 @@ static void stm32_console_write(struct console *co, const char *s, unsigned cnt)
+ 	local_irq_restore(flags);
+ }
+ 
+-static int stm32_console_setup(struct console *co, char *options)
++static int stm32_usart_console_setup(struct console *co, char *options)
+ {
+ 	struct stm32_port *stm32port;
+ 	int baud = 9600;
+@@ -1308,7 +1522,7 @@ static int stm32_console_setup(struct console *co, char *options)
+ 	 * this to be called during the uart port registration when the
+ 	 * driver gets probed and the port should be mapped at that point.
+ 	 */
+-	if (stm32port->port.mapbase == 0 || stm32port->port.membase == NULL)
++	if (stm32port->port.mapbase == 0 || !stm32port->port.membase)
+ 		return -ENXIO;
+ 
+ 	if (options)
+@@ -1320,8 +1534,8 @@ static int stm32_console_setup(struct console *co, char *options)
+ static struct console stm32_console = {
+ 	.name		= STM32_SERIAL_NAME,
+ 	.device		= uart_console_device,
+-	.write		= stm32_console_write,
+-	.setup		= stm32_console_setup,
++	.write		= stm32_usart_console_write,
++	.setup		= stm32_usart_console_setup,
+ 	.flags		= CON_PRINTBUFFER,
+ 	.index		= -1,
+ 	.data		= &stm32_usart_driver,
+@@ -1342,60 +1556,89 @@ static struct uart_driver stm32_usart_driver = {
+ 	.cons		= STM32_SERIAL_CONSOLE,
+ };
+ 
+-static void __maybe_unused stm32_serial_enable_wakeup(struct uart_port *port,
+-						      bool enable)
++static void __maybe_unused stm32_usart_serial_en_wakeup(struct uart_port *port,
++							bool enable)
+ {
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+-	struct stm32_usart_config *cfg = &stm32_port->info->cfg;
+-	u32 val;
+ 
+-	if (stm32_port->wakeirq <= 0)
++	if (!stm32_port->wakeup_src)
+ 		return;
+ 
++	/*
++	 * Enable low-power wake-up and wake-up irq if argument is set to
++	 * "enable", disable low-power wake-up and wake-up irq otherwise
++	 */
+ 	if (enable) {
+-		stm32_clr_bits(port, ofs->cr1, BIT(cfg->uart_enable_bit));
+-		stm32_set_bits(port, ofs->cr1, USART_CR1_UESM);
+-		val = readl_relaxed(port->membase + ofs->cr3);
+-		val &= ~USART_CR3_WUS_MASK;
+-		/* Enable Wake up interrupt from low power on start bit */
+-		val |= USART_CR3_WUS_START_BIT | USART_CR3_WUFIE;
+-		writel_relaxed(val, port->membase + ofs->cr3);
+-		stm32_set_bits(port, ofs->cr1, BIT(cfg->uart_enable_bit));
++		stm32_usart_set_bits(port, ofs->cr1, USART_CR1_UESM);
++		stm32_usart_set_bits(port, ofs->cr3, USART_CR3_WUFIE);
+ 	} else {
+-		stm32_clr_bits(port, ofs->cr1, USART_CR1_UESM);
++		stm32_usart_clr_bits(port, ofs->cr1, USART_CR1_UESM);
++		stm32_usart_clr_bits(port, ofs->cr3, USART_CR3_WUFIE);
+ 	}
+ }
+ 
+-static int __maybe_unused stm32_serial_suspend(struct device *dev)
++static int __maybe_unused stm32_usart_serial_suspend(struct device *dev)
+ {
+ 	struct uart_port *port = dev_get_drvdata(dev);
++	struct stm32_port *stm32_port = to_stm32_port(port);
++	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
++	struct tty_port *tport = &port->state->port;
+ 
+ 	uart_suspend_port(&stm32_usart_driver, port);
+ 
+-	if (device_may_wakeup(dev))
+-		stm32_serial_enable_wakeup(port, true);
+-	else
+-		stm32_serial_enable_wakeup(port, false);
++	if (device_may_wakeup(dev) || device_wakeup_path(dev)) {
++		stm32_usart_serial_en_wakeup(port, true);
++		/*
++		 * DMA can't suspend while DMA channels are still active.
++		 * Terminate DMA transfer at suspend, and then restart a new
++		 * DMA transfer at resume.
++		 */
++		if (stm32_port->rx_ch && tty_port_initialized(tport)) {
++			stm32_usart_clr_bits(port, ofs->cr3, USART_CR3_DMAR);
++			dmaengine_terminate_sync(stm32_port->rx_ch);
++		}
++	}
+ 
+-	pinctrl_pm_select_sleep_state(dev);
++	/*
++	 * When "no_console_suspend" is enabled, keep the pinctrl default state
++	 * and rely on bootloader stage to restore this state upon resume.
++	 * Otherwise, apply the idle or sleep states depending on wakeup
++	 * capabilities.
++	 */
++	if (console_suspend_enabled || !uart_console(port)) {
++		if (device_may_wakeup(dev) || device_wakeup_path(dev))
++			pinctrl_pm_select_idle_state(dev);
++		else
++			pinctrl_pm_select_sleep_state(dev);
++	}
+ 
+ 	return 0;
+ }
+ 
+-static int __maybe_unused stm32_serial_resume(struct device *dev)
++static int __maybe_unused stm32_usart_serial_resume(struct device *dev)
+ {
+ 	struct uart_port *port = dev_get_drvdata(dev);
++	struct stm32_port *stm32_port = to_stm32_port(port);
++	struct tty_port *tport = &port->state->port;
++	int ret;
+ 
+ 	pinctrl_pm_select_default_state(dev);
+ 
+-	if (device_may_wakeup(dev))
+-		stm32_serial_enable_wakeup(port, false);
++	if (device_may_wakeup(dev) || device_wakeup_path(dev)) {
++		stm32_usart_serial_en_wakeup(port, false);
++
++		if (stm32_port->rx_ch && tty_port_initialized(tport)) {
++			ret = stm32_usart_start_rx_dma_cyclic(port);
++			if (ret)
++				return ret;
++		}
++	}
+ 
+ 	return uart_resume_port(&stm32_usart_driver, port);
+ }
+ 
+-static int __maybe_unused stm32_serial_runtime_suspend(struct device *dev)
++static int __maybe_unused stm32_usart_runtime_suspend(struct device *dev)
+ {
+ 	struct uart_port *port = dev_get_drvdata(dev);
+ 	struct stm32_port *stm32port = container_of(port,
+@@ -1406,7 +1649,7 @@ static int __maybe_unused stm32_serial_runtime_suspend(struct device *dev)
+ 	return 0;
+ }
+ 
+-static int __maybe_unused stm32_serial_runtime_resume(struct device *dev)
++static int __maybe_unused stm32_usart_runtime_resume(struct device *dev)
+ {
+ 	struct uart_port *port = dev_get_drvdata(dev);
+ 	struct stm32_port *stm32port = container_of(port,
+@@ -1416,14 +1659,15 @@ static int __maybe_unused stm32_serial_runtime_resume(struct device *dev)
+ }
+ 
+ static const struct dev_pm_ops stm32_serial_pm_ops = {
+-	SET_RUNTIME_PM_OPS(stm32_serial_runtime_suspend,
+-			   stm32_serial_runtime_resume, NULL)
+-	SET_SYSTEM_SLEEP_PM_OPS(stm32_serial_suspend, stm32_serial_resume)
++	SET_RUNTIME_PM_OPS(stm32_usart_runtime_suspend,
++			   stm32_usart_runtime_resume, NULL)
++	SET_SYSTEM_SLEEP_PM_OPS(stm32_usart_serial_suspend,
++				stm32_usart_serial_resume)
+ };
+ 
+ static struct platform_driver stm32_serial_driver = {
+-	.probe		= stm32_serial_probe,
+-	.remove		= stm32_serial_remove,
++	.probe		= stm32_usart_serial_probe,
++	.remove		= stm32_usart_serial_remove,
+ 	.driver	= {
+ 		.name	= DRIVER_NAME,
+ 		.pm	= &stm32_serial_pm_ops,
+@@ -1431,7 +1675,7 @@ static struct platform_driver stm32_serial_driver = {
+ 	},
+ };
+ 
+-static int __init usart_init(void)
++static int __init stm32_usart_init(void)
+ {
+ 	static char banner[] __initdata = "STM32 USART driver initialized";
+ 	int ret;
+@@ -1449,14 +1693,14 @@ static int __init usart_init(void)
+ 	return ret;
+ }
+ 
+-static void __exit usart_exit(void)
++static void __exit stm32_usart_exit(void)
+ {
+ 	platform_driver_unregister(&stm32_serial_driver);
+ 	uart_unregister_driver(&stm32_usart_driver);
+ }
+ 
+-module_init(usart_init);
+-module_exit(usart_exit);
++module_init(stm32_usart_init);
++module_exit(stm32_usart_exit);
+ 
+ MODULE_ALIAS("platform:" DRIVER_NAME);
+ MODULE_DESCRIPTION("STMicroelectronics STM32 serial port driver");
+diff --git a/drivers/tty/serial/stm32-usart.h b/drivers/tty/serial/stm32-usart.h
+index a175c1094..969b0c6dd 100644
+--- a/drivers/tty/serial/stm32-usart.h
++++ b/drivers/tty/serial/stm32-usart.h
+@@ -1,4 +1,4 @@
+-// SPDX-License-Identifier: GPL-2.0
++/* SPDX-License-Identifier: GPL-2.0 */
+ /*
+  * Copyright (C) Maxime Coquelin 2015
+  * Copyright (C) STMicroelectronics SA 2017
+@@ -106,7 +106,7 @@ struct stm32_usart_info stm32h7_info = {
+ /* USART_SR (F4) / USART_ISR (F7) */
+ #define USART_SR_PE		BIT(0)
+ #define USART_SR_FE		BIT(1)
+-#define USART_SR_NF		BIT(2)
++#define USART_SR_NE		BIT(2)		/* F7 (NF for F4) */
+ #define USART_SR_ORE		BIT(3)
+ #define USART_SR_IDLE		BIT(4)
+ #define USART_SR_RXNE		BIT(5)
+@@ -123,13 +123,11 @@ struct stm32_usart_info stm32h7_info = {
+ #define USART_SR_SBKF		BIT(18)		/* F7 */
+ #define USART_SR_WUF		BIT(20)		/* H7 */
+ #define USART_SR_TEACK		BIT(21)		/* F7 */
+-#define USART_SR_ERR_MASK	(USART_SR_ORE | USART_SR_FE | USART_SR_PE)
++#define USART_SR_ERR_MASK	(USART_SR_ORE | USART_SR_NE | USART_SR_FE |\
++				 USART_SR_PE)
+ /* Dummy bits */
+ #define USART_SR_DUMMY_RX	BIT(16)
+ 
+-/* USART_ICR (F7) */
+-#define USART_CR_TC		BIT(6)
+-
+ /* USART_DR */
+ #define USART_DR_MASK		GENMASK(8, 0)
+ 
+@@ -252,9 +250,9 @@ struct stm32_usart_info stm32h7_info = {
+ #define STM32_SERIAL_NAME "ttySTM"
+ #define STM32_MAX_PORTS 8
+ 
+-#define RX_BUF_L 200		 /* dma rx buffer length     */
+-#define RX_BUF_P RX_BUF_L	 /* dma rx buffer period     */
+-#define TX_BUF_L 200		 /* dma tx buffer length     */
++#define RX_BUF_L 4096		 /* dma rx buffer length     */
++#define RX_BUF_P (RX_BUF_L / 2)	 /* dma rx buffer period     */
++#define TX_BUF_L RX_BUF_L	 /* dma tx buffer length     */
+ 
+ struct stm32_port {
+ 	struct uart_port port;
+@@ -272,8 +270,10 @@ struct stm32_port {
+ 	bool tx_dma_busy;	 /* dma tx busy               */
+ 	bool hw_flow_control;
+ 	bool fifoen;
+-	int wakeirq;
++	bool wakeup_src;
+ 	int rdr_mask;		/* receive data register mask */
++	struct dma_tx_state state;
++	enum dma_status status;
+ };
+ 
+ static struct stm32_port stm32_ports[STM32_MAX_PORTS];
+-- 
+2.17.1
+

@@ -1,0 +1,1314 @@
+From 29a46aadaab8285eafc89b86fb6db1b092979589 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@st.com>
+Date: Fri, 10 Apr 2020 14:41:19 +0200
+Subject: [PATCH 07/23] ARM-stm32mp1-r1-DRM
+
+---
+ drivers/gpu/drm/bridge/sii902x.c              | 145 +++++++++-
+ drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c | 160 +++++++++--
+ drivers/gpu/drm/drm_modes.c                   |  19 +-
+ .../gpu/drm/panel/panel-orisetech-otm8009a.c  |  20 +-
+ drivers/gpu/drm/panel/panel-raydium-rm68200.c |  14 +-
+ drivers/gpu/drm/stm/dw_mipi_dsi-stm.c         |   9 +-
+ drivers/gpu/drm/stm/ltdc.c                    | 270 +++++++++++-------
+ drivers/gpu/drm/stm/ltdc.h                    |   1 +
+ drivers/input/touchscreen/edt-ft5x06.c        |  18 +-
+ drivers/input/touchscreen/goodix.c            |  16 ++
+ include/uapi/drm/drm_mode.h                   |   6 +
+ 11 files changed, 512 insertions(+), 166 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/sii902x.c b/drivers/gpu/drm/bridge/sii902x.c
+index 38f75ac58..92299884f 100644
+--- a/drivers/gpu/drm/bridge/sii902x.c
++++ b/drivers/gpu/drm/bridge/sii902x.c
+@@ -16,8 +16,10 @@
+ #include <linux/i2c-mux.h>
+ #include <linux/i2c.h>
+ #include <linux/module.h>
++#include <linux/pm_runtime.h>
+ #include <linux/regmap.h>
+ #include <linux/clk.h>
++#include <linux/regulator/consumer.h>
+ 
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_drv.h>
+@@ -160,6 +162,11 @@
+ 
+ #define SII902X_AUDIO_PORT_INDEX		3
+ 
++/* CEC device */
++#define SII902X_CEC_I2C_ADDR			0x30
++
++#define SII902X_CEC_SETUP			0x8e
++
+ struct sii902x {
+ 	struct i2c_client *i2c;
+ 	struct regmap *regmap;
+@@ -167,6 +174,7 @@ struct sii902x {
+ 	struct drm_connector connector;
+ 	struct gpio_desc *reset_gpio;
+ 	struct i2c_mux_core *i2cmux;
++	struct edid *edid;
+ 	/*
+ 	 * Mutex protects audio and video functions from interfering
+ 	 * each other, by keeping their i2c command sequences atomic.
+@@ -177,6 +185,7 @@ struct sii902x {
+ 		struct clk *mclk;
+ 		u32 i2s_fifo_sequence[4];
+ 	} audio;
++	struct regulator_bulk_data supplies[2];
+ };
+ 
+ static int sii902x_read_unlocked(struct i2c_client *i2c, u8 reg, u8 *val)
+@@ -277,6 +286,8 @@ static int sii902x_get_modes(struct drm_connector *connector)
+ 
+ 	mutex_lock(&sii902x->mutex);
+ 
++	kfree(sii902x->edid);
++	sii902x->edid = NULL;
+ 	edid = drm_get_edid(connector, sii902x->i2cmux->adapter[0]);
+ 	drm_connector_update_edid_property(connector, edid);
+ 	if (edid) {
+@@ -284,7 +295,7 @@ static int sii902x_get_modes(struct drm_connector *connector)
+ 			output_mode = SII902X_SYS_CTRL_OUTPUT_HDMI;
+ 
+ 		num = drm_add_edid_modes(connector, edid);
+-		kfree(edid);
++		sii902x->edid = edid;
+ 	}
+ 
+ 	ret = drm_display_info_set_bus_formats(&connector->display_info,
+@@ -334,6 +345,7 @@ static void sii902x_bridge_disable(struct drm_bridge *bridge)
+ static void sii902x_bridge_enable(struct drm_bridge *bridge)
+ {
+ 	struct sii902x *sii902x = bridge_to_sii902x(bridge);
++	u8 output_mode = SII902X_SYS_CTRL_OUTPUT_DVI;
+ 
+ 	mutex_lock(&sii902x->mutex);
+ 
+@@ -343,6 +355,14 @@ static void sii902x_bridge_enable(struct drm_bridge *bridge)
+ 	regmap_update_bits(sii902x->regmap, SII902X_SYS_CTRL_DATA,
+ 			   SII902X_SYS_CTRL_PWR_DWN, 0);
+ 
++	if (sii902x->edid) {
++		if (drm_detect_hdmi_monitor(sii902x->edid))
++			output_mode = SII902X_SYS_CTRL_OUTPUT_HDMI;
++	}
++
++	regmap_update_bits(sii902x->regmap, SII902X_SYS_CTRL_DATA,
++			   SII902X_SYS_CTRL_OUTPUT_MODE, output_mode);
++
+ 	mutex_unlock(&sii902x->mutex);
+ }
+ 
+@@ -952,6 +972,13 @@ static int sii902x_probe(struct i2c_client *client,
+ 	struct device *dev = &client->dev;
+ 	unsigned int status = 0;
+ 	struct sii902x *sii902x;
++	unsigned char data[2] = { SII902X_CEC_SETUP, 0};
++	struct i2c_msg msg = {
++		.addr	= SII902X_CEC_I2C_ADDR << 1,
++		.flags	= 0,
++		.len	= 2,
++		.buf	= data,
++	};
+ 	u8 chipid[4];
+ 	int ret;
+ 
+@@ -980,40 +1007,66 @@ static int sii902x_probe(struct i2c_client *client,
+ 	}
+ 
+ 	mutex_init(&sii902x->mutex);
++	sii902x->supplies[0].supply = "iovcc";
++	sii902x->supplies[1].supply = "cvcc12";
++	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(sii902x->supplies),
++				      sii902x->supplies);
++	if (ret) {
++		if(ret != -EPROBE_DEFER)
++			dev_err(dev, "regulator_bulk_get failed\n");
++		return ret;
++	}
++
++	ret = regulator_bulk_enable(ARRAY_SIZE(sii902x->supplies),
++				    sii902x->supplies);
++	if (ret) {
++		dev_err(dev, "regulator_bulk_enable failed\n");
++		return ret;
++	}
+ 
+ 	sii902x_reset(sii902x);
+ 
+ 	ret = regmap_write(sii902x->regmap, SII902X_REG_TPI_RQB, 0x0);
+ 	if (ret)
+-		return ret;
++		goto err_disable_regulator;
+ 
+ 	ret = regmap_bulk_read(sii902x->regmap, SII902X_REG_CHIPID(0),
+ 			       &chipid, 4);
+ 	if (ret) {
+ 		dev_err(dev, "regmap_read failed %d\n", ret);
+-		return ret;
++		goto err_disable_regulator;
+ 	}
+ 
+ 	if (chipid[0] != 0xb0) {
+ 		dev_err(dev, "Invalid chipid: %02x (expecting 0xb0)\n",
+ 			chipid[0]);
+-		return -EINVAL;
++		ret = -EINVAL;
++		goto err_disable_regulator;
+ 	}
+ 
++	/*
++	 * By default, CEC must be disabled to allow other CEC devives
++	 * to bypass the bridge.
++	 */
++	ret = i2c_transfer(client->adapter, &msg, 1);
++	if (ret < 0)
++		dev_warn(&client->dev, "Failed to disable CEC device!\n");
++
+ 	/* Clear all pending interrupts */
+ 	regmap_read(sii902x->regmap, SII902X_INT_STATUS, &status);
+ 	regmap_write(sii902x->regmap, SII902X_INT_STATUS, status);
+ 
+ 	if (client->irq > 0) {
+-		regmap_write(sii902x->regmap, SII902X_INT_ENABLE,
+-			     SII902X_HOTPLUG_EVENT);
++		regmap_update_bits(sii902x->regmap, SII902X_INT_ENABLE,
++				   SII902X_HOTPLUG_EVENT,
++				   SII902X_HOTPLUG_EVENT);
+ 
+ 		ret = devm_request_threaded_irq(dev, client->irq, NULL,
+ 						sii902x_interrupt,
+ 						IRQF_ONESHOT, dev_name(dev),
+ 						sii902x);
+ 		if (ret)
+-			return ret;
++			goto err_disable_regulator;
+ 	}
+ 
+ 	sii902x->bridge.funcs = &sii902x_bridge_funcs;
+@@ -1033,7 +1086,20 @@ static int sii902x_probe(struct i2c_client *client,
+ 		return -ENOMEM;
+ 
+ 	sii902x->i2cmux->priv = sii902x;
+-	return i2c_mux_add_adapter(sii902x->i2cmux, 0, 0, 0);
++
++	ret = i2c_mux_add_adapter(sii902x->i2cmux, 0, 0, 0);
++	if (ret) {
++		dev_err(dev, "Couldn't add i2c mux adapter\n");
++		return ret;
++	}
++
++	return 0;
++
++err_disable_regulator:
++	regulator_bulk_disable(ARRAY_SIZE(sii902x->supplies),
++			       sii902x->supplies);
++
++	return ret;
+ }
+ 
+ static int sii902x_remove(struct i2c_client *client)
+@@ -1044,9 +1110,71 @@ static int sii902x_remove(struct i2c_client *client)
+ 	i2c_mux_del_adapters(sii902x->i2cmux);
+ 	drm_bridge_remove(&sii902x->bridge);
+ 
++	regulator_bulk_disable(ARRAY_SIZE(sii902x->supplies),
++			       sii902x->supplies);
++
++	return 0;
++}
++
++static int sii902x_pm_suspend(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct sii902x *sii902x = i2c_get_clientdata(client);
++
++	DRM_DEBUG_DRIVER("\n");
++
++	if (sii902x->reset_gpio)
++		gpiod_set_value(sii902x->reset_gpio, 1);
++
++	regulator_bulk_disable(ARRAY_SIZE(sii902x->supplies),
++			       sii902x->supplies);
++
++	return 0;
++}
++
++static int sii902x_pm_resume(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct sii902x *sii902x = i2c_get_clientdata(client);
++	unsigned char data[2] = { SII902X_CEC_SETUP, 0};
++	struct i2c_msg msg = {
++		.addr	= SII902X_CEC_I2C_ADDR << 1,
++		.flags	= 0,
++		.len	= 2,
++		.buf	= data,
++	};
++	int ret;
++
++	DRM_DEBUG_DRIVER("\n");
++
++	ret = regulator_bulk_enable(ARRAY_SIZE(sii902x->supplies),
++				    sii902x->supplies);
++	if (ret) {
++		DRM_ERROR("regulator_bulk_enable failed\n");
++		return ret;
++	}
++
++	if (sii902x->reset_gpio)
++		gpiod_set_value(sii902x->reset_gpio, 0);
++
++	regmap_write(sii902x->regmap, SII902X_REG_TPI_RQB, 0x00);
++
++	ret = i2c_transfer(client->adapter, &msg, 1);
++	if (ret < 0)
++		DRM_ERROR("Failed to disable CEC device!\n");
++
++	if (client->irq > 0)
++		regmap_update_bits(sii902x->regmap, SII902X_INT_ENABLE,
++				   SII902X_HOTPLUG_EVENT,
++				   SII902X_HOTPLUG_EVENT);
++
+ 	return 0;
+ }
+ 
++static const struct dev_pm_ops sii902x_pm_ops = {
++	SET_SYSTEM_SLEEP_PM_OPS(sii902x_pm_suspend, sii902x_pm_resume)
++};
++
+ static const struct of_device_id sii902x_dt_ids[] = {
+ 	{ .compatible = "sil,sii9022", },
+ 	{ }
+@@ -1065,6 +1193,7 @@ static struct i2c_driver sii902x_driver = {
+ 	.driver = {
+ 		.name = "sii902x",
+ 		.of_match_table = sii902x_dt_ids,
++		.pm = &sii902x_pm_ops,
+ 	},
+ 	.id_table = sii902x_i2c_ids,
+ };
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c b/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c
+index 675442bfc..1389bbfa0 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c
+@@ -90,6 +90,7 @@
+ #define VID_MODE_TYPE_NON_BURST_SYNC_EVENTS	0x1
+ #define VID_MODE_TYPE_BURST			0x2
+ #define VID_MODE_TYPE_MASK			0x3
++#define ENABLE_LOW_POWER_CMD		BIT(15)
+ #define VID_MODE_VPG_ENABLE		BIT(16)
+ #define VID_MODE_VPG_HORIZONTAL		BIT(24)
+ 
+@@ -212,6 +213,20 @@
+ 
+ #define DSI_INT_ST0			0xbc
+ #define DSI_INT_ST1			0xc0
++#define GPRXE				BIT(12)
++#define GPRDE				BIT(11)
++#define GPTXE				BIT(10)
++#define GPWRE				BIT(9)
++#define GCWRE				BIT(8)
++#define DPIPLDWE			BIT(7)
++#define EOTPE				BIT(6)
++#define PSE				BIT(5)
++#define CRCE				BIT(4)
++#define ECCME				BIT(3)
++#define ECCSE				BIT(2)
++#define TOLPRX				BIT(1)
++#define TOHSTX				BIT(0)
++
+ #define DSI_INT_MSK0			0xc4
+ #define DSI_INT_MSK1			0xc8
+ 
+@@ -297,7 +312,13 @@ static int dw_mipi_dsi_host_attach(struct mipi_dsi_host *host,
+ 	const struct dw_mipi_dsi_plat_data *pdata = dsi->plat_data;
+ 	struct drm_bridge *bridge;
+ 	struct drm_panel *panel;
+-	int ret;
++	int i, nb_endpoints;
++	int ret = -ENODEV;
++
++	/* Get number of endpoints */
++	nb_endpoints = of_graph_get_endpoint_count(host->dev->of_node);
++	if (!nb_endpoints)
++		return -ENODEV;
+ 
+ 	if (device->lanes > dsi->plat_data->max_data_lanes) {
+ 		dev_err(dsi->dev, "the number of data lanes(%u) is too many\n",
+@@ -310,8 +331,16 @@ static int dw_mipi_dsi_host_attach(struct mipi_dsi_host *host,
+ 	dsi->format = device->format;
+ 	dsi->mode_flags = device->mode_flags;
+ 
+-	ret = drm_of_find_panel_or_bridge(host->dev->of_node, 1, 0,
+-					  &panel, &bridge);
++	for (i = 1; i < nb_endpoints; i++) {
++		ret = drm_of_find_panel_or_bridge(host->dev->of_node, i, 0,
++						  &panel, &bridge);
++		if (!ret)
++			break;
++		else if (ret == -EPROBE_DEFER)
++			return ret;
++	}
++
++	/* check if an error is returned >> no panel or bridge detected */
+ 	if (ret)
+ 		return ret;
+ 
+@@ -360,13 +389,32 @@ static void dw_mipi_message_config(struct dw_mipi_dsi *dsi,
+ 	bool lpm = msg->flags & MIPI_DSI_MSG_USE_LPM;
+ 	u32 val = 0;
+ 
++	/*
++	 * In lpm mode, we maybe can compute the packet size dependig on
++	 * message lenght.
++	 */
++	/*
++	 * TODO dw drv improvements
++	 * largest packet sizes during hfp or during vsa/vpb/vfp
++	 * should be computed according to byte lane, lane number and only
++	 * if sending lp cmds in high speed is enable (PHY_TXREQUESTCLKHS)
++	 */
++	dsi_write(dsi, DSI_DPI_LP_CMD_TIM, OUTVACT_LPCMD_TIME(16)
++		  | INVACT_LPCMD_TIME(4));
++
+ 	if (msg->flags & MIPI_DSI_MSG_REQ_ACK)
+ 		val |= ACK_RQST_EN;
+ 	if (lpm)
+ 		val |= CMD_MODE_ALL_LP;
+ 
+-	dsi_write(dsi, DSI_LPCLK_CTRL, lpm ? 0 : PHY_TXREQUESTCLKHS);
+ 	dsi_write(dsi, DSI_CMD_MODE_CFG, val);
++
++	val = dsi_read(dsi, DSI_VID_MODE_CFG);
++	if (lpm)
++		val |= ENABLE_LOW_POWER_CMD;
++	else
++		val &= ~ENABLE_LOW_POWER_CMD;
++	dsi_write(dsi, DSI_VID_MODE_CFG, val);
+ }
+ 
+ static int dw_mipi_dsi_gen_pkt_hdr_write(struct dw_mipi_dsi *dsi, u32 hdr_val)
+@@ -396,6 +444,42 @@ static int dw_mipi_dsi_gen_pkt_hdr_write(struct dw_mipi_dsi *dsi, u32 hdr_val)
+ 	return 0;
+ }
+ 
++static int dw_mipi_dsi_read_status(struct dw_mipi_dsi *dsi)
++{
++	u32 val;
++
++	val = dsi_read(dsi, DSI_INT_ST1);
++
++	if (val & GPRXE)
++		DRM_DEBUG_DRIVER("DSI Generic payload receive error\n");
++	if (val & GPRDE)
++		DRM_DEBUG_DRIVER("DSI Generic payload read error\n");
++	if (val & GPTXE)
++		DRM_DEBUG_DRIVER("DSI Generic payload transmit error\n");
++	if (val & GPWRE)
++		DRM_DEBUG_DRIVER("DSI Generic payload write error\n");
++	if (val & GCWRE)
++		DRM_DEBUG_DRIVER("DSI Generic command write error\n");
++	if (val & DPIPLDWE)
++		DRM_DEBUG_DRIVER("DSI DPI payload write error\n");
++	if (val & EOTPE)
++		DRM_DEBUG_DRIVER("DSI EoTp error\n");
++	if (val & PSE)
++		DRM_DEBUG_DRIVER("DSI Packet size error\n");
++	if (val & CRCE)
++		DRM_DEBUG_DRIVER("DSI CRC error\n");
++	if (val & ECCME)
++		DRM_DEBUG_DRIVER("DSI ECC multi-bit error\n");
++	if (val & ECCSE)
++		DRM_DEBUG_DRIVER("DSI ECC single-bit error\n");
++	if (val & TOLPRX)
++		DRM_DEBUG_DRIVER("DSI Timeout low-power reception\n");
++	if (val & TOHSTX)
++		DRM_DEBUG_DRIVER("DSI Timeout high-speed transmission\n");
++
++	return val;
++}
++
+ static int dw_mipi_dsi_write(struct dw_mipi_dsi *dsi,
+ 			     const struct mipi_dsi_packet *packet)
+ {
+@@ -425,6 +509,12 @@ static int dw_mipi_dsi_write(struct dw_mipi_dsi *dsi,
+ 				"failed to get available write payload FIFO\n");
+ 			return ret;
+ 		}
++
++		val = dw_mipi_dsi_read_status(dsi);
++		if (val) {
++			dev_err(dsi->dev, "dsi status error 0x%0x\n", val);
++			return -EINVAL;
++		}
+ 	}
+ 
+ 	word = 0;
+@@ -458,6 +548,12 @@ static int dw_mipi_dsi_read(struct dw_mipi_dsi *dsi,
+ 			return ret;
+ 		}
+ 
++		val = dw_mipi_dsi_read_status(dsi);
++		if (val) {
++			dev_err(dsi->dev, "dsi status error 0x%0x\n", val);
++			return -EINVAL;
++		}
++
+ 		val = dsi_read(dsi, DSI_GEN_PLD_DATA);
+ 		for (j = 0; j < 4 && j + i < len; j++)
+ 			buf[i + j] = val >> (8 * j);
+@@ -472,6 +568,7 @@ static ssize_t dw_mipi_dsi_host_transfer(struct mipi_dsi_host *host,
+ 	struct dw_mipi_dsi *dsi = host_to_dsi(host);
+ 	struct mipi_dsi_packet packet;
+ 	int ret, nb_bytes;
++	int retry = 3;
+ 
+ 	ret = mipi_dsi_create_packet(&packet, msg);
+ 	if (ret) {
+@@ -483,24 +580,32 @@ static ssize_t dw_mipi_dsi_host_transfer(struct mipi_dsi_host *host,
+ 	if (dsi->slave)
+ 		dw_mipi_message_config(dsi->slave, msg);
+ 
+-	ret = dw_mipi_dsi_write(dsi, &packet);
+-	if (ret)
+-		return ret;
+-	if (dsi->slave) {
+-		ret = dw_mipi_dsi_write(dsi->slave, &packet);
++	while (retry--) {
++		ret = dw_mipi_dsi_write(dsi, &packet);
+ 		if (ret)
+-			return ret;
+-	}
++			continue;
+ 
+-	if (msg->rx_buf && msg->rx_len) {
+-		ret = dw_mipi_dsi_read(dsi, msg);
+-		if (ret)
+-			return ret;
+-		nb_bytes = msg->rx_len;
+-	} else {
+-		nb_bytes = packet.size;
++		if (dsi->slave) {
++			ret = dw_mipi_dsi_write(dsi->slave, &packet);
++			if (ret)
++				continue;
++		}
++
++		if (msg->rx_buf && msg->rx_len) {
++			ret = dw_mipi_dsi_read(dsi, msg);
++			if (ret)
++				continue;
++			nb_bytes = msg->rx_len;
++			break;
++		} else {
++			nb_bytes = packet.size;
++			break;
++		}
+ 	}
+ 
++	if (ret)
++		return ret;
++
+ 	return nb_bytes;
+ }
+ 
+@@ -541,16 +646,22 @@ static void dw_mipi_dsi_video_mode_config(struct dw_mipi_dsi *dsi)
+ static void dw_mipi_dsi_set_mode(struct dw_mipi_dsi *dsi,
+ 				 unsigned long mode_flags)
+ {
++	u32 val;
++
+ 	dsi_write(dsi, DSI_PWR_UP, RESET);
+ 
+ 	if (mode_flags & MIPI_DSI_MODE_VIDEO) {
+ 		dsi_write(dsi, DSI_MODE_CFG, ENABLE_VIDEO_MODE);
+ 		dw_mipi_dsi_video_mode_config(dsi);
+-		dsi_write(dsi, DSI_LPCLK_CTRL, PHY_TXREQUESTCLKHS);
+ 	} else {
+ 		dsi_write(dsi, DSI_MODE_CFG, ENABLE_CMD_MODE);
+ 	}
+ 
++	val = PHY_TXREQUESTCLKHS;
++	if (dsi->mode_flags & MIPI_DSI_CLOCK_NON_CONTINUOUS)
++		val |= AUTO_CLKLANE_CTRL;
++	dsi_write(dsi, DSI_LPCLK_CTRL, val);
++
+ 	dsi_write(dsi, DSI_PWR_UP, POWERUP);
+ }
+ 
+@@ -611,14 +722,6 @@ static void dw_mipi_dsi_dpi_config(struct dw_mipi_dsi *dsi,
+ 	dsi_write(dsi, DSI_DPI_VCID, DPI_VCID(dsi->channel));
+ 	dsi_write(dsi, DSI_DPI_COLOR_CODING, color);
+ 	dsi_write(dsi, DSI_DPI_CFG_POL, val);
+-	/*
+-	 * TODO dw drv improvements
+-	 * largest packet sizes during hfp or during vsa/vpb/vfp
+-	 * should be computed according to byte lane, lane number and only
+-	 * if sending lp cmds in high speed is enable (PHY_TXREQUESTCLKHS)
+-	 */
+-	dsi_write(dsi, DSI_DPI_LP_CMD_TIM, OUTVACT_LPCMD_TIME(4)
+-		  | INVACT_LPCMD_TIME(4));
+ }
+ 
+ static void dw_mipi_dsi_packet_handler_config(struct dw_mipi_dsi *dsi)
+@@ -814,7 +917,8 @@ static void dw_mipi_dsi_bridge_post_disable(struct drm_bridge *bridge)
+ 	 * This needs to be fixed in the drm_bridge framework and the API
+ 	 * needs to be updated to manage our own call chains...
+ 	 */
+-	dsi->panel_bridge->funcs->post_disable(dsi->panel_bridge);
++	if (dsi->panel_bridge->funcs->post_disable)
++		dsi->panel_bridge->funcs->post_disable(dsi->panel_bridge);
+ 
+ 	if (dsi->slave) {
+ 		dw_mipi_dsi_disable(dsi->slave);
+diff --git a/drivers/gpu/drm/drm_modes.c b/drivers/gpu/drm/drm_modes.c
+index 3fd35e6b9..80de2fb7e 100644
+--- a/drivers/gpu/drm/drm_modes.c
++++ b/drivers/gpu/drm/drm_modes.c
+@@ -127,7 +127,7 @@ EXPORT_SYMBOL(drm_mode_probed_add);
+  * according to the hdisplay, vdisplay, vrefresh.
+  * It is based from the VESA(TM) Coordinated Video Timing Generator by
+  * Graham Loveridge April 9, 2003 available at
+- * http://www.elo.utfsm.cl/~elo212/docs/CVTd6r1.xls 
++ * http://www.elo.utfsm.cl/~elo212/docs/CVTd6r1.xls
+  *
+  * And it is copied from xf86CVTmode in xserver/hw/xfree86/modes/xf86cvt.c.
+  * What I have done is to translate it by using integer calculation.
+@@ -614,6 +614,15 @@ void drm_display_mode_from_videomode(const struct videomode *vm,
+ 		dmode->flags |= DRM_MODE_FLAG_DBLSCAN;
+ 	if (vm->flags & DISPLAY_FLAGS_DOUBLECLK)
+ 		dmode->flags |= DRM_MODE_FLAG_DBLCLK;
++	if (vm->flags & DISPLAY_FLAGS_PIXDATA_POSEDGE)
++		dmode->flags |= DRM_MODE_FLAG_PPIXDATA;
++	else if (vm->flags & DISPLAY_FLAGS_PIXDATA_NEGEDGE)
++		dmode->flags |= DRM_MODE_FLAG_NPIXDATA;
++	if (vm->flags & DISPLAY_FLAGS_DE_HIGH)
++		dmode->flags |= DRM_MODE_FLAG_PDE;
++	else if (vm->flags & DISPLAY_FLAGS_DE_LOW)
++		dmode->flags |= DRM_MODE_FLAG_NDE;
++
+ 	drm_mode_set_name(dmode);
+ }
+ EXPORT_SYMBOL_GPL(drm_display_mode_from_videomode);
+@@ -655,6 +664,14 @@ void drm_display_mode_to_videomode(const struct drm_display_mode *dmode,
+ 		vm->flags |= DISPLAY_FLAGS_DOUBLESCAN;
+ 	if (dmode->flags & DRM_MODE_FLAG_DBLCLK)
+ 		vm->flags |= DISPLAY_FLAGS_DOUBLECLK;
++	if (dmode->flags & DRM_MODE_FLAG_PPIXDATA)
++		vm->flags |= DISPLAY_FLAGS_PIXDATA_POSEDGE;
++	else if (dmode->flags & DRM_MODE_FLAG_NPIXDATA)
++		vm->flags |= DISPLAY_FLAGS_PIXDATA_NEGEDGE;
++	if (dmode->flags & DRM_MODE_FLAG_PDE)
++		vm->flags |= DISPLAY_FLAGS_DE_HIGH;
++	else if (dmode->flags & DRM_MODE_FLAG_NDE)
++		vm->flags |= DISPLAY_FLAGS_DE_LOW;
+ }
+ EXPORT_SYMBOL_GPL(drm_display_mode_to_videomode);
+ 
+diff --git a/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c b/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c
+index c7b48df88..2fdf9d183 100644
+--- a/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c
++++ b/drivers/gpu/drm/panel/panel-orisetech-otm8009a.c
+@@ -101,20 +101,6 @@ static void otm8009a_dcs_write_buf(struct otm8009a *ctx, const void *data,
+ 		DRM_WARN("mipi dsi dcs write buffer failed\n");
+ }
+ 
+-static void otm8009a_dcs_write_buf_hs(struct otm8009a *ctx, const void *data,
+-				      size_t len)
+-{
+-	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
+-
+-	/* data will be sent in dsi hs mode (ie. no lpm) */
+-	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+-
+-	otm8009a_dcs_write_buf(ctx, data, len);
+-
+-	/* restore back the dsi lpm mode */
+-	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+-}
+-
+ #define dcs_write_seq(ctx, seq...)			\
+ ({							\
+ 	static const u8 d[] = { seq };			\
+@@ -401,7 +387,7 @@ static int otm8009a_backlight_update_status(struct backlight_device *bd)
+ 		 */
+ 		data[0] = MIPI_DCS_SET_DISPLAY_BRIGHTNESS;
+ 		data[1] = bd->props.brightness;
+-		otm8009a_dcs_write_buf_hs(ctx, data, ARRAY_SIZE(data));
++		otm8009a_dcs_write_buf(ctx, data, ARRAY_SIZE(data));
+ 
+ 		/* set Brightness Control & Backlight on */
+ 		data[1] = 0x24;
+@@ -413,7 +399,7 @@ static int otm8009a_backlight_update_status(struct backlight_device *bd)
+ 
+ 	/* Update Brightness Control & Backlight */
+ 	data[0] = MIPI_DCS_WRITE_CONTROL_DISPLAY;
+-	otm8009a_dcs_write_buf_hs(ctx, data, ARRAY_SIZE(data));
++	otm8009a_dcs_write_buf(ctx, data, ARRAY_SIZE(data));
+ 
+ 	return 0;
+ }
+@@ -453,7 +439,7 @@ static int otm8009a_probe(struct mipi_dsi_device *dsi)
+ 	dsi->lanes = 2;
+ 	dsi->format = MIPI_DSI_FMT_RGB888;
+ 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
+-			  MIPI_DSI_MODE_LPM;
++			  MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS;
+ 
+ 	drm_panel_init(&ctx->panel);
+ 	ctx->panel.dev = dev;
+diff --git a/drivers/gpu/drm/panel/panel-raydium-rm68200.c b/drivers/gpu/drm/panel/panel-raydium-rm68200.c
+index ba889625a..b20e26666 100644
+--- a/drivers/gpu/drm/panel/panel-raydium-rm68200.c
++++ b/drivers/gpu/drm/panel/panel-raydium-rm68200.c
+@@ -84,15 +84,15 @@ struct rm68200 {
+ };
+ 
+ static const struct drm_display_mode default_mode = {
+-	.clock = 52582,
++	.clock = 54000,
+ 	.hdisplay = 720,
+-	.hsync_start = 720 + 38,
+-	.hsync_end = 720 + 38 + 8,
+-	.htotal = 720 + 38 + 8 + 38,
++	.hsync_start = 720 + 48,
++	.hsync_end = 720 + 48 + 9,
++	.htotal = 720 + 48 + 9 + 48,
+ 	.vdisplay = 1280,
+ 	.vsync_start = 1280 + 12,
+-	.vsync_end = 1280 + 12 + 4,
+-	.vtotal = 1280 + 12 + 4 + 12,
++	.vsync_end = 1280 + 12 + 5,
++	.vtotal = 1280 + 12 + 5 + 12,
+ 	.vrefresh = 50,
+ 	.flags = 0,
+ 	.width_mm = 68,
+@@ -402,7 +402,7 @@ static int rm68200_probe(struct mipi_dsi_device *dsi)
+ 	dsi->lanes = 2;
+ 	dsi->format = MIPI_DSI_FMT_RGB888;
+ 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
+-			  MIPI_DSI_MODE_LPM;
++			  MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS;
+ 
+ 	drm_panel_init(&ctx->panel);
+ 	ctx->panel.dev = dev;
+diff --git a/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c b/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c
+index a03a642c1..d1689758f 100644
+--- a/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c
++++ b/drivers/gpu/drm/stm/dw_mipi_dsi-stm.c
+@@ -260,8 +260,11 @@ dw_mipi_dsi_get_lane_mbps(void *priv_data, const struct drm_display_mode *mode,
+ 	/* Compute requested pll out */
+ 	bpp = mipi_dsi_pixel_format_to_bpp(format);
+ 	pll_out_khz = mode->clock * bpp / lanes;
++
+ 	/* Add 20% to pll out to be higher than pixel bw (burst mode only) */
+-	pll_out_khz = (pll_out_khz * 12) / 10;
++	if (mode_flags & MIPI_DSI_MODE_VIDEO_BURST)
++		pll_out_khz = (pll_out_khz * 12) / 10;
++
+ 	if (pll_out_khz > dsi->lane_max_kbps) {
+ 		pll_out_khz = dsi->lane_max_kbps;
+ 		DRM_WARN("Warning max phy mbps is used\n");
+@@ -361,7 +364,9 @@ static int dw_mipi_dsi_stm_probe(struct platform_device *pdev)
+ 	dsi->pllref_clk = devm_clk_get(dev, "ref");
+ 	if (IS_ERR(dsi->pllref_clk)) {
+ 		ret = PTR_ERR(dsi->pllref_clk);
+-		DRM_ERROR("Unable to get pll reference clock: %d\n", ret);
++		if (ret != -EPROBE_DEFER)
++			DRM_ERROR("Unable to get pll reference clock: %d\n",
++				  ret);
+ 		goto err_clk_get;
+ 	}
+ 
+diff --git a/drivers/gpu/drm/stm/ltdc.c b/drivers/gpu/drm/stm/ltdc.c
+index 3ab4fbf8e..1f7836be2 100644
+--- a/drivers/gpu/drm/stm/ltdc.c
++++ b/drivers/gpu/drm/stm/ltdc.c
+@@ -15,6 +15,7 @@
+ #include <linux/module.h>
+ #include <linux/of_address.h>
+ #include <linux/of_graph.h>
++#include <linux/pinctrl/consumer.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/reset.h>
+@@ -39,10 +40,6 @@
+ #define NB_CRTC 1
+ #define CRTC_MASK GENMASK(NB_CRTC - 1, 0)
+ 
+-#define MAX_IRQ 4
+-
+-#define MAX_ENDPOINTS 2
+-
+ #define HWVER_10200 0x010200
+ #define HWVER_10300 0x010300
+ #define HWVER_20101 0x020101
+@@ -436,9 +433,6 @@ static void ltdc_crtc_atomic_enable(struct drm_crtc *crtc,
+ 	/* Commit shadow registers = update planes at next vblank */
+ 	reg_set(ldev->regs, LTDC_SRCR, SRCR_VBR);
+ 
+-	/* Enable LTDC */
+-	reg_set(ldev->regs, LTDC_GCR, GCR_LTDCEN);
+-
+ 	drm_crtc_vblank_on(crtc);
+ }
+ 
+@@ -452,9 +446,6 @@ static void ltdc_crtc_atomic_disable(struct drm_crtc *crtc,
+ 
+ 	drm_crtc_vblank_off(crtc);
+ 
+-	/* disable LTDC */
+-	reg_clear(ldev->regs, LTDC_GCR, GCR_LTDCEN);
+-
+ 	/* disable IRQ */
+ 	reg_clear(ldev->regs, LTDC_IER, IER_RRIE | IER_FUIE | IER_TERRIE);
+ 
+@@ -653,9 +644,14 @@ static const struct drm_crtc_helper_funcs ltdc_crtc_helper_funcs = {
+ static int ltdc_crtc_enable_vblank(struct drm_crtc *crtc)
+ {
+ 	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
++	struct drm_crtc_state *state = crtc->state;
+ 
+ 	DRM_DEBUG_DRIVER("\n");
+-	reg_set(ldev->regs, LTDC_IER, IER_LIE);
++
++	if (state->enable)
++		reg_set(ldev->regs, LTDC_IER, IER_LIE);
++	else
++		return -EPERM;
+ 
+ 	return 0;
+ }
+@@ -735,22 +731,44 @@ static int ltdc_plane_atomic_check(struct drm_plane *plane,
+ 				   struct drm_plane_state *state)
+ {
+ 	struct drm_framebuffer *fb = state->fb;
+-	u32 src_w, src_h;
++	struct drm_crtc_state *crtc_state;
++	struct drm_rect *src = &state->src;
++	struct drm_rect *dst = &state->dst;
+ 
+ 	DRM_DEBUG_DRIVER("\n");
+ 
+ 	if (!fb)
+ 		return 0;
+ 
+-	/* convert src_ from 16:16 format */
+-	src_w = state->src_w >> 16;
+-	src_h = state->src_h >> 16;
++	/* convert src from 16:16 format */
++	src->x1 = state->src_x >> 16;
++	src->y1 = state->src_y >> 16;
++	src->x2 = (state->src_w >> 16) + src->x1 - 1;
++	src->y2 = (state->src_h >> 16) + src->y1 - 1;
+ 
+-	/* Reject scaling */
+-	if (src_w != state->crtc_w || src_h != state->crtc_h) {
+-		DRM_ERROR("Scaling is not supported");
++	dst->x1 = state->crtc_x;
++	dst->y1 = state->crtc_y;
++	dst->x2 = state->crtc_w + dst->x1 - 1;
++	dst->y2 = state->crtc_h + dst->y1 - 1;
++
++	DRM_DEBUG_DRIVER("plane:%d fb:%d (%dx%d)@(%d,%d) -> (%dx%d)@(%d,%d)\n",
++			 plane->base.id, fb->base.id,
++			 src->x2 - src->x1 + 1, src->y2 - src->y1 + 1,
++			 src->x1, src->y1,
++			 dst->x2 - dst->x1 + 1, dst->y2 - dst->y1 + 1,
++			 dst->x1, dst->y1);
++
++	crtc_state = drm_atomic_get_existing_crtc_state(state->state,
++							state->crtc);
++	/* destination coordinates do not have to exceed display sizes */
++	if (crtc_state && (crtc_state->mode.hdisplay <= dst->x2 ||
++			   crtc_state->mode.vdisplay <= dst->y2))
++		return -EINVAL;
++
++	/* source sizes do not have to exceed destination sizes */
++	if (dst->x2 - dst->x1 < src->x2 - src->x1 ||
++	    dst->y2 - dst->y1 < src->y2 - src->y1)
+ 		return -EINVAL;
+-	}
+ 
+ 	return 0;
+ }
+@@ -760,44 +778,36 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
+ {
+ 	struct ltdc_device *ldev = plane_to_ltdc(plane);
+ 	struct drm_plane_state *state = plane->state;
++	struct drm_rect *src = &state->src;
++	struct drm_rect *dst = &state->dst;
+ 	struct drm_framebuffer *fb = state->fb;
+ 	u32 lofs = plane->index * LAY_OFS;
+-	u32 x0 = state->crtc_x;
+-	u32 x1 = state->crtc_x + state->crtc_w - 1;
+-	u32 y0 = state->crtc_y;
+-	u32 y1 = state->crtc_y + state->crtc_h - 1;
+-	u32 src_x, src_y, src_w, src_h;
+ 	u32 val, pitch_in_bytes, line_length, paddr, ahbp, avbp, bpcr;
+ 	enum ltdc_pix_fmt pf;
++	struct drm_rect dr;
+ 
+ 	if (!state->crtc || !fb) {
+ 		DRM_DEBUG_DRIVER("fb or crtc NULL");
+ 		return;
+ 	}
+ 
+-	/* convert src_ from 16:16 format */
+-	src_x = state->src_x >> 16;
+-	src_y = state->src_y >> 16;
+-	src_w = state->src_w >> 16;
+-	src_h = state->src_h >> 16;
+-
+-	DRM_DEBUG_DRIVER("plane:%d fb:%d (%dx%d)@(%d,%d) -> (%dx%d)@(%d,%d)\n",
+-			 plane->base.id, fb->base.id,
+-			 src_w, src_h, src_x, src_y,
+-			 state->crtc_w, state->crtc_h,
+-			 state->crtc_x, state->crtc_y);
++	/* compute final coordinates of frame buffer */
++	dr.x1 = src->x1 + dst->x1;
++	dr.y1 = src->y1 + dst->y1;
++	dr.x2 = src->x2 + dst->x1;
++	dr.y2 = src->y2 + dst->y1;
+ 
+ 	bpcr = reg_read(ldev->regs, LTDC_BPCR);
+ 	ahbp = (bpcr & BPCR_AHBP) >> 16;
+ 	avbp = bpcr & BPCR_AVBP;
+ 
+ 	/* Configures the horizontal start and stop position */
+-	val = ((x1 + 1 + ahbp) << 16) + (x0 + 1 + ahbp);
++	val = ((dr.x2 + 1 + ahbp) << 16) + (dr.x1 + 1 + ahbp);
+ 	reg_update_bits(ldev->regs, LTDC_L1WHPCR + lofs,
+ 			LXWHPCR_WHSTPOS | LXWHPCR_WHSPPOS, val);
+ 
+ 	/* Configures the vertical start and stop position */
+-	val = ((y1 + 1 + avbp) << 16) + (y0 + 1 + avbp);
++	val = ((dr.y2 + 1 + avbp) << 16) + (dr.y1 + 1 + avbp);
+ 	reg_update_bits(ldev->regs, LTDC_L1WVPCR + lofs,
+ 			LXWVPCR_WVSTPOS | LXWVPCR_WVSPPOS, val);
+ 
+@@ -816,8 +826,8 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
+ 
+ 	/* Configures the color frame buffer pitch in bytes & line length */
+ 	pitch_in_bytes = fb->pitches[0];
+-	line_length = fb->format->cpp[0] *
+-		      (x1 - x0 + 1) + (ldev->caps.bus_width >> 3) - 1;
++	line_length = fb->format->cpp[0] * (dr.x2 - dr.x1 + 1) +
++		      (ldev->caps.bus_width >> 3) - 1;
+ 	val = ((pitch_in_bytes << 16) | line_length);
+ 	reg_update_bits(ldev->regs, LTDC_L1CFBLR + lofs,
+ 			LXCFBLR_CFBLL | LXCFBLR_CFBP, val);
+@@ -840,7 +850,7 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
+ 			LXBFCR_BF2 | LXBFCR_BF1, val);
+ 
+ 	/* Configures the frame buffer line number */
+-	val = y1 - y0 + 1;
++	val = dr.y2 - dr.y1 + 1;
+ 	reg_update_bits(ldev->regs, LTDC_L1CFBLNR + lofs, LXCFBLNR_CFBLN, val);
+ 
+ 	/* Sets the FB address */
+@@ -1040,6 +1050,54 @@ static const struct drm_encoder_funcs ltdc_encoder_funcs = {
+ 	.destroy = drm_encoder_cleanup,
+ };
+ 
++static void ltdc_encoder_disable(struct drm_encoder *encoder)
++{
++	struct drm_device *ddev = encoder->dev;
++	struct ltdc_device *ldev = ddev->dev_private;
++
++	DRM_DEBUG_DRIVER("\n");
++
++	/* Disable LTDC */
++	reg_clear(ldev->regs, LTDC_GCR, GCR_LTDCEN);
++
++	/* Set to sleep state the pinctrl whatever type of encoder */
++	pinctrl_pm_select_sleep_state(ddev->dev);
++}
++
++static void ltdc_encoder_enable(struct drm_encoder *encoder)
++{
++	struct drm_device *ddev = encoder->dev;
++	struct ltdc_device *ldev = ddev->dev_private;
++
++	DRM_DEBUG_DRIVER("\n");
++
++	/* Enable LTDC */
++	reg_set(ldev->regs, LTDC_GCR, GCR_LTDCEN);
++}
++
++static void ltdc_encoder_mode_set(struct drm_encoder *encoder,
++				  struct drm_display_mode *mode,
++				  struct drm_display_mode *adjusted_mode)
++{
++	struct drm_device *ddev = encoder->dev;
++
++	DRM_DEBUG_DRIVER("\n");
++
++	/*
++	 * Set to default state the pinctrl only with DPI type.
++	 * Others types like DSI, don't need pinctrl due to
++	 * internal bridge (the signals do not come out of the chipset).
++	 */
++	if (encoder->encoder_type == DRM_MODE_ENCODER_DPI)
++		pinctrl_pm_select_default_state(ddev->dev);
++}
++
++static const struct drm_encoder_helper_funcs ltdc_encoder_helper_funcs = {
++	.disable = ltdc_encoder_disable,
++	.enable = ltdc_encoder_enable,
++	.mode_set = ltdc_encoder_mode_set,
++};
++
+ static int ltdc_encoder_init(struct drm_device *ddev, struct drm_bridge *bridge)
+ {
+ 	struct drm_encoder *encoder;
+@@ -1055,6 +1113,8 @@ static int ltdc_encoder_init(struct drm_device *ddev, struct drm_bridge *bridge)
+ 	drm_encoder_init(ddev, encoder, &ltdc_encoder_funcs,
+ 			 DRM_MODE_ENCODER_DPI, NULL);
+ 
++	drm_encoder_helper_add(encoder, &ltdc_encoder_helper_funcs);
++
+ 	ret = drm_bridge_attach(encoder, bridge, NULL);
+ 	if (ret) {
+ 		drm_encoder_cleanup(encoder);
+@@ -1101,12 +1161,14 @@ static int ltdc_get_caps(struct drm_device *ddev)
+ 		ldev->caps.pad_max_freq_hz = 90000000;
+ 		if (ldev->caps.hw_version == HWVER_10200)
+ 			ldev->caps.pad_max_freq_hz = 65000000;
++		ldev->caps.nb_irq = 2;
+ 		break;
+ 	case HWVER_20101:
+ 		ldev->caps.reg_ofs = REG_OFS_4;
+ 		ldev->caps.pix_fmt_hw = ltdc_pix_fmt_a1;
+ 		ldev->caps.non_alpha_only_l1 = false;
+ 		ldev->caps.pad_max_freq_hz = 150000000;
++		ldev->caps.nb_irq = 4;
+ 		break;
+ 	default:
+ 		return -ENODEV;
+@@ -1145,36 +1207,20 @@ int ltdc_load(struct drm_device *ddev)
+ 	struct ltdc_device *ldev = ddev->dev_private;
+ 	struct device *dev = ddev->dev;
+ 	struct device_node *np = dev->of_node;
+-	struct drm_bridge *bridge[MAX_ENDPOINTS] = {NULL};
+-	struct drm_panel *panel[MAX_ENDPOINTS] = {NULL};
++	struct drm_bridge *bridge;
++	struct drm_panel *panel;
+ 	struct drm_crtc *crtc;
+ 	struct reset_control *rstc;
+ 	struct resource *res;
+-	int irq, ret, i, endpoint_not_ready = -ENODEV;
++	int irq, i, nb_endpoints;
++	int ret = -ENODEV;
+ 
+ 	DRM_DEBUG_DRIVER("\n");
+ 
+-	/* Get endpoints if any */
+-	for (i = 0; i < MAX_ENDPOINTS; i++) {
+-		ret = drm_of_find_panel_or_bridge(np, 0, i, &panel[i],
+-						  &bridge[i]);
+-
+-		/*
+-		 * If at least one endpoint is -EPROBE_DEFER, defer probing,
+-		 * else if at least one endpoint is ready, continue probing.
+-		 */
+-		if (ret == -EPROBE_DEFER)
+-			return ret;
+-		else if (!ret)
+-			endpoint_not_ready = 0;
+-	}
+-
+-	if (endpoint_not_ready)
+-		return endpoint_not_ready;
+-
+-	rstc = devm_reset_control_get_exclusive(dev, NULL);
+-
+-	mutex_init(&ldev->err_lock);
++	/* Get number of endpoints */
++	nb_endpoints = of_graph_get_endpoint_count(np);
++	if (!nb_endpoints)
++		return -ENODEV;
+ 
+ 	ldev->pixel_clk = devm_clk_get(dev, "lcd");
+ 	if (IS_ERR(ldev->pixel_clk)) {
+@@ -1188,6 +1234,43 @@ int ltdc_load(struct drm_device *ddev)
+ 		return -ENODEV;
+ 	}
+ 
++	/* Get endpoints if any */
++	for (i = 0; i < nb_endpoints; i++) {
++		ret = drm_of_find_panel_or_bridge(np, 0, i, &panel, &bridge);
++
++		/*
++		 * If at least one endpoint is -ENODEV, continue probing,
++		 * else if at least one endpoint returned an error
++		 * (ie -EPROBE_DEFER) then stop probing.
++		 */
++		if (ret == -ENODEV)
++			continue;
++		else if (ret)
++			goto err;
++
++		if (panel) {
++			bridge = drm_panel_bridge_add(panel,
++						      DRM_MODE_CONNECTOR_DPI);
++			if (IS_ERR(bridge)) {
++				DRM_ERROR("panel-bridge endpoint %d\n", i);
++				ret = PTR_ERR(bridge);
++				goto err;
++			}
++		}
++
++		if (bridge) {
++			ret = ltdc_encoder_init(ddev, bridge);
++			if (ret) {
++				DRM_ERROR("init encoder endpoint %d\n", i);
++				goto err;
++			}
++		}
++	}
++
++	rstc = devm_reset_control_get_exclusive(dev, NULL);
++
++	mutex_init(&ldev->err_lock);
++
+ 	if (!IS_ERR(rstc)) {
+ 		reset_control_assert(rstc);
+ 		usleep_range(10, 20);
+@@ -1206,24 +1289,6 @@ int ltdc_load(struct drm_device *ddev)
+ 	reg_clear(ldev->regs, LTDC_IER,
+ 		  IER_LIE | IER_RRIE | IER_FUIE | IER_TERRIE);
+ 
+-	for (i = 0; i < MAX_IRQ; i++) {
+-		irq = platform_get_irq(pdev, i);
+-		if (irq == -EPROBE_DEFER)
+-			goto err;
+-
+-		if (irq < 0)
+-			continue;
+-
+-		ret = devm_request_threaded_irq(dev, irq, ltdc_irq,
+-						ltdc_irq_thread, IRQF_ONESHOT,
+-						dev_name(dev), ddev);
+-		if (ret) {
+-			DRM_ERROR("Failed to register LTDC interrupt\n");
+-			goto err;
+-		}
+-	}
+-
+-
+ 	ret = ltdc_get_caps(ddev);
+ 	if (ret) {
+ 		DRM_ERROR("hardware identifier (0x%08x) not supported!\n",
+@@ -1233,25 +1298,21 @@ int ltdc_load(struct drm_device *ddev)
+ 
+ 	DRM_DEBUG_DRIVER("ltdc hw version 0x%08x\n", ldev->caps.hw_version);
+ 
+-	/* Add endpoints panels or bridges if any */
+-	for (i = 0; i < MAX_ENDPOINTS; i++) {
+-		if (panel[i]) {
+-			bridge[i] = drm_panel_bridge_add(panel[i],
+-							DRM_MODE_CONNECTOR_DPI);
+-			if (IS_ERR(bridge[i])) {
+-				DRM_ERROR("panel-bridge endpoint %d\n", i);
+-				ret = PTR_ERR(bridge[i]);
+-				goto err;
+-			}
++	for (i = 0; i < ldev->caps.nb_irq; i++) {
++		irq = platform_get_irq(pdev, i);
++		if (irq < 0) {
++			ret = irq;
++			goto err;
+ 		}
+ 
+-		if (bridge[i]) {
+-			ret = ltdc_encoder_init(ddev, bridge[i]);
+-			if (ret) {
+-				DRM_ERROR("init encoder endpoint %d\n", i);
+-				goto err;
+-			}
++		ret = devm_request_threaded_irq(dev, irq, ltdc_irq,
++						ltdc_irq_thread, IRQF_ONESHOT,
++						dev_name(dev), ddev);
++		if (ret) {
++			DRM_ERROR("Failed to register LTDC interrupt\n");
++			goto err;
+ 		}
++
+ 	}
+ 
+ 	crtc = devm_kzalloc(dev, sizeof(*crtc), GFP_KERNEL);
+@@ -1280,12 +1341,14 @@ int ltdc_load(struct drm_device *ddev)
+ 
+ 	clk_disable_unprepare(ldev->pixel_clk);
+ 
++	pinctrl_pm_select_sleep_state(ddev->dev);
++
+ 	pm_runtime_enable(ddev->dev);
+ 
+ 	return 0;
+ err:
+-	for (i = 0; i < MAX_ENDPOINTS; i++)
+-		drm_panel_bridge_remove(bridge[i]);
++	for (i = 0; i < nb_endpoints; i++)
++		drm_of_panel_bridge_remove(ddev->dev->of_node, 0, i);
+ 
+ 	clk_disable_unprepare(ldev->pixel_clk);
+ 
+@@ -1294,11 +1357,14 @@ int ltdc_load(struct drm_device *ddev)
+ 
+ void ltdc_unload(struct drm_device *ddev)
+ {
+-	int i;
++	struct device *dev = ddev->dev;
++	int nb_endpoints, i;
+ 
+ 	DRM_DEBUG_DRIVER("\n");
+ 
+-	for (i = 0; i < MAX_ENDPOINTS; i++)
++	nb_endpoints = of_graph_get_endpoint_count(dev->of_node);
++
++	for (i = 0; i < nb_endpoints; i++)
+ 		drm_of_panel_bridge_remove(ddev->dev->of_node, 0, i);
+ 
+ 	pm_runtime_disable(ddev->dev);
+diff --git a/drivers/gpu/drm/stm/ltdc.h b/drivers/gpu/drm/stm/ltdc.h
+index a1ad0ae3b..310e87f06 100644
+--- a/drivers/gpu/drm/stm/ltdc.h
++++ b/drivers/gpu/drm/stm/ltdc.h
+@@ -19,6 +19,7 @@ struct ltdc_caps {
+ 	const u32 *pix_fmt_hw;	/* supported pixel formats */
+ 	bool non_alpha_only_l1; /* non-native no-alpha formats on layer 1 */
+ 	int pad_max_freq_hz;	/* max frequency supported by pad */
++	int nb_irq;		/* number of hardware interrupts */
+ };
+ 
+ #define LTDC_MAX_LAYER	4
+diff --git a/drivers/input/touchscreen/edt-ft5x06.c b/drivers/input/touchscreen/edt-ft5x06.c
+index 240e8de24..66f790de8 100644
+--- a/drivers/input/touchscreen/edt-ft5x06.c
++++ b/drivers/input/touchscreen/edt-ft5x06.c
+@@ -28,6 +28,8 @@
+ #include <linux/input/mt.h>
+ #include <linux/input/touchscreen.h>
+ #include <asm/unaligned.h>
++#include <linux/of_device.h>
++#include <drm/drm_mipi_dsi.h>
+ 
+ #define WORK_REGISTER_THRESHOLD		0x00
+ #define WORK_REGISTER_REPORT_RATE	0x08
+@@ -1042,6 +1044,8 @@ static int edt_ft5x06_ts_probe(struct i2c_client *client,
+ 	const struct edt_i2c_chip_data *chip_data;
+ 	struct edt_ft5x06_ts_data *tsdata;
+ 	u8 buf[2] = { 0xfc, 0x00 };
++	struct mipi_dsi_device *panel;
++	struct device_node *np;
+ 	struct input_dev *input;
+ 	unsigned long irq_flags;
+ 	int error;
+@@ -1107,7 +1111,7 @@ static int edt_ft5x06_ts_probe(struct i2c_client *client,
+ 
+ 	error = edt_ft5x06_ts_identify(client, tsdata, fw_version);
+ 	if (error) {
+-		dev_err(&client->dev, "touchscreen probe failed\n");
++		dev_dbg(&client->dev, "touchscreen probe failed\n");
+ 		return error;
+ 	}
+ 
+@@ -1176,6 +1180,18 @@ static int edt_ft5x06_ts_probe(struct i2c_client *client,
+ 	if (error)
+ 		return error;
+ 
++	np = of_parse_phandle(client->dev.of_node, "panel", 0);
++	if (np) {
++		panel = of_find_mipi_dsi_device_by_node(np);
++		of_node_put(np);
++		if (!panel)
++			return -EPROBE_DEFER;
++
++		device_link_add(&client->dev, &panel->dev, DL_FLAG_STATELESS |
++				DL_FLAG_AUTOREMOVE_SUPPLIER);
++		put_device(&panel->dev);
++	}
++
+ 	edt_ft5x06_ts_prepare_debugfs(tsdata, dev_driver_string(&client->dev));
+ 	device_init_wakeup(&client->dev, 1);
+ 
+diff --git a/drivers/input/touchscreen/goodix.c b/drivers/input/touchscreen/goodix.c
+index 0403102e8..8816f2cd4 100644
+--- a/drivers/input/touchscreen/goodix.c
++++ b/drivers/input/touchscreen/goodix.c
+@@ -21,6 +21,7 @@
+ #include <linux/input/touchscreen.h>
+ #include <linux/module.h>
+ #include <linux/delay.h>
++#include <drm/drm_mipi_dsi.h>
+ #include <linux/irq.h>
+ #include <linux/interrupt.h>
+ #include <linux/regulator/consumer.h>
+@@ -844,6 +845,8 @@ static int goodix_ts_probe(struct i2c_client *client,
+ 			   const struct i2c_device_id *id)
+ {
+ 	struct goodix_ts_data *ts;
++	struct mipi_dsi_device *panel;
++	struct device_node *np;
+ 	int error;
+ 
+ 	dev_dbg(&client->dev, "I2C Address: 0x%02x\n", client->addr);
+@@ -936,6 +939,17 @@ static int goodix_ts_probe(struct i2c_client *client,
+ 			return error;
+ 	}
+ 
++	np = of_parse_phandle(client->dev.of_node, "panel", 0);
++	if (np) {
++		panel = of_find_mipi_dsi_device_by_node(np);
++		of_node_put(np);
++		if (!panel)
++			return -EPROBE_DEFER;
++		device_link_add(&client->dev, &panel->dev, DL_FLAG_STATELESS |
++				DL_FLAG_AUTOREMOVE_SUPPLIER);
++		put_device(&panel->dev);
++	}
++
+ 	return 0;
+ }
+ 
+@@ -990,6 +1004,7 @@ static int __maybe_unused goodix_suspend(struct device *dev)
+ 	 * sooner, delay 58ms here.
+ 	 */
+ 	msleep(58);
++
+ 	return 0;
+ }
+ 
+@@ -1054,6 +1069,7 @@ static const struct of_device_id goodix_of_match[] = {
+ 	{ .compatible = "goodix,gt9271" },
+ 	{ .compatible = "goodix,gt928" },
+ 	{ .compatible = "goodix,gt967" },
++	{ .compatible = "goodix,gt9147",},
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(of, goodix_of_match);
+diff --git a/include/uapi/drm/drm_mode.h b/include/uapi/drm/drm_mode.h
+index 735c8cfda..28a9ea94e 100644
+--- a/include/uapi/drm/drm_mode.h
++++ b/include/uapi/drm/drm_mode.h
+@@ -97,6 +97,12 @@ extern "C" {
+ #define  DRM_MODE_FLAG_3D_TOP_AND_BOTTOM	(7<<14)
+ #define  DRM_MODE_FLAG_3D_SIDE_BY_SIDE_HALF	(8<<14)
+ 
++/* flags for polarity clock & data enable polarities */
++#define DRM_MODE_FLAG_PPIXDATA			(1 << 19)
++#define DRM_MODE_FLAG_NPIXDATA			(1 << 20)
++#define DRM_MODE_FLAG_PDE			(1 << 21)
++#define DRM_MODE_FLAG_NDE			(1 << 22)
++
+ /* Picture aspect ratio options */
+ #define DRM_MODE_PICTURE_ASPECT_NONE		0
+ #define DRM_MODE_PICTURE_ASPECT_4_3		1
+-- 
+2.17.1
+

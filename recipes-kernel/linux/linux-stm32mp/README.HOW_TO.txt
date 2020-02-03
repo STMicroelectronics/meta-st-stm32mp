@@ -12,12 +12,15 @@ Compilation of kernel:
 OpenSTLinux SDK must be installed.
 
 For kernel build, you need to install:
-- libncurses and libncursesw dev package
-    Ubuntu: sudo apt-get install libncurses5-dev libncursesw5-dev
-    Fedora: sudo yum install ncurses-devel
+- libncurses and libncursesw dev package libyaml-dev
+    Ubuntu: sudo apt-get install libncurses5-dev libncursesw5-dev libyaml-dev
+    Fedora: sudo yum install ncurses-devel libyaml-devel
 - mkimage
     Ubuntu: sudo apt-get install u-boot-tools
     Fedora: sudo yum install u-boot-tools
+- yaml (check dts)
+    Ubuntu: sudo apt-get install libyaml-dev
+    Fedora: sudo yum install libyaml-devel
 
 Only if you like to have a git management of the code (see section 4
 [Manage the kernel source code]):
@@ -26,18 +29,18 @@ Only if you like to have a git management of the code (see section 4
     Fedora: sudo yum install git
 
 If you have never configured your git configuration, run the following commands:
-    $> git config --global user.name "your_name"
-    $> git config --global user.email "your_email@example.com"
+    $ git config --global user.name "your_name"
+    $ git config --global user.email "your_email@example.com"
 
 2. Initialise cross-compilation via SDK:
 ----------------------------------------
 Source SDK environment:
-    $> source <path to SDK>/environment-setup-cortexa7t2hf-neon-vfpv4-openstlinux_weston-linux-gnueabi
+    $ source <path to SDK>/environment-setup-cortexa7t2hf-neon-vfpv4-ostl-linux-gnueabi
 
 To verify if your cross-compilation environment has been put in place correctly,
 run the following command:
-    $> set | grep CROSS
-    CROSS_COMPILE=arm-openstlinux_weston-linux-gnueabi-
+    $ set | grep CROSS
+    CROSS_COMPILE=arm-ostl-linux-gnueabi-
 
 Warning: the environment is valid only on the shell session where you have
 sourced the SDK environment.
@@ -46,18 +49,14 @@ sourced the SDK environment.
 -------------------------
 If you have the tarball and the list of patches, then you must extract the
 tarball and apply the patches.
-    $> tar xfz <kernel source>.tar.gz
-    or
-    $> tar xfj <kernel source>.tar.bz2
-    or
-    $> tar xfJ <kernel source>.tar.xz
+    $> tar xfJ linux-##PV##.tar.xz
 A new directory containing kernel standard source code will be created, go into it:
-    $> cd <directory to kernel source code>
+    $> cd linux-##PV##
 
 NB: if you like to have a git management of the code, see section 4 [Manage the
 kernel source code]
     if there is some patch, please apply it on source code
-    $> for p in `ls -1 <path to patch>/*.patch`; do patch -p1 < $p; done
+    $> for p in `ls -1 ../*.patch`; do patch -p1 < $p; done
 
 4. Manage the kernel source code:
 ---------------------------------
@@ -67,11 +66,11 @@ If you like to have a better management of change made on kernel source, you can
 use git.
 
 * With the kernel source code extracted in the section 3 [Prepare kernel source]
-    $> cd <directory to kernel source code>
-    $> test -d .git || git init . && git add . && git commit -m "new kernel" && git gc
-    $> git checkout -b WORKING
+    $ cd <directory to kernel source code>
+    $ test -d .git || git init . && git add . && git commit -m "new kernel" && git gc
+    $ git checkout -b WORKING
     Apply patches:
-    $> for p in `ls -1 <path to patch>/*.patch`; do git am $p; done
+    $ for p in `ls -1 <path to patch>/*.patch`; do git am $p; done
   NB: this is the fastest way to get your kernel source code ready for development
 
 Or
@@ -81,10 +80,10 @@ Or
     Branch: ##GIT_BRANCH##
     Revision: ##GIT_SRCREV##
 
-    $> git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
-    $> cd <kernel source>
-    $> git checkout -b WORKING ##GIT_SRCREV##
-    $> for p in `ls -1 <path to patch>/*.patch`; do git am $p; done
+    $ git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
+    $ cd <kernel source>
+    $ git checkout -b WORKING ##GIT_SRCREV##
+    $ for p in `ls -1 <path to patch>/*.patch`; do git am $p; done
   NB: this way is slightly slower than the tarball extraction but you get
       advantage of all git history.
 
@@ -94,8 +93,8 @@ If you are using git for managing your source code, kernel makefile get the SHA1
 of current git and add it to kernel version number generated.
  ex.: 4.9.23-g3e866b0 (kernel version  + SHA1 of current git commit)
 To bypass this auto-generation of kernel version number:
-    $> cd <directory to kernel source code>
-    $> echo "" > .scmversion
+    $ cd <directory to kernel source code>
+    $ echo "" > .scmversion
 This file avoid to have a kernel version with SHA1:
 - With scmversion file: 4.9.23
 - Without scmversion file: 4.9.23-g3e866b0
@@ -121,33 +120,33 @@ We highly preconized the build is a build directory method as:
 * Configure on a build directory (different of kernel source code directory)
     Here for example, build directory is located at the same level of kernel
     source code
-    $> cd <directory to kernel source code>
+    $ cd <directory to kernel source code>
     $> mkdir -p ../build
     $> make ARCH=arm O="$PWD/../build" multi_v7_defconfig fragment*.config
 
     If there are some fragments, apply them
     * manually one by one:
-    $> scripts/kconfig/merge_config.sh -m -r -O $PWD/../build $PWD/../build/.config ../fragment-01-xxx.config
-    $> scripts/kconfig/merge_config.sh -m -r -O $PWD/../build $PWD/../build/.config ../fragment-02-xxx.config
+    $ scripts/kconfig/merge_config.sh -m -r -O $PWD/../build $PWD/../build/.config ../fragment-01-xxx.config
+    $ scripts/kconfig/merge_config.sh -m -r -O $PWD/../build $PWD/../build/.config ../fragment-02-xxx.config
     ...
-    $> yes '' | make ARCH=arm oldconfig O="$PWD/../build"
+    $ yes '' | make ARCH=arm oldconfig O="$PWD/../build"
     * or, by loop:
     $> for f in `ls -1 ../fragment*.config`; do scripts/kconfig/merge_config.sh -m -r -O $PWD/../build $PWD/../build/.config $f; done
     $> yes '' | make ARCH=arm oldconfig O="$PWD/../build"
 
 * Configure on the current source code directory
-    $> cd <directory to kernel source code>
-    $> make ARCH=arm multi_v7_defconfig fragment*.config
+    $ cd <directory to kernel source code>
+    $ make ARCH=arm multi_v7_defconfig fragment*.config
 
     If there are some fragments, apply them
     * manually one by one:
-    $> scripts/kconfig/merge_config.sh -m -r .config ../fragment-01-xxxx.config
-    $> scripts/kconfig/merge_config.sh -m -r .config ../fragment-02-xxxx.config
+    $ scripts/kconfig/merge_config.sh -m -r .config ../fragment-01-xxxx.config
+    $ scripts/kconfig/merge_config.sh -m -r .config ../fragment-02-xxxx.config
     ...
-    $> yes '' | make oldconfig
+    $ yes '' | make oldconfig
     * or, by loop:
-    $> for f in `ls -1 ../fragment*.config`; do scripts/kconfig/merge_config.sh -m -r .config $f; done
-    $> yes '' | make ARCH=arm oldconfig
+    $ for f in `ls -1 ../fragment*.config`; do scripts/kconfig/merge_config.sh -m -r .config $f; done
+    $ yes '' | make ARCH=arm oldconfig
 
 NB: Two types of fragments are provided:
     * official fragments (fragment-xxx.config)
@@ -168,7 +167,7 @@ managment of changes made on source code (as all build artifacts will be located
 inside the dedicated build directory).
 
 * Compile and install on a build directory (different of kernel source code directory)
-    $> cd <directory to kernel source code>
+    $ cd <directory to kernel source code>
     * Build kernel images (uImage and vmlinux) and device tree (dtbs)
     $> make ARCH=arm uImage vmlinux dtbs LOADADDR=0xC2000040 O="$PWD/../build"
     * Build kernel module
@@ -181,28 +180,34 @@ inside the dedicated build directory).
 
     or
 
-    $> cd <build directory>
+    $ cd <build directory>
     * Build kernel images (uImage and vmlinux) and device tree (dtbs)
-    $> make ARCH=arm uImage vmlinux dtbs LOADADDR=0xC2000040
+    $ make ARCH=arm uImage vmlinux dtbs LOADADDR=0xC2000040
     * Build kernel module
-    $> make ARCH=arm modules
+    $ make ARCH=arm modules
     * Generate output build artifacts
-    $> make ARCH=arm INSTALL_MOD_PATH="$PWD/../build/install_artifact" modules_install
-    $> mkdir -p $PWD/../build/install_artifact/boot/
-    $> cp $PWD/../build/arch/arm/boot/uImage $PWD/../build/install_artifact/boot/
-    $> cp $PWD/../build/arch/arm/boot/dts/st*.dtb $PWD/../build/install_artifact/boot/
+    $ make ARCH=arm INSTALL_MOD_PATH="$PWD/../build/install_artifact" modules_install
+    $ mkdir -p $PWD/../build/install_artifact/boot/
+    $ cp $PWD/../build/arch/arm/boot/uImage $PWD/../build/install_artifact/boot/
+    $ cp $PWD/../build/arch/arm/boot/dts/st*.dtb $PWD/../build/install_artifact/boot/
 
 * Compile and install on the current source code directory
-    $> cd <directory to kernel source code>
+    $ cd <directory to kernel source code>
     * Build kernel images (uImage and vmlinux) and device tree (dtbs)
-    $> make ARCH=arm uImage vmlinux dtbs LOADADDR=0xC2000040
+    $ make ARCH=arm uImage vmlinux dtbs LOADADDR=0xC2000040
     * Build kernel module
-    $> make ARCH=arm modules
+    $ make ARCH=arm modules
     * Generate output build artifacts
-    $> make ARCH=arm INSTALL_MOD_PATH="$PWD/install_artifact" modules_install
-    $> mkdir -p $PWD/install_artifact/boot/
-    $> cp $PWD/arch/arm/boot/uImage $PWD/install_artifact/boot/
-    $> cp $PWD/arch/arm/boot/dts/st*.dtb $PWD/install_artifact/boot/
+    $ make ARCH=arm INSTALL_MOD_PATH="$PWD/install_artifact" modules_install
+    $ mkdir -p $PWD/install_artifact/boot/
+    $ cp $PWD/arch/arm/boot/uImage $PWD/install_artifact/boot/
+    $ cp $PWD/arch/arm/boot/dts/st*.dtb $PWD/install_artifact/boot/
+
+Generated files are :
+ #> $PWD/install_artifact/boot/uImage
+ #> $PWD/install_artifact/boot/<stm32-boards>.dtb
+
+
 
 7. Update software on board:
 ----------------------------
@@ -217,63 +222,63 @@ Please refer to User guide for more details.
 7.2. Update via network:
 ------------------------
 * kernel + devicetree
-    $> cd <path to install_artifact dir>/install_artifact
+    $ cd <path to install_artifact dir>/install_artifact
     if bootfs are not monted on target, mount it
-        $> ssh root@<ip of board> df to see if there is a partition mounted on /boot
+        $ ssh root@<ip of board> df to see if there is a partition mounted on /boot
     else
-        $> ssh root@<ip of board> mount <device corresponding to bootfs> /boot
-    $> scp -r boot/* root@<ip of board>:/boot/
-    $> ssh root@<ip of board> umount /boot
+        $ ssh root@<ip of board> mount <device corresponding to bootfs> /boot
+    $ scp -r boot/* root@<ip of board>:/boot/
+    $ ssh root@<ip of board> umount /boot
 
 * kernel modules
-    $> cd <path to install_artifact dir>/install_artifact
+    $ cd <path to install_artifact dir>/install_artifact
     Remove the link on install_artifact/lib/modules/<kernel version>/
-    $> rm lib/modules/<kernel version>/source lib/modules/<kernel version>/build
+    $ rm lib/modules/<kernel version>/source lib/modules/<kernel version>/build
     Optionally, strip kernel modules (to reduce the size of each kernel modules)
-    $> find . -name "*.ko" | xargs $STRIP --strip-debug --remove-section=.comment --remove-section=.note --preserve-dates
+    $ find . -name "*.ko" | xargs $STRIP --strip-debug --remove-section=.comment --remove-section=.note --preserve-dates
 
     Copy kernel modules:
-    $> scp -r lib/modules/* root@<ip of board>:/lib/modules/
+    $ scp -r lib/modules/* root@<ip of board>:/lib/modules/
 
     Generate a list of module dependencies (modules.dep) and a list of symbols
     provided by modules (modules.symbols):
-    $> ssh root@<ip of board> /sbin/depmod -a
+    $ ssh root@<ip of board> /sbin/depmod -a
     Synchronize data on disk with memory
-    $> ssh root@<ip of board> sync
+    $ ssh root@<ip of board> sync
     Reboot the board in order to take update into account
-    $> ssh root@<ip of board> reboot
+    $ ssh root@<ip of board> reboot
 
 7.3. Update via SDCARD on your Linux PC:
 ----------------------------------------
 * kernel + devicetree
-    $> cd <path to install_artifact dir>/install_artifact
+    $ cd <path to install_artifact dir>/install_artifact
     Verify sdcard are mounted on your Linux PC: /media/$USER/bootfs
-    $> cp -r boot/* /media/$USER/bootfs/
+    $ cp -r boot/* /media/$USER/bootfs/
     Depending of your Linux configuration, you may call the command under sudo
-        $> sudo cp -r boot/* /media/$USER/bootfs/
+        $ sudo cp -r boot/* /media/$USER/bootfs/
     Don't forget to unmount properly sdcard
 
 * kernel modules
-    $> cd <path to install_artifact dir>/install_artifact
+    $ cd <path to install_artifact dir>/install_artifact
     Remove the link on install_artifact/lib/modules/<kernel version>/
-    $> rm lib/modules/<kernel version>/source lib/modules/<kernel version>/build
+    $ rm lib/modules/<kernel version>/source lib/modules/<kernel version>/build
     Optionally, strip kernel modules (to reduce the size of each kernel modules)
-    $> find . -name "*.ko" | xargs $STRIP --strip-debug --remove-section=.comment --remove-section=.note --preserve-dates
+    $ find . -name "*.ko" | xargs $STRIP --strip-debug --remove-section=.comment --remove-section=.note --preserve-dates
 
     Verify sdcard are mounted on your Linux PC: /media/$USER/rootfs
     Copy kernel modules:
-    $> cp -r lib/modules/* /media/$USER/rootfs/lib/modules/
+    $ cp -r lib/modules/* /media/$USER/rootfs/lib/modules/
     Depending of your Linux configuration, you may call the command under sudo
-        $> sudo cp -r lib/modules/* /media/$USER/rootfs/lib/modules/
+        $ sudo cp -r lib/modules/* /media/$USER/rootfs/lib/modules/
     Don't forget to unmount properly sdcard
 
     Generate a list of module dependencies (modules.dep) and a list of symbols
     provided by modules (modules.symbols):
-    $> ssh root@<ip of board> depmod -a
+    $ ssh root@<ip of board> depmod -a
     Synchronize data on disk with memory
-    $> ssh root@<ip of board> sync
+    $ ssh root@<ip of board> sync
     Reboot the board in order to take update into account
-    $> ssh root@<ip of board> reboot
+    $ ssh root@<ip of board> reboot
 
 7.4. Update via SDCARD on your BOARD (via U-Boot):
 --------------------------------------------------
@@ -291,32 +296,32 @@ For SDCARD:    ums 0 mmc 0
 For USB Disk:  ums 0 usb 0
 
 * kernel + devicetree
-    $> cd <path to install_artifact dir>/install_artifact
+    $ cd <path to install_artifact dir>/install_artifact
     Remove the link on install_artifact/lib/modules/<kernel version>/
-    $> rm lib/modules/<kernel version>/source lib/modules/<kernel version>/build
+    $ rm lib/modules/<kernel version>/source lib/modules/<kernel version>/build
     Optionally, strip kernel modules (to reduce the size of each kernel modules)
-    $> find . -name "*.ko" | xargs $STRIP --strip-debug --remove-section=.comment --remove-section=.note --preserve-dates
+    $ find . -name "*.ko" | xargs $STRIP --strip-debug --remove-section=.comment --remove-section=.note --preserve-dates
 
     Verify sdcard mount point are mounted on your Linux PC: /media/$USER/bootfs
-    $> cp -r boot/* /media/$USER/bootfs/
+    $ cp -r boot/* /media/$USER/bootfs/
     Depending of your Linux configuration, you may call the command under sudo
-        $> sudo cp -rf boot/* /media/$USER/bootfs/
+        $ sudo cp -rf boot/* /media/$USER/bootfs/
     Don't forget to unmount properly sdcard
     Warning: kernel and device tree file name must be aligned between
     extlinux.conf file and file system.
 
 * kernel modules
-    $> cd <path to install_artifact dir>/install_artifact
+    $ cd <path to install_artifact dir>/install_artifact
     Remove the link on install_artifact/lib/modules/<kernel version>/
-    $> rm lib/modules/<kernel version>/source lib/modules/<kernel version>/build
+    $ rm lib/modules/<kernel version>/source lib/modules/<kernel version>/build
     Optionally, strip kernel modules (to reduce the size of each kernel modules)
-    $> find . -name "*.ko" | xargs $STRIP --strip-debug --remove-section=.comment --remove-section=.note --preserve-dates
+    $ find . -name "*.ko" | xargs $STRIP --strip-debug --remove-section=.comment --remove-section=.note --preserve-dates
 
     Verify sdcard mount point are mounted on your Linux PC: /media/$USER/rootfs
     Copy kernel modules:
-    $> cp -rf lib/modules/* /media/$USER/rootfs/lib/modules/
+    $ cp -rf lib/modules/* /media/$USER/rootfs/lib/modules/
     Depending of your Linux configuration, you may call the command under sudo
-        $> sudo cp -r lib/modules/* /media/$USER/rootfs/lib/modules/
+        $ sudo cp -r lib/modules/* /media/$USER/rootfs/lib/modules/
     Don't forget to unmount properly sdcard
 
     At next runtime, don't forget to generate a list of module dependencies
@@ -338,13 +343,13 @@ For USB Disk:  ums 0 usb 0
     $on board> lsmod
 
 * How to see information about kernel module:
-    $on board> modinfo ./install_artifact/lib/modules/<kernel version>/kernel/drivers/leds/led-class-flash.ko
-Example usage:
-filename:       <build directory>./install_artifact/lib/modules/4.9.23-g3e866b0/kernel/drivers/leds/led-class-flash.ko
+    $on board> modinfo /lib/modules/5.4.31/kernel/drivers/leds/led-class-flash.ko 
+filename:       /lib/modules/5.4.31/kernel/drivers/leds/led-class-flash.ko
 license:        GPL v2
 description:    LED Flash class interface
 author:         Jacek Anaszewski <j.anaszewski@samsung.com>
-depends:
+depends:        
 intree:         Y
-vermagic:       4.9.23-g3e866b0 SMP mod_unload ARMv7 p2v8
+name:           led_class_flash
+vermagic:       5.4.31 SMP preempt mod_unload modversions ARMv7 p2v8 
 
