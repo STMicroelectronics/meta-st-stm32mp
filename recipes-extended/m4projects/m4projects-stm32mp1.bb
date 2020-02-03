@@ -7,9 +7,9 @@ LICENSE = " \
 LIC_FILES_CHKSUM = "file://License.md;md5=5272d12bc1c2e29908b787134d73dae9"
 
 SRC_URI = "git://github.com/STMicroelectronics/STM32CubeMP1.git;protocol=https;branch=master"
-SRCREV  = "3739122ec3281ffe18356774ffc06a7fbcf6df98"
+SRCREV  = "c604fa0965c73e430eebd5fa780180beb9a71b44"
 
-PV = "1.1.0"
+PV = "1.2.0"
 
 S = "${WORKDIR}/git"
 
