@@ -35,6 +35,11 @@ PACKAGE_INSTALL += " \
     linux-examples-stm32mp1-userfs \
     "
 
+# Add demo application described on specific packagegroup
+PACKAGE_INSTALL += " \
+    packagegroup-st-demo \
+    "
+
 # Reset LDCONFIG to avoid runing ldconfig on image.
 LDCONFIGDEPEND = ""
 
