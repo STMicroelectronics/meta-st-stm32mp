@@ -51,6 +51,11 @@ IMAGE_PREPROCESS_COMMAND_remove = "prelink_image;"
 
 IMAGE_PREPROCESS_COMMAND_append = "reformat_rootfs;"
 
+# remove specific systemd task
+IMAGE_PREPROCESS_COMMAND_remove = "systemd-systemctl-native;"
+IMAGE_PREPROCESS_COMMAND_remove = "systemd_preset_all;"
+
+
 # Cleanup rootfs newly created
 reformat_rootfs() {
     if [ -d ${IMAGE_ROOTFS}${IMAGE_PARTITION_MOUNTPOINT} ]; then
