@@ -8,7 +8,7 @@ PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 SRC_URI = "file://boot.scr.cmd"
 
-PV = "2.0"
+PV = "2.6"
 
 inherit kernel-arch extlinuxconf-stm32mp
 
