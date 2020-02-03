@@ -132,17 +132,21 @@ function debug_dump_flashlayout_data_array() {
 function get_last_image_path() {
 	local i=0
 	last_image=""
-	for ((i=0;i<FLASHLAYOUT_number_of_line;i++))
+	for i in $(seq 0 $FLASHLAYOUT_number_of_line)
 	do
 		selected=${FLASHLAYOUT_data[$i,$COL_SELECTED_OPT]}
 		ip=${FLASHLAYOUT_data[$i,$COL_IP]}
+		partName=${FLASHLAYOUT_data[$i,$COL_PARTNAME]}
 		bin2flash=${FLASHLAYOUT_data[$i,$COL_BIN2FLASH]}
 
 		if [ "$ip" == "$SDCARD_TOKEN" ];
 		then
 			case "$selected" in
 			1|P)
-				last_image=$bin2flash
+				if [ "$partName" == 'rootfs' ];
+				then
+					last_image=$bin2flash
+				fi
 				;;
 			*)
 				;;
@@ -155,17 +159,19 @@ function get_last_image_path() {
 		if [ -f $FLASHLAYOUT_filename_path/$last_image ];
 		then
 			FLASHLAYOUT_prefix_image_path="$FLASHLAYOUT_filename_path"
+		elif [ -f $FLASHLAYOUT_filename_path/../$last_image ];
+		then
+			FLASHLAYOUT_prefix_image_path="$FLASHLAYOUT_filename_path/.."
+		elif [ -f $FLASHLAYOUT_filename_path/../../$last_image ];
+		then
+			FLASHLAYOUT_prefix_image_path="$FLASHLAYOUT_filename_path/../.."
 		else
-			if [ -f $FLASHLAYOUT_filename_path/../$last_image ];
-			then
-				FLASHLAYOUT_prefix_image_path="$FLASHLAYOUT_filename_path/.."
-			else
-				echo "[ERROR]: do not found image associated to this FLash layout on the directory:"
-				echo "[ERROR]:    $FLASHLAYOUT_filename_path"
-				echo "[ERROR]: or $FLASHLAYOUT_filename_path/.."
-				echo ""
-				exit 0
-			fi
+			echo "[ERROR]: do not found image associated to this FLash layout on the directory:"
+			echo "[ERROR]:    $FLASHLAYOUT_filename_path"
+			echo "[ERROR]: or $FLASHLAYOUT_filename_path/.."
+			echo "[ERROR]: or $FLASHLAYOUT_filename_path/../.."
+			echo ""
+			exit 0
 		fi
 	fi
 }
@@ -415,8 +421,8 @@ function generate_gpt_partition_table_from_flash_layout() {
 
 			j=$(($j+1))
 			fi
-		fi
 		p=$(($p+1))
+		fi
 	done
 
 	echo ""
