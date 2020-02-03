@@ -9,7 +9,8 @@ SRC_URI[sha256sum] = "7b62e9fe650e197473eb2f4dc35c09d1e6395eb48dc1c16cc139d401b3
 SRC_URI += " \
     file://0001-st-updates-r1.patch \
     file://0002-st-updates-r2.patch \
-   "
+    file://0003-st-updates-r3.patch \
+    "
 
 OPTEE_VERSION = "3.3.0"
 PV = "${OPTEE_VERSION}"
@@ -19,6 +20,9 @@ S = "${WORKDIR}/optee_os-${PV}"
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 
 PROVIDES += "optee-os"
+
+# The package is empty but must be generated to avoid apt-get installation issue
+ALLOW_EMPTY_${PN} = "1"
 
 require optee-os-stm32mp-common.inc
 
@@ -33,7 +37,7 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'optee-os-stm3
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/optee_os.git;protocol=https;name=opteeos;branch=3.3.0-stm32mp"
-SRCREV_class-devupstream = "2d2ec9752d49db633b4295ee509629642dfd8748"
+SRCREV_class-devupstream = "273094317924bd18d2b7e7ed1d98e5118ed9c1fa"
 SRCREV_FORMAT_class-devupstream = "opteeos"
 PV_class-devupstream = "${OPTEE_VERSION}+github+${SRCPV}"
 
