@@ -36,6 +36,7 @@ ALSA_ADDONS_INSTALL = "${@bb.utils.contains('COMBINED_FEATURES', 'alsa', '${ALSA
 # bluetooth
 #
 BLUETOOTH_LIST          = " linux-firmware-bluetooth-bcm4343 "
+BLUETOOTH_LIST         += "${@bb.utils.contains('DISTRO_FEATURES','systemd',' bluetooth-suspend ','',d)}"
 BLUETOOTH_IMAGE_INSTALL = "${@bb.utils.contains('MACHINE_FEATURES', 'bluetooth', '${BLUETOOTH_LIST}', '', d)} "
 
 #------------------
