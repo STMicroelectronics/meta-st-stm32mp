@@ -8,8 +8,6 @@ DEPENDS += " libdrm wayland "
 
 GCNANO_TYPE = "debug"
 
-GCNANO_USERLAND_FB_TARBALL_DATE = "20181210"
-
 do_install_append() {
     clean_release_file
 }

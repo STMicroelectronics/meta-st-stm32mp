@@ -8,6 +8,8 @@ PROVIDES += "gcnano-userland virtual/libgles1 virtual/libgles2 virtual/egl virtu
 
 TAR_FILENAME = "gcnano-userland-${BACKEND}-${PV}-${GCNANO_USERLAND_FB_TARBALL_DATE}"
 
+GCNANO_USERLAND_FB_TARBALL_DATE = "20190626"
+
 SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries.git;protocol=https;branch=gcnano-6.2.4_p4-binaries"
 SRCREV = "c01642ed5e18cf09ecd905af193e935cb3be95ed"
 
@@ -77,7 +79,14 @@ create_link() {
     library_src=$3
     library_dst=$4
     LINK=`readlink $prefix/$library_src/$library_link`
-    ln -sf $library_src/$LINK $prefix/$library_dst/$library_link
+    if [ -L $prefix/$library_src/$LINK ];
+    then
+        # point on a link, need to get the path of link
+        SUBLINK=$(readlink $prefix/$library_src/$LINK)
+        ln -sf $library_src/$SUBLINK $prefix/$library_dst/$library_link
+    else
+        ln -sf $library_src/$LINK $prefix/$library_dst/$library_link
+    fi
 }
 do_install() {
     if [ ${GCNANO_USERLAND_USE_VENDOR_DIR} -eq 1 ];
@@ -179,8 +188,22 @@ gcnano_sysroot() {
             rm ${SYSROOT_DESTDIR}${libdir}/libwayland-egl.so*
             rm ${SYSROOT_DESTDIR}${libdir}/pkgconfig/wayland-egl.pc
         fi
-
     fi
 }
 SYSROOT_PREPROCESS_FUNCS =+ "gcnano_sysroot"
-#SYSROOT_DIRS_append =+ " ${GCNANO_USERLAND_OUTPUT_LIBDIR} "
+
+modify_packagesplit_for_dev() {
+    #suppress content of package-split/${PN}-dev
+    rm -rf ${PKGDEST}/${PN}-dev/*
+    #install ${PN}-dev
+    install -d ${PKGDEST}/${PN}-dev/
+    #install regular file
+    (cd ${S}/${TAR_FILENAME}/; find usr -type f -exec install -D {} ${PKGDEST}/${PN}-dev/{} \;)
+    # re-create link
+    (cd ${S}/${TAR_FILENAME}/; \
+    for i in $(find usr -type l); do \
+        LINK=$(readlink $i); \
+        ln -sf $LINK ${PKGDEST}/${PN}-dev/$i ; \
+    done)
+}
+do_package[postfuncs] += "modify_packagesplit_for_dev"
