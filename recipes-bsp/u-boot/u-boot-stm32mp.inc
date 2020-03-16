@@ -2,6 +2,9 @@ require recipes-bsp/u-boot/u-boot.inc
 
 FILESEXTRAPATHS_prepend := "${THISDIR}/u-boot-stm32mp:"
 
+PROVIDES += "u-boot"
+RPROVIDES_${PN} += "u-boot"
+
 # Configure build dir for externalsrc class usage through devtool
 EXTERNALSRC_BUILD_pn-${PN} = "${WORKDIR}/build"
 
