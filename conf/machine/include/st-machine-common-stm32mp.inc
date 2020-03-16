@@ -278,6 +278,7 @@ LINUX_A7_EXAMPLES_DT ?= ""
 # u-boot
 # =========================================================================
 EXTRA_IMAGEDEPENDS += "u-boot-stm32mp"
+PREFERRED_PROVIDER_u-boot = "u-boot-stm32mp"
 PREFERRED_PROVIDER_virtual/bootloader = "u-boot-stm32mp"
 
 # Define default U-Boot config
