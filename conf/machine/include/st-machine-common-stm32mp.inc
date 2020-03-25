@@ -22,7 +22,7 @@ BOOTSCHEME_LABELS ??= "basic trusted optee"
 # boot device
 # =========================================================================
 # List of supported boot devices
-BOOTDEVICE_LABELS ??= "emmc nand-4-256 nor-emmc nor-nand-4-256 nor-sdcard sdcard"
+BOOTDEVICE_LABELS ??= "emmc nand-4-256 nor-sdcard sdcard"
 
 # =========================================================================
 # Machine settings

@@ -29,14 +29,6 @@ elif test ${boot_device} = nand; then
 
 elif test ${boot_device} = nor; then
 
-    #EMMC boot
-    env set boot_prefixes "/${boot_device}${boot_instance}-mmc1_${board_name}_"
-    run bootcmd_mmc1
-
-    #NAND boot
-    env set boot_prefixes "/nand0_${board_name}_"
-    run bootcmd_ubifs0
-
     #SDCARD boot
     env set boot_prefixes "/${boot_device}${boot_instance}_${board_name}_"
     run bootcmd_mmc0

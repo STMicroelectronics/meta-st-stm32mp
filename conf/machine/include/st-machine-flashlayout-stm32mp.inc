@@ -57,8 +57,6 @@ FLASHLAYOUT_BOOTSCHEME_LABELS += "${BOOTSCHEME_LABELS}"
 # Define supported config labels
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'emmc', '', d)}"
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', 'nand-4-256', '', d)}"
-FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emmc', 'nor-emmc', '', d)}"
-FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-nand-4-256', 'nor-nand-4-256', '', d)}"
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', 'nor-sdcard', '', d)}"
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'sdcard', '', d)}"
 
@@ -69,8 +67,6 @@ ST_EXAMPLE_IMAGE ??= "0"
 #FLASHLAYOUT_CONFIG_LABELS_remove = "${@bb.utils.contains('ST_EXAMPLE_IMAGE', '1', 'emmc', '', d)}"
 FLASHLAYOUT_CONFIG_LABELS_remove = "${@bb.utils.contains('ST_EXAMPLE_IMAGE', '1', 'nand-4-256', '', d)}"
 #FLASHLAYOUT_CONFIG_LABELS_remove = "${@bb.utils.contains('ST_EXAMPLE_IMAGE', '1', 'nor-sdcard', '', d)}"
-#FLASHLAYOUT_CONFIG_LABELS_remove = "${@bb.utils.contains('ST_EXAMPLE_IMAGE', '1', 'nor-emmc', '', d)}"
-FLASHLAYOUT_CONFIG_LABELS_remove = "${@bb.utils.contains('ST_EXAMPLE_IMAGE', '1', 'nor-nand-4-256', '', d)}"
 #FLASHLAYOUT_CONFIG_LABELS_remove = "${@bb.utils.contains('ST_EXAMPLE_IMAGE', '1', 'sdcard', '', d)}"
 
 # -----------------------------------------------------------------------------
@@ -91,8 +87,6 @@ FLASHLAYOUT_TYPE_LABELS_emmc = "${STM32MP_DT_FILES_ED} ${STM32MP_DT_FILES_EV}"
 FLASHLAYOUT_TYPE_LABELS_nand-4-256 = "${STM32MP_DT_FILES_EV}"
 # NOR
 # Set flashlayout file generation to eval board only
-FLASHLAYOUT_TYPE_LABELS_nor-emmc       = "${STM32MP_DT_FILES_EV}"
-FLASHLAYOUT_TYPE_LABELS_nor-nand-4-256 = "${STM32MP_DT_FILES_EV}"
 FLASHLAYOUT_TYPE_LABELS_nor-sdcard     = "${STM32MP_DT_FILES_EV}"
 # SDCARD
 # Set flashlayout file generation for all boards
@@ -118,39 +112,18 @@ VENDORFS_PART = "${@bb.utils.contains('ST_VENDORFS','1','vendorfs','',d)}"
 
 FLASHLAYOUT_PARTITION_LABELS_basic_emmc           = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl bootfs ${VENDORFS_PART} rootfs userfs"
 FLASHLAYOUT_PARTITION_LABELS_basic_nand-4-256     = "none"
-FLASHLAYOUT_PARTITION_LABELS_basic_nor-nand-4-256 = "none"
-FLASHLAYOUT_PARTITION_LABELS_basic_nor-emmc       = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl env empty bootfs ${VENDORFS_PART} rootfs userfs"
 FLASHLAYOUT_PARTITION_LABELS_basic_nor-sdcard     = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl env empty bootfs ${VENDORFS_PART} rootfs userfs"
 FLASHLAYOUT_PARTITION_LABELS_basic_sdcard         = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl bootfs ${VENDORFS_PART} rootfs userfs"
 
 FLASHLAYOUT_PARTITION_LABELS_optee_emmc           = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl teeh teed teex bootfs ${VENDORFS_PART} rootfs userfs"
 FLASHLAYOUT_PARTITION_LABELS_optee_nand-4-256     = "fsbl1-boot ssbl-boot fsbl1 ssbl ssbl2 teeh teed teex ubifs"
-FLASHLAYOUT_PARTITION_LABELS_optee_nor-nand-4-256 = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl env teeh teed teex empty emptyfsbl1 emptyssbl emptyssbl2 emptyteeh emptyteed emptyteex ubifs"
-FLASHLAYOUT_PARTITION_LABELS_optee_nor-emmc       = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl env teeh teed teex empty bootfs ${VENDORFS_PART} rootfs userfs"
 FLASHLAYOUT_PARTITION_LABELS_optee_nor-sdcard     = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl env teeh teed teex empty bootfs ${VENDORFS_PART} rootfs userfs"
 FLASHLAYOUT_PARTITION_LABELS_optee_sdcard         = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl teeh teed teex bootfs ${VENDORFS_PART} rootfs userfs"
 
 FLASHLAYOUT_PARTITION_LABELS_trusted_emmc           = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl bootfs ${VENDORFS_PART} rootfs userfs"
 FLASHLAYOUT_PARTITION_LABELS_trusted_nand-4-256     = "fsbl1-boot ssbl-boot fsbl1 ssbl ssbl2 ubifs"
-FLASHLAYOUT_PARTITION_LABELS_trusted_nor-nand-4-256 = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl env empty emptyfsbl1 emptyssbl emptyssbl2 ubifs"
-FLASHLAYOUT_PARTITION_LABELS_trusted_nor-emmc       = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl env empty bootfs ${VENDORFS_PART} rootfs userfs"
 FLASHLAYOUT_PARTITION_LABELS_trusted_nor-sdcard     = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl env empty bootfs ${VENDORFS_PART} rootfs userfs"
 FLASHLAYOUT_PARTITION_LABELS_trusted_sdcard         = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl bootfs ${VENDORFS_PART} rootfs userfs"
-
-# To manage properly dynamic boot for NOR use case, our 'boot.src' script scans
-# one after one the devices to find out expected binaries from bootfs partition.
-# So we make sure to erase all devices we do not want to use to boot
-# for our NOR-* boot configurations
-FLASHLAYOUT_PARTITION_LABELS_basic_nor-emmc   += "nandall sdcardall"
-FLASHLAYOUT_PARTITION_LABELS_basic_nor-sdcard += "emmcfsbl1 emmcfsbl2 emmcall nandall"
-
-FLASHLAYOUT_PARTITION_LABELS_optee_nor-nand-4-256 += "emmcfsbl1 emmcfsbl2 emmcall sdcardall"
-FLASHLAYOUT_PARTITION_LABELS_optee_nor-emmc       += "nandall sdcardall"
-FLASHLAYOUT_PARTITION_LABELS_optee_nor-sdcard     += "emmcfsbl1 emmcfsbl2 emmcall nandall"
-
-FLASHLAYOUT_PARTITION_LABELS_trusted_nor-nand-4-256 += "emmcfsbl1 emmcfsbl2 emmcall sdcardall"
-FLASHLAYOUT_PARTITION_LABELS_trusted_nor-emmc       += "nandall sdcardall"
-FLASHLAYOUT_PARTITION_LABELS_trusted_nor-sdcard     += "emmcfsbl1 emmcfsbl2 emmcall nandall"
 
 # -----------------------------------------------------------------------------
 # Partition configuration for each partition label
@@ -243,20 +216,6 @@ FLASHLAYOUT_PARTITION_TYPE_sdcardall        = "RawImage"
 
 FLASHLAYOUT_PARTITION_DEVICE_emmc = "${DEVICE_EMMC}"
 FLASHLAYOUT_PARTITION_DEVICE_nand-4-256 = "${DEVICE_NAND}"
-FLASHLAYOUT_PARTITION_DEVICE_nor = "${DEVICE_NOR}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-emmc          = "${DEVICE_NOR}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-emmc_bootfs   = "${DEVICE_EMMC}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-emmc_vendorfs = "${DEVICE_EMMC}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-emmc_rootfs   = "${DEVICE_EMMC}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-emmc_userfs   = "${DEVICE_EMMC}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-nand-4-256             = "${DEVICE_NOR}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-nand-4-256_emptyfsbl1  = "${DEVICE_NAND}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-nand-4-256_emptyssbl   = "${DEVICE_NAND}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-nand-4-256_emptyssbl2  = "${DEVICE_NAND}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-nand-4-256_emptyteeh   = "${DEVICE_NAND}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-nand-4-256_emptyteed   = "${DEVICE_NAND}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-nand-4-256_emptyteex   = "${DEVICE_NAND}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-nand-4-256_ubifs       = "${DEVICE_NAND}"
 FLASHLAYOUT_PARTITION_DEVICE_nor-sdcard          = "${DEVICE_NOR}"
 FLASHLAYOUT_PARTITION_DEVICE_nor-sdcard_bootfs   = "${DEVICE_SDCARD}"
 FLASHLAYOUT_PARTITION_DEVICE_nor-sdcard_vendorfs = "${DEVICE_SDCARD}"
@@ -270,17 +229,6 @@ FLASHLAYOUT_PARTITION_DEVICE_optee_fsbl1-boot = "none"
 FLASHLAYOUT_PARTITION_DEVICE_optee_ssbl-boot  = "none"
 FLASHLAYOUT_PARTITION_DEVICE_trusted_fsbl1-boot = "none"
 FLASHLAYOUT_PARTITION_DEVICE_trusted_ssbl-boot  = "none"
-# Specific to manage partition erase for NOR-* boot
-FLASHLAYOUT_PARTITION_DEVICE_nor-emmc_nandall   = "${DEVICE_NAND}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-emmc_sdcardall = "${DEVICE_SDCARD}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-nand-4-256_emmcall   = "${DEVICE_EMMC}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-nand-4-256_emmcfsbl1 = "${DEVICE_EMMC}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-nand-4-256_emmcfsbl2 = "${DEVICE_EMMC}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-nand-4-256_sdcardall = "${DEVICE_SDCARD}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-sdcard_emmcall   = "${DEVICE_EMMC}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-sdcard_emmcfsbl1 = "${DEVICE_EMMC}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-sdcard_emmcfsbl2 = "${DEVICE_EMMC}"
-FLASHLAYOUT_PARTITION_DEVICE_nor-sdcard_nandall   = "${DEVICE_NAND}"
 
 FLASHLAYOUT_PARTITION_OFFSET_fsbl1-boot = "0x0"
 FLASHLAYOUT_PARTITION_OFFSET_ssbl-boot  = "0x0"
@@ -290,10 +238,6 @@ FLASHLAYOUT_PARTITION_OFFSET_emmc_ssbl  = "${DEVICE_START_OFFSET_mmc1}"
 FLASHLAYOUT_PARTITION_OFFSET_nand-4-256_fsbl1 = "${DEVICE_START_OFFSET_nand0}"
 FLASHLAYOUT_PARTITION_OFFSET_nor-sdcard_fsbl1  = "${DEVICE_START_OFFSET_nor0}"
 FLASHLAYOUT_PARTITION_OFFSET_nor-sdcard_bootfs = "${DEVICE_START_OFFSET_mmc0}"
-FLASHLAYOUT_PARTITION_OFFSET_nor-emmc_fsbl1  = "${DEVICE_START_OFFSET_nor0}"
-FLASHLAYOUT_PARTITION_OFFSET_nor-emmc_bootfs = "${DEVICE_START_OFFSET_mmc1}"
-FLASHLAYOUT_PARTITION_OFFSET_nor-nand-4-256_fsbl1      = "${DEVICE_START_OFFSET_nor0}"
-FLASHLAYOUT_PARTITION_OFFSET_nor-nand-4-256_emptyfsbl1 = "${DEVICE_START_OFFSET_nand0}"
 FLASHLAYOUT_PARTITION_OFFSET_sdcard_fsbl1 = "${DEVICE_START_OFFSET_mmc0}"
 # Specific to manage partition erase
 FLASHLAYOUT_PARTITION_OFFSET_nandall    = "0x0"
