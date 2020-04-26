@@ -3,7 +3,7 @@ LICENSE = "MIT"
 
 inherit core-image
 
-IMAGE_FSTYPES_remove = "wic"
+IMAGE_FSTYPES_remove = "wic wic.bz2 wic.bmap"
 
 IMAGE_NAME_SUFFIX = ".${STM32MP_BOOTFS_LABEL}fs"
 
