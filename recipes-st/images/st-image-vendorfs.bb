@@ -3,7 +3,8 @@ LICENSE = "MIT"
 
 inherit core-image
 
-IMAGE_FSTYPES_remove = "wic"
+# WIC image generation is not needed for this image
+IMAGE_FSTYPES_remove = "${WKS_IMAGE_FSTYPES}"
 
 IMAGE_NAME_SUFFIX = ".${STM32MP_VENDORFS_LABEL}"
 

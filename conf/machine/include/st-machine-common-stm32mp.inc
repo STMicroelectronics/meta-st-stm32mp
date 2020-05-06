@@ -162,7 +162,8 @@ UBINIZE_ARGS_nand_4_256 = "--min-io-size 4096 --peb-size 256KiB"
 EXTRA_UBIFS_SIZE_nand_4_256 = "2304"
 
 # Default FSTYPES requested
-IMAGE_FSTYPES ?= "tar.xz ext4"
+WKS_IMAGE_FSTYPES ?= ""
+IMAGE_FSTYPES ?= "${WKS_IMAGE_FSTYPES} tar.xz ext4"
 
 # Define specific EXT4 command line:
 #   - Create minimal inode number (as it is done by default in image_types.bbclass)
