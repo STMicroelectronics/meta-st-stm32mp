@@ -1,19 +1,20 @@
 SUMMARY = "GCNano kernel drivers"
 LICENSE = "GPLv1 & MIT"
 # Note get md5sum with: $ head -n 53 Makefile | md5sum
-LIC_FILES_CHKSUM = "file://Makefile;endline=53;md5=d77ff5896dbbf8a8bc3f7c5e8f905fcc"
+LIC_FILES_CHKSUM = "file://Makefile;endline=53;md5=c53e65c2dc344ddd2f74196aae9e8384"
 
-SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries.git;protocol=https;branch=gcnano-6.2.4_p4-binaries"
-SRCREV = "c01642ed5e18cf09ecd905af193e935cb3be95ed"
+SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries;protocol=https;branch=gcnano-6.4.1-binaries"
+SRCREV = "eaff2c61bcc3936f8193a52ffe965bdcc6457a57"
 
-PV = "6.2.4.p4"
-PR = "tar${SRCPV}"
+GCNANO_VERSION = "6.4.1"
 
-S = "${WORKDIR}/gcnano-driver-${PV}"
+PV = "${GCNANO_VERSION}-tar.${SRCPV}"
+
+S = "${WORKDIR}/gcnano-driver-${GCNANO_VERSION}"
 
 include gcnano-driver-stm32mp.inc
 
-GCNANO_DRIVER_TARBALL = "gcnano-driver-${PV}.tar.xz"
+GCNANO_DRIVER_TARBALL = "gcnano-driver-${GCNANO_VERSION}.tar.xz"
 
 DEPENDS += "xz-native"
 do_unpack[depends] += "xz-native:do_populate_sysroot"
