@@ -1,0 +1,2857 @@
+From 3a5830ccfbcebfaa60540d50d42f0e37f3b532e9 Mon Sep 17 00:00:00 2001
+From: Lionel Debieve <lionel.debieve@st.com>
+Date: Mon, 30 Mar 2020 13:29:17 +0200
+Subject: [PATCH] stm32mp: ssp: Add secure secret provisioning feature
+
+This patch adds changes to support the secure secret
+provisioning (SSP).
+Main changes are:
+    - Add SSP library which includes OTP fusing services
+    - Change TF-A binary layout for SSP binary to embed only BL2
+      and device tree.
+    - Modify some generic drivers to embed only needed functions
+    - Add read functionality for UART/USB programmer mode to receive
+      the encrypted binary.
+
+Signed-off-by: Lionel Debieve <lionel.debieve@st.com>
+Change-Id: Ie5cdc173c3e924c466ce9a66a98c679a9ace08d4
+---
+ drivers/st/clk/stm32mp1_clk.c                |   8 +
+ drivers/st/io/io_programmer_st_usb.c         |  92 +++-
+ drivers/st/uart/io_programmer_uart.c         | 206 +++++++-
+ fdts/stm32mp151.dtsi                         |  26 +-
+ fdts/stm32mp15xx-dkx.dtsi                    |  12 +-
+ fdts/stm32mp15xx-edx.dtsi                    |  12 +-
+ include/drivers/st/io_programmer.h           |   8 +-
+ include/lib/ssp_lib.h                        |  35 ++
+ include/lib/usb/usb_st_dfu.h                 |  10 +-
+ lib/ssp/ssp.c                                | 748 +++++++++++++++++++++++++++
+ lib/usb/usb_st_dfu.c                         | 101 +++-
+ plat/st/common/bl2_io_storage.c              |  10 +-
+ plat/st/common/include/stm32mp_common.h      |   6 +
+ plat/st/common/include/stm32mp_dt.h          |   1 +
+ plat/st/common/stm32mp_common.c              |  16 +
+ plat/st/common/stm32mp_dt.c                  |  27 +
+ plat/st/common/stm32mp_trusted_boot.c        |   1 +
+ plat/st/stm32mp1/bl2_plat_setup.c            |  40 ++
+ plat/st/stm32mp1/include/boot_api.h          | 265 +++++++++-
+ plat/st/stm32mp1/include/platform_def.h      |  15 +-
+ plat/st/stm32mp1/plat_bl2_mem_params_desc.c  |   4 +-
+ plat/st/stm32mp1/plat_image_load.c           |   3 +-
+ plat/st/stm32mp1/platform.mk                 |  12 +
+ plat/st/stm32mp1/services/bsec_svc.c         |   4 -
+ plat/st/stm32mp1/stm32mp1_def.h              |  44 ++
+ plat/st/stm32mp1/stm32mp1_private.c          |  34 ++
+ plat/st/stm32mp1/stm32mp1_shared_resources.c |   9 +
+ plat/st/stm32mp1/stm32mp1_ssp.S              |  11 +
+ plat/st/stm32mp1/stm32mp1_ssp.ld.S           |  58 +++
+ plat/st/stm32mp1/stm32mp1_ssp.mk             |  66 +++
+ 30 files changed, 1830 insertions(+), 54 deletions(-)
+ create mode 100644 include/lib/ssp_lib.h
+ create mode 100644 lib/ssp/ssp.c
+ create mode 100644 plat/st/stm32mp1/stm32mp1_ssp.S
+ create mode 100644 plat/st/stm32mp1/stm32mp1_ssp.ld.S
+ create mode 100644 plat/st/stm32mp1/stm32mp1_ssp.mk
+
+diff --git a/drivers/st/clk/stm32mp1_clk.c b/drivers/st/clk/stm32mp1_clk.c
+index 5efe343..d294536 100644
+--- a/drivers/st/clk/stm32mp1_clk.c
++++ b/drivers/st/clk/stm32mp1_clk.c
+@@ -698,20 +698,24 @@ static unsigned int gate_refcounts[NB_GATES];
+ static struct spinlock refcount_lock;
+ static struct stm32mp1_pll_settings pll1_settings;
+ static uint32_t current_opp_khz;
++#if !STM32MP_SSP
+ static uint32_t pll3cr;
+ static uint32_t pll4cr;
+ static uint32_t mssckselr;
+ static uint32_t mcudivr;
++#endif
+ 
+ static const struct stm32mp1_clk_gate *gate_ref(unsigned int idx)
+ {
+ 	return &stm32mp1_clk_gate[idx];
+ }
+ 
++#if !STM32MP_SSP
+ static bool gate_is_non_secure(const struct stm32mp1_clk_gate *gate)
+ {
+ 	return gate->secure == N_S;
+ }
++#endif
+ 
+ static const struct stm32mp1_clk_sel *clk_sel_ref(unsigned int idx)
+ {
+@@ -2848,6 +2852,7 @@ unsigned long stm32mp1_clk_rcc2id(unsigned int offset, unsigned int bit)
+ 	return get_id_from_rcc_bit(offset, bit);
+ }
+ 
++#if !STM32MP_SSP
+ #ifdef IMAGE_BL32
+ /*
+  * Get the parent ID of the target parent clock, for tagging as secure
+@@ -3449,6 +3454,7 @@ static void sync_earlyboot_clocks_state(void)
+ 
+ 	stm32mp_clk_enable(RTCAPB);
+ }
++#endif /* !STM32MP_SSP */
+ 
+ int stm32mp1_clk_probe(void)
+ {
+@@ -3458,7 +3464,9 @@ int stm32mp1_clk_probe(void)
+ 
+ 	stm32mp1_osc_init();
+ 
++#if !STM32MP_SSP
+ 	sync_earlyboot_clocks_state();
++#endif
+ 
+ 	/* Save current CPU operating point value */
+ 	freq_khz = udiv_round_nearest(stm32mp_clk_get_rate(CK_MPU), 1000UL);
+diff --git a/drivers/st/io/io_programmer_st_usb.c b/drivers/st/io/io_programmer_st_usb.c
+index 20da965..02ade11 100644
+--- a/drivers/st/io/io_programmer_st_usb.c
++++ b/drivers/st/io/io_programmer_st_usb.c
+@@ -17,6 +17,7 @@
+ #include <drivers/st/io_programmer_st_usb.h>
+ #include <drivers/st/io_stm32image.h>
+ #include <drivers/st/stm32_iwdg.h>
++#include <lib/ssp_lib.h>
+ #include <lib/usb/usb_st_dfu.h>
+ 
+ #define USB_STATE_READY		0
+@@ -89,13 +90,22 @@ static uint16_t usb_callback_write_done(uint32_t *written_in, uint32_t len)
+ }
+ 
+ /* Call back to notify that a read memory is requested */
+-static uint8_t *usb_callback_read(uint8_t *src, uint8_t *dest, uint32_t len)
++static uint16_t usb_callback_read(uint8_t *src, uint8_t *dest, uint32_t len)
+ {
++#if STM32MP_SSP
++	if (current_phase.phase_id == SSP_PHASE) {
++		const size_t size = SSP_KEY_CERTIFICATE_SIZE * sizeof(uint32_t);
++
++		if (len >= size) {
++			memcpy(dest, src, size);
++			return size;
++		}
++	}
++#else
+ 	ERROR("%s read is not supported src 0x%lx dest 0x%lx len %i\n",
+ 	      __func__, (uintptr_t)src, (uintptr_t)dest, len);
+-
+-	/* Return a valid address to avoid HardFault */
+-	return (uint8_t *)(dest);
++#endif
++	return 0;
+ }
+ 
+ /* Get the status to know if written operation has been checked */
+@@ -173,10 +183,11 @@ static int usb_block_open(io_dev_info_t *dev_info, const  uintptr_t spec,
+ 			  io_entity_t *entity)
+ {
+ 	int result;
++#if !STM32MP_SSP
+ 	uint32_t length = 0;
+ 	boot_api_image_header_t *header =
+ 		(boot_api_image_header_t *)first_usb_buffer;
+-
++#endif
+ 	const struct stm32image_part_info *partition_spec =
+ 		(struct stm32image_part_info *)spec;
+ 
+@@ -186,7 +197,7 @@ static int usb_block_open(io_dev_info_t *dev_info, const  uintptr_t spec,
+ 		assert(entity);
+ 
+ 		current_phase.current_packet = 0;
+-
++#if !STM32MP_SSP
+ 		if (!strcmp(partition_spec->name, BL33_IMAGE_NAME)) {
+ 			/* read flash layout first for U-boot */
+ 			current_phase.phase_id = PHASE_FLASHLAYOUT;
+@@ -221,6 +232,16 @@ static int usb_block_open(io_dev_info_t *dev_info, const  uintptr_t spec,
+ 			current_phase.phase_id = PHASE_SSBL;
+ 			current_phase.max_size = dt_get_ddr_size();
+ 		}
++#else
++		if (!strcmp(partition_spec->name, "SSP")) {
++			current_phase.phase_id = SSP_PHASE;
++			current_phase.keep_header = 1;
++		}
++
++		if (!strcmp(partition_spec->name, "SSP_INIT")) {
++			current_phase.phase_id = RESET_PHASE;
++		}
++#endif
+ 		entity->info = (uintptr_t)&current_phase;
+ 		result = 0;
+ 	} else {
+@@ -267,6 +288,64 @@ static int usb_block_seek(io_entity_t *entity, int mode,
+ }
+ 
+ /* Read data from a file on the usb device */
++#if STM32MP_SSP
++static int usb_block_read(io_entity_t *entity, uintptr_t buffer,
++			  size_t length, size_t *length_read)
++{
++	uint64_t timeout;
++	uint32_t detach_timeout = DETACH_TIMEOUT;
++	ssp_exchange_t *exchange = (ssp_exchange_t *)buffer;
++
++	if (current_phase.phase_id == RESET_PHASE) {
++		usb_dfu_set_phase_id(RESET_PHASE);
++		usb_dfu_set_upload_addr(buffer);
++		usb_dfu_error_msg_size(length);
++	} else {
++		usb_dfu_set_upload_addr((uint32_t)exchange->msg);
++		usb_dfu_set_download_addr((uint32_t)exchange->blob);
++
++		/* Use flashlayout partition for SSP exchange */
++		usb_dfu_set_phase_id(PHASE_FLASHLAYOUT);
++
++		INFO("Start Download partition SSP address 0x%lx length %i\n",
++		     (uintptr_t)exchange->blob, length);
++	}
++
++	while (!usb_dfu_download_is_completed()) {
++		/* Reload watchdog */
++		stm32_iwdg_refresh();
++		usb_core_handle_it((usb_handle_t *)usb_dev_info.info);
++	}
++
++	/* Wait Detach in case */
++	usb_dfu_set_phase_id(0x0);
++	usb_dfu_set_upload_addr(UNDEFINE_DOWN_ADDR);
++	usb_dfu_request_detach();
++	timeout = timeout_init_us(IO_USB_TIMEOUT_10_SEC);
++	while (detach_timeout != 0U) {
++		usb_core_handle_it((usb_handle_t *)usb_dev_info.info);
++
++		if (usb_dfu_detach_req() == 0U) {
++			/*
++			 * Continue to handle usb core IT to assure
++			 * complete data transmission.
++			 */
++			detach_timeout--;
++		}
++
++		if (timeout_elapsed(timeout)) {
++			return -EIO;
++		}
++	}
++
++	/* STOP the USB Handler */
++	usb_core_stop((usb_handle_t *)usb_dev_info.info);
++
++	*length_read = length;
++
++	return 0;
++}
++#else /* STM32MP_SSP */
+ static int usb_block_read(io_entity_t *entity, uintptr_t buffer,
+ 			  size_t length, size_t *length_read)
+ {
+@@ -355,6 +434,7 @@ static int usb_block_read(io_entity_t *entity, uintptr_t buffer,
+ 
+ 	return 0;
+ }
++#endif /* STM32MP_SSP */
+ 
+ /* Close a file on the usb device */
+ static int usb_block_close(io_entity_t *entity)
+diff --git a/drivers/st/uart/io_programmer_uart.c b/drivers/st/uart/io_programmer_uart.c
+index 6d024e1..f3c8631 100644
+--- a/drivers/st/uart/io_programmer_uart.c
++++ b/drivers/st/uart/io_programmer_uart.c
+@@ -18,6 +18,7 @@
+ #include <drivers/st/io_stm32image.h>
+ #include <drivers/st/io_uart.h>
+ #include <drivers/st/stm32_iwdg.h>
++#include <lib/ssp_lib.h>
+ 
+ /* USART bootloader protocol version V4.0*/
+ #define USART_BL_VERSION	0x40
+@@ -31,6 +32,9 @@ static const uint8_t command_tab[] = {
+ 	GET_VER_COMMAND,
+ 	GET_ID_COMMAND,
+ 	PHASE_COMMAND,
++#if STM32MP_SSP
++	READ_PART_COMMAND,
++#endif
+ 	START_COMMAND,
+ 	DOWNLOAD_COMMAND
+ };
+@@ -195,8 +199,10 @@ static int uart_block_open(io_dev_info_t *dev_info, const  uintptr_t spec,
+ 	int result = -EIO;
+ 	const struct stm32image_part_info *partition_spec =
+ 		(struct stm32image_part_info *)spec;
++#if !STM32MP_SSP
+ 	uint32_t length = 0;
+ 	uint32_t layout_length = 0;
++#endif
+ 
+ 	/* Use PHASE_FSBL1 like init value*/
+ 	if (current_phase.phase_id == PHASE_FSBL1) {
+@@ -205,6 +211,7 @@ static int uart_block_open(io_dev_info_t *dev_info, const  uintptr_t spec,
+ 
+ 		current_phase.current_packet = 0;
+ 
++#if !STM32MP_SSP
+ 		if (!strcmp(partition_spec->name, BL33_IMAGE_NAME)) {
+ 			/* read flashlayout first for U-boot */
+ 			current_phase.phase_id = PHASE_FLASHLAYOUT;
+@@ -224,6 +231,18 @@ static int uart_block_open(io_dev_info_t *dev_info, const  uintptr_t spec,
+ 			current_phase.max_size = dt_get_ddr_size();
+ 			current_phase.keep_header = 0;
+ 		}
++#else
++		if (!strcmp(partition_spec->name, "SSP")) {
++			current_phase.phase_id = SSP_PHASE;
++			header_length_read = 0;
++		}
++
++		if (!strcmp(partition_spec->name, "SSP_INIT")) {
++			current_phase.phase_id = RESET_PHASE;
++			header_length_read = 0;
++		}
++#endif
++
+ 		entity->info = (uintptr_t)&current_phase;
+ 		result = 0;
+ 	} else {
+@@ -303,17 +322,128 @@ static int get_id_command(void)
+ 	return 0;
+ }
+ 
+-static int uart_send_phase(uint32_t address)
++static int uart_send_phase(uint32_t address, size_t length)
+ {
+-	uart_write_byte(0x05);			/* length of data - 1 */
++	size_t local_length = 0;
++	uint32_t i;
++
++	if (current_phase.phase_id == RESET_PHASE) {
++		local_length = length;
++	}
++
++	if ((local_length + 5U) > UINT8_MAX) {
++		return -EINVAL;
++	}
++
++	uart_write_byte(local_length + 5U);		/* length of data - 1 */
++
+ 	/* Send the ID of next partition */
+ 	uart_write_byte(current_phase.phase_id);	/* partition ID */
+ 
+ 	uart_write_uint32(address);		/* destination address */
+-	uart_write_byte(0x00);			/* length of extra data */
++
++	uart_write_byte(local_length);		/* length of extra data */
++
++	for (i = 0; i < local_length; i++) {
++		uart_write_byte(((char *)address)[i]);
++	}
++
++	return 0;
++}
++
++#if STM32MP_SSP
++static int uart_read_part(uint8_t *buffer, size_t length, size_t *length_read)
++{
++	uint8_t byte = 0U;
++	uint8_t xor = 0U;
++	uint8_t partid = 0U;
++	uint16_t size = 0U;
++	uint32_t start_address = 0U;
++	uint32_t i;
++
++	/* Get partition id */
++	if (uart_read_byte(&partid) != 0) {
++		return -EIO;
++	}
++
++	if (partid != SSP_PART_ID) {
++		return -EPERM;
++	}
++
++	xor = partid;
++
++	/* Get address */
++	for (i = 4U; i > 0U; i--) {
++		if (uart_read_byte(&byte) != 0) {
++			return -EIO;
++		}
++
++		xor ^= byte;
++		start_address = (start_address << 8) | byte;
++	}
++
++	/* Checksum */
++	if (uart_read_byte(&byte) != 0) {
++		return -EIO;
++	}
++
++	if (xor != byte) {
++		WARN("UART: Start cmd: address checksum: %x != %x\n",
++		     xor, byte);
++		return -EPROTO;
++	}
++
++	uart_write_byte(ACK_BYTE);
++
++	/* Get number of bytes to send */
++	if (uart_read_byte(&byte) != 0) {
++		return -EIO;
++	}
++
++	xor = byte;
++
++	/* Send Size + 1 */
++	size = byte++;
++
++	/* Checksum */
++	if (uart_read_byte(&byte) != 0) {
++		return -EIO;
++	}
++
++	if ((xor ^ byte) != 0xFF) {
++		WARN("UART: Start cmd: length checksum: %x != %x\n", xor, byte);
++		return -EPROTO;
++	}
++
++	uart_write_byte(ACK_BYTE);
++
++	switch (partid) {
++	case SSP_PART_ID:
++		if ((start_address != 0U) ||
++		    (size < (SSP_KEY_CERTIFICATE_SIZE * sizeof(uint32_t)))) {
++			return -EIO;
++		}
++
++		for (i = 0U;
++		     i < (SSP_KEY_CERTIFICATE_SIZE * sizeof(uint32_t));
++		     i++, buffer++) {
++			uart_write_byte(*buffer);
++		}
++
++		for (; i < size; i++) {
++			uart_write_byte(0x0);
++		}
++
++		break;
++
++	default:
++		WARN("Not supported\n");
++		return -EPROTO;
++	}
+ 
+ 	return 0;
+ }
++#endif /* STM32MP_SSP */
+ 
+ static int uart_download_part(uint8_t *buffer, uint32_t *length_read)
+ {
+@@ -325,15 +455,23 @@ static int uart_download_part(uint8_t *buffer, uint32_t *length_read)
+ 	int i = 0;
+ 	volatile uint8_t *ptr = (uint8_t *)buffer;
+ 
+-	/* get operation number */
+-	if (uart_read_byte(&operation))
++	/* Get operation number */
++	if (uart_read_byte(&operation) != 0) {
+ 		return -EIO;
++	}
++
+ 	xor = operation;
+ 
+-	/* get packet Number */
+-	for (i = 3, byte = 0; i > 0; i--) {
+-		if (uart_read_byte(&byte))
++	if ((operation != 0x0) && (operation != 0xF3)) {
++		return -EPERM;
++	}
++
++	/* Get packet number */
++	for (i = 3; i > 0; i--) {
++		if (uart_read_byte(&byte) != 0) {
+ 			return -EIO;
++		}
++
+ 		xor ^= byte;
+ 		packet_number = (packet_number << 8) | byte;
+ 	}
+@@ -430,6 +568,12 @@ static int uart_start_cmd(boot_api_image_header_t *header, uintptr_t buffer)
+ 
+ 		return stm32mp_check_header(header, buffer);
+ 
++#if STM32MP_SSP
++	case SSP_PHASE:
++		current_phase.phase_id = RESET_PHASE;
++		break;
++#endif
++
+ 	default:
+ 		ERROR("Invalid phase ID : %i\n", current_phase.phase_id);
+ 		return -EINVAL;
+@@ -447,6 +591,9 @@ static int uart_block_read(io_entity_t *entity, uintptr_t buffer,
+ 	uint32_t ptr_offset = 0;
+ 	uint8_t command = 0;
+ 	uint8_t all_commands_done = 0;
++#if STM32MP_SSP
++	ssp_exchange_t *exchange = (ssp_exchange_t *)buffer;
++#endif
+ 	boot_api_image_header_t *header =
+ 			(boot_api_image_header_t *)&header_buffer[0];
+ 
+@@ -508,12 +655,44 @@ static int uart_block_read(io_entity_t *entity, uintptr_t buffer,
+ 			break;
+ 
+ 		case PHASE_COMMAND:
+-			result = uart_send_phase((uint32_t)buffer);
++			result = uart_send_phase((uint32_t)buffer, length);
++#if STM32MP_SSP
++			if (current_phase.phase_id == RESET_PHASE) {
++				all_commands_done = 1;
++			}
++#endif
+ 			break;
+ 
++#if STM32MP_SSP
++		case READ_PART_COMMAND:
++			result = uart_read_part((uint8_t *)(buffer), length,
++						length_read);
++
++			if (result == 0) {
++				/* No ACK_BYTE needed */
++				continue;
++			}
++
++			break;
++#endif
++
+ 		case DOWNLOAD_COMMAND:
+-			result = uart_download_part((uint8_t *)(buffer +
+-								ptr_offset),
++#if STM32MP_SSP
++			result = uart_download_part((uint8_t *)
++						    (exchange->blob +
++						     ptr_offset),
++						    &read_length);
++			if (!result) {
++				ptr_offset += read_length;
++				total_length += read_length;
++				if (total_length > length) {
++					/* Buffer too long */
++					all_commands_done = 1;
++				}
++			}
++#else
++			result = uart_download_part((uint8_t *)
++						    (buffer + ptr_offset),
+ 						    &read_length);
+ 			if (!result) {
+ 				ptr_offset += read_length;
+@@ -524,6 +703,7 @@ static int uart_block_read(io_entity_t *entity, uintptr_t buffer,
+ 					all_commands_done = 1;
+ 				}
+ 			}
++#endif
+ 
+ 			break;
+ 
+@@ -531,7 +711,6 @@ static int uart_block_read(io_entity_t *entity, uintptr_t buffer,
+ 			result = uart_start_cmd(header, buffer);
+ 			if (!result)
+ 				all_commands_done = 1;
+-
+ 			break;
+ 
+ 		default:
+@@ -557,8 +736,7 @@ static int uart_block_read(io_entity_t *entity, uintptr_t buffer,
+ 	*length_read = total_length;
+ 
+ 	INFO("Read block in buffer 0x%lx size 0x%x phase ID %i\n",
+-	     buffer, length, current_phase.phase_id);
+-
++	     buffer, *length_read, current_phase.phase_id);
+ 	return 0;
+ }
+ 
+diff --git a/fdts/stm32mp151.dtsi b/fdts/stm32mp151.dtsi
+index 6e6dff4..087481d 100644
+--- a/fdts/stm32mp151.dtsi
++++ b/fdts/stm32mp151.dtsi
+@@ -41,7 +41,12 @@
+ 			      <&nand_otp>,
+ 			      <&uid_otp>,
+ 			      <&package_otp>,
+-			      <&hw2_otp>;
++			      <&hw2_otp>,
++			      <&pkh_otp>,
++			      <&cfg2_otp>,
++			      <&ssp_otp>,
++			      <&chip_otp>,
++			      <&rma_otp>;
+ 
+ 		nvmem-cell-names = "cfg0_otp",
+ 				   "part_number_otp",
+@@ -49,7 +54,12 @@
+ 				   "nand_otp",
+ 				   "uid_otp",
+ 				   "package_otp",
+-				   "hw2_otp";
++				   "hw2_otp",
++				   "pkh_otp",
++				   "cfg2_otp",
++				   "ssp_otp",
++				   "chip_otp",
++				   "rma_otp";
+ 	};
+ 
+ 	psci {
+@@ -456,9 +466,15 @@
+ 			part_number_otp: part_number_otp@4 {
+ 				reg = <0x4 0x1>;
+ 			};
++			cfg2_otp: cfg2_otp@8 {
++				reg = <0x8 0x4>;
++			};
+ 			monotonic_otp: monotonic_otp@10 {
+ 				reg = <0x10 0x4>;
+ 			};
++			ssp_otp: ssp_otp@20 {
++				reg = <0x20 0x4>;
++			};
+ 			nand_otp: nand_otp@24 {
+ 				reg = <0x24 0x4>;
+ 			};
+@@ -480,6 +496,12 @@
+ 			pkh_otp: pkh_otp@60 {
+ 				reg = <0x60 0x20>;
+ 			};
++			chip_otp: chip_otp@a0 {
++				reg = <0xa0 0x40>;
++			};
++			rma_otp: rma_otp@e0 {
++				reg = <0xe0 0x4>;
++			};
+ 			mac_addr: mac_addr@e4 {
+ 				reg = <0xe4 0x8>;
+ 				st,non-secure-otp;
+diff --git a/fdts/stm32mp15xx-dkx.dtsi b/fdts/stm32mp15xx-dkx.dtsi
+index 53790f2..787c1f2 100644
+--- a/fdts/stm32mp15xx-dkx.dtsi
++++ b/fdts/stm32mp15xx-dkx.dtsi
+@@ -289,7 +289,11 @@
+ 		      <&package_otp>,
+ 		      <&hw2_otp>,
+ 		      <&pkh_otp>,
+-		      <&board_id>;
++		      <&board_id>,
++		      <&cfg2_otp>,
++		      <&ssp_otp>,
++		      <&chip_otp>,
++		      <&rma_otp>;
+ 
+ 	nvmem-cell-names = "cfg0_otp",
+ 			   "part_number_otp",
+@@ -299,7 +303,11 @@
+ 			   "package_otp",
+ 			   "hw2_otp",
+ 			   "pkh_otp",
+-			   "board_id";
++			   "board_id",
++			   "cfg2_otp",
++			   "ssp_otp",
++			   "chip_otp",
++			   "rma_otp";
+ };
+ 
+ &pwr_regulators {
+diff --git a/fdts/stm32mp15xx-edx.dtsi b/fdts/stm32mp15xx-edx.dtsi
+index dd92190..26f2a14 100644
+--- a/fdts/stm32mp15xx-edx.dtsi
++++ b/fdts/stm32mp15xx-edx.dtsi
+@@ -296,7 +296,11 @@
+ 		      <&package_otp>,
+ 		      <&hw2_otp>,
+ 		      <&pkh_otp>,
+-		      <&board_id>;
++		      <&board_id>,
++		      <&cfg2_otp>,
++		      <&ssp_otp>,
++		      <&chip_otp>,
++		      <&rma_otp>;
+ 
+ 	nvmem-cell-names = "cfg0_otp",
+ 			   "part_number_otp",
+@@ -306,7 +310,11 @@
+ 			   "package_otp",
+ 			   "hw2_otp",
+ 			   "pkh_otp",
+-			   "board_id";
++			   "board_id",
++			   "cfg2_otp",
++			   "ssp_otp",
++			   "chip_otp",
++			   "rma_otp";
+ };
+ 
+ &pwr_regulators {
+diff --git a/include/drivers/st/io_programmer.h b/include/drivers/st/io_programmer.h
+index c6c2de1..6f3fd44 100644
+--- a/include/drivers/st/io_programmer.h
++++ b/include/drivers/st/io_programmer.h
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2015-2019, STMicroelectronics - All Rights Reserved
++ * Copyright (c) 2015-2020, STMicroelectronics - All Rights Reserved
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -12,12 +12,18 @@
+ #define PHASE_FSBL1		1
+ #define PHASE_FSBL2		2
+ #define PHASE_SSBL		3
++#define RESET_PHASE		0xFF
++
++#if STM32MP_SSP
++#define SSP_PHASE		0xF3
++#endif
+ 
+ /* Command definition */
+ #define GET_CMD_COMMAND		0x00
+ #define GET_VER_COMMAND		0x01
+ #define GET_ID_COMMAND		0x02
+ #define PHASE_COMMAND		0x03
++#define READ_PART_COMMAND	0x12
+ #define START_COMMAND		0x21
+ #define DOWNLOAD_COMMAND	0x31
+ 
+diff --git a/include/lib/ssp_lib.h b/include/lib/ssp_lib.h
+new file mode 100644
+index 0000000..26232d1
+--- /dev/null
++++ b/include/lib/ssp_lib.h
+@@ -0,0 +1,35 @@
++/*
++ * Copyright (c) 2017-2020, STMicroelectronics - All Rights Reserved
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#ifndef SSP_LIB_H
++#define SSP_LIB_H
++#include <boot_api.h>
++
++/* Constants */
++#define SSP_BLOB_FILE_MAX_ADDR		(BL2_RW_LIMIT - PLAT_XLAT_SIZE)
++#define SSP_KEY_CERTIFICATE_SIZE	U(34) // 4 * 34 bytes : 136 bytes
++#define SSP_PART_ID			0xF3
++
++/*
++ * SSP message format for flashloader exchange.
++ *
++ * msg: Message containing public key and certificate.
++ * blob: Output buffer for encrypted file.
++ */
++typedef struct ssp_exchange {
++	uint32_t msg[SSP_KEY_CERTIFICATE_SIZE];
++	uint8_t *blob;
++} ssp_exchange_t __aligned(4);
++
++/*
++ * Start the SSP processing.
++ *
++ * Parameters:
++ * boot_context	: Shared boot_context
++ */
++void ssp_start(boot_api_context_t *boot_context);
++
++#endif /* SSP_LIB_H */
+diff --git a/include/lib/usb/usb_st_dfu.h b/include/lib/usb/usb_st_dfu.h
+index 8a3a5a5..57f4e8f 100644
+--- a/include/lib/usb/usb_st_dfu.h
++++ b/include/lib/usb/usb_st_dfu.h
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2015-2019, STMicroelectronics - All Rights Reserved
++ * Copyright (c) 2015-2020, STMicroelectronics - All Rights Reserved
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -89,7 +89,11 @@ typedef enum {
+ typedef void (*p_function)(void);
+ 
+ typedef struct {
++#if STM32MP_SSP
++	uint8_t buffer[512];
++#else
+ 	uint8_t buffer[10];
++#endif
+ 	uint8_t dev_state;
+ 	uint8_t dev_status[DFU_STATUS_DEPTH];
+ 	uint8_t manif_state;
+@@ -101,16 +105,18 @@ typedef struct {
+ 
+ typedef struct {
+ 	uint16_t (*write_done)(uint32_t *written_in, uint32_t len);
+-	uint8_t* (*read)(uint8_t *src, uint8_t *dest, uint32_t len);
++	uint16_t (*read)(uint8_t *src, uint8_t *dest, uint32_t len);
+ 	uint16_t (*get_status)(void);
+ } usb_dfu_media_t;
+ 
+ void usb_dfu_register_callback(usb_handle_t *pdev);
+ void usb_dfu_set_phase_id(uint32_t phase_id);
+ void usb_dfu_set_download_addr(uintptr_t addr);
++void usb_dfu_set_upload_addr(uintptr_t addr);
+ uint32_t usb_dfu_download_is_completed(void);
+ uint32_t usb_dfu_get_current_req(void);
+ uint32_t usb_dfu_detach_req(void);
+ void usb_dfu_request_detach(void);
++void usb_dfu_error_msg_size(uint32_t size);
+ 
+ #endif /* USB_ST_DFU_H */
+diff --git a/lib/ssp/ssp.c b/lib/ssp/ssp.c
+new file mode 100644
+index 0000000..dff8bfe
+--- /dev/null
++++ b/lib/ssp/ssp.c
+@@ -0,0 +1,748 @@
++/*
++ * Copyright (c) 2017-2020, STMicroelectronics - All Rights Reserved
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#include <arch_helpers.h>
++#include <endian.h>
++#include <limits.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include <platform_def.h>
++
++#include <drivers/io/io_driver.h>
++#include <drivers/st/bsec.h>
++#include <drivers/st/io_stm32image.h>
++#include <drivers/st/stm32mp_pmic.h>
++#include <drivers/st/stm32_hash.h>
++#include <drivers/st/stpmic1.h>
++#include <lib/mmio.h>
++#include <lib/ssp_lib.h>
++#include <lib/utils.h>
++#include <lib/utils_def.h>
++#include <plat/common/platform.h>
++
++/* Local status for SSP processing sequences */
++typedef enum {
++	SSP_NONE,
++	SSP_GET_CERT,
++	SSP_FLASH_OEM,
++	SSP_DONE,
++	SSP_ERROR
++} ssp_result_e;
++
++struct otp_val {
++	uint32_t idx;
++	uint32_t nb;
++};
++
++static struct otp_val otp_ssp;
++static struct otp_val otp_rma;
++static struct otp_val otp_pubkey;
++
++static int initialize_otp(void)
++{
++	uint32_t len;
++
++	/* OTP SSP */
++	if (stm32_get_otp_index(SSP_OTP, &otp_ssp.idx, NULL) != 0) {
++		VERBOSE("%s: get index error\n", __func__);
++		return -EINVAL;
++	}
++
++	/* OTP public key */
++	if (stm32_get_otp_index(PKH_OTP, &(otp_pubkey.idx), &len) != 0) {
++		VERBOSE("%s: get index error\n", __func__);
++		return -EINVAL;
++	}
++
++	if (len != (CHAR_BIT * BOOT_API_SHA256_DIGEST_SIZE_IN_BYTES)) {
++		VERBOSE("%s: length Error\n", __func__);
++		return -EINVAL;
++	}
++
++	otp_pubkey.nb = len / (CHAR_BIT * sizeof(uint32_t));
++
++	/* OTP RMA */
++	if (stm32_get_otp_index(RMA_OTP, &otp_rma.idx, NULL) != 0) {
++		VERBOSE("%s: get index error\n", __func__);
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++/*
++ * Return device handler for flashloader interface.
++ */
++static int ssp_get_loader_handle(uintptr_t *dev_handle, uintptr_t *dev_spec)
++{
++	int result;
++
++	/* Obtain a reference to the image handle to get boot device */
++	result = plat_get_image_source(BL33_IMAGE_ID, dev_handle, dev_spec);
++	if (result != 0) {
++		WARN("Failed to obtain reference to image '%s' (%i)\n",
++		     BL33_IMAGE_NAME, result);
++		return -EINVAL;
++	}
++
++	return result;
++}
++
++/*
++ * Compute HASH from public key and burn it in OTP.
++ */
++static int ssp_pub_key_prog(boot_api_context_t *boot_context)
++{
++	uint8_t key_hash[BOOT_API_SHA256_DIGEST_SIZE_IN_BYTES];
++	uint8_t *pubk = (uint8_t *)
++		boot_context->p_ssp_config->p_blob_payload->oem_ecdsa_pubk;
++	uint32_t *value = (uint32_t *)key_hash;
++	uint32_t i;
++
++	if (stm32_hash_register() != 0) {
++		return -EINVAL;
++	}
++
++	stm32_hash_init(HASH_SHA256);
++
++	if (stm32_hash_final_update(pubk, BOOT_API_SSP_PUBK_KEY_SIZE_BYTES,
++				    key_hash) != 0) {
++		ERROR("Hash of payload failed\n");
++		return -EINVAL;
++	}
++
++	for (i = otp_pubkey.idx; i < (otp_pubkey.idx + otp_pubkey.nb); i++) {
++		if (bsec_program_otp(bswap32(*value), i) != BSEC_OK) {
++			return -EINVAL;
++		}
++
++		value++;
++		if (bsec_permanent_lock_otp(i) != BSEC_OK) {
++			ERROR("Error locking OTP %i\n", i);
++			panic();
++		}
++	}
++
++	return 0;
++}
++
++/*
++ * Burn OTP to close device.
++ */
++static int ssp_close_device(void)
++{
++	uint32_t otp;
++	uint32_t value;
++
++	if (stm32_get_otp_index(CFG0_OTP, &otp, NULL) != 0) {
++		return -EINVAL;
++	}
++
++	if (bsec_read_otp(&value, otp) != BSEC_OK) {
++		return -EINVAL;
++	}
++
++	if ((value & CFG0_CLOSED_DEVICE) != 0U) {
++		ERROR("Device already closed\n");
++		return -EINVAL;
++	}
++
++	value |= CFG0_CLOSED_DEVICE;
++	if (bsec_program_otp(value, otp) != BSEC_OK) {
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++/*
++ * OTP initial check to detect previous values.
++ */
++static int ssp_secrets_check(boot_api_context_t *boot_ctx)
++{
++	uint32_t i;
++	uint32_t check_val;
++	uint32_t otp_byte =
++		boot_ctx->p_ssp_config->p_blob_payload->oem_secret_size_bytes;
++	uint32_t otp_decrypted = round_up(otp_byte, sizeof(uint32_t)) /
++				 sizeof(uint32_t);
++
++	for (i = otp_pubkey.idx; i < (otp_pubkey.idx + otp_pubkey.nb); i++) {
++		if (stm32_get_otp_value_from_idx(i, &check_val) != 0) {
++			return -EINVAL;
++		}
++
++		if (check_val != 0U) {
++			ERROR("OTP %d value already programmed\n", i);
++			return -EINVAL;
++		}
++	}
++
++	/* OTP decrypted include RMA password */
++	if (otp_decrypted > (2U + SSP_OTP_SECRET_END - SSP_OTP_SECRET_BASE)) {
++		return -EINVAL;
++	}
++
++	/* Check RMA password */
++	if (stm32_get_otp_value_from_idx(otp_rma.idx, &check_val) != 0) {
++		return -EINVAL;
++	}
++
++	if (check_val != 0U) {
++		ERROR("OTP %s value already programmed\n", RMA_OTP);
++		return -EINVAL;
++	}
++
++	/* Check all OTP available */
++	for (i = SSP_OTP_SECRET_BASE;
++	     i < SSP_OTP_SECRET_BASE + otp_decrypted - 1; i++) {
++		if (stm32_get_otp_value_from_idx(i, &check_val) != 0) {
++			return -EINVAL;
++		}
++
++		if (check_val != 0U) {
++			ERROR("OTP %d value already programmed\n", i);
++			return -EINVAL;
++		}
++	}
++
++	return 0;
++}
++
++/*
++ * Burn OTP with the decrypted secret received.
++ */
++static int ssp_secrets_flash(boot_api_context_t *boot_ctx)
++{
++	uint32_t i;
++	uint32_t *val;
++	uint32_t otp_byte =
++		boot_ctx->p_ssp_config->p_blob_payload->oem_secret_size_bytes;
++	uint32_t otp_decrypted = round_up(otp_byte, sizeof(uint32_t)) /
++				 sizeof(uint32_t);
++	uint32_t otp_mask = 0U;
++
++	if (otp_byte % sizeof(uint32_t) != 0U) {
++		otp_mask = GENMASK_32(((otp_byte % sizeof(uint32_t)) *
++				       sizeof(uint32_t)) - 1, 0);
++	}
++
++	val = (uint32_t *)boot_ctx->p_ssp_config->p_ssp_oem_secrets_decrypted;
++
++	/* Burn RMA password */
++	if (otp_decrypted != 0U) {
++		if (bsec_program_otp((*val & RMA_OTP_MASK), otp_rma.idx) !=
++		    BSEC_OK) {
++			WARN("RMA programing failed\n");
++			return -EINVAL;
++		}
++
++		val++;
++		otp_decrypted--;
++
++		for (i = SSP_OTP_SECRET_BASE;
++		     i < (SSP_OTP_SECRET_BASE + otp_decrypted - 1); i++) {
++
++			if (*val == 0U) {
++				val++;
++				continue;
++			}
++
++			if (bsec_program_otp(*val, i) != BSEC_OK) {
++				WARN("Error writing OTP %i\n", i);
++				return -EINVAL;
++			}
++
++			if (bsec_permanent_lock_otp(i) != BSEC_OK) {
++				WARN("Error locking OTP %i\n", i);
++				return -EINVAL;
++			}
++
++			val++;
++		}
++
++		if (*val != 0U) {
++			/* Mask the last OTP value if needed */
++			if (otp_mask != 0U) {
++				*val &= otp_mask;
++			}
++
++			if (bsec_program_otp(*val, i) != BSEC_OK) {
++				WARN("Error writing OTP %i\n", i);
++				return -EINVAL;
++			}
++
++			if (bsec_permanent_lock_otp(i) != BSEC_OK) {
++				WARN("Error locking OTP %i\n", i);
++				return -EINVAL;
++			}
++		}
++	}
++
++	return 0;
++}
++
++/*
++ * Finish SSP processing by fusing OTP SSP success.
++ */
++static int ssp_finish_process(void)
++{
++	uint32_t val;
++
++	if (stm32_get_otp_value_from_idx(otp_ssp.idx, &val) != 0) {
++		return -EINVAL;
++	}
++
++	if ((val & SSP_OTP_SUCCESS) != 0U) {
++		WARN("Error while configuring OTP\n");
++		return -EINVAL;
++	}
++
++	val |= SSP_OTP_SUCCESS;
++	if (bsec_program_otp(val, otp_ssp.idx) != BSEC_OK) {
++		return -EINVAL;
++	}
++
++	VERBOSE("Write OTP Success\n");
++
++	return 0;
++}
++
++/*
++ * Transform integer to string.
++ */
++static void itoa(uint32_t num, char *str, int nb)
++{
++	if (num == 0U) {
++		while (nb--) {
++			str[nb] = '0';
++		}
++		return;
++	}
++
++	while (num != 0U) {
++		int rem = num % 16;
++
++		str[--nb] = (rem > 9) ? (rem - 10) + 'A' : rem + '0';
++		num /= 16;
++	}
++
++	while (nb != 0) {
++		str[--nb] = '0';
++	}
++}
++
++/*
++ * Return chip product ID.
++ */
++static int ssp_get_product_id(char *msg)
++{
++	uint32_t otp;
++	uint32_t otp_idx;
++	uint32_t chip_id;
++
++	if (stm32_get_otp_index(CFG2_OTP, &otp_idx, NULL) != 0) {
++		VERBOSE("Get index error\n");
++		return -EINVAL;
++	}
++
++	if (stm32_get_otp_value_from_idx(otp_idx, &otp) != 0) {
++		return -EINVAL;
++	}
++
++	if (stm32mp1_dbgmcu_get_chip_dev_id(&chip_id) < 0) {
++		return -EINVAL;
++	}
++
++	itoa(chip_id, msg, 3);
++	itoa((otp & OTP_CFG2_SEC_COUNTER_MASK) >>
++	     OTP_CFG2_SEC_COUNTER_SHIFT, msg + 3, 2);
++
++	itoa(0, msg + 5, 1);
++	itoa((otp & OTP_CFG2_ST_KEY_MASK) >>
++	     OTP_CFG2_ST_KEY_SHIFT, msg + 6, 2);
++
++	return 0;
++}
++
++/*
++ * Clean external data and bootrom context secret values.
++ */
++static void ssp_cleanup(boot_api_context_t *boot_context)
++{
++	boot_api_ssp_config_t *ssp_config = boot_context->p_ssp_config;
++
++	/* Cleanup boot_context */
++	if (ssp_config->p_ssp_oem_secrets_decrypted != NULL) {
++		zeromem(ssp_config->p_ssp_oem_secrets_decrypted,
++			BOOT_API_SSP_OEM_SECRETS_MAX_SIZE_BYTES);
++		zeromem(ssp_config->p_chip_pubk,
++			BOOT_API_SSP_PUBK_KEY_SIZE_BYTES);
++		zeromem(ssp_config->p_blob_license,
++			sizeof(boot_api_ssp_blob_license_t));
++		zeromem(ssp_config->p_blob_payload,
++			sizeof(boot_api_ssp_blob_payload_t));
++	}
++
++	ssp_config->ssp_cmd = 0U;
++
++#ifndef DCACHE_OFF
++	flush_dcache_range((uintptr_t)ssp_config->p_ssp_oem_secrets_decrypted,
++			   BOOT_API_SSP_OEM_SECRETS_MAX_SIZE_BYTES);
++
++	flush_dcache_range((uintptr_t)ssp_config->p_chip_pubk,
++			   BOOT_API_SSP_PUBK_KEY_SIZE_BYTES);
++
++	flush_dcache_range((uintptr_t)ssp_config->p_blob_license,
++			   sizeof(boot_api_ssp_blob_license_t));
++
++	flush_dcache_range((uintptr_t)ssp_config->p_blob_payload,
++			   sizeof(boot_api_ssp_blob_payload_t));
++#endif
++
++	ssp_config->p_ssp_oem_secrets_decrypted = NULL;
++	ssp_config->p_chip_pubk = NULL;
++	ssp_config->p_blob_license = NULL;
++	ssp_config->p_blob_payload = NULL;
++
++#ifndef DCACHE_OFF
++	flush_dcache_range((uintptr_t)boot_context,
++			   sizeof(boot_api_context_t));
++
++	flush_dcache_range((uintptr_t)ssp_config,
++			   sizeof(boot_api_ssp_config_t));
++#endif
++}
++
++/*
++ * Send certificate to the programmer and retrieve the associated
++ * encrypted file.
++ */
++static int ssp_download_phase(boot_api_context_t *boot_ctx)
++{
++	uint32_t i;
++	uint32_t j;
++	uint32_t otp;
++	uint32_t otp_idx;
++	uint32_t otp_len;
++	uint8_t *blob_file;
++	int result = 0;
++	uintptr_t dev_handle, handle, dev_spec;
++	size_t length_read;
++	struct stm32image_part_info partition_spec = {
++		.name = "SSP"
++	};
++
++	blob_file = (uint8_t *)page_align(SSP_BLOB_FILE_MAX_ADDR -
++					  sizeof(boot_api_ssp_blob_license_t) -
++					  sizeof(boot_api_ssp_blob_payload_t),
++					  DOWN);
++
++	ssp_exchange_t flash_exch = {
++		.blob = blob_file
++	};
++
++	/* Prepare the ROM Security constant */
++	if (ssp_get_product_id((char *)flash_exch.msg) != 0) {
++		return -EINVAL;
++	}
++
++	/* Prepare public key and certificate for flashloader */
++	/* Read Public Key from boot_context */
++	memcpy((uint8_t *)flash_exch.msg + 8,
++	       boot_ctx->p_ssp_config->p_chip_pubk,
++	       BOOT_API_SSP_PUBK_KEY_SIZE_BYTES);
++
++	if (stm32_get_otp_index(CHIP_CERTIFICATE_OTP,
++				&otp_idx, &otp_len) != 0) {
++		VERBOSE("Get index error\n");
++		return -EINVAL;
++	}
++
++	if (otp_len != (CHAR_BIT * CHIP_CERTIFICATE_MAX_SIZE)) {
++		VERBOSE("Length Error\n");
++		return -EINVAL;
++	}
++
++	otp_len /= (CHAR_BIT * sizeof(uint32_t));
++
++	/* Read Certificat from OTP */
++	for (i = otp_idx, j = 0; i < (otp_idx + otp_len); i++, j++) {
++		stm32_get_otp_value_from_idx(i, &otp);
++		flash_exch.msg[18 + j] = bswap32(otp);
++	}
++
++	if (ssp_get_loader_handle(&dev_handle, &dev_spec) != 0) {
++		WARN("Error while retrieving handle\n");
++		return -ENOENT;
++	}
++
++	result = io_open(dev_handle, (uintptr_t)&partition_spec, &handle);
++	if (result != 0) {
++		WARN("SSP io open error %i\n", result);
++		return -EINVAL;
++	}
++
++	result = io_read(handle, (uintptr_t)&flash_exch,
++			 sizeof(boot_api_ssp_blob_license_t) +
++			 sizeof(boot_api_ssp_blob_payload_t),
++			 &length_read);
++	if (result != 0) {
++		WARN("SSP read command error %i\n", result);
++		return -EINVAL;
++	}
++
++	boot_ctx->p_ssp_config->p_blob_license =
++		(boot_api_ssp_blob_license_t *)blob_file;
++
++	/* Payload is concatene with license file */
++	boot_ctx->p_ssp_config->p_blob_payload =
++		(boot_api_ssp_blob_payload_t *)(blob_file +
++		sizeof(boot_api_ssp_blob_license_t));
++
++	/* Set return address for decrypted_secrets */
++	boot_ctx->p_ssp_config->p_ssp_oem_secrets_decrypted =
++		boot_ctx->p_ssp_config->p_blob_payload->oem_encrypted_secrets;
++
++#ifndef DCACHE_OFF
++	flush_dcache_range((uintptr_t)boot_ctx->p_ssp_config->p_blob_license,
++			   sizeof(boot_api_ssp_blob_license_t));
++	flush_dcache_range((uintptr_t)boot_ctx->p_ssp_config->p_blob_payload,
++			   sizeof(boot_api_ssp_blob_payload_t));
++#endif
++	result = io_close(handle);
++
++	return result;
++}
++
++/*
++ * Burn decrypted secrets into OTP, clean memory and close the device.
++ */
++static int ssp_secret_programming(boot_api_context_t *boot_context)
++{
++	int result;
++
++	result = ssp_secrets_check(boot_context);
++	if (result != 0) {
++		WARN("SSP ERROR checking OTP\n");
++		goto clean;
++	}
++
++	result = ssp_pub_key_prog(boot_context);
++	if (result != 0) {
++		WARN("SSP ERROR writing HASH key\n");
++		goto clean;
++	}
++
++	result = ssp_close_device();
++	if (result != 0) {
++		WARN("SSP close device failed\n");
++		goto clean;
++	}
++
++	result = ssp_secrets_flash(boot_context);
++	if (result != 0) {
++		WARN("SSP Secret flash failed\n");
++	}
++
++clean:
++	ssp_cleanup(boot_context);
++
++	if (result != 0) {
++		return result;
++	}
++
++	return ssp_finish_process();
++}
++
++/*
++ * Enable the SSP processing.
++ */
++static int ssp_enable_processing(boot_api_context_t *boot_context)
++{
++	static const char buf_err[] = "Provisioning";
++	uint32_t val;
++	int result;
++	uintptr_t dev_handle, handle, dev_spec;
++	size_t length_read;
++	struct stm32image_part_info partition_spec = {
++		.name = "SSP_INIT"
++	};
++
++	if (stm32_get_otp_value_from_idx(otp_ssp.idx, &val) != 0) {
++		return -EINVAL;
++	}
++
++	if (((val & SSP_OTP_MASK) == SSP_OTP_MASK) ||
++	    ((val & SSP_OTP_MASK) == SSP_OTP_SUCCESS)) {
++		return -EINVAL;
++	}
++
++	if ((val & SSP_OTP_MASK) == 0U) {
++		if (bsec_program_otp(SSP_OTP_REQ, otp_ssp.idx) != BSEC_OK) {
++			return -EINVAL;
++		}
++	}
++
++	if (ssp_get_loader_handle(&dev_handle, &dev_spec) != 0) {
++		WARN("Error while retrieving handle\n");
++		return -ENOENT;
++	}
++
++	result = io_open(dev_handle, (uintptr_t)&partition_spec, &handle);
++	if (result != 0) {
++		WARN("SSP io open error  %i\n", result);
++		return -EINVAL;
++	}
++
++	result = io_read(handle, (uintptr_t)&buf_err, sizeof(buf_err),
++			 &length_read);
++	if (result != 0) {
++		WARN("SSP read command error %i\n", result);
++		return -EINVAL;
++	}
++
++	result = io_close(handle);
++	if (result != 0) {
++		WARN("SSP io close error %i\n", result);
++		return -EINVAL;
++	}
++
++	boot_context->p_ssp_config->ssp_cmd =
++		BOOT_API_CTX_SSP_CMD_CALC_CHIP_PUBK;
++#ifndef DCACHE_OFF
++	flush_dcache_range((uintptr_t)boot_context->p_ssp_config,
++			   sizeof(boot_api_ssp_config_t));
++#endif
++	return 0;
++}
++
++/*
++ * Retrieve the current status of the SSP from bootrom context and OTP value.
++ */
++static ssp_result_e ssp_check_status(boot_api_context_t *boot_context)
++{
++	uint32_t otp;
++
++	if (initialize_otp() < 0) {
++		return SSP_ERROR;
++	}
++
++	if (stm32_get_otp_value_from_idx(otp_ssp.idx, &otp) != 0) {
++		return SSP_ERROR;
++	}
++
++	if ((otp & SSP_OTP_REQ) == 0U) {
++		return SSP_NONE;
++	}
++
++	if ((otp & SSP_OTP_SUCCESS) != 0U) {
++		return SSP_DONE;
++	}
++
++	VERBOSE("Start Get ssp_cmd : %x\n",
++		boot_context->p_ssp_config->ssp_cmd);
++
++	switch (boot_context->p_ssp_config->ssp_cmd) {
++	case BOOT_API_CTX_SSP_CMD_CALC_CHIP_PUBK_ACK:
++		INFO("Detected start SSP Phase 2\n");
++		return SSP_GET_CERT;
++	case BOOT_API_CTX_SSP_CMD_PROV_SECRET_ACK:
++		INFO("Detected start SSP Phase 3\n");
++		return SSP_FLASH_OEM;
++	default:
++		return SSP_NONE;
++	}
++}
++
++/*
++ * Start the SSP processing.
++ */
++void ssp_start(boot_api_context_t *boot_context)
++{
++	int result;
++
++	switch (ssp_check_status(boot_context)) {
++	case SSP_GET_CERT:
++		result = ssp_download_phase(boot_context);
++		if (result != 0) {
++			/*
++			 * Download Phase failed, clean, reset
++			 */
++			ssp_cleanup(boot_context);
++
++			ERROR("SSP_Error: Resetting target\n");
++			goto out;
++		}
++
++		/* Process completed, go to Phase 3 */
++		boot_context->p_ssp_config->ssp_cmd =
++			BOOT_API_CTX_SSP_CMD_PROV_SECRET;
++#ifndef DCACHE_OFF
++		flush_dcache_range((uintptr_t)boot_context->p_ssp_config,
++				   sizeof(boot_api_ssp_config_t));
++#endif
++		break;
++
++	case SSP_FLASH_OEM:
++		result = ssp_secret_programming(boot_context);
++		if (result != 0) {
++			ERROR("Error during provisionning\n");
++			goto out;
++		}
++
++		NOTICE("Provisioning completed\n");
++		goto out;
++
++	case SSP_ERROR:
++		/*
++		 * Error during bootrom SSP processing
++		 */
++		ERROR("SSP_Error: Resetting target\n");
++		goto out;
++
++	case SSP_NONE:
++	default:
++		result = ssp_enable_processing(boot_context);
++		if (result != 0) {
++			ERROR("Start SSP Failed (%i)\n", result);
++			goto out;
++		}
++	}
++
++	if (result == 0) {
++		/*
++		 * Keep VDDCORE && VDD enabled if pmic used to generate
++		 * the required MPSYSRST.
++		 */
++		if (dt_pmic_status() > 0) {
++			const char *name;
++
++			name = stm32mp_get_cpu_supply_name();
++			if (name == NULL) {
++				goto out;
++			}
++
++			if (stpmic1_regulator_mask_reset_set(name) != 0) {
++				WARN("Failed to write %s reset mask\n", name);
++			}
++
++			name = stm32mp_get_vdd_supply_name();
++			if (name == NULL) {
++				goto out;
++			}
++
++			if (stpmic1_regulator_mask_reset_set(name) != 0) {
++				WARN("Failed to write %s reset mask\n", name);
++			}
++		}
++	}
++
++out:
++	stm32mp_plat_reset(plat_my_core_pos());
++}
+diff --git a/lib/usb/usb_st_dfu.c b/lib/usb/usb_st_dfu.c
+index 8876b74..1c0c2ef 100644
+--- a/lib/usb/usb_st_dfu.c
++++ b/lib/usb/usb_st_dfu.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2015-2019, STMicroelectronics - All Rights Reserved
++ * Copyright (c) 2015-2020, STMicroelectronics - All Rights Reserved
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -12,10 +12,12 @@
+ #include <lib/usb/usb_st_dfu.h>
+ 
+ static uintptr_t usbd_dfu_download_address;
++static uintptr_t usbd_dfu_upload_address;
+ static uint32_t usbd_dfu_phase_id;
+ static uint32_t usbd_dfu_operation_complete;
+ static uint32_t usbd_dfu_current_req;
+ static uint32_t usbd_detach_req;
++static uint32_t usbd_error_msg_size;
+ 
+ /*
+  * @brief  USBD_DFU_Init
+@@ -370,28 +372,21 @@ static void usb_dfu_upload(usb_handle_t *pdev, usb_setup_req_t *req)
+ 
+ 				INFO("UPLOAD :\n");
+ 				INFO("\t\tPhase ID : %i\n", usbd_dfu_phase_id);
++#if STM32MP_SSP
+ 				INFO("\t\taddress 0x%lx\n",
+-				     usbd_dfu_download_address);
++				     usbd_dfu_upload_address);
+ 
+ 				hdfu->buffer[0] = usbd_dfu_phase_id;
+-				hdfu->buffer[1] = (uint8_t)
+-						  (usbd_dfu_download_address);
+-				hdfu->buffer[2] = (uint8_t)
+-						  (usbd_dfu_download_address >>
+-						   8);
+-				hdfu->buffer[3] = (uint8_t)
+-						  (usbd_dfu_download_address >>
+-						   16);
+-				hdfu->buffer[4] = (uint8_t)
+-						  (usbd_dfu_download_address >>
+-						   24);
+-
++				hdfu->buffer[1] = usbd_dfu_upload_address;
++				hdfu->buffer[2] = usbd_dfu_upload_address >> 8;
++				hdfu->buffer[3] = usbd_dfu_upload_address >> 16;
++				hdfu->buffer[4] = usbd_dfu_upload_address >> 24;
+ 				hdfu->buffer[5] = 0x00;
+ 				hdfu->buffer[6] = 0x00;
+ 				hdfu->buffer[7] = 0x00;
+ 				hdfu->buffer[8] = 0x00;
+ 
+-				if ((usbd_dfu_download_address ==
++				if ((usbd_dfu_upload_address ==
+ 				    UNDEFINE_DOWN_ADDR) &&
+ 				   (usbd_detach_req)) {
+ 					INFO("Send detach request\n");
+@@ -399,10 +394,69 @@ static void usb_dfu_upload(usb_handle_t *pdev, usb_setup_req_t *req)
+ 					pdev->ep_in[0].total_length = 10;
+ 					pdev->ep_in[0].rem_length   = 10;
+ 				} else {
++					if (usbd_dfu_phase_id != 0xFF) {
++						pdev->ep_in[0].total_length = 9;
++						pdev->ep_in[0].rem_length   = 9;
++					} else {
++						memcpy(&hdfu->buffer[9],
++						       (char *)
++						       usbd_dfu_upload_address,
++						       usbd_error_msg_size);
++						pdev->ep_in[0].total_length =
++							9 + usbd_error_msg_size;
++						pdev->ep_in[0].rem_length =
++							9 + usbd_error_msg_size;
++						usbd_dfu_operation_complete = 1;
++					}
++				}
++
++				if (hdfu->alt_setting != DFU_GET_PHASE) {
++					uint16_t size;
++
++					/* Change SSP phase */
++					size = ((usb_dfu_media_t *)
++						pdev->user_data)->
++						read((uint8_t *)
++						     usbd_dfu_upload_address,
++						     &hdfu->buffer[9],
++						     hdfu->wlength);
++
++					if (size != 0) {
++						pdev->ep_in[0].total_length +=
++							size;
++						pdev->ep_in[0].rem_length   +=
++							size;
++					}
++				}
++#else /* STM32MP_SSP */
++				INFO("\t\taddress 0x%lx\n",
++				     usbd_dfu_download_address);
++
++				hdfu->buffer[0] = usbd_dfu_phase_id;
++				hdfu->buffer[1] = usbd_dfu_download_address;
++				hdfu->buffer[2] = usbd_dfu_download_address >>
++					8;
++				hdfu->buffer[3] = usbd_dfu_download_address >>
++					16;
++				hdfu->buffer[4] = usbd_dfu_download_address >>
++					24;
++				hdfu->buffer[5] = 0x00;
++				hdfu->buffer[6] = 0x00;
++				hdfu->buffer[7] = 0x00;
++				hdfu->buffer[8] = 0x00;
++
++				if ((usbd_dfu_download_address ==
++				     UNDEFINE_DOWN_ADDR) &&
++				    (usbd_detach_req)) {
++					INFO("Send detach request\n");
++					hdfu->buffer[9] = 0x01;
++					pdev->ep_in[0].total_length = 10;
++					pdev->ep_in[0].rem_length   = 10;
++				} else {
+ 					pdev->ep_in[0].total_length = 9;
+ 					pdev->ep_in[0].rem_length   = 9;
+ 				}
+-
++#endif /* STM32MP_SSP */
+ 				/* Send the status data over EP0 */
+ 				pdev->ep0_state = USBD_EP0_DATA_IN;
+ 				/* Start the transfer */
+@@ -662,6 +716,10 @@ static uint8_t usb_dfu_setup(usb_handle_t *pdev, usb_setup_req_t *req)
+ 				usb_dfu_upload(pdev, req);
+ 				break;
+ 
++			case DFU_DNLOAD:
++				usb_dfu_download(pdev, req);
++				break;
++
+ 			case DFU_GETSTATUS:
+ 				INFO("GETSTATUS :\n");
+ 				usb_dfu_get_status(pdev);
+@@ -759,6 +817,7 @@ static uint8_t usb_dfu_setup(usb_handle_t *pdev, usb_setup_req_t *req)
+ 				break;
+ 
+ 			case DFU_DETACH:
++				INFO("Receive DFU detach\n");
+ 				usb_dfu_detach(pdev, req);
+ 				break;
+ 
+@@ -844,6 +903,11 @@ void usb_dfu_set_download_addr(uintptr_t addr)
+ 	usbd_dfu_download_address = addr;
+ }
+ 
++void usb_dfu_set_upload_addr(uintptr_t addr)
++{
++	usbd_dfu_upload_address = addr;
++}
++
+ uint32_t usb_dfu_download_is_completed(void)
+ {
+ 	return usbd_dfu_operation_complete;
+@@ -863,3 +927,8 @@ void usb_dfu_request_detach(void)
+ {
+ 	usbd_detach_req = 1;
+ }
++
++void usb_dfu_error_msg_size(uint32_t size)
++{
++	usbd_error_msg_size = size;
++}
+diff --git a/plat/st/common/bl2_io_storage.c b/plat/st/common/bl2_io_storage.c
+index f94a5c2..6050358 100644
+--- a/plat/st/common/bl2_io_storage.c
++++ b/plat/st/common/bl2_io_storage.c
+@@ -128,6 +128,7 @@ static pcd_handle_t pcd_handle;
+ static const io_dev_connector_t *usb_dev_con;
+ #endif /* STM32MP_USB_PROGRAMMER */
+ 
++#if !STM32MP_SSP
+ #ifdef AARCH32_SP_OPTEE
+ static const struct stm32image_part_info optee_header_partition_spec = {
+ 	.name = OPTEE_HEADER_IMAGE_NAME,
+@@ -154,6 +155,7 @@ static const io_block_spec_t bl2_block_spec = {
+ 	.offset = BL2_BASE,
+ 	.length = STM32MP_BL2_SIZE,
+ };
++#endif /* !STM32MP_SSP */
+ 
+ static const struct stm32image_part_info bl33_partition_spec = {
+ 	.name = BL33_IMAGE_NAME,
+@@ -199,7 +201,9 @@ static io_block_spec_t stm32image_block_spec = {
+ 
+ static const io_dev_connector_t *stm32image_dev_con __unused;
+ 
++#if !STM32MP_SSP
+ static int open_dummy(const uintptr_t spec);
++#endif
+ static int open_image(const uintptr_t spec);
+ static int open_storage(const uintptr_t spec);
+ 
+@@ -210,6 +214,7 @@ struct plat_io_policy {
+ };
+ 
+ static const struct plat_io_policy policies[] = {
++#if !STM32MP_SSP
+ 	[BL2_IMAGE_ID] = {
+ 		.dev_handle = &dummy_dev_handle,
+ 		.image_spec = (uintptr_t)&bl2_block_spec,
+@@ -237,7 +242,8 @@ static const struct plat_io_policy policies[] = {
+ 		.image_spec = (uintptr_t)&bl32_block_spec,
+ 		.check = open_dummy
+ 	},
+-#endif
++#endif /* AARCH32_SP_OPTEE */
++#endif /* !STM32MP_SSP */
+ 	[BL33_IMAGE_ID] = {
+ 		.dev_handle = &image_dev_handle,
+ 		.image_spec = (uintptr_t)&bl33_partition_spec,
+@@ -257,10 +263,12 @@ static const struct plat_io_policy policies[] = {
+ 	}
+ };
+ 
++#if !STM32MP_SSP
+ static int open_dummy(const uintptr_t spec)
+ {
+ 	return io_dev_init(dummy_dev_handle, 0);
+ }
++#endif
+ 
+ static int open_image(const uintptr_t spec)
+ {
+diff --git a/plat/st/common/include/stm32mp_common.h b/plat/st/common/include/stm32mp_common.h
+index ab419f1..65d4806 100644
+--- a/plat/st/common/include/stm32mp_common.h
++++ b/plat/st/common/include/stm32mp_common.h
+@@ -23,6 +23,7 @@ bool stm32mp_is_closed_device(void);
+ bool stm32mp_is_auth_supported(void);
+ 
+ const char *stm32mp_get_cpu_supply_name(void);
++const char *stm32mp_get_vdd_supply_name(void);
+ 
+ /* Return the base address of the DDR controller */
+ uintptr_t stm32mp_ddrctrl_base(void);
+@@ -94,6 +95,11 @@ void stm32mp_print_boardinfo(void);
+ /* Check HW CPU OPP support */
+ bool stm32mp_supports_cpu_opp(uint32_t opp_id);
+ 
++#if STM32MP_SSP
++/* Check HW support SSP */
++bool stm32mp_supports_ssp(void);
++#endif
++
+ /*
+  * Util for clock gating and to get clock rate for stm32 and platform drivers
+  * @id: Target clock ID, ID used in clock DT bindings
+diff --git a/plat/st/common/include/stm32mp_dt.h b/plat/st/common/include/stm32mp_dt.h
+index 873bed5..996ed0a 100644
+--- a/plat/st/common/include/stm32mp_dt.h
++++ b/plat/st/common/include/stm32mp_dt.h
+@@ -49,6 +49,7 @@ int dt_get_max_opp_freqvolt(uint32_t *freq_khz, uint32_t *voltage_mv);
+ int dt_get_all_opp_freqvolt(uint32_t *count, uint32_t *freq_khz_array,
+ 			    uint32_t *voltage_mv_array);
+ uint32_t dt_get_pwr_vdd_voltage(void);
++const char *dt_get_vdd_regulator_name(void);
+ const char *dt_get_cpu_regulator_name(void);
+ const char *dt_get_board_model(void);
+ int fdt_get_gpio_bank_pinctrl_node(unsigned int bank);
+diff --git a/plat/st/common/stm32mp_common.c b/plat/st/common/stm32mp_common.c
+index e838995..612358c 100644
+--- a/plat/st/common/stm32mp_common.c
++++ b/plat/st/common/stm32mp_common.c
+@@ -170,6 +170,22 @@ const char *stm32mp_get_cpu_supply_name(void)
+ 	return supply;
+ }
+ 
++/* Return VDD supply name */
++const char *stm32mp_get_vdd_supply_name(void)
++{
++	const char *supply = NULL;
++
++	if (dt_pmic_status() > 0) {
++		const char *regulator = dt_get_vdd_regulator_name();
++
++		if (regulator != NULL) {
++			dt_pmic_find_supply(&supply, regulator);
++		}
++	}
++
++	return supply;
++}
++
+ #if TRUSTED_BOARD_BOOT
+ /* Save pointer to last loaded header */
+ static boot_api_image_header_t *latest_stm32_header;
+diff --git a/plat/st/common/stm32mp_dt.c b/plat/st/common/stm32mp_dt.c
+index f6de0b6..b12fc86 100644
+--- a/plat/st/common/stm32mp_dt.c
++++ b/plat/st/common/stm32mp_dt.c
+@@ -651,6 +651,33 @@ uint32_t dt_get_pwr_vdd_voltage(void)
+ }
+ 
+ /*******************************************************************************
++ * This function retrieves VDD regulator name from DT.
++ * Returns string taken from supply node, NULL otherwise.
++ ******************************************************************************/
++const char *dt_get_vdd_regulator_name(void)
++{
++	int node;
++	const fdt32_t *cuint;
++
++	node = dt_get_node_by_compatible(DT_PWR_COMPAT);
++	if (node < 0) {
++		return NULL;
++	}
++
++	cuint = fdt_getprop(fdt, node, "vdd-supply", NULL);
++	if (cuint == NULL) {
++		return NULL;
++	}
++
++	node = fdt_node_offset_by_phandle(fdt, fdt32_to_cpu(*cuint));
++	if (node < 0) {
++		return NULL;
++	}
++
++	return (const char *)fdt_getprop(fdt, node, "regulator-name", NULL);
++}
++
++/*******************************************************************************
+  * This function retrieves CPU regulator name from DT.
+  * Returns string taken from supply node, NULL otherwise.
+  ******************************************************************************/
+diff --git a/plat/st/common/stm32mp_trusted_boot.c b/plat/st/common/stm32mp_trusted_boot.c
+index f475842..57c0983 100644
+--- a/plat/st/common/stm32mp_trusted_boot.c
++++ b/plat/st/common/stm32mp_trusted_boot.c
+@@ -32,6 +32,7 @@ int plat_get_rotpk_info(void *cookie, void **key_ptr, unsigned int *key_len,
+ 		VERBOSE("get_rot_pk_hash: get index error\n");
+ 		return -EINVAL;
+ 	}
++
+ 	if (len != (CHAR_BIT * BOOT_API_SHA256_DIGEST_SIZE_IN_BYTES)) {
+ 		VERBOSE("get_rot_pk_hash: length Error\n");
+ 		return -EINVAL;
+diff --git a/plat/st/stm32mp1/bl2_plat_setup.c b/plat/st/stm32mp1/bl2_plat_setup.c
+index 3f5eb56..e62e911 100644
+--- a/plat/st/stm32mp1/bl2_plat_setup.c
++++ b/plat/st/stm32mp1/bl2_plat_setup.c
+@@ -30,6 +30,7 @@
+ #include <drivers/st/stpmic1.h>
+ #include <lib/mmio.h>
+ #include <lib/optee_utils.h>
++#include <lib/ssp_lib.h>
+ #include <lib/xlat_tables/xlat_tables_v2.h>
+ #include <plat/common/platform.h>
+ 
+@@ -41,6 +42,7 @@
+ 
+ #define TIMEOUT_US_1MS		U(1000)
+ 
++#if !STM32MP_SSP
+ static const char debug_msg[626] = {
+ 	"***************************************************\n"
+ 	"** NOTICE   NOTICE   NOTICE   NOTICE   NOTICE    **\n"
+@@ -55,6 +57,7 @@ static const char debug_msg[626] = {
+ 	"**                                               **\n"
+ 	"***************************************************\n"
+ };
++#endif
+ 
+ static struct console_stm32 console;
+ static enum boot_device_e boot_device = BOOT_DEVICE_BOARD;
+@@ -158,6 +161,11 @@ void bl2_el3_early_platform_setup(u_register_t arg0,
+ 	stm32mp_save_boot_ctx_address(arg0);
+ }
+ 
++#if STM32MP_SSP
++void bl2_platform_setup(void)
++{
++}
++#else
+ void bl2_platform_setup(void)
+ {
+ 	int ret;
+@@ -217,6 +225,7 @@ void bl2_platform_setup(void)
+ 		configure_pmic();
+ 	}
+ }
++#endif /* STM32MP_SSP */
+ 
+ static void update_monotonic_counter(void)
+ {
+@@ -258,9 +267,11 @@ static void initialize_clock(void)
+ 	uint32_t freq_khz = 0U;
+ 	int ret = 0;
+ 
++#if !STM32MP_SSP
+ 	if (wakeup_standby) {
+ 		ret = stm32_get_pll1_settings_from_context();
+ 	}
++#endif
+ 
+ 	/*
+ 	 * If no pre-defined PLL1 settings in DT, find the highest frequency
+@@ -343,6 +354,13 @@ void bl2_el3_plat_arch_setup(void)
+ 			BL_CODE_END - BL_CODE_BASE,
+ 			MT_CODE | MT_SECURE);
+ 
++#if SEPARATE_CODE_AND_RODATA
++	mmap_add_region(BL_RO_DATA_BASE, BL_RO_DATA_BASE,
++			BL_RO_DATA_END - BL_RO_DATA_BASE,
++			MT_RO_DATA | MT_SECURE);
++#endif
++
++#if !STM32MP_SSP
+ #ifdef AARCH32_SP_OPTEE
+ 	mmap_add_region(STM32MP_OPTEE_BASE, STM32MP_OPTEE_BASE,
+ 			STM32MP_OPTEE_SIZE,
+@@ -353,6 +371,7 @@ void bl2_el3_plat_arch_setup(void)
+ 			BL32_LIMIT - BL32_BASE,
+ 			MT_RO_DATA | MT_SECURE);
+ #endif
++#endif
+ 	/* Prevent corruption of preloaded Device Tree */
+ 	mmap_add_region(DTB_BASE, DTB_BASE,
+ 			DTB_LIMIT - DTB_BASE,
+@@ -502,7 +521,17 @@ void bl2_el3_plat_arch_setup(void)
+ 	console_set_scope(&console.console, CONSOLE_FLAG_BOOT |
+ 			  CONSOLE_FLAG_CRASH | CONSOLE_FLAG_TRANSLATE_CRLF);
+ 
++#if STM32MP_SSP
++	if (boot_context->p_ssp_config->ssp_cmd !=
++	    BOOT_API_CTX_SSP_CMD_PROV_SECRET_ACK) {
++		stm32mp_print_cpuinfo();
++		if (!stm32mp_supports_ssp()) {
++			ERROR("Chip doesn't support SSP\n");
++		}
++	}
++#else
+ 	stm32mp_print_cpuinfo();
++#endif
+ 
+ 	board_model = dt_get_board_model();
+ 	if (board_model != NULL) {
+@@ -536,6 +565,7 @@ skip_console_init:
+ 
+ 	stm32_iwdg_refresh();
+ 
++#if !STM32MP_SSP
+ 	if (bsec_read_debug_conf() != 0U) {
+ 		result = stm32mp1_dbgmcu_freeze_iwdg2();
+ 		if (result != 0) {
+@@ -554,6 +584,7 @@ skip_console_init:
+ 	}
+ 
+ 	stm32mp1_arch_security_setup();
++#endif
+ 
+ 	print_reset_reason();
+ 
+@@ -564,7 +595,16 @@ skip_console_init:
+ 		print_pmic_info_and_debug();
+ 	}
+ 
++#if STM32MP_SSP
++	if (boot_context->p_ssp_config->ssp_cmd !=
++	    BOOT_API_CTX_SSP_CMD_PROV_SECRET_ACK) {
++		stm32mp_io_setup();
++	}
++
++	ssp_start(boot_context);
++#else
+ 	stm32mp_io_setup();
++#endif
+ }
+ 
+ #if defined(AARCH32_SP_OPTEE)
+diff --git a/plat/st/stm32mp1/include/boot_api.h b/plat/st/stm32mp1/include/boot_api.h
+index 872e204..04be28d 100644
+--- a/plat/st/stm32mp1/include/boot_api.h
++++ b/plat/st/stm32mp1/include/boot_api.h
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2017-2019, STMicroelectronics - All Rights Reserved
++ * Copyright (c) 2017-2020, STMicroelectronics - All Rights Reserved
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -335,15 +335,278 @@ BOOT_API_MCIC_RETRAM_REGION_TO_HASH_IN_BYTES_TAMP_BCK_REG_IDX		23
+ /* 'K' 'B' 'U' 'P' -.> 'PUBK' */
+ #define BOOT_API_CTX_SSP_CMD_CALC_CHIP_PUBK             0x4B425550
+ 
++#if STM32MP_SSP
++/* 'V' 'O' 'R' 'P' -.> 'PROV' */
++#define BOOT_API_CTX_SSP_CMD_PROV_SECRET		0x564F5250
++/*
++ * Possible values of boot context field
++ * 'ssp_config_ptr_in->ssp_cmd' written by bootROM as Acknowledge
++ * of a request of SSP by FSBL.
++ */
++
++/* Written by bootROM on SSP error */
++#define BOOT_API_CTX_SSP_CMD_INVALID			0x00000000
++/*
++ * 'A' 'B' 'U' 'P' -.> 'PUBA' : ACK of ECIES_CHIP_PUBK calculation
++ * request by bootROM.
++ */
++#define BOOT_API_CTX_SSP_CMD_CALC_CHIP_PUBK_ACK		0x41425550
++/*
++ * 'A' 'O' 'R' 'P' -.> 'PROA' : ACK of OEM Secret Provisioning request
++ * by bootROM.
++ */
++#define BOOT_API_CTX_SSP_CMD_PROV_SECRET_ACK		0x414F5250
++
++/*
++ * Constants required for SSP
++ */
++/* '.' 'P' 'S' 'S' -.> 'SSP.' */
++#define BOOT_API_SSP_BLOB_LICENSE_TYPE_SSP_NORMAL	0x2E505353
++/* 'L' 'P' 'S' 'S' -.> 'SSPL' */
++#define BOOT_API_SSP_BLOB_LICENSE_TYPE_SSP_LIVE		0x4C505353
++/* version 1 */
++#define BOOT_API_SSP_LICENSE_LAYOUT_VERSION_TO_MATCH	0x00000001
++/* 'P' 'P' 'S' 'S' -.> 'SSPP' */
++#define BOOT_API_SSP_BLOB_PAYLOAD_MAGIC_SSP		0x50505353
++/* IV AES on 128 bits = 16 bytes and KEY AES on 128 bits = 16 bytes */
++#define BOOT_API_SSP_ENCRYPTED_IV_AND_KEY_SIZE_BYTES	32
++/* version 1 */
++#define BOOT_API_SSP_PAYLOAD_PROTOCOL_VERSION_TO_MATCH	0x00000001
++/*
++ * Scalar in Elliptic curve cryptography is an integer (often a Prime)
++ * the number of bytes of this scalar is defined below.
++ */
++#define BOOT_API_SSP_SCALAR_SIZE_BYTES				32
++
++/*
++ * In Elliptic curve cryptography coordinates of points are 2D P
++ * (Px, Py) as concatenation of two scalars.
++ */
++#define BOOT_API_SSP_EC_COORDINATE_SIZE_BYTES \
++	(2 * BOOT_API_SSP_SCALAR_SIZE_BYTES)
++
++/* In Elliptic curve cryptography Private Keys are scalars */
++#define BOOT_API_SSP_PRIVK_KEY_SIZE_BYTES \
++	BOOT_API_SSP_SCALAR_SIZE_BYTES
++
++/*
++ * In ECIES algorithm the Shared Secret (SS) is
++ * the x coordinate (Px) of a point P(Px,Py) obtained on reference
++ * NIST-P256 Elliptic curve chosen.
++ */
++#define BOOT_API_SSP_ECDH_SHARED_SECRET_SIZE_BYTES \
++	BOOT_API_SSP_SCALAR_SIZE_BYTES
++
++/*
++ * In Elliptic curve cryptography Public Keys are Points on Elliptic
++ * curve chosen P(x,y).
++ * Public Key is the x, y coordinates concatenated
++ * Ecies_eph_pubk and OEM_ECDSA_PUBK are each 64 bytes = 512 bits key
++ * sizes.
++ */
++#define BOOT_API_SSP_PUBK_KEY_SIZE_BYTES \
++	BOOT_API_SSP_EC_COORDINATE_SIZE_BYTES
++
++/*
++ * Size in bytes of ECIES_Chip_pubk obtained from bootROM at end of SSP
++ * phase 1 : Chip public key calculation.
++ */
++#define BOOT_API_SSP_ECIES_CHIP_PUBK_SIZE_BYTES \
++	BOOT_API_SSP_PUBK_KEY_SIZE_BYTES
++
++/* AES-GCM authentication tag size is 16 bytes = 128 bits */
++#define BOOT_API_SSP_AES_GCM_AUTH_TAG_SIZE_BYTES		16
++
++/* AES-GCM Symmetric Key size is 16 bytes = 128 bits */
++#define BOOT_API_SSP_AES_GCM_KEY_SIZE_BYTES			16
++
++/* AES-GCM Initialization Vector (IV) size is of 16 bytes = 128 bits */
++#define BOOT_API_SSP_AES_GCM_IV_SIZE_BYTES			16
++
++/*
++ * 88 bytes (license_type, live_session_id, license_version,
++ * fsbl_min_version, rfu[8], eph_ecies_pubk[])
++ */
++#define BOOT_API_SSP_AES_GCM_LICENSE_AAD_NB_BYTES_FROM_LICENSE	88
++
++/*
++ * 32 bytes AAD License Secret from 2nd round KDF-SHA-256
++ * from ECDH Shared Secret hence KDF[32..63] aka "Authorization Token"
++ */
++#define BOOT_API_SSP_AES_GCM_LICENSE_AAD_NB_BYTES_FROM_KDF	32
++
++/*
++ * Total License AAD size = 88 + 32 = 120 bytes
++ */
++#define BOOT_API_SSP_AES_GCM_LICENSE_AAD_SIZE_BYTES \
++	(BOOT_API_SSP_AES_GCM_LICENSE_AAD_NB_BYTES_FROM_LICENSE + \
++	 BOOT_API_SSP_AES_GCM_LICENSE_AAD_NB_BYTES_FROM_KDF)
++
++/*
++ * AAD for Payload size : composed of :
++ * payload_magic, payload_protocol_version, oem_ecdsa_pubk[], oem_secret_size
++ * = 4 + 4 + 64 + 4 = 76 bytes AAD for Payload
++ */
++#define BOOT_API_SSP_AES_GCM_PAYLOAD_AAD_SIZE_BYTES		76
++
++/*
++ * OEM Secrets max size in bytes :
++ * [OTP[95:59] + OTP_CFG56 (RMA Unlock and Relock passwords)] x 4 bytes
++ * by OTP word = 152 bytes
++ */
++#define BOOT_API_SSP_OEM_SECRETS_MAX_SIZE_BYTES			152
++
++/*
++ * Possible values of boot context field 'ssp_status'
++ * as can be read by FSBL-SSP
++ */
++#define BOOT_API_CTX_SSP_STATUS_NO_SSP				0
++#define BOOT_API_CTX_SSP_STATUS_CHIP_PUBK_CALC_FINISHED		1
++#define BOOT_API_CTX_SSP_STATUS_OEM_SEC_PROV_FINISHED		2
++#define BOOT_API_CTX_SSP_STATUS_OEM_SEC_PROV_FORBIDDEN		3
++
++/*
++ * Reserved size for future use
++ */
++#define BOOT_API_SSP_HSM_OEM_RFU_SIZE				8
++
+ /*
+  * Exported types
+  */
+ 
++/*
++ * SSP related definitions
++ */
++/*
++ * SSP BLOB License structure : Binary Large OBject License structure
++ * Should be written by FSBL-SSP to provide bootROM with SSP OEM Secret
++ * provisioning.
++ * License information data, the structure is read by bootROM.
++ */
++typedef struct {
++	/*
++	 * License Type provided by HSM-OEM tool
++	 * should match Normal SSP License of Live SSP License.
++	 */
++	uint32_t license_type;
++
++	/* Live Session ID provided by HSM-OEM tool */
++	uint32_t live_session_id;
++
++	/*
++	 * Version of the License Protocol (Structure)
++	 * should be incremented each time a new.
++	 */
++	uint32_t license_version;
++
++	/*
++	 * Minimum FSBL version to be compared
++	 * with FSBL Header field 'imageVersion'.
++	 */
++	uint32_t fsbl_min_version;
++
++	/* RFU provided by HSM-OEM tool */
++	uint8_t  rfu[BOOT_API_SSP_HSM_OEM_RFU_SIZE];
++
++	/*
++	 * Ephemeral ECIES Public Key from HSM-OEM
++	 * 64 bytes = 512 bits.
++	 */
++	uint8_t  eph_ecies_pubk[BOOT_API_SSP_PUBK_KEY_SIZE_BYTES];
++
++	/*
++	 * Encrypted (IV,Key) : with Shared Secret based on
++	 * 'Ephemeral ECIES Key pair' and 'ECIES Chip Key pair'.
++	 */
++	uint8_t encrypted_iv_and_key
++		[BOOT_API_SSP_ENCRYPTED_IV_AND_KEY_SIZE_BYTES];
++
++	/*
++	 * AUTH_TAG AES-GCM from encryption of (IV, Key)
++	 * in HSM-OEM with License AAD scheme
++	 * License Tag is 16 bytes = 128 bits.
++	 */
++	uint8_t  license_tag[BOOT_API_SSP_AES_GCM_AUTH_TAG_SIZE_BYTES];
++
++} boot_api_ssp_blob_license_t;
++
++/*
++ * SSP BLOB Payload structure : Binary Large OBject Payload Structure
++ * Should be written by FSBL-SSP to provide bootROM with SSP OEM Secret
++ * provisioning input data, the structure is read by bootROM
++ * The BLOB Payload size is fixed to a max size of 244 bytes based
++ * on a max number of bytes of OEM secret derived from OTP upper free
++ * area in STM32MP15xx cut 2.0.In this table oem_encrypted_secrets[]
++ * of max size only the first 'p_blob_payload->oem_secret_size_bytes'
++ * bytes will be considered and used by bootROM.
++ */
++typedef struct {
++	/*
++	 * BLOB Payload Magic : for memory validity check of BLOB Payload
++	 * to match against BOOT_API_SSP_BLOB_PAYLOAD_MAGIC_SSP by bootROM.
++	 */
++	uint32_t payload_magic;
++
++	/*
++	 * SSP Payload protocol version : on 32 bits
++	 * to be checked by bootROM for equality with
++	 * BOOT_API_SSP_PAYLOAD_PROTOCOL_VERSION_TO_MATCH
++	 * ie : 0x00000001 : version 1 of SSP Payload
++	 */
++	uint32_t payload_protocol_version;
++
++	/*
++	 * OEM_ECDSA_PUBK Public Key defined by OEM
++	 * 64 bytes = 512 bits
++	 */
++	uint8_t  oem_ecdsa_pubk[BOOT_API_SSP_PUBK_KEY_SIZE_BYTES];
++
++	/*
++	 * Size of Table of OEM Secrets encrypted with AES-GCM (Key,IV) from
++	 * License field 'encrypted_iv_and_key[]'
++	 * should be <= BOOT_API_SSP_OEM_SECRETS_MAX_SIZE_BYTES:
++	 * is verified by bootROM.
++	 */
++	uint32_t oem_secret_size_bytes;
++
++	/*
++	 * AUTH_TAG AES-GCM computed by HSM-OEM when encrypting OEM Secrets with
++	 * (Key,IV) using special AAD scheme for Payload.
++	 * 16 bytes = 128 bits
++	 */
++	uint8_t  payload_tag[BOOT_API_SSP_AES_GCM_AUTH_TAG_SIZE_BYTES];
++
++	/*
++	 * OEM Secrets encrypted with AES-GCM (IV, Key) from
++	 * License field 'encrypted_iv_and_key[]'.
++	 * The payload size is 'oem_secret_size_bytes'
++	 * should be <= BOOT_API_SSP_OEM_SECRETS_MAX_SIZE_BYTES =
++	 *  152 bytes : OEM Secrets max size in bytes :
++	 * [OTP_CFG56, OTP_CFG59, OTP_CFG60..95] x 4 bytes by OTP word.
++	 */
++	uint8_t oem_encrypted_secrets[BOOT_API_SSP_OEM_SECRETS_MAX_SIZE_BYTES];
++
++} boot_api_ssp_blob_payload_t;
++#endif
++
+ /* SSP Configuration structure */
+ typedef struct {
+ 	/* SSP Command*/
+ 	uint32_t ssp_cmd;
++#if STM32MP_SSP
++	/* ECIES chip public key */
++	uint8_t *p_chip_pubk;
++	/* Blob License Address */
++	boot_api_ssp_blob_license_t *p_blob_license;
++	/* Blob Payload Address */
++	boot_api_ssp_blob_payload_t *p_blob_payload;
++	/* Secrets Decrypted Address */
++	uint8_t *p_ssp_oem_secrets_decrypted;
++	/* Reserved for Future Use (RFU) */
++	uint32_t padding_rfu;
++#else
+ 	uint8_t	reserved[20];
++#endif
+ } boot_api_ssp_config_t;
+ 
+ /*
+diff --git a/plat/st/stm32mp1/include/platform_def.h b/plat/st/stm32mp1/include/platform_def.h
+index 694c3c4..380e120 100644
+--- a/plat/st/stm32mp1/include/platform_def.h
++++ b/plat/st/stm32mp1/include/platform_def.h
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2015-2019, ARM Limited and Contributors. All rights reserved.
++ * Copyright (c) 2015-2020, ARM Limited and Contributors. All rights reserved.
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -60,18 +60,31 @@
+  * Put BL2 just below BL3-1. BL2_BASE is calculated using the current BL2 debug
+  * size plus a little space for growth.
+  */
++#if !STM32MP_SSP
+ #define BL2_BASE			STM32MP_BL2_BASE
+ #define BL2_LIMIT			(STM32MP_BL2_BASE + \
+ 					 STM32MP_BL2_SIZE)
++#else
++#define BL2_RO_BASE			STM32MP_BL2_BASE
++#define BL2_RO_LIMIT			(STM32MP_BL2_BASE +	\
++					 STM32MP_BL2_SIZE)
++#define BL2_RW_BASE			BL2_RO_LIMIT
++#define BL2_RW_LIMIT			(STM32MP_SYSRAM_BASE +	\
++					 STM32MP_SYSRAM_SIZE -	\
++					 PLAT_XLAT_SIZE	-	\
++					 STM32MP_BL2_SIZE)
++#endif
+ 
+ /*******************************************************************************
+  * BL32 specific defines.
+  ******************************************************************************/
++#if !STM32MP_SSP
+ #ifndef AARCH32_SP_OPTEE
+ #define BL32_BASE			STM32MP_BL32_BASE
+ #define BL32_LIMIT			(STM32MP_BL32_BASE + \
+ 					 STM32MP_BL32_SIZE)
+ #endif
++#endif
+ 
+ /*******************************************************************************
+  * BL33 specific defines.
+diff --git a/plat/st/stm32mp1/plat_bl2_mem_params_desc.c b/plat/st/stm32mp1/plat_bl2_mem_params_desc.c
+index 1d407bb..5597886 100644
+--- a/plat/st/stm32mp1/plat_bl2_mem_params_desc.c
++++ b/plat/st/stm32mp1/plat_bl2_mem_params_desc.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2016-2019, ARM Limited and Contributors. All rights reserved.
++ * Copyright (c) 2016-2020, ARM Limited and Contributors. All rights reserved.
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -19,6 +19,7 @@
+  * the next executable image id.
+  ******************************************************************************/
+ static bl_mem_params_node_t bl2_mem_params_descs[] = {
++#if !STM32MP_SSP
+ 	/* Fill BL32 related information */
+ 	{
+ 		.image_id = BL32_IMAGE_ID,
+@@ -78,6 +79,7 @@ static bl_mem_params_node_t bl2_mem_params_descs[] = {
+ 		.next_handoff_image_id = INVALID_IMAGE_ID,
+ 	},
+ #endif /* AARCH32_SP_OPTEE */
++#endif /* !STM32MP_SSP */
+ 
+ 	/* Fill BL33 related information */
+ 	{
+diff --git a/plat/st/stm32mp1/plat_image_load.c b/plat/st/stm32mp1/plat_image_load.c
+index 0a7437b..2434e87 100644
+--- a/plat/st/stm32mp1/plat_image_load.c
++++ b/plat/st/stm32mp1/plat_image_load.c
+@@ -33,6 +33,7 @@ static bool addr_inside_backupsram(uintptr_t addr)
+  ******************************************************************************/
+ bl_load_info_t *plat_get_bl_image_load_info(void)
+ {
++#if !STM32MP_SSP
+ 	boot_api_context_t *boot_context =
+ 		(boot_api_context_t *)stm32mp_get_boot_ctx_address();
+ #ifdef AARCH32_SP_OPTEE
+@@ -86,7 +87,7 @@ bl_load_info_t *plat_get_bl_image_load_info(void)
+ 					  STM32MP_DDR_S_SIZE -
+ 					  STM32MP_DDR_SHMEM_SIZE -
+ 					  bl33->image_info.image_base;
+-
++#endif /* STM32MP_SSP */
+ 	return get_bl_load_info_from_mem_params_desc();
+ }
+ 
+diff --git a/plat/st/stm32mp1/platform.mk b/plat/st/stm32mp1/platform.mk
+index 840a38d..61443b5 100644
+--- a/plat/st/stm32mp1/platform.mk
++++ b/plat/st/stm32mp1/platform.mk
+@@ -15,6 +15,14 @@ VERSION_STRING		:=	v${VERSION_MAJOR}.${VERSION_MINOR}-${ST_VERSION}(${BUILD_TYPE
+ 
+ TRUSTED_BOARD_BOOT	:=	1
+ 
++STM32MP_SSP		?=	0
++$(eval $(call assert_boolean,STM32MP_SSP))
++$(eval $(call add_define,STM32MP_SSP))
++
++ifeq ($(STM32MP_SSP),1)
++include plat/st/stm32mp1/stm32mp1_ssp.mk
++endif
++
+ # Please don't increment this value without good understanding of
+ # the monotonic counter
+ STM32_TF_VERSION	?=	0
+@@ -185,8 +193,10 @@ BL2_SOURCES		+=	drivers/st/uart/io_programmer_uart.c			\
+ 				drivers/st/uart/stm32mp1xx_hal_uart.c
+ endif
+ 
++ifeq ($(STM32MP_SSP),0)
+ BL2_SOURCES		+=	drivers/st/ddr/stm32mp1_ddr.c				\
+ 				drivers/st/ddr/stm32mp1_ram.c
++endif
+ 
+ BL2_SOURCES		+=	common/desc_image_load.c				\
+ 				plat/st/stm32mp1/plat_bl2_mem_params_desc.c		\
+@@ -227,7 +237,9 @@ STM32IMAGE_SRC		:= ${STM32IMAGEPATH}/stm32image.c
+ .PHONY: check_dtc_version stm32image clean_stm32image
+ .SUFFIXES:
+ 
++ifeq ($(STM32MP_SSP),0)
+ all: check_dtc_version stm32image ${STM32_TF_STM32}
++endif
+ 
+ ifeq ($(AARCH32_SP),sp_min)
+ # BL32 is built only if using SP_MIN
+diff --git a/plat/st/stm32mp1/services/bsec_svc.c b/plat/st/stm32mp1/services/bsec_svc.c
+index e75571f..273c1cf 100644
+--- a/plat/st/stm32mp1/services/bsec_svc.c
++++ b/plat/st/stm32mp1/services/bsec_svc.c
+@@ -27,10 +27,6 @@
+ 
+ #include "bsec_svc.h"
+ 
+-#define SSP_OTP_REQ		BIT(BOOT_API_OTP_SSP_REQ_BIT_POS)
+-#define SSP_OTP_SUCCESS		BIT(BOOT_API_OTP_SSP_SUCCESS_BIT_POS)
+-#define SSP_OTP_MASK		(SSP_OTP_REQ | SSP_OTP_SUCCESS)
+-
+ enum bsec_ssp_status {
+ 	BSEC_NO_SSP = 0,
+ 	BSEC_SSP_SET,
+diff --git a/plat/st/stm32mp1/stm32mp1_def.h b/plat/st/stm32mp1/stm32mp1_def.h
+index d458805..bc6dd8f 100644
+--- a/plat/st/stm32mp1/stm32mp1_def.h
++++ b/plat/st/stm32mp1/stm32mp1_def.h
+@@ -131,6 +131,12 @@ enum ddr_type {
+ 					 (STM32MP_PARAM_LOAD_SIZE +	\
+ 					  STM32MP_HEADER_SIZE))
+ 
++#if STM32MP_SSP
++#define STM32MP_BL2_SIZE		U(0x00010000)	/* 64 Ko for BL2 */
++
++#define STM32MP_BL2_BASE		STM32MP_DTB_BASE + \
++					STM32MP_DTB_SIZE
++#else /* STM32MP_SSP */
+ #ifdef AARCH32_SP_OPTEE
+ #define STM32MP_BL32_SIZE		U(0)
+ 
+@@ -166,6 +172,7 @@ enum ddr_type {
+ 
+ #define STM32MP_BL2_BASE		(STM32MP_BL32_BASE - \
+ 					 STM32MP_BL2_SIZE)
++#endif /* STM32MP_SSP */
+ 
+ #if STM32MP_USB_PROGRAMMER
+  /* BL2 and BL32/sp_min require 5 finer granularity tables */
+@@ -179,6 +186,9 @@ enum ddr_type {
+  * MAX_MMAP_REGIONS is usually:
+  * BL stm32mp1_mmap size + mmap regions in *_plat_arch_setup
+  */
++#if STM32MP_SSP
++  #define MAX_MMAP_REGIONS		8
++#else
+ #if defined(IMAGE_BL2)
+  #if STM32MP_USB_PROGRAMMER
+   #define MAX_MMAP_REGIONS		12
+@@ -189,19 +199,30 @@ enum ddr_type {
+ #if defined(IMAGE_BL32)
+   #define MAX_MMAP_REGIONS		6
+ #endif
++#endif /* STM32MP_SSP */
+ 
+ #define XLAT_TABLE_OCTETSIZE		U(0x1000)
+ #define PLAT_XLAT_SIZE			(MAX_XLAT_TABLES *	\
+ 					 XLAT_TABLE_OCTETSIZE)
+ 
++#if STM32MP_SSP
++#define PLAT_XLAT_BASE			(STM32MP_SYSRAM_BASE +	\
++					 STM32MP_SYSRAM_SIZE -	\
++					 PLAT_XLAT_SIZE)
++#else
+ #define PLAT_XLAT_BASE			(STM32MP_BL2_BASE -	\
+ 					 PLAT_XLAT_SIZE)
++#endif
+ 
+ /* DTB initialization value */
+ #define STM32MP_DTB_SIZE		U(0x00006000)	/* 24 KB for DTB */
+ 
++#if STM32MP_SSP
++#define STM32MP_DTB_BASE		U(0x2FFC3000)
++#else
+ #define STM32MP_DTB_BASE		(PLAT_XLAT_BASE -	\
+ 					 STM32MP_DTB_SIZE)
++#endif
+ 
+ #define STM32MP_BL33_BASE		(STM32MP_DDR_BASE + U(0x100000))
+ 
+@@ -404,11 +425,34 @@ enum ddr_type {
+ #define UID_OTP				"uid_otp"
+ #define PKH_OTP				"pkh_otp"
+ #define BOARD_ID_OTP			"board_id"
++#define CFG2_OTP			"cfg2_otp"
++#define SSP_OTP				"ssp_otp"
++#define CHIP_CERTIFICATE_OTP		"chip_otp"
++#define RMA_OTP				"rma_otp"
+ 
+ /* OTP mask */
+ /* CFG0 */
+ #define CFG0_CLOSED_DEVICE		BIT(6)
+ 
++/* CFG2 */
++#define OTP_CFG2_SEC_COUNTER_MASK	GENMASK_32(27, 20)
++#define OTP_CFG2_SEC_COUNTER_SHIFT	U(20)
++#define OTP_CFG2_ST_KEY_MASK		GENMASK_32(31, 28)
++#define OTP_CFG2_ST_KEY_SHIFT		U(28)
++
++/* SSP */
++#define SSP_OTP_REQ			BIT(BOOT_API_OTP_SSP_REQ_BIT_POS)
++#define SSP_OTP_SUCCESS			BIT(BOOT_API_OTP_SSP_SUCCESS_BIT_POS)
++#define SSP_OTP_MASK			GENMASK_32(9, 8)
++#define SSP_OTP_SECRET_BASE		U(59)
++#define SSP_OTP_SECRET_END		U(95)
++
++/* CHIP_CERT */
++#define CHIP_CERTIFICATE_MAX_SIZE	U(0x40)
++
++/* RMA */
++#define RMA_OTP_MASK			GENMASK_32(29, 0)
++
+ /* PART NUMBER */
+ #define PART_NUMBER_OTP_PART_MASK	GENMASK_32(7, 0)
+ #define PART_NUMBER_OTP_PART_SHIFT	0
+diff --git a/plat/st/stm32mp1/stm32mp1_private.c b/plat/st/stm32mp1/stm32mp1_private.c
+index b94857b..1a57a7b 100644
+--- a/plat/st/stm32mp1/stm32mp1_private.c
++++ b/plat/st/stm32mp1/stm32mp1_private.c
+@@ -101,7 +101,9 @@ static const mmap_region_t stm32mp1_mmap[] = {
+ 	MAP_SRAM_MCU,
+ #endif
+ 	MAP_DEVICE1,
++#if !STM32MP_SSP
+ 	MAP_DEVICE2,
++#endif
+ 	{0}
+ };
+ #endif
+@@ -189,6 +191,7 @@ void __dead2 stm32mp_wait_cpu_reset(void)
+ 	}
+ }
+ 
++#if defined(IMAGE_BL32)
+ /*
+  * tzc_source_ip contains the TZC transaction source IPs that need to be reset
+  * before a C-A7 subsystem is reset (i.e. independent reset):
+@@ -232,9 +235,22 @@ static const struct tzc_source_ip tzc_source_ip[] = {
+ 	_TZC_COND(DMA1_R, DMA1, STM32MP1_ETZPC_DMA1_ID),
+ 	_TZC_COND(DMA2_R, DMA2, STM32MP1_ETZPC_DMA2_ID),
+ };
++#endif
+ 
+ #define TIMEOUT_US_1MS		U(1000)
+ 
++#if defined(IMAGE_BL2)
++void __dead2 stm32mp_plat_reset(int cpu)
++{
++	mmio_setbits_32(stm32mp_rcc_base() + RCC_MP_GRSTCSETR,
++			RCC_MP_GRSTCSETR_MPSYSRST);
++
++	/* Loop in case system reset is not immediately caught */
++	for ( ; ; ) {
++		;
++	}
++}
++#else
+ void __dead2 stm32mp_plat_reset(int cpu)
+ {
+ 	uint32_t reg = RCC_MP_GRSTCSETR_MPUP0RST;
+@@ -289,6 +305,7 @@ void __dead2 stm32mp_plat_reset(int cpu)
+ 
+ 	stm32mp_wait_cpu_reset();
+ }
++#endif /* IMAGE_BL2 */
+ 
+ unsigned long stm32_get_gpio_bank_clock(unsigned int bank)
+ {
+@@ -420,6 +437,23 @@ bool stm32mp_supports_cpu_opp(uint32_t opp_id)
+ 	}
+ }
+ 
++#if STM32MP_SSP
++bool stm32mp_supports_ssp(void)
++{
++	switch (get_part_number()) {
++	case STM32MP157F_PART_NB:
++	case STM32MP157C_PART_NB:
++	case STM32MP153F_PART_NB:
++	case STM32MP153C_PART_NB:
++	case STM32MP151F_PART_NB:
++	case STM32MP151C_PART_NB:
++		return true;
++	default:
++		return false;
++	}
++}
++#endif /* STM32MP_SSP */
++
+ void stm32mp_print_cpuinfo(void)
+ {
+ 	const char *cpu_s, *cpu_r, *pkg;
+diff --git a/plat/st/stm32mp1/stm32mp1_shared_resources.c b/plat/st/stm32mp1/stm32mp1_shared_resources.c
+index 232fbeb..6773bd7 100644
+--- a/plat/st/stm32mp1/stm32mp1_shared_resources.c
++++ b/plat/st/stm32mp1/stm32mp1_shared_resources.c
+@@ -66,6 +66,7 @@ static const char *shres2str_id(unsigned int id)
+ 	return shres2str_id_tbl[id];
+ }
+ 
++#if !STM32MP_SSP
+ static const char *shres2str_state_tbl[4] = {
+ 	[SHRES_UNREGISTERED] = "unregistered",
+ 	[SHRES_NON_SECURE] = "non-secure",
+@@ -76,6 +77,7 @@ static const char *shres2str_state(unsigned int id)
+ {
+ 	return shres2str_state_tbl[id];
+ }
++#endif /* !STM32MP_SSP */
+ 
+ struct shres2decprot {
+ 	unsigned int shres_id;
+@@ -146,6 +148,12 @@ static unsigned int get_gpioz_nbpin(void)
+ 	return (unsigned int)gpioz_nbpin;
+ }
+ 
++#if STM32MP_SSP
++static void register_periph(unsigned int id __unused,
++			    unsigned int state __unused)
++{
++}
++#else
+ static void register_periph(unsigned int id, unsigned int state)
+ {
+ 	assert((id < STM32MP1_SHRES_COUNT) &&
+@@ -227,6 +235,7 @@ static void register_periph(unsigned int id, unsigned int state)
+ 		}
+ 	}
+ }
++#endif /* STM32MP_SSP */
+ 
+ static bool stm32mp1_mckprot_resource(unsigned int id)
+ {
+diff --git a/plat/st/stm32mp1/stm32mp1_ssp.S b/plat/st/stm32mp1/stm32mp1_ssp.S
+new file mode 100644
+index 0000000..83a66c2
+--- /dev/null
++++ b/plat/st/stm32mp1/stm32mp1_ssp.S
+@@ -0,0 +1,11 @@
++/*
++ * Copyright (c) 2020, STMicroelectronics - All Rights Reserved
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++.section .dtb_image
++.incbin DTB_BIN_PATH
++
++.section .bl2_image
++.incbin BL2_BIN_PATH
+diff --git a/plat/st/stm32mp1/stm32mp1_ssp.ld.S b/plat/st/stm32mp1/stm32mp1_ssp.ld.S
+new file mode 100644
+index 0000000..5f05e7b
+--- /dev/null
++++ b/plat/st/stm32mp1/stm32mp1_ssp.ld.S
+@@ -0,0 +1,58 @@
++/*
++ * Copyright (c) 2013-2020, ARM Limited and Contributors. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#define TF_LINKER_SCRIPT
++#include <platform_def.h>
++
++OUTPUT_FORMAT(PLATFORM_LINKER_FORMAT)
++OUTPUT_ARCH(PLATFORM_LINKER_ARCH)
++
++ENTRY(__BL2_IMAGE_START__)
++
++MEMORY {
++	HEADER (rw) : ORIGIN = STM32MP_DTB_BASE, LENGTH = 0x3000
++	RAM (rwx) : ORIGIN = STM32MP_BINARY_BASE, LENGTH = STM32MP_BINARY_SIZE
++}
++
++SECTIONS
++{
++    /*
++     * TF mapping must conform to ROM code specification.
++     */
++    .header : {
++        __HEADER_START__ = .;
++        KEEP(*(.header))
++        . = ALIGN(4);
++        __HEADER_END__ = .;
++    } >HEADER
++
++    . = STM32MP_BINARY_BASE;
++    .data . : {
++        . = ALIGN(PAGE_SIZE);
++        __DATA_START__ = .;
++        *(.data*)
++
++	/*
++	 * Device tree
++	 */
++        __DTB_IMAGE_START__ = .;
++        *(.dtb_image*)
++        __DTB_IMAGE_END__ = .;
++
++	/*
++	 * BL2 image
++	 */
++	. = (STM32MP_BL2_BASE - STM32MP_BINARY_BASE);
++        __BL2_IMAGE_START__ = .;
++        *(.bl2_image*)
++        __BL2_IMAGE_END__ = .;
++        __DATA_END__ = .;
++    } >RAM
++
++    __TF_END__ = .;
++
++}
++#undef TF_LINKER_SCRIPT
+diff --git a/plat/st/stm32mp1/stm32mp1_ssp.mk b/plat/st/stm32mp1/stm32mp1_ssp.mk
+new file mode 100644
+index 0000000..6d1fc49
+--- /dev/null
++++ b/plat/st/stm32mp1/stm32mp1_ssp.mk
+@@ -0,0 +1,66 @@
++#
++# Copyright (c) 2015-2020, ARM Limited and Contributors. All rights reserved.
++#
++# SPDX-License-Identifier: BSD-3-Clause
++#
++
++ST_VERSION 		:=	r1.0
++VERSION_STRING		:=	v${VERSION_MAJOR}.${VERSION_MINOR}-${ST_VERSION}(${BUILD_TYPE}):${BUILD_STRING}
++
++# Required to use BL2_IN_XIP_MEM
++BL2_IN_XIP_MEM 		:= 	1
++$(eval $(call add_define,BL2_IN_XIP_MEM))
++
++SEPARATE_CODE_AND_RODATA :=	1
++
++# Macros and rules to build TF-A binary
++STM32_TF_ELF_LDFLAGS		:=	--hash-style=gnu --as-needed
++STM32_DT_BASENAME		:= 	$(DTB_FILE_NAME:.dtb=)
++STM32_TF_SSP_STM32 		:= 	${BUILD_PLAT}/tf-a-ssp-${STM32_DT_BASENAME}.stm32
++STM32_TF_SSP_BINARY 		:= 	$(STM32_TF_SSP_STM32:.stm32=.bin)
++STM32_TF_SSP_MAPFILE		:=	$(STM32_TF_SSP_STM32:.stm32=.map)
++STM32_TF_SSP_LINKERFILE		:=	$(STM32_TF_SSP_STM32:.stm32=.ld)
++STM32_TF_SSP_ELF 		:= 	$(STM32_TF_SSP_STM32:.stm32=.elf)
++STM32_TF_SSP_OBJS		:=	${BUILD_PLAT}/stm32mp1-ssp.o
++STM32_TF_SSP_DTBFILE		:=      ${BUILD_PLAT}/fdts/${DTB_FILE_NAME}
++
++BL2_SOURCES		+=	lib/ssp/ssp.c
++
++${STM32_TF_SSP_OBJS}: plat/st/stm32mp1/stm32mp1_ssp.S bl2 ${STM32_TF_SSP_DTBFILE}
++	@echo "  AS      $<"
++	${Q}${AS} ${ASFLAGS} ${TF_CFLAGS} \
++		-DBL2_BIN_PATH=\"${BUILD_PLAT}/bl2.bin\" \
++		-DDTB_BIN_PATH=\"${STM32_TF_SSP_DTBFILE}\" \
++		-c plat/st/stm32mp1/stm32mp1_ssp.S -o $@
++
++
++${STM32_TF_SSP_LINKERFILE}: plat/st/stm32mp1/stm32mp1_ssp.ld.S
++	@echo "  LDS     $<"
++	${Q}${AS} ${ASFLAGS} ${TF_CFLAGS} -P -E $< -o $@
++
++${STM32_TF_SSP_ELF}: ${STM32_TF_SSP_OBJS} ${STM32_TF_SSP_LINKERFILE}
++	@echo "  LDS     $<"
++	${Q}${LD} -o $@ ${STM32_TF_ELF_LDFLAGS} \
++		-Map=${STM32_TF_SSP_MAPFILE} \
++		--script ${STM32_TF_SSP_LINKERFILE} \
++		${STM32_TF_SSP_OBJS}
++
++${STM32_TF_SSP_BINARY}: ${STM32_TF_SSP_ELF}
++	${Q}${OC} -O binary ${STM32_TF_SSP_ELF} $@
++	@echo
++	@echo "Built $@ successfully"
++	@echo
++
++${STM32_TF_SSP_STM32}: check_dtc_version stm32image ${STM32_TF_SSP_BINARY}
++	@echo
++	@echo "Generated $@"
++	$(eval LOADADDR = $(shell cat ${STM32_TF_SSP_MAPFILE} | grep RAM | awk '{print $$2}'))
++	$(eval ENTRY =  $(shell cat ${STM32_TF_SSP_MAPFILE} | grep "__BL2_IMAGE_START" | awk '{print $$1}'))
++	${STM32IMAGE} -s ${STM32_TF_SSP_BINARY} -d $@ \
++		-l $(LOADADDR) -e ${ENTRY} \
++		-v ${STM32_TF_VERSION} \
++		-m ${STM32_HEADER_VERSION_MAJOR} \
++		-n ${STM32_HEADER_VERSION_MINOR}
++	@echo
++
++all: ${STM32_TF_SSP_STM32}
+-- 
+2.7.4
+
