@@ -9,8 +9,7 @@ LIC_FILES_CHKSUM = "file://LICENSE.txt;md5=7c3949a631240cb6c31c50f3eb696077"
 SRC_URI = "git://github.com/signal11/hidapi.git"
 SRCREV = "a6a622ffb680c55da0de787ff93b80280498330f"
 
-PV = "0.8.0-rc1"
-PR = "git${SRCPV}"
+PV = "0.8.0-rc1-git.${SRCPV}"
 
 S = "${WORKDIR}/git"
 
