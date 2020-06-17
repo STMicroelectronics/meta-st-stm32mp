@@ -2,13 +2,16 @@ FILESEXTRAPATHS_prepend := "${THISDIR}/optee-os:"
 
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
+PROVIDES += "virtual/optee-os"
+RPROVIDES_${PN} += "virtual/optee-os virtual/systemd-bootconf"
+
 B = "${WORKDIR}/build"
 # Configure build dir for externalsrc class usage through devtool
 EXTERNALSRC_BUILD_pn-${PN} = "${WORKDIR}/build"
 
-DEPENDS += "dtc-native python-pycrypto-native"
+DEPENDS += "dtc-native python3-pycryptodomex-native python3-pycrypto-native python3-pyelftools-native"
 
-inherit deploy pythonnative
+inherit deploy python3native
 
 OPTEEMACHINE ?= "${MACHINE}"
 OPTEEOUTPUTMACHINE ?= "${MACHINE}"
@@ -38,7 +41,7 @@ do_compile() {
     unset -v CFLAGS CPPFLAGS LDFLAGS LDADD
     if [ -n "${OPTEE_CONF}" ]; then
         for conf in ${OPTEE_CONF}; do
-            oe_runmake -C ${S} O=${B}/${conf} CFG_SECURE_DT=${conf}
+            oe_runmake -C ${S} O=${B}/${conf} CFG_EMBED_DTB_SOURCE_FILE=${conf}.dts
         done
     else
         oe_runmake -C ${S} O=${B}/out
@@ -69,6 +72,7 @@ ELF_DEBUG_ENABLE ?= ""
 OPTEE_ELF = "tee"
 OPTEE_ELF_SUFFIX = "elf"
 
+do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/optee"
 do_deploy() {
     install -d ${DEPLOYDIR}
     if [ -n "${OPTEE_CONF}" ]; then
