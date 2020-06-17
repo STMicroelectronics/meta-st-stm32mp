@@ -34,7 +34,7 @@ do_install() {
     install -m 0644 ${WORKDIR}/*.state ${D}${localstatedir}/lib/alsa
 
     # create link to support all packages configuration
-    for p in a b c;
+    for p in a b c d e f;
     do
         for n in 1 3 7;
         do
