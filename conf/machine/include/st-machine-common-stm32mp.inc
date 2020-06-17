@@ -378,6 +378,10 @@ CUBE_M4_EXAMPLES_DT ?= ""
 # This name is cherry picked from list defined in m4projects-stm32mp1.bb
 DEFAULT_COPRO_FIRMWARE = "OpenAMP_TTY_echo"
 
+# Define M4 example installation dir
+M4_INSTALLDIR = "${STM32MP_USERFS_MOUNTPOINT}"
+M4_PACKAGE_4USERFS = "${@bb.utils.contains('ST_USERFS','1','1','0',d)}"
+
 # =========================================================================
 # GCNANO userland configuration
 # =========================================================================
