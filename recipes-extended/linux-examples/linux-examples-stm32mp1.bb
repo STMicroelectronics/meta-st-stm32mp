@@ -7,9 +7,9 @@ COMPATIBLE_MACHINE = "(stm32mpcommon)"
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 SRC_URI = "git://github.com/STMicroelectronics/linux-examples;protocol=https;branch=master"
-SRCREV  = "bcfba47fb4d9c3756a0b94242e42541c8145f1ab"
+SRCREV  = "1046d23448d0031db8bbf15668b666325402a09e"
 
-PV = "4.19+${SRCPV}"
+PV = "5.4+${SRCPV}"
 
 S = "${WORKDIR}/git"
 
