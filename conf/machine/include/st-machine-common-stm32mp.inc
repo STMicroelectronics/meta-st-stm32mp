@@ -184,6 +184,7 @@ IMAGE_SUMMARY_LIST_append = ":${STM32MP_USERFS_IMAGE}"
 EXTRA_IMAGEDEPENDS_append = " \
     gdb-cross-arm \
     openocd-stm32mp-native \
+    stm32wrapper4dbg-native \
     sdcard-raw-tools-native \
     "
 
@@ -192,6 +193,7 @@ ST_TOOLS_FOR_SDK = " \
     nativesdk-gcc-arm-none-eabi \
     nativesdk-binutils \
     nativesdk-openocd-stm32mp \
+    nativesdk-stm32wrapper4dbg \
     nativesdk-sdcard-raw-tools \
     nativesdk-ncurses-libncursesw \
     "
