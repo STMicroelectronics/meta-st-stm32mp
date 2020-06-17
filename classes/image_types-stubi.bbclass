@@ -1,6 +1,9 @@
 inherit image_types
 
-do_image_stmultiubi[depends] += "mtd-utils-native:do_populate_sysroot"
+do_image_stmultiubi[depends] += " \
+        mtd-utils-native:do_populate_sysroot \
+        bc-native:do_populate_sysroot \
+        "
 
 python stmultiub_environment () {
     if d.getVar('MULTIUBI_BUILD'):
@@ -39,36 +42,23 @@ IMAGE_CMD_stmultiubi () {
 
 ENABLE_MULTIVOLUME_UBI ?= "1"
 
-st_multivolume_ubifs() {
-    # This function depends on IMAGE_FSTYPES 'stmultiubi'
-    if [ "${@bb.utils.contains('IMAGE_FSTYPES', 'stmultiubi', '1', '0', d)}" != "1" ]; then
-        return
-    fi
+# -----------------------------------------------------------------------------
+# Define the list of volumes for the multi UBIFS with 'STM32MP_UBI_VOLUME' var.
+# The format to follow is:
+#   STM32MP_UBI_VOLUME = "<VOL_NAME_1>:<VOL_SIZE_1>:<VOL_TYPE_1> <VOL_NAME_2>:<VOL_SIZE_2>"
+# Note that:
+#   - 'VOL_NAME' is the image volume name
+#   - 'VOL_SIZE' is set in KiB
+#   - 'VOL_TYPE' is optional part and could be 'empty' to add empty UBI with
+#     volume name set to 'VOL_NAME'
+# -----------------------------------------------------------------------------
+STM32MP_UBI_VOLUME ?= ""
 
+st_multivolume_ubifs() {
     if [ "${ENABLE_MULTIVOLUME_UBI}" != "1" ]; then
         return
     fi
-
-    # -----------------------------------------------------------------------------
-    # Define the list of volumes for the multi UBIFS with 'STM32MP_UBI_VOLUME' var.
-    # The format to follow is:
-    #   STM32MP_UBI_VOLUME = "<VOL_NAME_1>:<VOL_SIZE_1>:<VOL_TYPE_1> <VOL_NAME_2>:<VOL_SIZE_2>"
-    # Note that:
-    #   - 'VOL_NAME' should follow 'IMAGE_LINK_NAME' format
-    #   - 'VOL_SIZE' is set in KiB
-    #   - 'VOL_TYPE' is optional part and could be 'empty' to add empty UBI with name 'VOL_NAME'
-    # -----------------------------------------------------------------------------
-
-    # We check that user as explicitly provided multi volume UBIFS var
-    # and that partition images are also provided
-    if [ -n "${STM32MP_UBI_VOLUME}" ] && [ -n "${PARTITIONS_IMAGE}" ]; then
-
-        # We should only generate multi volume UBIFS for rootfs image and not
-        # any of the partition image one
-        for partition in ${PARTITIONS_IMAGE}; do
-            [ "${partition}-${DISTRO}-${MACHINE}" = "${IMAGE_LINK_NAME}" ] && return
-        done
-
+    if [ -n "${STM32MP_UBI_VOLUME}" ]; then
         . ${T}/stmultiubi_environment
 
         # Get total volume number to handle
@@ -99,6 +89,13 @@ st_multivolume_ubifs() {
                     echo vol_name=${volume_name} >> ${cfg_filename}
                     echo vol_flags=autoresize >> ${cfg_filename}
                 else
+                    # Update volume_name to fit image link name scheme
+                    if [ "${volume_name}" = "${IMAGE_BASENAME}" ]; then
+                        volume_name=${IMAGE_LINK_NAME}
+                    else
+                        # Partiton images use case, so make sure to append DISTRO and MACHINE
+                        volume_name=${volume_name}-${DISTRO}-${MACHINE}
+                    fi
                     if [ -z "${volume_type}" ]; then
                         bbnote "The UBI volume type is not set. Use default configuration for ${volume_name}"
                         bbnote "Append ${extra_size}KiB extra space to UBIFS volume size"
@@ -114,7 +111,7 @@ st_multivolume_ubifs() {
                 elif [ -e ${DEPLOY_DIR_IMAGE}/${volume_name}_${name}.ubinize.cfg.ubi ]; then
                     ubinize_cfg=${DEPLOY_DIR_IMAGE}/${volume_name}_${name}.ubinize.cfg.ubi
                 else
-                    bbfatal "Can't find any '${name}' ubinize config file for ${volume_name} in ${IMGDEPLOYDIR} or ${DEPLOY_DIR_IMAGE} folders"
+                    bbfatal "Can't find any '${volume_name}_${name}.ubinize.cfg.ubi' config file from ${IMGDEPLOYDIR} or ${DEPLOY_DIR_IMAGE} folders"
                 fi
                 # Create temporary copy of ubinize config file for update
                 cp ${ubinize_cfg} ${WORKDIR}/
@@ -159,5 +156,3 @@ st_multivolume_ubifs() {
         done
     fi
 }
-
-IMAGE_POSTPROCESS_COMMAND += " st_multivolume_ubifs ;"

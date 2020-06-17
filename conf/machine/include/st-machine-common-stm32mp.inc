@@ -5,6 +5,7 @@ require conf/machine/include/st-machine-features-stm32mp.inc
 require conf/machine/include/st-machine-flashlayout-stm32mp.inc
 require conf/machine/include/st-machine-flashlayout-deleteall-stm32mp.inc
 require conf/machine/include/st-machine-flashlayout-extensible-stm32mp.inc
+require conf/machine/include/st-machine-storage-device-stm32mp.inc
 
 # Define specific common machine name
 MACHINEOVERRIDES .= ":stcommon"
@@ -16,13 +17,13 @@ MACHINEOVERRIDES .= ":stm32mpcommon"
 # boot scheme
 # =========================================================================
 # List of supported boot schemes
-BOOTSCHEME_LABELS ??= "basic trusted optee"
+BOOTSCHEME_LABELS ??= "trusted optee"
 
 # =========================================================================
 # boot device
 # =========================================================================
 # List of supported boot devices
-BOOTDEVICE_LABELS ??= "emmc nand-4-256 nor-emmc nor-nand-4-256 nor-sdcard sdcard"
+BOOTDEVICE_LABELS ??= "emmc nand-4-256 nor-sdcard sdcard"
 
 # =========================================================================
 # Machine settings
@@ -30,8 +31,12 @@ BOOTDEVICE_LABELS ??= "emmc nand-4-256 nor-emmc nor-nand-4-256 nor-sdcard sdcard
 # Default machine feature
 MACHINE_FEATURES = "usbhost usbgadget alsa screen ext2"
 MACHINE_FEATURES_append = " ${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'optee', '', d)} "
-MACHINE_FEATURES_append = " watchdog "
 MACHINE_FEATURES_append = " tpm2 "
+
+MACHINE_FEATURES_append = " autoresize "
+# Remove autoresize package from DISTRO_EXTRA_RRECOMMENDS to add it explicitly
+# in our bootfs image instead of rootfs
+DISTRO_EXTRA_RRECOMMENDS_remove = "${@bb.utils.contains('COMBINED_FEATURES', 'autoresize', '${AUTORESIZE}', '', d)}"
 
 # Default serial consoles (TTYs) to enable using getty
 # Before kernel 4.18, serial console are ttyS3 but after is ttySTM0
@@ -56,51 +61,35 @@ STM32MP_DEVICETREE_append = " ${STM32MP_DT_FILES_EV} "
 # =========================================================================
 # Machine specific packages
 # =========================================================================
-WIFI_SUSPEND = "${@bb.utils.contains('DISTRO_FEATURES','systemd',' wifi-suspend ','',d)}"
-MACHINE_EXTRA_RRECOMMENDS_append = " ${@bb.utils.contains('MACHINE_FEATURES', 'wifi', 'linux-firmware-bcm43430', '', d)} "
-MACHINE_EXTRA_RRECOMMENDS_append = " ${@bb.utils.contains('MACHINE_FEATURES', 'wifi', '${WIFI_SUSPEND}', '', d)} "
-MACHINE_EXTRA_RRECOMMENDS_append = " m4projects-stm32mp1 "
-MACHINE_EXTRA_RRECOMMENDS_append = " linux-examples-stm32mp1 "
-MACHINE_EXTRA_RRECOMMENDS_append = " m4fwcoredump "
 # Enable Software watchdog when sysvinit
 MACHINE_EXTRA_RRECOMMENDS_append = " ${@bb.utils.contains('DISTRO_FEATURES','sysvinit',' watchdog ','',d)} "
 
 # =========================================================================
 # Image
 # =========================================================================
+# For sparse, align on 4096b
+IMAGE_ROOTFS_ALIGNMENT ?= "4"
+
+# Enable licence summary and configure License content generation
+ENABLE_IMAGE_LICENSE_SUMMARY ?= "1"
+
 # Partitions configuration
 IMAGE_CLASSES += "st-partitions-image"
 
 # Define image to use for extra partitions
-STM32MP_BOOTFS_IMAGE = "st-image-bootfs"
-STM32MP_BOOTFS_LABEL = "boot"
-STM32MP_BOOTFS_MOUNTPOINT_IMAGE = "/boot"
-STM32MP_USERFS_IMAGE = "st-image-userfs"
-STM32MP_USERFS_LABEL = "userfs"
-STM32MP_USERFS_MOUNTPOINT_IMAGE = "/usr/local"
-STM32MP_VENDORFS_IMAGE = "st-image-vendorfs"
-STM32MP_VENDORFS_LABEL = "vendorfs"
-STM32MP_VENDORFS_MOUNTPOINT_IMAGE = "/vendor"
-
-# Configure use of VENDORFS partition
-ST_VENDORFS ?= "1"
-
-# Define extra partition to build
-PARTITIONS_IMAGE  = "${STM32MP_BOOTFS_IMAGE}"
-PARTITIONS_IMAGE += "${STM32MP_USERFS_IMAGE}"
-PARTITIONS_IMAGE += "${@bb.utils.contains('ST_VENDORFS','1','${STM32MP_VENDORFS_IMAGE}','',d)}"
-PARTITIONS_MOUNTPOINT_IMAGE  = "${STM32MP_BOOTFS_MOUNTPOINT_IMAGE}"
-PARTITIONS_MOUNTPOINT_IMAGE += "${STM32MP_USERFS_MOUNTPOINT_IMAGE}"
-PARTITIONS_MOUNTPOINT_IMAGE += "${@bb.utils.contains('ST_VENDORFS','1','${STM32MP_VENDORFS_MOUNTPOINT_IMAGE}','',d)}"
-
-# Provide list of partition to mount
-MOUNT_PARTITIONS_LIST  = "${STM32MP_BOOTFS_LABEL},${STM32MP_BOOTFS_MOUNTPOINT_IMAGE}"
-MOUNT_PARTITIONS_LIST += "${STM32MP_USERFS_LABEL},${STM32MP_USERFS_MOUNTPOINT_IMAGE}"
-MOUNT_PARTITIONS_LIST += "${@bb.utils.contains('ST_VENDORFS','1','${STM32MP_VENDORFS_LABEL},${STM32MP_VENDORFS_MOUNTPOINT_IMAGE}','',d)}"
+STM32MP_BOOTFS_IMAGE ?= "st-image-bootfs"
+STM32MP_BOOTFS_LABEL ?= "boot"
+STM32MP_BOOTFS_MOUNTPOINT ?= "/boot"
+STM32MP_USERFS_IMAGE ?= "st-image-userfs"
+STM32MP_USERFS_LABEL ?= "userfs"
+STM32MP_USERFS_MOUNTPOINT ?= "/usr/local"
+STM32MP_VENDORFS_IMAGE ?= "st-image-vendorfs"
+STM32MP_VENDORFS_LABEL ?= "vendorfs"
+STM32MP_VENDORFS_MOUNTPOINT ?= "/vendor"
 
 # Define image partition size (supposed to be set as max size in image recipe)
 # Proposed value for bootfs is 64MB
-BOOTFS_PARTITION_SIZE = "65536"
+BOOTFS_PARTITION_SIZE ?= "65536"
 # Proposed value for rootfs should fit our highest constraint: NAND size (1GiB)
 # For optee bootscheme we have the maximum partitions:
 #   FSBL1 + SSBL + SSBL2 + TEEH + TEED + TEEX + Multivolume UBI = NAND size
@@ -116,35 +105,38 @@ BOOTFS_PARTITION_SIZE = "65536"
 #   rootfs < 1016.5MiB - (256KiB + 256KiB + 64MiB + 16MiB + 128MiB + 53360KiB + 4 * 9 * 256KiB)
 #   rootfs < 746.8MiB
 # Proposed value for rootfs is 746MiB
-ROOTFS_PARTITION_SIZE = "763904"
+# Define max size for ROOTFS image being built to this value
+IMAGE_ROOTFS_MAXSIZE ?= "763904"
+# And configure the ROOTFS_PARTITION_SIZE variable accordingly
+ROOTFS_PARTITION_SIZE ?= "${IMAGE_ROOTFS_MAXSIZE}"
 # Proposed value for userfs is 128MB (4*32MB)
-USERFS_PARTITION_SIZE = "131072"
+USERFS_PARTITION_SIZE ?= "131072"
 # Proposed value for vendorfs is 16MB
-VENDORFS_PARTITION_SIZE = "16384"
+VENDORFS_PARTITION_SIZE ?= "16384"
 
-# Define the max size for ROOTFS image being built
-# On other image partition such settings is directly done in image recipe
-IMAGE_ROOTFS_MAXSIZE ?= "${ROOTFS_PARTITION_SIZE}"
+# Enable use of extra partition(s)
+ST_BOOTFS   ?= "1"
+ST_VENDORFS ?= "1"
+ST_USERFS   ?= "1"
+
+# Partitions configuration
+PARTITIONS_CONFIG += "${@bb.utils.contains('ST_BOOTFS', '1', 'bootfs', '', d)}"
+PARTITIONS_CONFIG += "${@bb.utils.contains('ST_VENDORFS', '1', 'vendorfs', '', d)}"
+PARTITIONS_CONFIG += "rootfs"
+PARTITIONS_CONFIG += "${@bb.utils.contains('ST_USERFS', '1', 'userfs', '', d)}"
+
+PARTITIONS_CONFIG[bootfs]   ?= "${STM32MP_BOOTFS_IMAGE},${STM32MP_BOOTFS_LABEL},${STM32MP_BOOTFS_MOUNTPOINT},${BOOTFS_PARTITION_SIZE},System"
+PARTITIONS_CONFIG[vendorfs] ?= "${STM32MP_VENDORFS_IMAGE},${STM32MP_VENDORFS_LABEL},${STM32MP_VENDORFS_MOUNTPOINT},${VENDORFS_PARTITION_SIZE},FileSystem"
+PARTITIONS_CONFIG[rootfs]   ?= "${IMAGE_BASENAME},rootfs,,${ROOTFS_PARTITION_SIZE},FileSystem"
+PARTITIONS_CONFIG[userfs]   ?= "${STM32MP_USERFS_IMAGE},${STM32MP_USERFS_LABEL},${STM32MP_USERFS_MOUNTPOINT},${USERFS_PARTITION_SIZE},FileSystem"
 
 # UBI Configuration
 IMAGE_CLASSES += "image_types-stubi"
 
-# Define specific U-Boot config partition settings
-STM32MP_UBOOTCONFIG_NAME   = "uboot_config"
-UBOOTCONFIG_PARTITION_SIZE = "256"
+# Define two empty volumes to manage U-Boot config beginning of multivolume UBIFS
+STM32MP_UBI_VOLUME_prepend = "uboot_config:256:empty uboot_config_r:256:empty "
 
-# Define volume list for multivolume UBIFS
-# We need to have two empty UBI volumes to manage U-Boot config in our multivolume UBI
-STM32MP_UBI_VOLUME += "${STM32MP_UBOOTCONFIG_NAME}:${UBOOTCONFIG_PARTITION_SIZE}:empty"
-STM32MP_UBI_VOLUME += "${STM32MP_UBOOTCONFIG_NAME}_r:${UBOOTCONFIG_PARTITION_SIZE}:empty"
-# Add default partition volumes
-STM32MP_UBI_VOLUME += "${STM32MP_BOOTFS_IMAGE}-${DISTRO}-${MACHINE}:${BOOTFS_PARTITION_SIZE}"
-STM32MP_UBI_VOLUME += "${IMAGE_LINK_NAME}:${ROOTFS_PARTITION_SIZE}"
-STM32MP_UBI_VOLUME += "${@bb.utils.contains('ST_VENDORFS','1','${STM32MP_VENDORFS_IMAGE}-${DISTRO}-${MACHINE}:${VENDORFS_PARTITION_SIZE}','',d)}"
-STM32MP_UBI_VOLUME += "${STM32MP_USERFS_IMAGE}-${DISTRO}-${MACHINE}:${USERFS_PARTITION_SIZE}"
-
-# Define UBI volume label for ROOTFS image being built
-# This is needed to have "generic" kernel command line to mount UBI file system
+# Define UBI volume label to use in kernel command line to mount UBI file system
 UBI_VOLNAME ?= "rootfs"
 
 # Define UBI labels to build
@@ -152,7 +144,7 @@ UBI_VOLNAME ?= "rootfs"
 #      nand_<PageSize>_<BlockSize>
 #      nor_<BlockSize>
 #   Like that a same UBI partition can be used for severals NAND/NOR providers
-MULTIUBI_BUILD_append = " nand_4_256 "
+MULTIUBI_BUILD += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', 'nand_4_256', '', d)}"
 
 # UBI Args for NAND by default on MB1262 (Micron MT29F8G16ABACAH4)
 # LEB = BLOCK_SIZE - (2 * page size): 256*1024 - (2*4096)
@@ -164,6 +156,8 @@ EXTRA_UBIFS_SIZE_nand_4_256 = "2304"
 # Default FSTYPES requested
 WKS_IMAGE_FSTYPES ?= ""
 IMAGE_FSTYPES ?= "${WKS_IMAGE_FSTYPES} tar.xz ext4"
+# Append ubi FSTYPES to default ones for nand volumes
+IMAGE_FSTYPES += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', 'stmultiubi', '', d)}"
 
 # Define specific EXT4 command line:
 #   - Create minimal inode number (as it is done by default in image_types.bbclass)
@@ -172,13 +166,6 @@ IMAGE_FSTYPES ?= "${WKS_IMAGE_FSTYPES} tar.xz ext4"
 #   - Deactivate metadata_csum and dir_index (hashed b-trees): update not supported
 #     by U-Boot
 EXTRA_IMAGECMD_ext4 = "-i 4096 -L ${@d.getVar('IMAGE_NAME_SUFFIX').replace('.', '', 1)[:16]} -O ^metadata_csum,^dir_index"
-
-# Enable licence summary and configure License content generation
-ENABLE_IMAGE_LICENSE_SUMMARY = "1"
-IMAGE_SUMMARY_LIST = "${STM32MP_BOOTFS_IMAGE}"
-IMAGE_SUMMARY_LIST_append = "${@bb.utils.contains('ST_VENDORFS','1',':${STM32MP_VENDORFS_IMAGE}','',d)}"
-IMAGE_SUMMARY_LIST_append = ":#IMAGE#"
-IMAGE_SUMMARY_LIST_append = ":${STM32MP_USERFS_IMAGE}"
 
 # Allow debug on the platform with gdb and openocd tools
 EXTRA_IMAGEDEPENDS_append = " \
@@ -204,7 +191,15 @@ ST_TOOLS_FOR_SDK_PERL = " \
     nativesdk-perl-module-encode \
     nativesdk-perl-module-encode-mime-header \
 "
+
 ST_TOOLS_FOR_SDK_append = " ${ST_TOOLS_FOR_SDK_PERL} "
+
+# For support of python module for optee-os
+ST_TOOLS_FOR_SDK_append = " \
+    nativesdk-python3-pyelftools \
+    nativesdk-python3-pycryptodomex \
+    nativesdk-python3-pycrypto \
+"
 
 # For support of string convertion (iconv) in SDK
 ST_TOOLS_FOR_SDK_append = " \
@@ -214,6 +209,12 @@ ST_TOOLS_FOR_SDK_append = " \
 # For support wayland-scanner in SDK
 ST_TOOLS_FOR_SDK_append = " \
     nativesdk-wayland \
+    "
+
+# For Kernel yaml dependency
+ST_TOOLS_FOR_SDK_remove = " \
+    nativesdk-libyaml \
+    nativesdk-libyaml-dev \
     "
 
 # For CMSIS-SVD file parser with GDB
@@ -284,21 +285,18 @@ LINUX_A7_EXAMPLES_DT ?= ""
 # =========================================================================
 # u-boot
 # =========================================================================
-EXTRA_IMAGEDEPENDS += "u-boot-stm32mp"
-PREFERRED_PROVIDER_u-boot = "u-boot-stm32mp"
-PREFERRED_PROVIDER_virtual/bootloader = "u-boot-stm32mp"
+EXTRA_IMAGEDEPENDS += "virtual/bootloader"
 
 # Define default U-Boot config
-UBOOT_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'basic', 'basic', '', d)}"
 UBOOT_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'trusted', 'trusted', '', d)}"
 UBOOT_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'optee', '', d)}"
-#Add this config until u-boot is able to flash with basic binary
-UBOOT_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'basic', 'trusted', '', d)}"
+# The 'basic' config is only available for stm32mp1 machines
+UBOOT_CONFIG_append_stm32mp1common = " basic "
 
 # Define u-boot defconfig and binary to use for each UBOOT_CONFIG
 UBOOT_CONFIG[basic]   = "stm32mp15_basic_defconfig,,u-boot.img"
 UBOOT_CONFIG[trusted] = "stm32mp15_trusted_defconfig,,u-boot.stm32"
-UBOOT_CONFIG[optee]   = "stm32mp15_optee_defconfig,,u-boot.stm32"
+UBOOT_CONFIG[optee]   = "stm32mp15_trusted_defconfig,,u-boot.stm32"
 
 # List of U-Boot device tree to use
 UBOOT_DEVICETREE = "${STM32MP_DEVICETREE}"
@@ -306,27 +304,27 @@ UBOOT_DEVICETREE = "${STM32MP_DEVICETREE}"
 # Define u-boot splashscreen file naming
 UBOOT_SPLASH_IMAGE = "splash"
 
-# =========================================================================
-# tf-a
-# =========================================================================
-# Finally we must compile tf-a in all cases as we need trusted binary to boot
-#EXTRA_IMAGEDEPENDS += "${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee trusted', 'tf-a-stm32mp', '', d)}"
-EXTRA_IMAGEDEPENDS += "tf-a-stm32mp"
+PREFERRED_PROVIDER_u-boot-fw-utils_stm32mp1common = "libubootenv"
 
-# Define default TF-A config
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'trusted', 'trusted', '', d)}"
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'optee', '', d)}"
+MACHINE_EXTRA_RRECOMMENDS_append_stm32mp1common = " \
+    u-boot-fw-config-stm32mp \
+"
 
-#Add this config until tf-a is able to flash with basic binary
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'basic', 'trusted', '', d)}"
-#Add this config until optee is able to flash
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'trusted', '', d)}"
+# =========================================================================
+# trusted-firmware-a
+# =========================================================================
+# Add trusted-firmware-a serialboot to allow images programming
+EXTRA_IMAGEDEPENDS += "virtual/trusted-firmware-a-serialboot"
+# Add optionnaly trusted-firmware-a
+EXTRA_IMAGEDEPENDS += "${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee trusted', 'virtual/trusted-firmware-a', '', d)}"
 
 # Define SECURE_PAYLOAD config to set for each TF_A_CONFIG
-TF_A_CONFIG_optee   = "AARCH32_SP=optee STM32MP_BOOT_ONLY=1"
-TF_A_CONFIG_trusted = "AARCH32_SP=sp_min"
+TF_A_CONFIG_serialboot  = "AARCH32_SP=sp_min"
+TF_A_CONFIG_optee       = "AARCH32_SP=optee"
+TF_A_CONFIG_trusted     = "AARCH32_SP=sp_min"
 
-# Manage proper dependency
+# Manage proper update for TF_A_CONFIG_* var
+tfaconfig_env[vardeps] += "${@bb.utils.contains('TF_A_CONFIG', 'serialboot', 'TF_A_CONFIG_serialboot', '', d)}"
 tfaconfig_env[vardeps] += "${@bb.utils.contains('TF_A_CONFIG', 'optee', 'TF_A_CONFIG_optee', '', d)}"
 tfaconfig_env[vardeps] += "${@bb.utils.contains('TF_A_CONFIG', 'trusted', 'TF_A_CONFIG_trusted', '', d)}"
 
@@ -338,16 +336,6 @@ TF_A_DEVICETREE = "${STM32MP_DEVICETREE}"
 # =========================================================================
 # Map OPTEE configuration to device tree list
 OPTEE_CONF = "${STM32MP_DEVICETREE}"
-
-# =========================================================================
-# flashlayout
-# =========================================================================
-# Add specific scheme to provide flashlayout that will erase all storage devices
-FLASHLAYOUT_BOOTSCHEME_LABELS += "deleteall"
-# Add specific scheme to provide flashlayout that will make rootfs extensible to
-# remaining device free space
-#   NOTE: this scheme is ONLY compatible with disco board and trusted bootscheme
-FLASHLAYOUT_BOOTSCHEME_LABELS += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'trusted', 'extensible', '', d)}"
 
 # =========================================================================
 # Xserver
@@ -369,7 +357,6 @@ ELF_DEBUG_ENABLE = "1"
 # =========================================================================
 PREFERRED_PROVIDER_sysdig = "sysdig-stm32mp"
 
-
 # =========================================================================
 # M4 copro
 # =========================================================================
@@ -389,4 +376,4 @@ M4_PACKAGE_4USERFS = "${@bb.utils.contains('ST_USERFS','1','1','0',d)}"
 # =========================================================================
 # Variable for using vendor directory instead of usr
 GCNANO_USERLAND_USE_VENDOR_DIR = "${@bb.utils.contains('ST_VENDORFS','1','1','0',d)}"
-GCNANO_USERLAND_VENDOR_DIR = "${STM32MP_VENDORFS_MOUNTPOINT_IMAGE}"
+GCNANO_USERLAND_VENDOR_DIR = "${STM32MP_VENDORFS_MOUNTPOINT}"
