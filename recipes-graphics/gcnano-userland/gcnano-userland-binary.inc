@@ -8,10 +8,12 @@ PROVIDES += "gcnano-userland virtual/libgles1 virtual/libgles2 virtual/egl virtu
 
 TAR_FILENAME = "gcnano-userland-${BACKEND}-${PV}-${GCNANO_USERLAND_FB_TARBALL_DATE}"
 
-SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries.git;protocol=https;branch=gcnano-6.2.4_p4-binaries"
-SRCREV = "c01642ed5e18cf09ecd905af193e935cb3be95ed"
+SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries;protocol=https;branch=gcnano-6.4.1-binaries"
+SRCREV = "eaff2c61bcc3936f8193a52ffe965bdcc6457a57"
 
-PV = "6.2.4.p4"
+PV = "6.4.1"
+
+GCNANO_USERLAND_FB_TARBALL_DATE = "20200402"
 
 S = "${WORKDIR}/git"
 
@@ -74,10 +76,17 @@ clean_debug_file() {
 create_link() {
     prefix=$1
     library_link=$2
-    library_src=$3
+    library_src_relative_path_to_dst=$3
     library_dst=$4
-    LINK=`readlink $prefix/$library_src/$library_link`
-    ln -sf $library_src/$LINK $prefix/$library_dst/$library_link
+    LINK=`readlink $prefix/$library_dst/$library_src_relative_path_to_dst/$library_link`
+    if [ -L $prefix/$library_dst/$library_src_relative_path_to_dst/$LINK ];
+    then
+        # point on a link, need to get the path of link
+        SUBLINK=$(readlink $prefix/$library_dst/$library_src_relative_path_to_dst/$LINK)
+        ln -sf $library_src_relative_path_to_dst/$SUBLINK $prefix/$library_dst/$library_link
+    else
+        ln -sf $library_src_relative_path_to_dst/$LINK $prefix/$library_dst/$library_link
+    fi
 }
 do_install() {
     if [ ${GCNANO_USERLAND_USE_VENDOR_DIR} -eq 1 ];
@@ -89,16 +98,16 @@ do_install() {
         cd ${D}${libdir}/
         if [ -e ${D}/${GCNANO_USERLAND_OUTPUT_LIBDIR}/gbm_viv.so ];
         then
-            ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/gbm_viv.so ${D}${libdir}/gbm_viv.so
+            ln -sf ../..${GCNANO_USERLAND_OUTPUT_LIBDIR}/gbm_viv.so ${D}${libdir}/gbm_viv.so
         fi
         if [ -e ${D}/${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm_viv.so ];
         then
-            ln -sf ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm_viv.so ${D}${libdir}/libgbm_viv.so
+            ln -sf ../..${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm_viv.so ${D}${libdir}/libgbm_viv.so
         fi
         for link in `find ${D}/${GCNANO_USERLAND_OUTPUT_LIBDIR} -type l`;
         do
             library_link=`basename $link`
-            create_link ${D} $library_link ${GCNANO_USERLAND_OUTPUT_LIBDIR} ${libdir}
+            create_link ${D} $library_link  ../..${GCNANO_USERLAND_OUTPUT_LIBDIR} ${libdir}
         done
 
         chown -R root.root ${D}/${GCNANO_USERLAND_OUTPUT_LIBDIR} ${D}${libdir}/
@@ -161,7 +170,7 @@ FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libwayland-viv*.so*"
 FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/gbm_viv.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/gbm_viv.*.${GCNANO_TYPE}.so"
 FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm_viv.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm_viv.*.${GCNANO_TYPE}.so"
 
-FILES_${PN} += "${libdir}/"
+FILES_${PN} += "${libdir}/lib*.so ${libdir}/lib*${SOLIBS} ${libdir}/gbm*"
 
 SUMMARY_${PN}-dev = "${SUMMARY_${PN}} - Development files"
 FILES_${PN}-dev   = "${includedir} ${libdir}/pkgconfig/ ${libdir}/"
@@ -179,8 +188,6 @@ gcnano_sysroot() {
             rm ${SYSROOT_DESTDIR}${libdir}/libwayland-egl.so*
             rm ${SYSROOT_DESTDIR}${libdir}/pkgconfig/wayland-egl.pc
         fi
-
     fi
 }
 SYSROOT_PREPROCESS_FUNCS =+ "gcnano_sysroot"
-#SYSROOT_DIRS_append =+ " ${GCNANO_USERLAND_OUTPUT_LIBDIR} "
