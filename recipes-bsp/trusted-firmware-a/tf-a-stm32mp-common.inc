@@ -11,6 +11,13 @@ B = "${WORKDIR}/build"
 EXTERNALSRC_BUILD_pn-${PN} = "${WORKDIR}/build"
 
 DEPENDS += "dtc-native"
+DEPENDS_append = " ${@bb.utils.contains('TF_A_ENABLE_DEBUG_WRAPPER', '1', 'stm32wrapper4dbg-native', '', d)}"
+
+# Extra make settings
+EXTRA_OEMAKE = 'CROSS_COMPILE=${TARGET_PREFIX}'
+# Debug support
+EXTRA_OEMAKE += 'DEBUG=1'
+EXTRA_OEMAKE += 'LOG_LEVEL=40'
 
 # Define default TF-A namings
 TF_A_BASENAME ?= "tf-a"
@@ -32,21 +39,15 @@ BL32_NAME ?= "bl32/bl32"
 BL32_ELF = "${BL32_NAME}.${TF_A_ELF_SUFFIX}"
 BL32_BASENAME = "${@os.path.basename(d.getVar("BL32_NAME"))}"
 
-# Extra make settings
-EXTRA_OEMAKE = 'CROSS_COMPILE=${TARGET_PREFIX}'
-EXTRA_OEMAKE += 'PLAT=stm32mp1'
-EXTRA_OEMAKE += 'ARCH=aarch32'
-EXTRA_OEMAKE += 'ARM_ARCH_MAJOR=7'
-
-# Debug support
-EXTRA_OEMAKE += 'DEBUG=1'
-EXTRA_OEMAKE += "LOG_LEVEL=40"
-
 # Set default TF-A config
 TF_A_CONFIG ?= ""
 
+#Enable the wrapper for debug
+TF_A_ENABLE_DEBUG_WRAPPER ??= "1"
+
 # -----------------------------------------------
 # Enable use of work-shared folder
+TFA_SHARED_SOURCES ??= "1"
 STAGING_TFA_DIR = "${TMPDIR}/work-shared/${MACHINE}/tfa-source"
 # Make sure to move ${S} to STAGING_TFA_DIR. We can't just
 # create the symlink in advance as the git fetcher can't cope with
@@ -60,24 +61,25 @@ base_do_unpack_append () {
         if d.getVar('STAGING_TFA_DIR', d):
             d.setVar('STAGING_TFA_DIR', '${S}')
 
-    # Copy/Paste from kernel class with adaptation to TFA var
-    s = d.getVar("S")
-    if s[-1] == '/':
-        # drop trailing slash, so that os.symlink(tfasrc, s) doesn't use s as directory name and fail
-        s=s[:-1]
-    tfasrc = d.getVar("STAGING_TFA_DIR")
-    if s != tfasrc:
-        bb.utils.mkdirhier(tfasrc)
-        bb.utils.remove(tfasrc, recurse=True)
-        if d.getVar("EXTERNALSRC"):
-            # With EXTERNALSRC S will not be wiped so we can symlink to it
-            os.symlink(s, tfasrc)
-        else:
-            import shutil
-            shutil.move(s, tfasrc)
-            os.symlink(tfasrc, s)
+    shared = d.getVar("TFA_SHARED_SOURCES")
+    if shared and oe.types.boolean(shared):
+        # Copy/Paste from kernel class with adaptation to TFA var
+        s = d.getVar("S")
+        if s[-1] == '/':
+            # drop trailing slash, so that os.symlink(tfasrc, s) doesn't use s as directory name and fail
+            s=s[:-1]
+        tfasrc = d.getVar("STAGING_TFA_DIR")
+        if s != tfasrc:
+            bb.utils.mkdirhier(tfasrc)
+            bb.utils.remove(tfasrc, recurse=True)
+            if d.getVar("EXTERNALSRC"):
+                # With EXTERNALSRC S will not be wiped so we can symlink to it
+                os.symlink(s, tfasrc)
+            else:
+                import shutil
+                shutil.move(s, tfasrc)
+                os.symlink(tfasrc, s)
 }
-
 
 # Manage to export any specific setting for defined configs
 python tfaconfig_env () {
@@ -106,13 +108,20 @@ do_compile() {
             for dt in ${TF_A_DEVICETREE}; do
                 oe_runmake -C ${S} DTB_FILE_NAME=${dt}.dtb BUILD_PLAT=${B}/${config} ${add_extraoemake}
                 cp ${B}/${config}/${TF_A_BASENAME}-${dt}.${TF_A_SUFFIX} ${B}/${config}/${TF_A_BASENAME}-${dt}-${config}.${TF_A_SUFFIX}
+                if [ "${TF_A_ENABLE_DEBUG_WRAPPER}" = "1" ]; then
+                    stm32wrapper4dbg -s ${B}/${config}/${TF_A_BASENAME}-${dt}.${TF_A_SUFFIX} -d ${B}/${config}/debug-${TF_A_BASENAME}-${dt}-${config}.${TF_A_SUFFIX}
+                fi
             done
         else
             oe_runmake -C ${S} BUILD_PLAT=${B}/${config} ${add_extraoemake}
+            tf_a_binary_basename=$(find ${B}/${config} -name "${TF_A_BASENAME}-*.${TF_A_SUFFIX}" -exec basename {} \; | sed 's|\.'"${TF_A_SUFFIX}"'||g')
+            if [ "${TF_A_ENABLE_DEBUG_WRAPPER}" = "1" ]; then
+                stm32wrapper4dbg -s ${B}/${config}/${tf_a_binary_basename}.${TF_A_SUFFIX} -d ${B}/${config}/debug-${tf_a_binary_basename}.${TF_A_SUFFIX}
+            fi
         fi
     done
 }
-
+do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/arm-trusted-firmware"
 do_deploy() {
     install -d ${DEPLOYDIR}
 
@@ -120,11 +129,21 @@ do_deploy() {
         if [ -n "${TF_A_DEVICETREE}" ]; then
             for dt in ${TF_A_DEVICETREE}; do
                 install -m 644 ${B}/${config}/${TF_A_BASENAME}-${dt}-${config}.${TF_A_SUFFIX} ${DEPLOYDIR}
+                if [ "${TF_A_ENABLE_DEBUG_WRAPPER}" = "1" ]; then
+                    install -d ${DEPLOYDIR}/debug
+                    install -m 644 ${B}/${config}/debug-${TF_A_BASENAME}-${dt}-${config}.${TF_A_SUFFIX} ${DEPLOYDIR}/debug
+                fi
             done
         else
             # Get tf-a binary basename to copy
             tf_a_binary_basename=$(find ${B}/${config} -name "${TF_A_BASENAME}-*.${TF_A_SUFFIX}" -exec basename {} \; | sed 's|\.'"${TF_A_SUFFIX}"'||g')
-            install -m 644 ${B}/${config}/${tf_a_binary_basename}.${TF_A_SUFFIX} ${DEPLOYDIR}/${tf_a_binary_basename}-${config}.${TF_A_SUFFIX}
+            for f in ${tf_a_binary_basename}; do
+                install -m 644 ${B}/${config}/${f}.${TF_A_SUFFIX} ${DEPLOYDIR}/${f}-${config}.${TF_A_SUFFIX}
+                if [ "${TF_A_ENABLE_DEBUG_WRAPPER}" = "1" ]; then
+                    install -d ${DEPLOYDIR}/debug
+                    install -m 644 ${B}/${config}/debug-${f}.${TF_A_SUFFIX} ${DEPLOYDIR}/debug/debug-${f}-${config}.${TF_A_SUFFIX}
+                fi
+            done
         fi
     done
 
