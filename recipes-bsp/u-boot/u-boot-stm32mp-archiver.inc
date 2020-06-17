@@ -43,8 +43,6 @@ archiver_create_makefile_for_sdk() {
 
     echo "LOCAL_PATH=\$(PWD)" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     echo "" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo -n "EXTRA_OEMAKE=" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "${EXTRA_OEMAKE}" | sed "s|HOSTCC=${BUILD_CC}||" | sed "s|STAGING_INCDIR=${STAGING_INCDIR_NATIVE}||" | sed "s|STAGING_LIBDIR=${STAGING_LIBDIR_NATIVE}||" | sed "s|${BUILD_CFLAGS} ||" | sed "s|${BUILD_LDFLAGS}||" |sed "s|CC=\([^ ]*\) --sysroot=[^ ]* |CC=\"\1 \$(KCFLAGS)\" |" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     echo "" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     echo "UBOOT_LOCALVERSION=${UBOOT_LOCALVERSION}" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     echo "" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
@@ -93,11 +91,11 @@ archiver_create_makefile_for_sdk() {
     echo "		if [ ! -d \$(LOCAL_PATH)/../build\$\$uboot_type ]; then \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     echo "			mkdir -p \$(LOCAL_PATH)/../build\$\$uboot_type ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     echo "			echo \$(UBOOT_LOCALVERSION) > \$(LOCAL_PATH)/../build\$\$uboot_type/.scmversion ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "			\$(MAKE) \$(EXTRA_OEMAKE) -C \$(LOCAL_PATH) O=\$(LOCAL_PATH)/../build\$\$uboot_type \$\$uboot_config ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+    echo "			\$(MAKE) -C \$(LOCAL_PATH) O=\$(LOCAL_PATH)/../build\$\$uboot_type \$\$uboot_config ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     echo "		fi ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     # Build binaries
     echo "		if [ -z \"\$(DEVICE_TREE)\" ]; then \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "			\$(MAKE) \$(EXTRA_OEMAKE) -C \$(LOCAL_PATH) O=\$(LOCAL_PATH)/../build\$\$uboot_type ${UBOOT_MAKE_TARGET} ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+    echo "			\$(MAKE) -C \$(LOCAL_PATH) O=\$(LOCAL_PATH)/../build\$\$uboot_type ${UBOOT_MAKE_TARGET} ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     # Copy binary files with explicit name
     echo "			cp -f \$(LOCAL_PATH)/../build\$\$uboot_type/\$\$uboot_binary \$(LOCAL_PATH)/../build\$\$uboot_type/u-boot\$\$uboot_type.\$\$uboot_suffix ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     echo "			cp -f \$(LOCAL_PATH)/../build\$\$uboot_type/${UBOOT_ELF} \$(LOCAL_PATH)/../build\$\$uboot_type/u-boot\$\$uboot_type.${UBOOT_ELF_SUFFIX} ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
@@ -107,7 +105,7 @@ archiver_create_makefile_for_sdk() {
     echo "			fi ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     echo "		else \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     echo "			for devicetree in \$(DEVICE_TREE); do \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "				\$(MAKE) \$(EXTRA_OEMAKE) -C \$(LOCAL_PATH) O=\$(LOCAL_PATH)/../build\$\$uboot_type ${UBOOT_MAKE_TARGET} DEVICE_TREE=\$\$devicetree ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+    echo "				\$(MAKE) -C \$(LOCAL_PATH) O=\$(LOCAL_PATH)/../build\$\$uboot_type ${UBOOT_MAKE_TARGET} DEVICE_TREE=\$\$devicetree DEVICE_TREE_EXT=\$\$devicetree.dtb; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     # Copy binary files with explicit name
     echo "				cp -f \$(LOCAL_PATH)/../build\$\$uboot_type/\$\$uboot_binary \$(LOCAL_PATH)/../build\$\$uboot_type/u-boot-\$\$devicetree\$\$uboot_type.\$\$uboot_suffix ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     echo "				cp -f \$(LOCAL_PATH)/../build\$\$uboot_type/${UBOOT_ELF} \$(LOCAL_PATH)/../build\$\$uboot_type/u-boot-\$\$devicetree\$\$uboot_type.${UBOOT_ELF_SUFFIX} ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk

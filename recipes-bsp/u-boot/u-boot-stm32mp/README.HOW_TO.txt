@@ -19,17 +19,17 @@ For U-Boot build you need to install:
     - Fedora: sudo yum install git
 
 If you have never configured you git configuration:
-    $> git config --global user.name "your_name"
-    $> git config --global user.email "your_email@example.com"
+    $ git config --global user.name "your_name"
+    $ git config --global user.email "your_email@example.com"
 
 2. Initialize cross-compilation via SDK:
 ---------------------------------------
 * Source SDK environment:
-    $> source <path to SDK>/environment-setup-cortexa7t2hf-neon-vfpv4-openstlinux_weston-linux-gnueabi
+    $ source <path to SDK>/environment-setup-cortexa7t2hf-neon-vfpv4-ostl-linux-gnueabi
 
 * To verify if you cross-compilation environment are put in place:
-    $> set | grep CROSS
-    CROSS_COMPILE=arm-openstlinux_weston-linux-gnueabi-
+    $ set | grep CROSS
+    CROSS_COMPILE=arm-ostl-linux-gnueabi-
 
 Warning: the environment are valid only on the shell session where you have
          sourced the sdk environment.
@@ -38,11 +38,11 @@ Warning: the environment are valid only on the shell session where you have
 ------------------------
 
 Extract the sources from tarball, for example:
-$> tar xfJ SOURCES-st-image-weston-openstlinux-weston-stm32mp1-*.tar.xz
+$ tar xfJ SOURCES-st-image-weston-openstlinux-weston-stm32mp1-*.tar.xz
 
-In the U-Boot source directory (sources/*/u-boot-stm32mp-2018.11-r0),
+In the U-Boot source directory (sources/*/##BP##-##PR##),
 you have one U-Boot source tarball, the patches and one Makefile:
-   - v2018.11.tar.gz
+   - ##BP##-##PR##.tar.gz
    - 000*.patch
    - Makefile.sdk
 
@@ -51,8 +51,8 @@ NB: if you would like to have a git management on the code see
 
 Then you must extract the tarball and apply the patch:
 
-    $> tar xfz v2018.11.tar.gz
-    $> cd u-boot-2018.11
+    $> tar xfz ##BP##-##PR##.tar.gz
+    $> cd ##BP##
     $> for p in `ls -1 ../*.patch`; do patch -p1 < $p; done
 
 4. Management of U-Boot source code with GIT
@@ -63,57 +63,57 @@ you have 3 solutions to use git
 4.1 Get STMicroelectronics U-Boot source from GitHub
 
     URL: https://github.com/STMicroelectronics/u-boot.git
-    Branch: v2018.11-stm32mp
-    Revision: v2018.11-stm32mp-r2
+    Branch: v##PV##-stm32mp
+    Revision: v##PV##-stm32mp-##PR##
 
-    $> git clone https://github.com/STMicroelectronics/u-boot.git
-    $> git checkout -b WORKING v2018.11-stm32mp-r2
+    $ git clone https://github.com/STMicroelectronics/u-boot.git
+    $ git checkout -b WORKING v##PV##-stm32mp-##PR##
 
 4.2 Create Git from tarball
 
-    $> tar xvf v2018.11.tar.gz
-    $> cd u-boot-2018.11
-    $> test -d .git || git init . && git add . && git commit -m "U-Boot source code" && git gc
-    $> git checkout -b WORKING
-    $> for p in `ls -1 ../*.patch`; do git am $p; done
+    $ tar xfz ##BP##-##PR##.tar.gz
+    $ cd ##BP##
+    $ test -d .git || git init . && git add . && git commit -m "U-Boot source code" && git gc
+    $ git checkout -b WORKING
+    $ for p in `ls -1 ../*.patch`; do git am $p; done
 
 4.3 Get Git from community and apply STMicroelectronics patches
 
     URL: git://git.denx.de/u-boot.git
     Branch: master
-    Revision: v2018.11
+    Revision: v##PV##
 
-    $> git clone git://git.denx.de/u-boot.git
+    $ git clone git://git.denx.de/u-boot.git
 or
-    $> git clone http://git.denx.de/u-boot.git
+    $ git clone http://git.denx.de/u-boot.git
 
-    $> cd u-boot
-    $> git checkout -b WORKING v2018.11
-    $> for p in `ls -1 ../*.patch`; do git am $p; done
+    $ cd u-boot
+    $ git checkout -b WORKING v##PV##
+    $ for p in `ls -1 ../*.patch`; do git am $p; done
 
 5. Compilation U-Boot source code:
 ----------------------------------
 To compile U-Boot source code, first move to U-Boot source:
-    $> cd u-boot-2018.11
+    $ cd ##BP##
     or
-    $> cd u-boot
+    $ cd u-boot
 
 5.1 Compilation for one target (one defconfig, one device tree)
 
     see <U-Boot source>/board/st/stm32mp1/README for details
 
-    # make stm32mp15_<config>_defconfig
-    # make DEVICE_TREE=<device tree> all
+    $ make stm32mp15_<config>_defconfig
+    $ make DEVICE_TREE=<device tree> all
 
     example:
 
     a) trusted boot on ev1
-	# make stm32mp15_trusted_defconfig
-	# make DEVICE_TREE=stm32mp157c-ev1 all
+	$ make stm32mp15_trusted_defconfig
+	$ make DEVICE_TREE=stm32mp157c-ev1 all
 
     b) basic boot on dk2
-	# make stm32mp15_basic_defconfig
-	# make DEVICE_TREE=stm32mp157c-dk2 all
+	$ make stm32mp15_basic_defconfig
+	$ make DEVICE_TREE=stm32mp157c-dk2 all
 
 5.2 Compilation for several targets: use Makefile.sdk
 
@@ -135,36 +135,21 @@ variables 'DEVICE_TREE' and 'UBOOT_CONFIGS':
 
 The generated binary files are available in ../build-${config}.
 
-by default we define 3 configs: basic, trusted, optee
-for the 4 board : stm32mp157a-dk1 stm32mp157c-dk2 stm32mp157c-ed1 stm32mp157c-ev1
-
-The generated files are:
-
-../build-trusted
-	u-boot-stm32mp157a-dk1-trusted.stm32
-	u-boot-stm32mp157c-dk2-trusted.stm32
-	u-boot-stm32mp157c-ed1-trusted.stm32
-	u-boot-stm32mp157c-ev1-trusted.stm32
-
-../build-optee
-	u-boot-stm32mp157a-dk1-optee.stm32
-	u-boot-stm32mp157c-dk2-optee.stm32
-	u-boot-stm32mp157c-ed1-optee.stm32
-	u-boot-stm32mp157c-ev1-optee.stm32
-
-../build-basic
-	u-boot-stm32mp157a-dk1-basic.img & u-boot-spl.stm32-stm32mp157a-dk1-basic
-	u-boot-stm32mp157c-dk2-basic.img & u-boot-spl.stm32-stm32mp157c-dk2-basic
-	u-boot-stm32mp157c-ed1-basic.img & u-boot-spl.stm32-stm32mp157c-ed1-basic
-	u-boot-stm32mp157c-ev1-basic.img & u-boot-spl.stm32-stm32mp157c-ev1-basic
+by default we define 3 configs: basic, trusted, optee for the several boards
+The generated files are :
+  for trusted and optee configs:
+    #> ../build-{trusted,optee}/*.stm32
+  for basic config
+    #> ../build-basic/u-boot-spl.elf-*-basic
+    #> ../build-basic/u-boot-*-basic.img
 
 You can override the default U-Boot configuration if you specify these variables:
   - Compile default U-Boot configuration but applying specific devicetree(s):
-    $> make -f $PWD/../Makefile.sdk all DEVICE_TREE="<devicetree1> <devicetree2>"
+    $ make -f $PWD/../Makefile.sdk all DEVICE_TREE="<devicetree1> <devicetree2>"
   - Compile for a specific U-Boot configuration:
-    $> make -f $PWD/../Makefile.sdk all UBOOT_CONFIGS=<u-boot defconfig>,<u-boot type>,<u-boot binary>
+    $ make -f $PWD/../Makefile.sdk all UBOOT_CONFIGS=<u-boot defconfig>,<u-boot type>,<u-boot binary>
   - Compile for a specific U-Boot configuration and applying specific devicetree(s):
-    $> make -f $PWD/../Makefile.sdk all UBOOT_CONFIGS=<u-boot defconfig>,<u-boot type>,<u-boot binary> DEVICE_TREE="<devicetree1> <devicetree2>"
+    $ make -f $PWD/../Makefile.sdk all UBOOT_CONFIGS=<u-boot defconfig>,<u-boot type>,<u-boot binary> DEVICE_TREE="<devicetree1> <devicetree2>"
 
 6. Update software on board:
 ----------------------------
@@ -203,14 +188,14 @@ U-boot binary (u-boot*.stm32) MUST be copied on a dedicated partition named "ssb
   "fsbl1" is the partition 1:
   - SDCARD: /dev/mmcblkXp1 (where X is the instance number)
   - SDCARD via USB reader: /dev/sdX1 (where X is the instance number)
-  dd if=<U-Boot SPL file> of=/dev/<device partition> bs=1M conv=fdatasync
+  $ dd if=<U-Boot SPL file> of=/dev/<device partition> bs=1M conv=fdatasync
 
 * u-boot*.img
   Copy the binary on the dedicated partition, on SDCARD/USB disk the partition
   "ssbl" is the partition 4:
   - SDCARD: /dev/mmcblkXp3 (where X is the instance number)
   - SDCARD via USB reader: /dev/sdX3 (where X is the instance number)
-  dd if=<U-Boot image file> of=/dev/<device partition> bs=1M conv=fdatasync
+  $ dd if=<U-Boot image file> of=/dev/<device partition> bs=1M conv=fdatasync
 
 6.2.2. Trusted boot chain
 * tf-a-*.stm32
@@ -218,19 +203,19 @@ U-boot binary (u-boot*.stm32) MUST be copied on a dedicated partition named "ssb
   "fsbl1" is the partition 1:
   - SDCARD: /dev/mmcblkXp1 (where X is the instance number)
   - SDCARD via USB reader: /dev/sdX1 (where X is the instance number)
-  dd if=<TF-A binary file> of=/dev/<device partition> bs=1M conv=fdatasync
+  $ dd if=<TF-A binary file> of=/dev/<device partition> bs=1M conv=fdatasync
 
 * u-boot*.stm32
   Copy the binary on the dedicated partition, on SDCARD/USB disk the partition
   "ssbl" is the partition 4:
   - SDCARD: /dev/mmcblkXp3 (where X is the instance number)
   - SDCARD via USB reader: /dev/sdX3 (where X is the instance number)
-  dd if=<U-Boot stm32 binary file> of=/dev/<device partition> bs=1M conv=fdatasync
+  $ dd if=<U-Boot stm32 binary file> of=/dev/<device partition> bs=1M conv=fdatasync
 
 6.2.3. FAQ
 to found the partition associated to a specific label, just plug the
 SDCARD/USB disk on your PC and call the following command:
-  $> ls -l /dev/disk/by-partlabel/
+  $ ls -l /dev/disk/by-partlabel/
 total 0
 lrwxrwxrwx 1 root root 10 Jan 17 17:38 bootfs -> ../../mmcblk0p4
 lrwxrwxrwx 1 root root 10 Jan 17 17:38 fsbl1 -> ../../mmcblk0p1     ➔ FSBL (TF-A)
