@@ -17,6 +17,7 @@ python archiver_clean_tarball() {
             if os.path.exists(os.path.join(tmpdir,dirs_list[0],"git", ".git")):
                 src_origin = os.path.join(tmpdir,dirs_list[0], '.')
                 shutil.rmtree(os.path.join(tmpdir,dirs_list[0],"git", ".git"))
+                shutil.move(os.path.join(tmpdir,dirs_list[0],"git"),os.path.join(tmpdir,dirs_list[0],d.getVar('BPN')+'-'+d.getVar('PV')))
                 os.remove(os.path.join(ar_outdir,tarball_name[0]))
                 subdirs_list = [f for f in listdir(os.path.join(tmpdir,dirs_list[0])) if os.path.isdir(os.path.join(tmpdir,dirs_list[0], f))]
                 if len(subdirs_list) == 1:
@@ -34,7 +35,7 @@ archiver_git_uri() {
         BRANCH=master
     fi
 
-    sed -i -e "s|##GIT_BRANCH##|$BRANCH|g" -e "s|##GIT_SRCREV##|${SRCREV}|g" ${ARCHIVER_OUTDIR}/${ARCHIVER_README}
+    sed -i -e "s|##GIT_BRANCH##|$BRANCH|g" -e "s|##GIT_SRCREV##|${SRCREV}|g" -e "s|##BP##|${BP}|g" -e "s|##PV##|${PV}|g" -e "s|##PR##|${PR}|g" ${ARCHIVER_OUTDIR}/${ARCHIVER_README}
 }
 do_ar_original[postfuncs] =+ "archiver_git_uri"
 
