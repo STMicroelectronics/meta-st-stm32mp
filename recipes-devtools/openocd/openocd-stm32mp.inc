@@ -7,8 +7,8 @@ SRC_URI = " \
     "
 
 SRCREV_git2cl = "8373c9f74993e218a08819cbcdbab3f3564bbeba"
-SRCREV_jimtcl = "a9bf5975fd0f89974d689a2d9ebd0873c8d64787"
-SRCREV_libjaylink = "8645845c1abebd004e991ba9a7f808f4fd0c608b"
+SRCREV_jimtcl = "0aa0fb4e3a38d38a49de9eb585d93d63a370dcf6"
+SRCREV_libjaylink = "f73ad5e667ae8b26a52b847c603fdadaabf302a6"
 
 S = "${WORKDIR}/git"
 
