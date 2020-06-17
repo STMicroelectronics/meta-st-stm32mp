@@ -214,6 +214,11 @@ ST_TOOLS_FOR_SDK_append = " \
     nativesdk-wayland \
     "
 
+# For CMSIS-SVD file parser with GDB
+ST_TOOLS_FOR_SDK_append = " \
+    nativesdk-svd-tools \
+    "
+
 # Make sure to append mkimage to SDK for kernel uImage build
 ST_DEPENDENCIES_BUILD_FOR_SDK = " \
     ${@bb.utils.contains('KERNEL_IMAGETYPE', 'uImage', 'nativesdk-u-boot-mkimage', '', d)} \
