@@ -1,0 +1,295 @@
+From 2f115dde2ef6e6e72ff6439f27bc2e20f83b5d10 Mon Sep 17 00:00:00 2001
+From: Antonio Borneo <borneo.antonio@gmail.com>
+Date: Fri, 29 May 2020 17:22:33 +0200
+Subject: [PATCH] fixes for gcc-10 build, macos build, CM4 halt, stlink J28 and
+ j37
+
+Change-Id: If6c44bc94debc305aff1837d74b282f97e7c596a
+Signed-off-by: Antonio Borneo <borneo.antonio@gmail.com>
+---
+ src/flash/nor/jtagspi.c       | 19 +++++++++++++++----
+ src/flash/nor/nrf5.c          | 10 +++++++---
+ src/jtag/drivers/bitbang.h    |  2 +-
+ src/jtag/drivers/stlink_usb.c | 32 ++++++++++++++++++++++++++------
+ src/server/gdb_server.c       |  2 +-
+ src/target/cortex_m.c         | 21 +++++++++++++++++----
+ src/target/startup.tcl        |  2 +-
+ tcl/target/stm32mp15x.cfg     |  2 +-
+ 8 files changed, 69 insertions(+), 21 deletions(-)
+
+diff --git a/src/flash/nor/jtagspi.c b/src/flash/nor/jtagspi.c
+index f6e311ab8..73b1c7a26 100644
+--- a/src/flash/nor/jtagspi.c
++++ b/src/flash/nor/jtagspi.c
+@@ -228,13 +228,16 @@ static int jtagspi_probe(struct flash_bank *bank)
+ 	return ERROR_OK;
+ }
+ 
+-static void jtagspi_read_status(struct flash_bank *bank, uint32_t *status)
++static int jtagspi_read_status(struct flash_bank *bank, uint32_t *status)
+ {
+ 	uint8_t buf;
+-	if (jtagspi_cmd(bank, SPIFLASH_READ_STATUS, NULL, &buf, -8) == ERROR_OK) {
++	int err = jtagspi_cmd(bank, SPIFLASH_READ_STATUS, NULL, &buf, -8);
++	if (err == ERROR_OK) {
+ 		*status = buf;
+ 		/* LOG_DEBUG("status=0x%08" PRIx32, *status); */
+ 	}
++
++	return err;
+ }
+ 
+ static int jtagspi_wait(struct flash_bank *bank, int timeout_ms)
+@@ -245,7 +248,11 @@ static int jtagspi_wait(struct flash_bank *bank, int timeout_ms)
+ 
+ 	do {
+ 		dt = timeval_ms() - t0;
+-		jtagspi_read_status(bank, &status);
++
++		int retval = jtagspi_read_status(bank, &status);
++		if (retval != ERROR_OK)
++			return retval;
++
+ 		if ((status & SPIFLASH_BSY_BIT) == 0) {
+ 			LOG_DEBUG("waited %" PRId64 " ms", dt);
+ 			return ERROR_OK;
+@@ -262,7 +269,11 @@ static int jtagspi_write_enable(struct flash_bank *bank)
+ 	uint32_t status;
+ 
+ 	jtagspi_cmd(bank, SPIFLASH_WRITE_ENABLE, NULL, NULL, 0);
+-	jtagspi_read_status(bank, &status);
++
++	int retval = jtagspi_read_status(bank, &status);
++	if (retval != ERROR_OK)
++		return retval;
++
+ 	if ((status & SPIFLASH_WE_BIT) == 0) {
+ 		LOG_ERROR("Cannot enable write to flash. Status=0x%08" PRIx32, status);
+ 		return ERROR_FAIL;
+diff --git a/src/flash/nor/nrf5.c b/src/flash/nor/nrf5.c
+index 8422589b8..5bef8487c 100644
+--- a/src/flash/nor/nrf5.c
++++ b/src/flash/nor/nrf5.c
+@@ -570,10 +570,14 @@ static int nrf5_protect(struct flash_bank *bank, int set, int first, int last)
+ 
+ static bool nrf5_info_variant_to_str(uint32_t variant, char *bf)
+ {
+-	h_u32_to_be((uint8_t *)bf, variant);
+-	bf[4] = '\0';
+-	if (isalnum(bf[0]) && isalnum(bf[1]) && isalnum(bf[2]) && isalnum(bf[3]))
++	uint8_t b[4];
++
++	h_u32_to_be(b, variant);
++	if (isalnum(b[0]) && isalnum(b[1]) && isalnum(b[2]) && isalnum(b[3])) {
++		memcpy(bf, b, 4);
++		bf[4] = 0;
+ 		return true;
++	}
+ 
+ 	strcpy(bf, "xxxx");
+ 	return false;
+diff --git a/src/jtag/drivers/bitbang.h b/src/jtag/drivers/bitbang.h
+index edb779cad..bbbc693df 100644
+--- a/src/jtag/drivers/bitbang.h
++++ b/src/jtag/drivers/bitbang.h
+@@ -56,7 +56,7 @@ struct bitbang_interface {
+ 	void (*swdio_drive)(bool on);
+ };
+ 
+-const struct swd_driver bitbang_swd;
++extern const struct swd_driver bitbang_swd;
+ 
+ extern bool swd_mode;
+ 
+diff --git a/src/jtag/drivers/stlink_usb.c b/src/jtag/drivers/stlink_usb.c
+index 6c0601d0e..83bb89046 100644
+--- a/src/jtag/drivers/stlink_usb.c
++++ b/src/jtag/drivers/stlink_usb.c
+@@ -335,6 +335,7 @@ enum stlink_mode {
+ #define STLINK_F_HAS_AP_INIT            BIT(7)
+ #define STLINK_F_HAS_DPBANKSEL          BIT(8)
+ #define STLINK_F_HAS_RW8_512BYTES       BIT(9)
++#define STLINK_F_FIX_CLOSE_AP           BIT(10)
+ 
+ /* aliases */
+ #define STLINK_F_HAS_TARGET_VOLT        STLINK_F_HAS_TRACE
+@@ -379,6 +380,7 @@ static int stlink_swim_status(void *handle);
+ void stlink_dump_speed_map(const struct speed_map *map, unsigned int map_size);
+ static int stlink_get_com_freq(void *handle, bool is_jtag, struct speed_map *map);
+ static int stlink_speed(void *handle, int khz, bool query);
++static int stlink_usb_open_ap(void *handle, unsigned short apsel);
+ 
+ /** */
+ static unsigned int stlink_usb_block(void *handle)
+@@ -852,7 +854,7 @@ static int stlink_cmd_allow_retry(void *handle, const uint8_t *buf, int size)
+ 
+ 		res = stlink_usb_error_check(handle);
+ 		if (res == ERROR_WAIT && retries < MAX_WAIT_RETRIES) {
+-			useconds_t delay_us = (1<<retries++) * 1000;
++			unsigned int delay_us = (1<<retries++) * 1000;
+ 			LOG_DEBUG("stlink_cmd_allow_retry ERROR_WAIT, retry %d, delaying %u microseconds", retries, delay_us);
+ 			usleep(delay_us);
+ 			continue;
+@@ -1050,6 +1052,10 @@ static int stlink_usb_version(void *handle)
+ 		if (h->version.jtag >= 28)
+ 			flags |= STLINK_F_HAS_AP_INIT;
+ 
++		/* API required to return proper error code on close AP from J29 */
++		if (h->version.jtag >= 29)
++			flags |= STLINK_F_FIX_CLOSE_AP;
++
+ 		/* Banked regs (DPv1 & DPv2) support from V2J32 */
+ 		/* API to read memory without address increment from V2J32 */
+ 		/* Memory R/W supports CSW from V2J32 */
+@@ -1080,6 +1086,9 @@ static int stlink_usb_version(void *handle)
+ 		/* API required to init AP before any AP access */
+ 		flags |= STLINK_F_HAS_AP_INIT;
+ 
++		/* API required to return proper error code on close AP */
++		flags |= STLINK_F_FIX_CLOSE_AP;
++
+ 		/* Banked regs (DPv1 & DPv2) support from V3J2 */
+ 		/* API to read memory without address increment from V3J2 */
+ 		/* Memory R/W supports CSW from V3J2 */
+@@ -3121,6 +3130,7 @@ static int stlink_usb_open(struct hl_interface_param_s *param, void **fd)
+ 	h->max_mem_packet = (1 << 10);
+ 
+ 	uint8_t buffer[4];
++	stlink_usb_open_ap(h, STLINK_HLA_AP_NUM);
+ 	err = stlink_usb_read_mem32(h, STLINK_HLA_AP_NUM, STLINK_HLA_CSW, CPUID, 4, buffer);
+ 	if (err == ERROR_OK) {
+ 		uint32_t cpuid = le_to_h_u32(buffer);
+@@ -3225,7 +3235,12 @@ static int stlink_usb_close_access_port(void *handle, unsigned char ap_num)
+ 	h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_APIV2_CLOSE_AP_DBG;
+ 	h->cmdbuf[h->cmdidx++] = ap_num;
+ 
+-	return stlink_usb_xfer_errcheck(handle, h->databuf, 2);
++	/* ignore incorrectly returned error on bogus FW */
++	if (h->version.flags & STLINK_F_FIX_CLOSE_AP)
++		return stlink_usb_xfer_errcheck(handle, h->databuf, 2);
++	else
++		return stlink_usb_xfer_noerrcheck(handle, h->databuf, 2);
++
+ }
+ 
+ /** */
+@@ -3343,13 +3358,13 @@ static int stlink_dap_get_and_clear_error(void)
+ 	return retval;
+ }
+ 
+-/** */
+-static int stlink_dap_open_ap(unsigned short apsel)
++static int stlink_usb_open_ap(void *handle, unsigned short apsel)
+ {
++	struct stlink_usb_handle_s *h = handle;
+ 	int retval;
+ 
+ 	/* nothing to do on old versions */
+-	if (!(stlink_dap_handle->version.flags & STLINK_F_HAS_AP_INIT))
++	if (!(h->version.flags & STLINK_F_HAS_AP_INIT))
+ 		return ERROR_OK;
+ 
+ 	if (apsel > DP_APSEL_MAX)
+@@ -3358,7 +3373,7 @@ static int stlink_dap_open_ap(unsigned short apsel)
+ 	if (test_bit(apsel, opened_ap))
+ 		return ERROR_OK;
+ 
+-	retval = stlink_usb_init_access_port(stlink_dap_handle, apsel);
++	retval = stlink_usb_init_access_port(h, apsel);
+ 	if (retval != ERROR_OK)
+ 		return retval;
+ 
+@@ -3367,6 +3382,11 @@ static int stlink_dap_open_ap(unsigned short apsel)
+ 	return ERROR_OK;
+ }
+ 
++static int stlink_dap_open_ap(unsigned short apsel)
++{
++	return stlink_usb_open_ap(stlink_dap_handle, apsel);
++}
++
+ /** */
+ static int stlink_dap_closeall_ap(void)
+ {
+diff --git a/src/server/gdb_server.c b/src/server/gdb_server.c
+index 0ca4fa4ee..3f2632b03 100644
+--- a/src/server/gdb_server.c
++++ b/src/server/gdb_server.c
+@@ -3489,7 +3489,7 @@ static int gdb_target_start(struct target *target, const char *port)
+ 	if (NULL == gdb_service)
+ 		return -ENOMEM;
+ 
+-	LOG_DEBUG("starting gdb server for %s on %s", target_name(target), port);
++	LOG_INFO("starting gdb server for %s on %s", target_name(target), port);
+ 
+ 	gdb_service->target = target;
+ 	gdb_service->core[0] = -1;
+diff --git a/src/target/cortex_m.c b/src/target/cortex_m.c
+index 9a1f2b16f..dbd8ee088 100644
+--- a/src/target/cortex_m.c
++++ b/src/target/cortex_m.c
+@@ -710,11 +710,11 @@ static int cortex_m_soft_reset_halt(struct target *target)
+ 	uint32_t dcb_dhcsr = 0;
+ 	int retval, timeout = 0;
+ 
+-	/* soft_reset_halt is deprecated on cortex_m as the same functionality
+-	 * can be obtained by using 'reset halt' and 'cortex_m reset_config vectreset'
+-	 * As this reset only used VC_CORERESET it would only ever reset the cortex_m
++	/* on single cortex_m MCU soft_reset_halt should be avoided as same functionality
++	 * can be obtained by using 'reset halt' and 'cortex_m reset_config vectreset'.
++	 * As this reset only uses VC_CORERESET it would only ever reset the cortex_m
+ 	 * core, not the peripherals */
+-	LOG_WARNING("soft_reset_halt is deprecated, please use 'reset halt' instead.");
++	LOG_DEBUG("soft_reset_halt is discouraged, please use 'reset halt' instead.");
+ 
+ 	/* Set C_DEBUGEN */
+ 	retval = cortex_m_write_debug_halt_mask(target, 0, C_STEP | C_MASKINTS);
+@@ -2231,6 +2231,19 @@ int cortex_m_examine(struct target *target)
+ 				armv7m->debug_ap->tar_autoincr_block = (1 << 10);
+ 		}
+ 
++		/* Enable debug requests */
++		retval = target_read_u32(target, DCB_DHCSR, &cortex_m->dcb_dhcsr);
++		if (retval != ERROR_OK)
++			return retval;
++		if (!(cortex_m->dcb_dhcsr & C_DEBUGEN)) {
++			uint32_t dhcsr = (cortex_m->dcb_dhcsr | C_DEBUGEN) & ~(C_HALT | C_STEP | C_MASKINTS);
++
++			retval = target_write_u32(target, DCB_DHCSR, DBGKEY | (dhcsr & 0x0000FFFFUL));
++			if (retval != ERROR_OK)
++				return retval;
++			cortex_m->dcb_dhcsr = dhcsr;
++		}
++
+ 		/* Configure trace modules */
+ 		retval = target_write_u32(target, DCB_DEMCR, TRCENA | armv7m->demcr);
+ 		if (retval != ERROR_OK)
+diff --git a/src/target/startup.tcl b/src/target/startup.tcl
+index 976cd2af5..164a0bad8 100644
+--- a/src/target/startup.tcl
++++ b/src/target/startup.tcl
+@@ -205,7 +205,7 @@ proc init_target_events {} {
+ 	foreach t $targets {
+ 		set_default_target_event $t gdb-flash-erase-start "reset init"
+ 		set_default_target_event $t gdb-flash-write-end "reset halt"
+-		set_default_target_event $t gdb-attach "halt"
++		set_default_target_event $t gdb-attach "halt 1000"
+ 	}
+ }
+ 
+diff --git a/tcl/target/stm32mp15x.cfg b/tcl/target/stm32mp15x.cfg
+index 7f0d19c4d..f2ba94eec 100644
+--- a/tcl/target/stm32mp15x.cfg
++++ b/tcl/target/stm32mp15x.cfg
+@@ -114,7 +114,7 @@ $_CHIPNAME.ap2  configure -event reset-deassert-pre  {dbgmcu_enable_debug}
+ $_CHIPNAME.cpu0 configure -event reset-deassert-pre  {$::_CHIPNAME.cpu0 arp_examine}
+ $_CHIPNAME.cpu1 configure -event reset-deassert-pre  {$::_CHIPNAME.cpu1 arp_examine allow-defer}
+ $_CHIPNAME.cpu0 configure -event reset-deassert-post {toggle_cpu0_dbg_claim0}
+-$_CHIPNAME.cm4  configure -event reset-deassert-post {$::_CHIPNAME.cm4 arp_examine;if {[$::_CHIPNAME.ap2 curstate] == "halted"} {$::_CHIPNAME.cm4 arp_halt}}
++$_CHIPNAME.cm4  configure -event reset-deassert-post {$::_CHIPNAME.cm4 arp_examine;if {[$::_CHIPNAME.ap2 curstate] == "halted"} {$::_CHIPNAME.cm4 arp_poll;$::_CHIPNAME.cm4 arp_poll;$::_CHIPNAME.cm4 arp_halt}}
+ $_CHIPNAME.ap1  configure -event examine-start       {dap init}
+ $_CHIPNAME.ap2  configure -event examine-start       {dbgmcu_enable_debug}
+ $_CHIPNAME.cpu0 configure -event examine-end         {detect_cpu1}
+-- 
+2.26.2
+
