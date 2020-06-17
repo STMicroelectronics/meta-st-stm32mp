@@ -100,6 +100,8 @@ FLASHLAYOUT_DESTDIR = "${IMGDEPLOYDIR}/${FLASHLAYOUT_SUBDIR}"
 
 FLASHLAYOUT_BASENAME ??= "FlashLayout"
 FLASHLAYOUT_SUFFIX   ??= "tsv"
+# Configure flashlayout file generation for stm32wrapper4dbg
+ENABLE_FLASHLAYOUT_CONFIG_WRAPPER4DBG ??= "0"
 
 FLASHLAYOUT_BOOTSCHEME_LABELS ??= ""
 FLASHLAYOUT_CONFIG_LABELS ??= ""
@@ -408,4 +410,37 @@ python do_create_flashlayout_config() {
                                          (partition_enable, partition_id, partition_name, partition_type, partition_device, partition_offset, partition_bin2load))
                 except OSError:
                     bb.fatal('Unable to open %s' % (fl_file))
+
+                if d.getVar("ENABLE_FLASHLAYOUT_CONFIG_WRAPPER4DBG") == "1":
+                    bb.note('*** Loop for flashlayout for the wrapper for debug %s' % labeltype)
+
+                    tmp_flashlayout_file = os.path.join(flashlayout_subfolder_path, "flashlayout.tmp")
+                    debug_flashlayout = False
+
+                    try:
+                        with open(flashlayout_file, 'r') as fl_file:
+                            try:
+                                with open(tmp_flashlayout_file, 'w') as debug_fl_file:
+                                    for line in fl_file:
+                                        if re.match('^.*/tf-a.*$', line) :
+                                            line_tmp = re.sub(r'(.*)/',r'\1/debug/debug-', line)
+                                            filename = re.sub(r'.*[\t ](.*)$',r'\1', line_tmp).strip()
+                                            if os.path.isfile(os.path.join(d.getVar('DEPLOY_DIR_IMAGE'), filename)):
+                                                line = line_tmp
+                                                debug_flashlayout = True
+
+                                        debug_fl_file.write('%s' % (line))
+                            except OSError:
+                                bb.fatal('Unable to open %s' % (debug_fl_file))
+                    except OSError:
+                        bb.fatal('Unable to open %s' % (fl_file))
+                    if debug_flashlayout:
+                        flashlayout_wrapper4dbg_subfolder_path = os.path.join(d.getVar('FLASHLAYOUT_DESTDIR'), bootscheme, "debug")
+                        bb.utils.mkdirhier(flashlayout_wrapper4dbg_subfolder_path)
+                        # Wrapper4dbg output filename
+                        debug_flashlayout_file = os.path.join(flashlayout_wrapper4dbg_subfolder_path,d.expand("debug-${FLASHLAYOUT_BASENAME}%s%s.${FLASHLAYOUT_SUFFIX}" % (config_append, labeltype_append)))
+                        bb.note(">>> Update tf-a in %s" %  (debug_flashlayout_file))
+                        os.rename(tmp_flashlayout_file, debug_flashlayout_file)
+                    else:
+                        os.remove(tmp_flashlayout_file)
 }
