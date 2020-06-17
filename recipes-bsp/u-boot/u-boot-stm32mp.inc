@@ -2,11 +2,9 @@ require recipes-bsp/u-boot/u-boot.inc
 
 FILESEXTRAPATHS_prepend := "${THISDIR}/u-boot-stm32mp:"
 
-PROVIDES += "u-boot"
-RPROVIDES_${PN} += "u-boot"
-
 # Configure build dir for externalsrc class usage through devtool
 EXTERNALSRC_BUILD_pn-${PN} = "${WORKDIR}/build"
+B = "${WORKDIR}/build"
 
 # Define dedicated var to configure SPL binary name to override U-Boot default
 # configuration. By this way we allow to mix configuration with and without SPL
@@ -74,7 +72,7 @@ do_compile_append() {
                             then
                                 rm ${B}/${config}/dts/dt.dtb
                             fi
-                            oe_runmake -C ${S} O=${B}/${config} DEVICE_TREE=${devicetree}
+                            oe_runmake -C ${S} O=${B}/${config} DEVICE_TREE=${devicetree} DEVICE_TREE_EXT=${devicetree}.dtb
                             for binary in ${UBOOT_BINARIES}; do
                                 binarysuffix=$(echo ${binary} | cut -d'.' -f2)
                                 k=$(expr $k + 1);
@@ -109,6 +107,7 @@ do_compile_append() {
 # -----------------------------------------------------------------------------
 # Append deploy to handle specific device tree binary deployement
 #
+do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/bootloader"
 do_deploy_append() {
     if [ -n "${UBOOT_DEVICETREE}" ]; then
         # Clean deploydir from any available binary first
