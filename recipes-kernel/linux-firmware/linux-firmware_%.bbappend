@@ -23,3 +23,5 @@ FILES_${PN}-bcm43430_append_stm32mpcommon = " \
   ${nonarch_base_libdir}/firmware/brcm/brcmfmac43430-sdio.clm_blob \
 "
 RDEPENDS_${PN}-bcm43430_remove_stm32mpcommon = " ${PN}-cypress-license "
+
+RRECOMMENDS_${PN}-bcm43430_append_stm32mpcommon += "${@bb.utils.contains('DISTRO_FEATURES', 'systemd', 'wifi-suspend', '', d)}"
