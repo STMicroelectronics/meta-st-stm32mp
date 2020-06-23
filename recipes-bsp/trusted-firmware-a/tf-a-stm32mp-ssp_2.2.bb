@@ -23,8 +23,13 @@ EXTRA_OEMAKE += 'ARM_ARCH_MAJOR=7'
 EXTRA_OEMAKE += 'STM32MP_UART_PROGRAMMER=1'
 EXTRA_OEMAKE += 'STM32MP_USB_PROGRAMMER=1'
 
-
 # ---------------------------------
 # Configure archiver use
 # ---------------------------------
 include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'tf-a-stm32mp-ssp-archiver.inc','')}
+
+# ---------------------------------
+# Configure devupstream class usage
+# ---------------------------------
+SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/arm-trusted-firmware.git;protocol=https;name=tfa;branch=v${TF_VERSION}-stm32mp-ssp"
+SRCREV_class-devupstream = "3a5830ccfbcebfaa60540d50d42f0e37f3b532e9"
