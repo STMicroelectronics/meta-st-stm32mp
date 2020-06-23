@@ -36,16 +36,16 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'optee-os-stm3
 # ---------------------------------
 # Configure devupstream class usage
 # ---------------------------------
-#BBCLASSEXTEND = "devupstream:target"
+BBCLASSEXTEND = "devupstream:target"
 
-#SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/optee_os.git;protocol=https;name=opteeos;branch=3.3.0-stm32mp"
-#SRCREV_class-devupstream = "5f5cc70dfd04419be2ba66b87f41584b6136118c"
-#SRCREV_FORMAT_class-devupstream = "opteeos"
-#PV_class-devupstream = "${OPTEE_VERSION}+github+${SRCPV}"
+SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/optee_os.git;protocol=https;name=opteeos;branch=${OPTEE_VERSION}-stm32mp"
+SRCREV_class-devupstream = "dbfbd96e5850747842b008b54e7d2be171c6d83f"
+SRCREV_FORMAT_class-devupstream = "opteeos"
+PV_class-devupstream = "${OPTEE_VERSION}+github+${SRCPV}"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github
 # ---------------------------------
-#STM32MP_SOURCE_SELECTION ?= "tarball"
+STM32MP_SOURCE_SELECTION ?= "tarball"
 
-#DEFAULT_PREFERENCE = "${@bb.utils.contains('STM32MP_SOURCE_SELECTION', 'github', '-1', '1', d)}"
+DEFAULT_PREFERENCE = "${@bb.utils.contains('STM32MP_SOURCE_SELECTION', 'github', '-1', '1', d)}"

@@ -32,16 +32,16 @@ S = "${WORKDIR}/git"
 # ---------------------------------
 # Configure devupstream class usage
 # ---------------------------------
-#BBCLASSEXTEND = "devupstream:target"
+BBCLASSEXTEND = "devupstream:target"
 
-#SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/u-boot.git;name=uboot;protocol=https;branch=v2018.11-stm32mp"
-#SRCREV_class-devupstream = "a120b9bdb3e656bb2f0485924d77d58e2281311a"
-#SRCREV_FORMAT_class-devupstream = "uboot"
-#PV_class-devupstream = "${U_BOOT_VERSION}+github+${SRCPV}"
+SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/u-boot.git;name=uboot;protocol=https;branch=v${U_BOOT_VERSION}-stm32mp"
+SRCREV_class-devupstream = "764fc8b2591139fb6a729516ccb4f9836b310d63"
+SRCREV_FORMAT_class-devupstream = "uboot"
+PV_class-devupstream = "${U_BOOT_VERSION}+github+${SRCPV}"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github
 # ---------------------------------
-#STM32MP_SOURCE_SELECTION ?= "tarball"
+STM32MP_SOURCE_SELECTION ?= "tarball"
 
-#DEFAULT_PREFERENCE = "${@bb.utils.contains('STM32MP_SOURCE_SELECTION', 'github', '-1', '1', d)}"
+DEFAULT_PREFERENCE = "${@bb.utils.contains('STM32MP_SOURCE_SELECTION', 'github', '-1', '1', d)}"

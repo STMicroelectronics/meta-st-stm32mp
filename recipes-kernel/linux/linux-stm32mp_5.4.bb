@@ -43,19 +43,19 @@ S = "${WORKDIR}/linux-${LINUX_VERSION}.${LINUX_SUBVERSION}"
 # ---------------------------------
 # Configure devupstream class usage
 # ---------------------------------
-#BBCLASSEXTEND = "devupstream:target"
+BBCLASSEXTEND = "devupstream:target"
 
-#SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/linux.git;protocol=https;branch=v${LINUX_VERSION}-stm32mp;name=linux"
-#SRCREV_class-devupstream = "196201973b7048ccf75aa63ac3c3673f8b6ee1c1"
-#SRCREV_FORMAT_class-devupstream = "linux"
-#PV_class-devupstream = "${LINUX_VERSION}+github+${SRCPV}"
+SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/linux.git;protocol=https;branch=v${LINUX_VERSION}-stm32mp;name=linux"
+SRCREV_class-devupstream = "b8663f5fdb5cfd6f243b72c9fac82c24b2594294"
+SRCREV_FORMAT_class-devupstream = "linux"
+PV_class-devupstream = "${LINUX_VERSION}+github+${SRCPV}"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github
 # ---------------------------------
-#STM32MP_SOURCE_SELECTION ?= "tarball"
+STM32MP_SOURCE_SELECTION ?= "tarball"
 
-#DEFAULT_PREFERENCE = "${@bb.utils.contains('STM32MP_SOURCE_SELECTION', 'github', '-1', '1', d)}"
+DEFAULT_PREFERENCE = "${@bb.utils.contains('STM32MP_SOURCE_SELECTION', 'github', '-1', '1', d)}"
 
 # ---------------------------------
 # Configure archiver use
