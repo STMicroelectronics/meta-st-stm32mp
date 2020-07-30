@@ -116,6 +116,8 @@ python __anonymous () {
                         d.appendVarFlag('do_image_complete', 'depends', ' %s:do_image_complete' % partition)
                     bb.debug(1, "Appending 'image_rootfs_image_clean_task' to IMAGE_PREPROCESS_COMMAND.")
                     d.appendVar('IMAGE_PREPROCESS_COMMAND', 'image_rootfs_image_clean_task;')
+                    bb.debug(1, "Set DEPLOY_BUILDINFO_FILE to '1' to allow to deploy build info file for rootfs build.")
+                    d.setVar('DEPLOY_BUILDINFO_FILE', '1')
                     # Manage multiubi volume build enable for current image
                     if bb.utils.contains('IMAGE_FSTYPES', 'stmultiubi', True, False, d) and d.getVar('ENABLE_MULTIVOLUME_UBI') == "1":
                         bb.debug(1, "Appending 'st_multivolume_ubifs' to IMAGE_POSTPROCESS_COMMAND.")
@@ -146,4 +148,22 @@ image_rootfs_image_clean_task() {
         unset j
     done
     unset i
+}
+
+# -----------------------------------------------------------------------------
+# Append buildinfo() to allow to export to DEPLOYDIR the buildinfo file itself
+# -----------------------------------------------------------------------------
+DEPLOY_BUILDINFO_FILE ??= "0"
+
+buildinfo_append() {
+    if d.getVar('DEPLOY_BUILDINFO_FILE') != '1':
+        return
+    # Export build information to deploy dir
+    import shutil
+    buildinfo_srcfile=d.expand('${IMAGE_ROOTFS}${IMAGE_BUILDINFO_FILE}')
+    buildinfo_dstfile=os.path.join(d.getVar('IMGDEPLOYDIR'), os.path.basename(d.getVar('IMAGE_BUILDINFO_FILE')) + '-' + d.getVar('IMAGE_LINK_NAME'))
+    if os.path.isfile(buildinfo_srcfile):
+        shutil.copy2(buildinfo_srcfile, buildinfo_dstfile)
+    else:
+        bb.warn('Not able to locate %s file in image rootfs %s' % (d.getVar('IMAGE_BUILDINFO_FILE'), d.getVar('IMAGE_ROOTFS')))
 }
