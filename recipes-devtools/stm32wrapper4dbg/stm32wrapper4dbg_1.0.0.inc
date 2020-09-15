@@ -10,5 +10,5 @@ S = "${WORKDIR}/git"
 SECTION = "devel"
 
 do_install() {
-    install -D -m 0755 stm32wrapper4dbg -t ${D}${bindir}
+    install -D -m 0755 ${S}/stm32wrapper4dbg -t ${D}${bindir}
 }
