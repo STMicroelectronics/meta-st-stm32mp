@@ -14,6 +14,6 @@ EXTRA_OECONF_append_stm32mpcommon = " \
 
 do_install_append_stm32mpcommon() {
    install -d ${D}/${bindir}/
-   cp -a ${WORKDIR}/gdbinit ${D}/${bindir}/
+   cp -a --no-preserve=ownership ${WORKDIR}/gdbinit ${D}/${bindir}/
 }
 
