@@ -45,10 +45,8 @@ S = "${WORKDIR}/linux-${LINUX_VERSION}.${LINUX_SUBVERSION}"
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
-SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/linux.git;protocol=https;branch=v${LINUX_VERSION}-stm32mp;name=linux"
+SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/linux.git;protocol=https;branch=v${LINUX_VERSION}-stm32mp"
 SRCREV_class-devupstream = "b8663f5fdb5cfd6f243b72c9fac82c24b2594294"
-SRCREV_FORMAT_class-devupstream = "linux"
-PV_class-devupstream = "${LINUX_VERSION}+github+${SRCPV}"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github
@@ -79,9 +77,10 @@ SRC_URI += "file://${LINUX_VERSION}/fragment-05-modules.config;subdir=fragments"
 SRC_URI += "file://${LINUX_VERSION}/fragment-06-signature.config;subdir=fragments"
 
 # Don't forget to add/del for devupstream
-#SRC_URI_class-devupstream += " file://${LINUX_VERSION}/fragment-03-systemd.config;subdir=fragments "
-#SRC_URI_class-devupstream += " file://${LINUX_VERSION}/fragment-04-optee.config;subdir=fragments "
-#SRC_URI_class-devupstream += " file://${LINUX_VERSION}/fragment-05-modules.config;subdir=fragments "
+SRC_URI_class-devupstream += "file://${LINUX_VERSION}/fragment-03-systemd.config;subdir=fragments"
+SRC_URI_class-devupstream += "file://${LINUX_VERSION}/fragment-04-optee.config;subdir=fragments"
+SRC_URI_class-devupstream += "file://${LINUX_VERSION}/fragment-05-modules.config;subdir=fragments"
+SRC_URI_class-devupstream += "file://${LINUX_VERSION}/fragment-06-signature.config;subdir=fragments"
 
 # -------------------------------------------------------------
 # Kernel Args
