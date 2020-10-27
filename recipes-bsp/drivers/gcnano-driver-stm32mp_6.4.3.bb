@@ -1,12 +1,12 @@
 SUMMARY = "GCNano kernel drivers"
 LICENSE = "GPLv1 & MIT"
 # Note get md5sum with: $ head -n 53 Makefile | md5sum
-LIC_FILES_CHKSUM = "file://Makefile;endline=53;md5=c53e65c2dc344ddd2f74196aae9e8384"
+LIC_FILES_CHKSUM = "file://Makefile;endline=53;md5=3ad4e99418a2e0f339ecdc29ac648351"
 
-SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries;protocol=https;branch=gcnano-6.4.1-binaries"
-SRCREV = "eaff2c61bcc3936f8193a52ffe965bdcc6457a57"
+SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries;protocol=https;branch=gcnano-6.4.3-binaries"
+SRCREV = "6b0972cc5466627372d4dcee0227c9828c6ff881"
 
-GCNANO_VERSION = "6.4.1"
+GCNANO_VERSION = "6.4.3"
 
 PV = "${GCNANO_VERSION}-tar.${SRCPV}"
 

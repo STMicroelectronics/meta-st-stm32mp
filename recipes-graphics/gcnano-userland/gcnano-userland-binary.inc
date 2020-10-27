@@ -8,12 +8,12 @@ PROVIDES += "gcnano-userland virtual/libgles1 virtual/libgles2 virtual/egl virtu
 
 TAR_FILENAME = "gcnano-userland-${BACKEND}-${PV}-${GCNANO_USERLAND_FB_TARBALL_DATE}"
 
-SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries;protocol=https;branch=gcnano-6.4.1-binaries"
-SRCREV = "eaff2c61bcc3936f8193a52ffe965bdcc6457a57"
+SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries;protocol=https;branch=gcnano-6.4.3-binaries"
+SRCREV = "6b0972cc5466627372d4dcee0227c9828c6ff881"
 
-PV = "6.4.1"
+PV = "6.4.3"
 
-GCNANO_USERLAND_FB_TARBALL_DATE = "20200402"
+GCNANO_USERLAND_FB_TARBALL_DATE = "20200902"
 
 S = "${WORKDIR}/git"
 
