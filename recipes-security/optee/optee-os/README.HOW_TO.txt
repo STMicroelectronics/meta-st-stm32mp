@@ -10,14 +10,6 @@ Compilation of Optee-os (Trusted Execution Environment):
 -----------------
 OpenSTLinux SDK must be installed.
 
-For optee-os build you need to install:
-- Wand python and/or python crypto package
-    Ubuntu: sudo apt-get install python-wand python-crypto python-pycryptopp
-    Fedora: sudo yum install python-wand python-crypto
-- git:
-    Ubuntu: sudo apt-get install git-core gitk
-    Fedora: sudo yum install git
-
 If you have never configured you git configuration:
     $ git config --global user.name "your_name"
     $ git config --global user.email "your_email@example.com"

@@ -47,5 +47,9 @@ archiver_create_makefile_for_sdk() {
     echo "		cp ../build/core/${OPTEE_PAGER}.${OPTEE_SUFFIX} ../build/${OPTEE_PAGER}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX} ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     echo "		cp ../build/core/${OPTEE_PAGEABLE}.${OPTEE_SUFFIX} ../build/${OPTEE_PAGEABLE}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX} ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
     echo "	fi" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+
+    echo "" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+    echo "clean:" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+    echo "	rm -rf \$(LOCAL_PATH)/../build" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
 }
 do_ar_original[prefuncs] += "archiver_create_makefile_for_sdk"
