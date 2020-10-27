@@ -1,9 +1,9 @@
 inherit pkgconfig autotools-brokensep gettext
 
 SRC_URI = " \
-    git://repo.or.cz/r/git2cl.git;protocol=http;destsuffix=git/tools/git2cl;name=git2cl                         \
-    git://repo.or.cz/r/jimtcl.git;protocol=http;destsuffix=git/jimtcl;name=jimtcl                               \
-    git://repo.or.cz/r/libjaylink.git;protocol=http;destsuffix=git/src/jtag/drivers/libjaylink;name=libjaylink  \
+    git://repo.or.cz/git2cl.git;;destsuffix=git/tools/git2cl;name=git2cl                         \
+    git://repo.or.cz/jimtcl.git;destsuffix=git/jimtcl;name=jimtcl                               \
+    git://repo.or.cz/libjaylink.git;destsuffix=git/src/jtag/drivers/libjaylink;name=libjaylink  \
     "
 
 SRCREV_git2cl = "8373c9f74993e218a08819cbcdbab3f3564bbeba"
