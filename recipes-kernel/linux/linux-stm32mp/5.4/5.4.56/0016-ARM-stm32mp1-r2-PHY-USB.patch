@@ -1,41 +1,262 @@
-From cad7f0ae4c464edf0d139218f06c9d46e18fb62b Mon Sep 17 00:00:00 2001
-From: Christophe Priouzeau <christophe.priouzeau@st.com>
-Date: Fri, 10 Apr 2020 14:47:01 +0200
-Subject: [PATCH 16/23] ARM-stm32mp1-r1-PHY-USB
+From 95aafdb42d1f3aa59f114a7f076949abac53c38d Mon Sep 17 00:00:00 2001
+From: Lionel VITTE <lionel.vitte@st.com>
+Date: Mon, 5 Oct 2020 13:19:50 +0200
+Subject: [PATCH 16/22] ARM-stm32mp1-r2-rc8-PHY-USB
 
 ---
- drivers/phy/phy-core.c                 |  48 +-
- drivers/phy/st/phy-stm32-usbphyc.c     | 485 ++++++++++---
- drivers/usb/dwc2/Kconfig               |   1 +
- drivers/usb/dwc2/Makefile              |   2 +-
- drivers/usb/dwc2/core.c                | 123 ++--
- drivers/usb/dwc2/core.h                |  20 +
- drivers/usb/dwc2/core_intr.c           |   7 +-
- drivers/usb/dwc2/drd.c                 | 189 +++++
- drivers/usb/dwc2/gadget.c              |   7 +-
- drivers/usb/dwc2/hcd.c                 |   6 +-
- drivers/usb/dwc2/hw.h                  |   8 +
- drivers/usb/dwc2/params.c              |  39 ++
- drivers/usb/dwc2/platform.c            | 134 +++-
- drivers/usb/gadget/function/f_acm.c    |  16 +
- drivers/usb/gadget/function/f_serial.c |  16 +
- drivers/usb/gadget/function/u_serial.c |  53 +-
- drivers/usb/gadget/function/u_serial.h |   2 +
- drivers/usb/host/ehci-platform.c       |   7 +
- drivers/usb/renesas_usbhs/rcar2.c      |   2 +-
- drivers/usb/renesas_usbhs/rza2.c       |   2 +-
- drivers/usb/typec/Kconfig              |   9 +
- drivers/usb/typec/Makefile             |   1 +
- drivers/usb/typec/class.c              |  15 +
- drivers/usb/typec/typec_stusb.c        | 910 +++++++++++++++++++++++++
- include/linux/phy/phy.h                |   9 +-
- include/linux/usb/typec.h              |   1 +
- 26 files changed, 1959 insertions(+), 153 deletions(-)
+ .../bindings/connector/usb-connector.txt      |   2 +
+ .../bindings/phy/phy-stm32-usbphyc.txt        |  60 +-
+ .../devicetree/bindings/usb/dwc2.txt          |   8 +
+ .../devicetree/bindings/usb/generic-ehci.yaml |   5 +
+ .../bindings/usb/st,typec-stusb.txt           |  48 +
+ drivers/phy/phy-core.c                        |  48 +-
+ drivers/phy/st/phy-stm32-usbphyc.c            | 497 ++++++++--
+ drivers/usb/dwc2/Kconfig                      |   1 +
+ drivers/usb/dwc2/Makefile                     |   2 +-
+ drivers/usb/dwc2/core.c                       | 123 ++-
+ drivers/usb/dwc2/core.h                       |  21 +
+ drivers/usb/dwc2/drd.c                        | 196 ++++
+ drivers/usb/dwc2/gadget.c                     |   7 +-
+ drivers/usb/dwc2/hcd.c                        |   6 +-
+ drivers/usb/dwc2/hw.h                         |   8 +
+ drivers/usb/dwc2/params.c                     |  43 +
+ drivers/usb/dwc2/platform.c                   | 131 ++-
+ drivers/usb/gadget/function/f_acm.c           |  16 +
+ drivers/usb/gadget/function/f_serial.c        |  16 +
+ drivers/usb/gadget/function/u_serial.c        |  53 +-
+ drivers/usb/gadget/function/u_serial.h        |   2 +
+ drivers/usb/host/ehci-platform.c              |   7 +
+ drivers/usb/renesas_usbhs/rcar2.c             |   2 +-
+ drivers/usb/renesas_usbhs/rza2.c              |   2 +-
+ drivers/usb/typec/Kconfig                     |   9 +
+ drivers/usb/typec/Makefile                    |   1 +
+ drivers/usb/typec/class.c                     |  15 +
+ drivers/usb/typec/typec_stusb.c               | 910 ++++++++++++++++++
+ include/linux/phy/phy.h                       |   9 +-
+ include/linux/usb/typec.h                     |   1 +
+ 30 files changed, 2102 insertions(+), 147 deletions(-)
+ create mode 100644 Documentation/devicetree/bindings/usb/st,typec-stusb.txt
  create mode 100644 drivers/usb/dwc2/drd.c
  create mode 100644 drivers/usb/typec/typec_stusb.c
 
+diff --git a/Documentation/devicetree/bindings/connector/usb-connector.txt b/Documentation/devicetree/bindings/connector/usb-connector.txt
+index d357987181ee0..5c0bb0395bc92 100644
+--- a/Documentation/devicetree/bindings/connector/usb-connector.txt
++++ b/Documentation/devicetree/bindings/connector/usb-connector.txt
+@@ -34,6 +34,8 @@ Optional properties for usb-b-connector:
+ Optional properties for usb-c-connector:
+ - power-role: should be one of "source", "sink" or "dual"(DRP) if typec
+   connector has power support.
++- power-opmode: should be one of "default", "1.5A", "3.0A" or
++  "usb_power_delivery" if typec connector has power support.
+ - try-power-role: preferred power role if "dual"(DRP) can support Try.SNK
+   or Try.SRC, should be "sink" for Try.SNK or "source" for Try.SRC.
+ - data-role: should be one of "host", "device", "dual"(DRD) if typec
+diff --git a/Documentation/devicetree/bindings/phy/phy-stm32-usbphyc.txt b/Documentation/devicetree/bindings/phy/phy-stm32-usbphyc.txt
+index 725ae71ae6535..3953489e3a6bb 100644
+--- a/Documentation/devicetree/bindings/phy/phy-stm32-usbphyc.txt
++++ b/Documentation/devicetree/bindings/phy/phy-stm32-usbphyc.txt
+@@ -23,8 +23,11 @@ Required properties:
+ - compatible: must be "st,stm32mp1-usbphyc"
+ - reg: address and length of the usb phy control register set
+ - clocks: phandle + clock specifier for the PLL phy clock
++- vdda1v1-supply: phandle to the regulator providing 1V1 power to the PHY
++- vdda1v8-supply: phandle to the regulator providing 1V8 power to the PHY
+ - #address-cells: number of address cells for phys sub-nodes, must be <1>
+ - #size-cells: number of size cells for phys sub-nodes, must be <0>
++- #clock-cells: number of clock cells for ck_usbo_48m consumer, must be <0>
+ 
+ Optional properties:
+ - assigned-clocks: phandle + clock specifier for the PLL phy clock
+@@ -34,40 +37,83 @@ Optional properties:
+ Required nodes: one sub-node per port the controller provides.
+ 
+ Phy sub-nodes
+-==============
++=============
+ 
+ Required properties:
+ - reg: phy port index
+ - phy-supply: phandle to the regulator providing 3V3 power to the PHY,
+ 	      see phy-bindings.txt in the same directory.
+-- vdda1v1-supply: phandle to the regulator providing 1V1 power to the PHY
+-- vdda1v8-supply: phandle to the regulator providing 1V8 power to the PHY
+ - #phy-cells: see phy-bindings.txt in the same directory, must be <0> for PHY
+   port#1 and must be <1> for PHY port#2, to select USB controller
+ 
++Optional properties:
++- st,phy-tuning : phandle to the usb phy tuning node, see Phy tuning node below
++- vbus-supply: phandle to the regulator providing 5V vbus to the USB connector
++
++Phy tuning node
++===============
++
++It may be necessary to adjust the phy settings to compensate parasitics, which
++can be due to USB connector/receptacle, routing, ESD protection component, ...
++
++Here is the list of all optional parameters to tune the interface of the phy
++(HS for High-Speed, FS for Full-Speed, LS for Low-Speed)
++
++Optional properties:
++- st,current-boost: <1> current boosting of 1mA
++		    <2> current boosting of 2mA
++- st,no-lsfs-fb-cap: disables the LS/FS feedback capacitor
++- st,hs-slew-ctrl: slows the HS driver slew rate by 10%
++- st,hs-dc-level: <0> decreases the HS driver DC level by 5 to 7mV
++		  <1> increases the HS driver DC level by 5 to 7mV
++		  <2> increases the HS driver DC level by 10 to 14mV
++- st,fs-rftime-tuning: enables the FS rise/fall tuning option
++- st,hs-rftime-reduction: enables the HS rise/fall reduction feature
++- st,hs-current-trim: controls HS driver current trimming for choke
++- st,hs-impedance-trim: controls HS driver impedance tuning for choke
++- st,squelch-level: adjusts the squelch DC threshold value
++- st,hs-rx-gain-eq: enables the HS Rx gain equalizer
++- st,hs-rx-offset: adjusts the HS Rx offset
++- st,no-hs-ftime-ctrl: disables the HS fall time control of single
++		       ended signals during pre-emphasis
++- st,no-lsfs-sc: disables the short circuit protection in LS/FS driver
++- st,hs-tx-staggering: enables the basic staggering in HS Tx mode
++
+ 
+ Example:
++		usb_phy_tuning: usb-phy-tuning {
++			st,current-boost = <2>;
++			st,no-lfs-fb-cap;
++			st,hs-dc-level = <2>;
++			st,hs-rftime-reduction;
++			st,hs-current-trim = <5>;
++			st,hs-impedance-trim = <0>;
++			st,squelch-level = <1>;
++			st,no-hs-ftime-ctrl;
++			st,hs-tx-staggering;
++		};
++
+ 		usbphyc: usb-phy@5a006000 {
+ 			compatible = "st,stm32mp1-usbphyc";
+ 			reg = <0x5a006000 0x1000>;
+ 			clocks = <&rcc_clk USBPHY_K>;
+ 			resets = <&rcc_rst USBPHY_R>;
++			vdda1v1-supply = <&reg11>;
++			vdda1v8-supply = <&reg18>;
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
++			#clock-cells = <0>;
+ 
+ 			usbphyc_port0: usb-phy@0 {
+ 				reg = <0>;
+ 				phy-supply = <&vdd_usb>;
+-				vdda1v1-supply = <&reg11>;
+-				vdda1v8-supply = <&reg18>
+ 				#phy-cells = <0>;
+ 			};
+ 
+ 			usbphyc_port1: usb-phy@1 {
+ 				reg = <1>;
+ 				phy-supply = <&vdd_usb>;
+-				vdda1v1-supply = <&reg11>;
+-				vdda1v8-supply = <&reg18>
+ 				#phy-cells = <1>;
++				st,phy-tuning = <&usb_phy_tuning>;
+ 			};
+ 		};
+diff --git a/Documentation/devicetree/bindings/usb/dwc2.txt b/Documentation/devicetree/bindings/usb/dwc2.txt
+index aafff3a6904d0..1a65303d0ca5c 100644
+--- a/Documentation/devicetree/bindings/usb/dwc2.txt
++++ b/Documentation/devicetree/bindings/usb/dwc2.txt
+@@ -23,6 +23,9 @@ Required properties:
+   configured in HS mode;
+   - "st,stm32f7-hsotg": The DWC2 USB HS controller instance in STM32F7 SoCs
+     configured in HS mode;
++  - "st,stm32mp1-fsotg": The DWC2 USB controller instance in STM32MP1 SoCs,
++  configured in FS mode (using dedicated FS transceiver).
++  - "st,stm32mp1-hsotg": The DWC2 USB controller instance in STM32MP1 SoCs;
+ - reg : Should contain 1 register range (address and length)
+ - interrupts : Should contain 1 interrupt
+ - clocks: clock provider specifier
+@@ -46,6 +49,11 @@ Refer to phy/phy-bindings.txt for generic phy consumer properties
+                           on for remote wakeup during suspend.
+ - snps,reset-phy-on-wake: If present indicates that we need to reset the PHY when
+                           we detect a wakeup.  This is due to a hardware errata.
++- usb33d-supply: external VBUS and ID sensing comparators supply, in order to
++  perform OTG operation, used on STM32MP1 SoCs.
++- usb-role-switch: use USB Role Switch to support dynamic dual role switch.
++  Refer to usb/generic.txt
++- wakeup-source: bool flag to indicate this device has wakeup capabilities
+ 
+ Deprecated properties:
+ - g-use-dma: gadget DMA mode is automatically detected
+diff --git a/Documentation/devicetree/bindings/usb/generic-ehci.yaml b/Documentation/devicetree/bindings/usb/generic-ehci.yaml
+index 1ca64c85191aa..b71c15dc8c11f 100644
+--- a/Documentation/devicetree/bindings/usb/generic-ehci.yaml
++++ b/Documentation/devicetree/bindings/usb/generic-ehci.yaml
+@@ -69,6 +69,11 @@ properties:
+   phy-names:
+     const: usb
+ 
++  wakeup-source:
++    $ref: /schemas/types.yaml#/definitions/flag
++    description:
++      Indicate this device has wakeup capabilities.
++
+ required:
+   - compatible
+   - reg
+diff --git a/Documentation/devicetree/bindings/usb/st,typec-stusb.txt b/Documentation/devicetree/bindings/usb/st,typec-stusb.txt
+new file mode 100644
+index 0000000000000..415e14e1409ea
+--- /dev/null
++++ b/Documentation/devicetree/bindings/usb/st,typec-stusb.txt
+@@ -0,0 +1,48 @@
++STMicroelectronics STUSB Type-C Controller family
++
++Required properties:
++ - compatible: should be "st,stusb1600".
++ - reg: I2C slave address of the device.
++
++Optional properties:
++ - vdd-supply: main power supply [4.1V;22V].
++ - vsys-supply: low power supply [3.0V;5.5V].
++ - vconn-supply: power supply [2.7;5.5V] used to supply VConn on CC pin in
++   source or dual power role.
++ - interrupts: interrupt specifier triggered by ALERT# signal.
++   Please refer to ../interrupt-controller/interrupt.txt
++ - pinctrl state named "default" may be defined to configure pin for #ALERT
++   signal
++
++USB-C connector attached to STUSB Type-C port controller can be described in
++an optional connector sub-node. Refer to ../connector/usb-connector.txt.
++In case role switch can be used, an optional port sub-node can be added. Refer
++to ../graph.txt.
++
++Example :
++
++	typec: stusb1600@28 {
++		compatible = "st,stusb1600";
++		reg = <0x28>;
++		vdd-supply = <&vbus_drd>;
++		vsys-supply = <&vdd_usb>;
++		interrupts = <11 IRQ_TYPE_EDGE_FALLING>;
++		interrupt-parent = <&gpioi>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&stusb1600_pins_a>;
++
++		usb_con: connector {
++			compatible = "usb-c-connector";
++			label = "USB-C";
++			power-role = "dual";
++			power-opmode = "1.5A";
++			data-role = "dual";
++
++			port {
++				con_usbotg_hs_ep: endpoint {
++					remote-endpoint = <&usbotg_hs_ep>;
++				};
++			};
++		};
++	};
++
 diff --git a/drivers/phy/phy-core.c b/drivers/phy/phy-core.c
-index b04f4fe85..8dfb4868c 100644
+index b04f4fe85ac2d..8dfb4868c8c3d 100644
 --- a/drivers/phy/phy-core.c
 +++ b/drivers/phy/phy-core.c
 @@ -29,7 +29,7 @@ static void devm_phy_release(struct device *dev, void *res)
@@ -152,7 +373,7 @@ index b04f4fe85..8dfb4868c 100644
  }
  EXPORT_SYMBOL_GPL(devm_of_phy_get_by_index);
 diff --git a/drivers/phy/st/phy-stm32-usbphyc.c b/drivers/phy/st/phy-stm32-usbphyc.c
-index 56bdea4b0..4e029c008 100644
+index 56bdea4b0bd90..0eb699344c071 100644
 --- a/drivers/phy/st/phy-stm32-usbphyc.c
 +++ b/drivers/phy/st/phy-stm32-usbphyc.c
 @@ -7,8 +7,9 @@
@@ -220,10 +441,7 @@ index 56bdea4b0..4e029c008 100644
 +	DC_PLUS_10_TO_14_MV,
 +	DC_MAX,
 +};
- 
--static const char * const supplies_names[] = {
--	"vdda1v1",	/* 1V1 */
--	"vdda1v8",	/* 1V8 */
++
 +enum current_trim {
 +	CUR_NOMINAL,
 +	CUR_PLUS_1_56_PCT,
@@ -242,9 +460,8 @@ index 56bdea4b0..4e029c008 100644
 +	CUR_PLUS_22_16_PCT,
 +	CUR_PLUS_23_73_PCT,
 +	CUR_MAX,
- };
- 
--#define NUM_SUPPLIES		ARRAY_SIZE(supplies_names)
++};
++
 +enum impedance_trim {
 +	IMP_NOMINAL,
 +	IMP_MINUS_2_OHMS,
@@ -260,15 +477,19 @@ index 56bdea4b0..4e029c008 100644
 +	SQLCH_PLUS_14_MV,
 +	SQLCH_MAX,
 +};
-+
+ 
+-static const char * const supplies_names[] = {
+-	"vdda1v1",	/* 1V1 */
+-	"vdda1v8",	/* 1V8 */
 +enum rx_offset {
 +	NO_RX_OFFSET,
 +	RX_OFFSET_PLUS_5_MV,
 +	RX_OFFSET_PLUS_10_MV,
 +	RX_OFFSET_MINUS_5_MV,
 +	RX_OFFSET_MAX,
-+};
-+
+ };
+ 
+-#define NUM_SUPPLIES		ARRAY_SIZE(supplies_names)
 +/* STM32_USBPHYC_VERSION bit fields */
 +#define MINREV			GENMASK(3, 0)
 +#define MAJREV			GENMASK(7, 4)
@@ -278,15 +499,16 @@ index 56bdea4b0..4e029c008 100644
  #define PLL_FVCO_MHZ		2880
  #define PLL_INFF_MIN_RATE_HZ	19200000
  #define PLL_INFF_MAX_RATE_HZ	38400000
-@@ -58,7 +135,6 @@ struct pll_params {
+@@ -58,7 +135,7 @@ struct pll_params {
  struct stm32_usbphyc_phy {
  	struct phy *phy;
  	struct stm32_usbphyc *usbphyc;
 -	struct regulator_bulk_data supplies[NUM_SUPPLIES];
++	struct regulator *vbus;
  	u32 index;
  	bool active;
  };
-@@ -70,6 +146,10 @@ struct stm32_usbphyc {
+@@ -70,6 +147,10 @@ struct stm32_usbphyc {
  	struct reset_control *rst;
  	struct stm32_usbphyc_phy **phys;
  	int nphys;
@@ -297,7 +519,7 @@ index 56bdea4b0..4e029c008 100644
  	int switch_setup;
  };
  
-@@ -83,6 +163,41 @@ static inline void stm32_usbphyc_clr_bits(void __iomem *reg, u32 bits)
+@@ -83,6 +164,41 @@ static inline void stm32_usbphyc_clr_bits(void __iomem *reg, u32 bits)
  	writel_relaxed(readl_relaxed(reg) & ~bits, reg);
  }
  
@@ -339,7 +561,7 @@ index 56bdea4b0..4e029c008 100644
  static void stm32_usbphyc_get_pll_params(u32 clk_rate,
  					 struct pll_params *pll_params)
  {
-@@ -142,83 +257,106 @@ static int stm32_usbphyc_pll_init(struct stm32_usbphyc *usbphyc)
+@@ -142,83 +258,106 @@ static int stm32_usbphyc_pll_init(struct stm32_usbphyc *usbphyc)
  	return 0;
  }
  
@@ -354,12 +576,12 @@ index 56bdea4b0..4e029c008 100644
 -		if (usbphyc->phys[i]->active)
 -			return true;
 +	stm32_usbphyc_clr_bits(pll_reg, PLLEN);
-+
+ 
+-	return false;
 +	/* Wait for minimum width of powerdown pulse (ENABLE = Low) */
 +	if (readl_relaxed_poll_timeout(pll_reg, pllen, !(pllen & PLLEN), 5, 50))
 +		dev_err(usbphyc->dev, "PLL not reset\n");
- 
--	return false;
++
 +	return stm32_usbphyc_regulators_disable(usbphyc);
 +}
 +
@@ -424,12 +646,10 @@ index 56bdea4b0..4e029c008 100644
 -
  	return 0;
 -}
- 
+-
 -static int stm32_usbphyc_pll_disable(struct stm32_usbphyc *usbphyc)
 -{
 -	void __iomem *pll_reg = usbphyc->base + STM32_USBPHYC_PLL;
-+reg_disable:
-+	stm32_usbphyc_regulators_disable(usbphyc);
  
 -	/* Check if other phy port active */
 -	if (stm32_usbphyc_has_one_phy_active(usbphyc))
@@ -438,7 +658,9 @@ index 56bdea4b0..4e029c008 100644
 -	stm32_usbphyc_clr_bits(pll_reg, PLLEN);
 -	/* Wait for minimum width of powerdown pulse (ENABLE = Low) */
 -	udelay(PLL_PWR_DOWN_TIME_US);
--
++reg_disable:
++	stm32_usbphyc_regulators_disable(usbphyc);
+ 
 -	if (readl_relaxed(pll_reg) & PLLEN) {
 -		dev_err(usbphyc->dev, "PLL not reset\n");
 -		return -EIO;
@@ -484,44 +706,49 @@ index 56bdea4b0..4e029c008 100644
  }
  
  static int stm32_usbphyc_phy_exit(struct phy *phy)
-@@ -231,28 +369,168 @@ static int stm32_usbphyc_phy_exit(struct phy *phy)
- 	return stm32_usbphyc_pll_disable(usbphyc);
- }
- 
--static int stm32_usbphyc_phy_power_on(struct phy *phy)
-+static const struct phy_ops stm32_usbphyc_phy_ops = {
-+	.init = stm32_usbphyc_phy_init,
-+	.exit = stm32_usbphyc_phy_exit,
-+	.owner = THIS_MODULE,
-+};
-+
-+static int stm32_usbphyc_clk48_prepare(struct clk_hw *hw)
+@@ -235,14 +374,20 @@ static int stm32_usbphyc_phy_power_on(struct phy *phy)
  {
--	struct stm32_usbphyc_phy *usbphyc_phy = phy_get_drvdata(phy);
-+	struct stm32_usbphyc *usbphyc = container_of(hw, struct stm32_usbphyc,
-+						     clk48_hw);
+ 	struct stm32_usbphyc_phy *usbphyc_phy = phy_get_drvdata(phy);
  
 -	return regulator_bulk_enable(NUM_SUPPLIES, usbphyc_phy->supplies);
-+	return stm32_usbphyc_pll_enable(usbphyc);
++	if (usbphyc_phy->vbus)
++		return regulator_enable(usbphyc_phy->vbus);
++
++	return 0;
  }
  
--static int stm32_usbphyc_phy_power_off(struct phy *phy)
-+static void stm32_usbphyc_clk48_unprepare(struct clk_hw *hw)
+ static int stm32_usbphyc_phy_power_off(struct phy *phy)
  {
--	struct stm32_usbphyc_phy *usbphyc_phy = phy_get_drvdata(phy);
-+	struct stm32_usbphyc *usbphyc = container_of(hw, struct stm32_usbphyc,
-+						     clk48_hw);
+ 	struct stm32_usbphyc_phy *usbphyc_phy = phy_get_drvdata(phy);
  
 -	return regulator_bulk_disable(NUM_SUPPLIES, usbphyc_phy->supplies);
-+	stm32_usbphyc_pll_disable(usbphyc);
++	if (usbphyc_phy->vbus)
++		return regulator_disable(usbphyc_phy->vbus);
++
++	return 0;
  }
  
--static const struct phy_ops stm32_usbphyc_phy_ops = {
--	.init = stm32_usbphyc_phy_init,
--	.exit = stm32_usbphyc_phy_exit,
--	.power_on = stm32_usbphyc_phy_power_on,
--	.power_off = stm32_usbphyc_phy_power_off,
--	.owner = THIS_MODULE,
+ static const struct phy_ops stm32_usbphyc_phy_ops = {
+@@ -253,6 +398,163 @@ static const struct phy_ops stm32_usbphyc_phy_ops = {
+ 	.owner = THIS_MODULE,
+ };
+ 
++static int stm32_usbphyc_clk48_prepare(struct clk_hw *hw)
++{
++	struct stm32_usbphyc *usbphyc = container_of(hw, struct stm32_usbphyc,
++						     clk48_hw);
++
++	return stm32_usbphyc_pll_enable(usbphyc);
++}
++
++static void stm32_usbphyc_clk48_unprepare(struct clk_hw *hw)
++{
++	struct stm32_usbphyc *usbphyc = container_of(hw, struct stm32_usbphyc,
++						     clk48_hw);
++
++	stm32_usbphyc_pll_disable(usbphyc);
++}
++
 +static unsigned long stm32_usbphyc_clk48_recalc_rate(struct clk_hw *hw,
 +						     unsigned long parent_rate)
 +{
@@ -532,8 +759,8 @@ index 56bdea4b0..4e029c008 100644
 +	.prepare = stm32_usbphyc_clk48_prepare,
 +	.unprepare = stm32_usbphyc_clk48_unprepare,
 +	.recalc_rate = stm32_usbphyc_clk48_recalc_rate,
- };
- 
++};
++
 +static void stm32_usbphyc_clk48_unregister(void *data)
 +{
 +	struct stm32_usbphyc *usbphyc = data;
@@ -550,6 +777,7 @@ index 56bdea4b0..4e029c008 100644
 +
 +	init.name = "ck_usbo_48m";
 +	init.ops = &usbphyc_clk48_ops;
++	init.flags = CLK_IGNORE_UNUSED | CLK_IS_CRITICAL;
 +
 +	usbphyc->clk48_hw.init = &init;
 +
@@ -665,7 +893,7 @@ index 56bdea4b0..4e029c008 100644
  static void stm32_usbphyc_switch_setup(struct stm32_usbphyc *usbphyc,
  				       u32 utmi_switch)
  {
-@@ -313,7 +591,7 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
+@@ -313,7 +615,7 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
  	struct device_node *child, *np = dev->of_node;
  	struct resource *res;
  	struct phy_provider *phy_provider;
@@ -674,7 +902,7 @@ index 56bdea4b0..4e029c008 100644
  	int ret, port = 0;
  
  	usbphyc = devm_kzalloc(dev, sizeof(*usbphyc), GFP_KERNEL);
-@@ -330,7 +608,8 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
+@@ -330,7 +632,8 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
  	usbphyc->clk = devm_clk_get(dev, 0);
  	if (IS_ERR(usbphyc->clk)) {
  		ret = PTR_ERR(usbphyc->clk);
@@ -684,7 +912,7 @@ index 56bdea4b0..4e029c008 100644
  		return ret;
  	}
  
-@@ -345,6 +624,24 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
+@@ -345,6 +648,24 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
  		reset_control_assert(usbphyc->rst);
  		udelay(2);
  		reset_control_deassert(usbphyc->rst);
@@ -709,7 +937,7 @@ index 56bdea4b0..4e029c008 100644
  	}
  
  	usbphyc->switch_setup = -EINVAL;
-@@ -356,11 +653,26 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
+@@ -356,11 +677,26 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
  		goto clk_disable;
  	}
  
@@ -737,7 +965,7 @@ index 56bdea4b0..4e029c008 100644
  
  		phy = devm_phy_create(dev, child, &stm32_usbphyc_phy_ops);
  		if (IS_ERR(phy)) {
-@@ -378,24 +690,15 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
+@@ -378,24 +714,15 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
  			goto put_child;
  		}
  
@@ -765,7 +993,22 @@ index 56bdea4b0..4e029c008 100644
  		usbphyc->phys[port] = usbphyc_phy;
  		phy_set_bus_width(phy, 8);
  		phy_set_drvdata(phy, usbphyc_phy);
-@@ -416,6 +719,13 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
+@@ -405,6 +732,14 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
+ 		usbphyc->phys[port]->index = index;
+ 		usbphyc->phys[port]->active = false;
+ 
++		usbphyc->phys[port]->vbus = devm_regulator_get_optional(&phy->dev, "vbus");
++		if (IS_ERR(usbphyc->phys[port]->vbus)) {
++			ret = PTR_ERR(usbphyc->phys[port]->vbus);
++			if (ret == -EPROBE_DEFER)
++				goto put_child;
++			usbphyc->phys[port]->vbus = NULL;
++		}
++
+ 		port++;
+ 	}
+ 
+@@ -416,6 +751,13 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
  		goto clk_disable;
  	}
  
@@ -779,7 +1022,7 @@ index 56bdea4b0..4e029c008 100644
  	version = readl_relaxed(usbphyc->base + STM32_USBPHYC_VERSION);
  	dev_info(dev, "registered rev:%lu.%lu\n",
  		 FIELD_GET(MAJREV, version), FIELD_GET(MINREV, version));
-@@ -433,12 +743,34 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
+@@ -433,12 +775,34 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
  static int stm32_usbphyc_remove(struct platform_device *pdev)
  {
  	struct stm32_usbphyc *usbphyc = dev_get_drvdata(&pdev->dev);
@@ -814,7 +1057,7 @@ index 56bdea4b0..4e029c008 100644
  static const struct of_device_id stm32_usbphyc_of_match[] = {
  	{ .compatible = "st,stm32mp1-usbphyc", },
  	{ },
-@@ -451,6 +783,7 @@ static struct platform_driver stm32_usbphyc_driver = {
+@@ -451,6 +815,7 @@ static struct platform_driver stm32_usbphyc_driver = {
  	.driver = {
  		.of_match_table = stm32_usbphyc_of_match,
  		.name = "stm32-usbphyc",
@@ -823,19 +1066,19 @@ index 56bdea4b0..4e029c008 100644
  };
  module_platform_driver(stm32_usbphyc_driver);
 diff --git a/drivers/usb/dwc2/Kconfig b/drivers/usb/dwc2/Kconfig
-index 16e1aa304..dceb8f324 100644
+index 16e1aa304edc4..c131719367eca 100644
 --- a/drivers/usb/dwc2/Kconfig
 +++ b/drivers/usb/dwc2/Kconfig
-@@ -47,6 +47,7 @@ config USB_DWC2_PERIPHERAL
- config USB_DWC2_DUAL_ROLE
- 	bool "Dual Role mode"
- 	depends on (USB=y && USB_GADGET=y) || (USB_DWC2=m && USB && USB_GADGET)
+@@ -5,6 +5,7 @@ config USB_DWC2
+ 	depends on HAS_DMA
+ 	depends on USB || USB_GADGET
+ 	depends on HAS_IOMEM
 +	select USB_ROLE_SWITCH
  	help
- 	  Select this option if you want the driver to work in a dual-role
- 	  mode. In this mode both host and gadget features are enabled, and
+ 	  Say Y here if your system has a Dual Role Hi-Speed USB
+ 	  controller based on the DesignWare HSOTG IP Core.
 diff --git a/drivers/usb/dwc2/Makefile b/drivers/usb/dwc2/Makefile
-index 440320cc2..2bcd6945d 100644
+index 440320cc20a47..2bcd6945df461 100644
 --- a/drivers/usb/dwc2/Makefile
 +++ b/drivers/usb/dwc2/Makefile
 @@ -3,7 +3,7 @@ ccflags-$(CONFIG_USB_DWC2_DEBUG)	+= -DDEBUG
@@ -848,7 +1091,7 @@ index 440320cc2..2bcd6945d 100644
  
  ifneq ($(filter y,$(CONFIG_USB_DWC2_HOST) $(CONFIG_USB_DWC2_DUAL_ROLE)),)
 diff --git a/drivers/usb/dwc2/core.c b/drivers/usb/dwc2/core.c
-index 78a4925aa..d1c6a8a9d 100644
+index 78a4925aa1185..d1c6a8a9d9789 100644
 --- a/drivers/usb/dwc2/core.c
 +++ b/drivers/usb/dwc2/core.c
 @@ -83,6 +83,7 @@ int dwc2_backup_global_registers(struct dwc2_hsotg *hsotg)
@@ -1036,7 +1279,7 @@ index 78a4925aa..d1c6a8a9d 100644
  
  /**
 diff --git a/drivers/usb/dwc2/core.h b/drivers/usb/dwc2/core.h
-index d08d070a0..ab67c2127 100644
+index d08d070a0fb6f..04d6b4937d769 100644
 --- a/drivers/usb/dwc2/core.h
 +++ b/drivers/usb/dwc2/core.h
 @@ -411,6 +411,10 @@ enum dwc2_ep0_state {
@@ -1136,32 +1379,20 @@ index d08d070a0..ab67c2127 100644
  void dwc2_hsotg_core_connect(struct dwc2_hsotg *hsotg);
  void dwc2_hsotg_disconnect(struct dwc2_hsotg *dwc2);
  int dwc2_hsotg_set_test_mode(struct dwc2_hsotg *hsotg, int testmode);
-diff --git a/drivers/usb/dwc2/core_intr.c b/drivers/usb/dwc2/core_intr.c
-index 6af6add3d..6272b4ae4 100644
---- a/drivers/usb/dwc2/core_intr.c
-+++ b/drivers/usb/dwc2/core_intr.c
-@@ -421,10 +421,13 @@ static void dwc2_handle_wakeup_detected_intr(struct dwc2_hsotg *hsotg)
- 			if (ret && (ret != -ENOTSUPP))
- 				dev_err(hsotg->dev, "exit power_down failed\n");
- 
-+			/* Change to L0 state */
-+			hsotg->lx_state = DWC2_L0;
- 			call_gadget(hsotg, resume);
-+		} else {
-+			/* Change to L0 state */
-+			hsotg->lx_state = DWC2_L0;
- 		}
--		/* Change to L0 state */
--		hsotg->lx_state = DWC2_L0;
- 	} else {
- 		if (hsotg->params.power_down)
- 			return;
+@@ -1405,6 +1425,7 @@ static inline int dwc2_gadget_init(struct dwc2_hsotg *hsotg)
+ { return 0; }
+ static inline void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *dwc2,
+ 						     bool reset) {}
++static inline void dwc2_hsotg_core_disconnect(struct dwc2_hsotg *hsotg) {}
+ static inline void dwc2_hsotg_core_connect(struct dwc2_hsotg *hsotg) {}
+ static inline void dwc2_hsotg_disconnect(struct dwc2_hsotg *dwc2) {}
+ static inline int dwc2_hsotg_set_test_mode(struct dwc2_hsotg *hsotg,
 diff --git a/drivers/usb/dwc2/drd.c b/drivers/usb/dwc2/drd.c
 new file mode 100644
-index 000000000..8de90d7b2
+index 0000000000000..728ca64450960
 --- /dev/null
 +++ b/drivers/usb/dwc2/drd.c
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,196 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * drd.c - DesignWare USB2 DRD Controller Dual-role support
@@ -1171,6 +1402,7 @@ index 000000000..8de90d7b2
 + * Author(s): Amelie Delaunay <amelie.delaunay@st.com>
 + */
 +
++#include <linux/clk.h>
 +#include <linux/iopoll.h>
 +#include <linux/platform_device.h>
 +#include <linux/usb/role.h>
@@ -1189,9 +1421,9 @@ index 000000000..8de90d7b2
 +	gotgctl &= ~(GOTGCTL_BVALOVAL | GOTGCTL_AVALOVAL | GOTGCTL_VBVALOVAL);
 +	dwc2_writel(hsotg, gotgctl, GOTGCTL);
 +
-+	dwc2_force_mode(hsotg, false);
-+
 +	spin_unlock_irqrestore(&hsotg->lock, flags);
++
++	dwc2_force_mode(hsotg, (hsotg->dr_mode == USB_DR_MODE_HOST));
 +}
 +
 +static int dwc2_ovr_avalid(struct dwc2_hsotg *hsotg, bool valid)
@@ -1234,55 +1466,61 @@ index 000000000..8de90d7b2
 +{
 +	struct dwc2_hsotg *hsotg = dev_get_drvdata(dev);
 +	unsigned long flags;
++	int already = 0;
 +
 +	/* Skip session not in line with dr_mode */
 +	if ((role == USB_ROLE_DEVICE && hsotg->dr_mode == USB_DR_MODE_HOST) ||
 +	    (role == USB_ROLE_HOST && hsotg->dr_mode == USB_DR_MODE_PERIPHERAL))
 +		return -EINVAL;
 +
++#if IS_ENABLED(CONFIG_USB_DWC2_PERIPHERAL) || \
++	IS_ENABLED(CONFIG_USB_DWC2_DUAL_ROLE)
 +	/* Skip session if core is in test mode */
 +	if (role == USB_ROLE_NONE && hsotg->test_mode) {
 +		dev_dbg(hsotg->dev, "Core is in test mode\n");
 +		return -EBUSY;
 +	}
++#endif
++
++	/*
++	 * In case of USB_DR_MODE_PERIPHERAL, clock is disabled at the end of
++	 * the probe and enabled on udc_start.
++	 * If role-switch set is called before the udc_start, we need to enable
++	 * the clock to read/write GOTGCTL and GUSBCFG registers to override
++	 * mode and sessions. It is the case if cable is plugged at boot.
++	 */
++	if (!hsotg->ll_hw_enabled && hsotg->clk) {
++		int ret = clk_prepare_enable(hsotg->clk);
++		if (ret)
++			return ret;
++	}
 +
 +	spin_lock_irqsave(&hsotg->lock, flags);
 +
 +	if (role == USB_ROLE_HOST) {
-+		if (dwc2_ovr_avalid(hsotg, true))
-+			goto unlock;
-+
-+		if (hsotg->dr_mode == USB_DR_MODE_OTG)
-+			/*
-+			 * This will raise a Connector ID Status Change
-+			 * Interrupt - connID A
-+			 */
-+			dwc2_force_mode(hsotg, true);
++		already = dwc2_ovr_avalid(hsotg, true);
 +	} else if (role == USB_ROLE_DEVICE) {
-+		if (dwc2_ovr_bvalid(hsotg, true))
-+			goto unlock;
-+
-+		if (hsotg->dr_mode == USB_DR_MODE_OTG)
-+			/*
-+			 * This will raise a Connector ID Status Change
-+			 * Interrupt - connID B
-+			 */
-+			dwc2_force_mode(hsotg, false);
-+
++		already = dwc2_ovr_bvalid(hsotg, true);
 +		/* This clear DCTL.SFTDISCON bit */
 +		dwc2_hsotg_core_connect(hsotg);
 +	} else {
 +		if (dwc2_is_device_mode(hsotg)) {
-+		    if (!dwc2_ovr_bvalid(hsotg, false))
-+			/* This set DCTL.SFTDISCON bit */
-+			dwc2_hsotg_core_disconnect(hsotg);
++			if (!dwc2_ovr_bvalid(hsotg, false))
++				/* This set DCTL.SFTDISCON bit */
++				dwc2_hsotg_core_disconnect(hsotg);
 +		} else {
 +			dwc2_ovr_avalid(hsotg, false);
 +		}
 +	}
 +
-+unlock:
 +	spin_unlock_irqrestore(&hsotg->lock, flags);
++
++	if (!already && hsotg->dr_mode == USB_DR_MODE_OTG)
++		/* This will raise a Connector ID Status Change Interrupt */
++		dwc2_force_mode(hsotg, role == USB_ROLE_HOST);
++
++	if (!hsotg->ll_hw_enabled && hsotg->clk)
++		clk_disable_unprepare(hsotg->clk);
 +
 +	dev_dbg(hsotg->dev, "%s-session valid\n",
 +		role == USB_ROLE_NONE ? "No" :
@@ -1352,7 +1590,7 @@ index 000000000..8de90d7b2
 +		usb_role_switch_unregister(hsotg->role_sw);
 +}
 diff --git a/drivers/usb/dwc2/gadget.c b/drivers/usb/dwc2/gadget.c
-index 7fd0900a9..f1e8323c0 100644
+index f7528f732b2aa..8e448e8b1fe4b 100644
 --- a/drivers/usb/dwc2/gadget.c
 +++ b/drivers/usb/dwc2/gadget.c
 @@ -3531,7 +3531,7 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
@@ -1374,7 +1612,7 @@ index 7fd0900a9..f1e8323c0 100644
  }
  
  /**
-@@ -4930,7 +4931,7 @@ int dwc2_hsotg_suspend(struct dwc2_hsotg *hsotg)
+@@ -4924,7 +4925,7 @@ int dwc2_hsotg_suspend(struct dwc2_hsotg *hsotg)
  		hsotg->gadget.speed = USB_SPEED_UNKNOWN;
  		spin_unlock_irqrestore(&hsotg->lock, flags);
  
@@ -1384,7 +1622,7 @@ index 7fd0900a9..f1e8323c0 100644
  				dwc2_hsotg_ep_disable_lock(&hsotg->eps_in[ep]->ep);
  			if (hsotg->eps_out[ep])
 diff --git a/drivers/usb/dwc2/hcd.c b/drivers/usb/dwc2/hcd.c
-index 81afe553a..f89e6d003 100644
+index 81afe553aa666..f89e6d003ec8b 100644
 --- a/drivers/usb/dwc2/hcd.c
 +++ b/drivers/usb/dwc2/hcd.c
 @@ -1735,7 +1735,8 @@ static void dwc2_hcd_cleanup_channels(struct dwc2_hsotg *hsotg)
@@ -1408,7 +1646,7 @@ index 81afe553a..f89e6d003 100644
  			 * The port is disconnected, which means the core is
  			 * either in device mode or it soon will be. Just
 diff --git a/drivers/usb/dwc2/hw.h b/drivers/usb/dwc2/hw.h
-index 510e87ec0..c4027bbce 100644
+index 510e87ec0be84..c4027bbcedec4 100644
 --- a/drivers/usb/dwc2/hw.h
 +++ b/drivers/usb/dwc2/hw.h
 @@ -54,6 +54,12 @@
@@ -1434,10 +1672,10 @@ index 510e87ec0..c4027bbce 100644
  #define GUID				HSOTG_REG(0x003c)
  #define GSNPSID				HSOTG_REG(0x0040)
 diff --git a/drivers/usb/dwc2/params.c b/drivers/usb/dwc2/params.c
-index 31e090ac9..f7c947cdc 100644
+index 31e090ac9f1ec..b4cff8b079ec2 100644
 --- a/drivers/usb/dwc2/params.c
 +++ b/drivers/usb/dwc2/params.c
-@@ -163,6 +163,41 @@ static void dwc2_set_stm32f7_hsotg_params(struct dwc2_hsotg *hsotg)
+@@ -163,6 +163,45 @@ static void dwc2_set_stm32f7_hsotg_params(struct dwc2_hsotg *hsotg)
  	p->host_perio_tx_fifo_size = 256;
  }
  
@@ -1474,12 +1712,16 @@ index 31e090ac9..f7c947cdc 100644
 +	p->host_perio_tx_fifo_size = 256;
 +	p->ahbcfg = GAHBCFG_HBSTLEN_INCR16 << GAHBCFG_HBSTLEN_SHIFT;
 +	p->power_down = DWC2_POWER_DOWN_PARAM_NONE;
++	p->lpm = false;
++	p->lpm_clock_gating = false;
++	p->besl = false;
++	p->hird_threshold_en = false;
 +}
 +
  const struct of_device_id dwc2_of_match_table[] = {
  	{ .compatible = "brcm,bcm2835-usb", .data = dwc2_set_bcm_params },
  	{ .compatible = "hisilicon,hi6220-usb", .data = dwc2_set_his_params  },
-@@ -186,6 +221,10 @@ const struct of_device_id dwc2_of_match_table[] = {
+@@ -186,6 +225,10 @@ const struct of_device_id dwc2_of_match_table[] = {
  	{ .compatible = "st,stm32f4x9-hsotg" },
  	{ .compatible = "st,stm32f7-hsotg",
  	  .data = dwc2_set_stm32f7_hsotg_params },
@@ -1491,35 +1733,22 @@ index 31e090ac9..f7c947cdc 100644
  };
  MODULE_DEVICE_TABLE(of, dwc2_of_match_table);
 diff --git a/drivers/usb/dwc2/platform.c b/drivers/usb/dwc2/platform.c
-index 3c6ce09a6..5691d8281 100644
+index 4e14c4f7fed7a..0acbf58020ea8 100644
 --- a/drivers/usb/dwc2/platform.c
 +++ b/drivers/usb/dwc2/platform.c
 @@ -312,6 +312,11 @@ static int dwc2_driver_remove(struct platform_device *dev)
  	if (hsotg->gadget_enabled)
  		dwc2_hsotg_remove(hsotg);
  
++	dwc2_drd_exit(hsotg);
++
 +	if (hsotg->params.activate_stm_id_vb_detection)
 +		regulator_disable(hsotg->usb33d);
-+
-+	dwc2_drd_exit(hsotg);
 +
  	if (hsotg->ll_hw_enabled)
  		dwc2_lowlevel_hw_disable(hsotg);
  
-@@ -445,8 +450,11 @@ static int dwc2_driver_probe(struct platform_device *dev)
- 	 * reset value form registers.
- 	 */
- 	retval = dwc2_core_reset(hsotg, false);
--	if (retval)
-+	if (retval) {
-+		/* TEMPORARY WORKAROUND */
-+		retval = -EPROBE_DEFER;
- 		goto error;
-+	}
- 
- 	/* Detect config values from hardware */
- 	retval = dwc2_get_hwparams(hsotg);
-@@ -464,10 +472,40 @@ static int dwc2_driver_probe(struct platform_device *dev)
+@@ -465,10 +470,40 @@ static int dwc2_driver_probe(struct platform_device *dev)
  	if (retval)
  		goto error;
  
@@ -1557,30 +1786,32 @@ index 3c6ce09a6..5691d8281 100644
  		retval = dwc2_gadget_init(hsotg);
  		if (retval)
 -			goto error;
-+			goto error_init;
++			goto error_drd;
  		hsotg->gadget_enabled = 1;
  	}
  
-@@ -493,7 +531,7 @@ static int dwc2_driver_probe(struct platform_device *dev)
+@@ -494,7 +529,7 @@ static int dwc2_driver_probe(struct platform_device *dev)
  		if (retval) {
  			if (hsotg->gadget_enabled)
  				dwc2_hsotg_remove(hsotg);
 -			goto error;
-+			goto error_init;
++			goto error_drd;
  		}
  		hsotg->hcd_enabled = 1;
  	}
-@@ -509,6 +547,9 @@ static int dwc2_driver_probe(struct platform_device *dev)
- 
+@@ -521,6 +556,11 @@ static int dwc2_driver_probe(struct platform_device *dev)
+ #endif /* CONFIG_USB_DWC2_PERIPHERAL || CONFIG_USB_DWC2_DUAL_ROLE */
  	return 0;
  
++error_drd:
++	dwc2_drd_exit(hsotg);
 +error_init:
 +	if (hsotg->params.activate_stm_id_vb_detection)
 +		regulator_disable(hsotg->usb33d);
  error:
  	dwc2_lowlevel_hw_disable(hsotg);
  	return retval;
-@@ -523,12 +564,61 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
+@@ -535,12 +575,61 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
  	if (is_device_mode)
  		dwc2_hsotg_suspend(dwc2);
  
@@ -1642,7 +1873,7 @@ index 3c6ce09a6..5691d8281 100644
  	return ret;
  }
  
-@@ -537,6 +627,9 @@ static int __maybe_unused dwc2_resume(struct device *dev)
+@@ -549,6 +638,9 @@ static int __maybe_unused dwc2_resume(struct device *dev)
  	struct dwc2_hsotg *dwc2 = dev_get_drvdata(dev);
  	int ret = 0;
  
@@ -1652,7 +1883,7 @@ index 3c6ce09a6..5691d8281 100644
  	if (dwc2->phy_off_for_suspend && dwc2->ll_hw_enabled) {
  		ret = __dwc2_lowlevel_hw_enable(dwc2);
  		if (ret)
-@@ -544,6 +637,41 @@ static int __maybe_unused dwc2_resume(struct device *dev)
+@@ -556,6 +648,41 @@ static int __maybe_unused dwc2_resume(struct device *dev)
  	}
  	dwc2->phy_off_for_suspend = false;
  
@@ -1695,7 +1926,7 @@ index 3c6ce09a6..5691d8281 100644
  		ret = dwc2_hsotg_resume(dwc2);
  
 diff --git a/drivers/usb/gadget/function/f_acm.c b/drivers/usb/gadget/function/f_acm.c
-index 9fc98de83..780059373 100644
+index 9fc98de836249..7800593735659 100644
 --- a/drivers/usb/gadget/function/f_acm.c
 +++ b/drivers/usb/gadget/function/f_acm.c
 @@ -723,6 +723,20 @@ static void acm_free_func(struct usb_function *f)
@@ -1729,7 +1960,7 @@ index 9fc98de83..780059373 100644
  	return &acm->port.func;
  }
 diff --git a/drivers/usb/gadget/function/f_serial.c b/drivers/usb/gadget/function/f_serial.c
-index c860f30a0..b2fb6b742 100644
+index c860f30a0ea2b..b2fb6b7424e98 100644
 --- a/drivers/usb/gadget/function/f_serial.c
 +++ b/drivers/usb/gadget/function/f_serial.c
 @@ -327,6 +327,20 @@ static void gser_unbind(struct usb_configuration *c, struct usb_function *f)
@@ -1763,7 +1994,7 @@ index c860f30a0..b2fb6b742 100644
  	return &gser->port.func;
  }
 diff --git a/drivers/usb/gadget/function/u_serial.c b/drivers/usb/gadget/function/u_serial.c
-index 038c445a4..3c144621a 100644
+index 038c445a4e9b5..3c144621ad935 100644
 --- a/drivers/usb/gadget/function/u_serial.c
 +++ b/drivers/usb/gadget/function/u_serial.c
 @@ -119,6 +119,8 @@ struct gs_port {
@@ -1857,7 +2088,7 @@ index 038c445a4..3c144621a 100644
  {
  	unsigned			i;
 diff --git a/drivers/usb/gadget/function/u_serial.h b/drivers/usb/gadget/function/u_serial.h
-index 9acaac1cb..223a4be05 100644
+index 9acaac1cbb75a..223a4be05afe7 100644
 --- a/drivers/usb/gadget/function/u_serial.h
 +++ b/drivers/usb/gadget/function/u_serial.h
 @@ -60,6 +60,8 @@ void gserial_free_line(unsigned char port_line);
@@ -1870,10 +2101,10 @@ index 9acaac1cb..223a4be05 100644
  /* functions are bound to configurations by a config or gadget driver */
  int gser_bind_config(struct usb_configuration *c, u8 port_num);
 diff --git a/drivers/usb/host/ehci-platform.c b/drivers/usb/host/ehci-platform.c
-index 769749ca5..a356b227e 100644
+index e4fc3f66d43bf..db436d432e723 100644
 --- a/drivers/usb/host/ehci-platform.c
 +++ b/drivers/usb/host/ehci-platform.c
-@@ -33,6 +33,7 @@
+@@ -35,6 +35,7 @@
  #include <linux/usb/hcd.h>
  #include <linux/usb/ehci_pdriver.h>
  #include <linux/usb/of.h>
@@ -1881,7 +2112,7 @@ index 769749ca5..a356b227e 100644
  
  #include "ehci.h"
  
-@@ -307,6 +308,9 @@ static int ehci_platform_suspend(struct device *dev)
+@@ -430,6 +431,9 @@ static int ehci_platform_suspend(struct device *dev)
  	if (pdata->power_suspend)
  		pdata->power_suspend(pdev);
  
@@ -1891,7 +2122,7 @@ index 769749ca5..a356b227e 100644
  	return ret;
  }
  
-@@ -318,6 +322,9 @@ static int ehci_platform_resume(struct device *dev)
+@@ -441,6 +445,9 @@ static int ehci_platform_resume(struct device *dev)
  	struct ehci_platform_priv *priv = hcd_to_ehci_priv(hcd);
  	struct device *companion_dev;
  
@@ -1902,7 +2133,7 @@ index 769749ca5..a356b227e 100644
  		int err = pdata->power_on(pdev);
  		if (err < 0)
 diff --git a/drivers/usb/renesas_usbhs/rcar2.c b/drivers/usb/renesas_usbhs/rcar2.c
-index 440d213e1..791908f8c 100644
+index 440d213e1749d..791908f8cf73e 100644
 --- a/drivers/usb/renesas_usbhs/rcar2.c
 +++ b/drivers/usb/renesas_usbhs/rcar2.c
 @@ -34,7 +34,7 @@ static int usbhs_rcar2_hardware_exit(struct platform_device *pdev)
@@ -1915,7 +2146,7 @@ index 440d213e1..791908f8c 100644
  	}
  
 diff --git a/drivers/usb/renesas_usbhs/rza2.c b/drivers/usb/renesas_usbhs/rza2.c
-index 021749594..3eed3334a 100644
+index 021749594389e..3eed3334a17f1 100644
 --- a/drivers/usb/renesas_usbhs/rza2.c
 +++ b/drivers/usb/renesas_usbhs/rza2.c
 @@ -29,7 +29,7 @@ static int usbhs_rza2_hardware_exit(struct platform_device *pdev)
@@ -1928,7 +2159,7 @@ index 021749594..3eed3334a 100644
  
  	return 0;
 diff --git a/drivers/usb/typec/Kconfig b/drivers/usb/typec/Kconfig
-index 895e2418d..3a1ee89be 100644
+index 895e2418de53b..3a1ee89be74e4 100644
 --- a/drivers/usb/typec/Kconfig
 +++ b/drivers/usb/typec/Kconfig
 @@ -61,6 +61,15 @@ config TYPEC_TPS6598X
@@ -1948,7 +2179,7 @@ index 895e2418d..3a1ee89be 100644
  
  source "drivers/usb/typec/altmodes/Kconfig"
 diff --git a/drivers/usb/typec/Makefile b/drivers/usb/typec/Makefile
-index 6696b7263..c9136020e 100644
+index 6696b7263d61a..c9136020e4f3e 100644
 --- a/drivers/usb/typec/Makefile
 +++ b/drivers/usb/typec/Makefile
 @@ -5,4 +5,5 @@ obj-$(CONFIG_TYPEC)		+= altmodes/
@@ -1958,7 +2189,7 @@ index 6696b7263..c9136020e 100644
 +obj-$(CONFIG_TYPEC_STUSB) += typec_stusb.o
  obj-$(CONFIG_TYPEC)		+= mux/
 diff --git a/drivers/usb/typec/class.c b/drivers/usb/typec/class.c
-index a400b65cf..6391d0101 100644
+index a400b65cf17bb..6391d01015d17 100644
 --- a/drivers/usb/typec/class.c
 +++ b/drivers/usb/typec/class.c
 @@ -1387,6 +1387,21 @@ void typec_set_pwr_opmode(struct typec_port *port,
@@ -1985,7 +2216,7 @@ index a400b65cf..6391d0101 100644
   * @name: port power capability string
 diff --git a/drivers/usb/typec/typec_stusb.c b/drivers/usb/typec/typec_stusb.c
 new file mode 100644
-index 000000000..e760ba304
+index 0000000000000..e760ba304f854
 --- /dev/null
 +++ b/drivers/usb/typec/typec_stusb.c
 @@ -0,0 +1,910 @@
@@ -2900,7 +3131,7 @@ index 000000000..e760ba304
 +MODULE_DESCRIPTION("STMicroelectronics STUSB Type-C controller driver");
 +MODULE_LICENSE("GPL v2");
 diff --git a/include/linux/phy/phy.h b/include/linux/phy/phy.h
-index 15032f145..99ec370a6 100644
+index 15032f1450631..99ec370a6ff50 100644
 --- a/include/linux/phy/phy.h
 +++ b/include/linux/phy/phy.h
 @@ -233,7 +233,8 @@ struct phy *devm_of_phy_get(struct device *dev, struct device_node *np,
@@ -2927,7 +3158,7 @@ index 15032f145..99ec370a6 100644
  }
  
 diff --git a/include/linux/usb/typec.h b/include/linux/usb/typec.h
-index 7df4ecabc..2671776a1 100644
+index 7df4ecabc78a2..2671776a1f8ea 100644
 --- a/include/linux/usb/typec.h
 +++ b/include/linux/usb/typec.h
 @@ -241,6 +241,7 @@ int typec_set_orientation(struct typec_port *port,

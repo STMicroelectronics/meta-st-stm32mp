@@ -1,16 +1,17 @@
-From 9e9f45cd3d4887d9af58da15e627443838da1645 Mon Sep 17 00:00:00 2001
-From: Christophe Priouzeau <christophe.priouzeau@st.com>
-Date: Fri, 10 Apr 2020 14:41:46 +0200
-Subject: [PATCH 08/23] ARM-stm32mp1-r1-HWSPINLOCK
+From 10e0333454dbd6ccecb67ad303eae3aef707ce0b Mon Sep 17 00:00:00 2001
+From: Lionel VITTE <lionel.vitte@st.com>
+Date: Mon, 5 Oct 2020 13:19:43 +0200
+Subject: [PATCH 08/22] ARM-stm32mp1-r2-rc8-HWSPINLOCK
 
 ---
  Documentation/hwspinlock.txt             | 10 ++-
  drivers/hwspinlock/hwspinlock_core.c     | 82 ++++++++++++++++++------
  drivers/hwspinlock/hwspinlock_internal.h |  2 +
- 3 files changed, 73 insertions(+), 21 deletions(-)
+ drivers/hwspinlock/stm32_hwspinlock.c    | 62 +++++++++++-------
+ 4 files changed, 112 insertions(+), 44 deletions(-)
 
 diff --git a/Documentation/hwspinlock.txt b/Documentation/hwspinlock.txt
-index 6f03713b7..605bd2dc8 100644
+index 6f03713b70039..605bd2dc8a03e 100644
 --- a/Documentation/hwspinlock.txt
 +++ b/Documentation/hwspinlock.txt
 @@ -54,9 +54,11 @@ Should be called from a process context (might sleep).
@@ -43,7 +44,7 @@ index 6f03713b7..605bd2dc8 100644
  	};
  
 diff --git a/drivers/hwspinlock/hwspinlock_core.c b/drivers/hwspinlock/hwspinlock_core.c
-index 8862445aa..ac76631c7 100644
+index 8862445aa8580..ac76631c7059b 100644
 --- a/drivers/hwspinlock/hwspinlock_core.c
 +++ b/drivers/hwspinlock/hwspinlock_core.c
 @@ -29,6 +29,8 @@
@@ -231,7 +232,7 @@ index 8862445aa..ac76631c7 100644
  	return ret;
  }
 diff --git a/drivers/hwspinlock/hwspinlock_internal.h b/drivers/hwspinlock/hwspinlock_internal.h
-index 9eb6bd020..c808e116c 100644
+index 9eb6bd020dc70..c808e116ce3fe 100644
 --- a/drivers/hwspinlock/hwspinlock_internal.h
 +++ b/drivers/hwspinlock/hwspinlock_internal.h
 @@ -35,11 +35,13 @@ struct hwspinlock_ops {
@@ -248,6 +249,113 @@ index 9eb6bd020..c808e116c 100644
  	void *priv;
  };
  
+diff --git a/drivers/hwspinlock/stm32_hwspinlock.c b/drivers/hwspinlock/stm32_hwspinlock.c
+index c8eacf4f9692b..c7c8c4cc2c5fa 100644
+--- a/drivers/hwspinlock/stm32_hwspinlock.c
++++ b/drivers/hwspinlock/stm32_hwspinlock.c
+@@ -54,8 +54,23 @@ static const struct hwspinlock_ops stm32_hwspinlock_ops = {
+ 	.relax		= stm32_hwspinlock_relax,
+ };
+ 
++static void stm32_hwspinlock_disable_clk(void *data)
++{
++	struct platform_device *pdev = data;
++	struct stm32_hwspinlock *hw = platform_get_drvdata(pdev);
++	struct device *dev = &pdev->dev;
++
++	pm_runtime_get_sync(dev);
++	pm_runtime_disable(dev);
++	pm_runtime_set_suspended(dev);
++	pm_runtime_put_noidle(dev);
++
++	clk_disable_unprepare(hw->clk);
++}
++
+ static int stm32_hwspinlock_probe(struct platform_device *pdev)
+ {
++	struct device *dev = &pdev->dev;
+ 	struct stm32_hwspinlock *hw;
+ 	void __iomem *io_base;
+ 	struct resource *res;
+@@ -63,46 +78,48 @@ static int stm32_hwspinlock_probe(struct platform_device *pdev)
+ 	int i, ret;
+ 
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+-	io_base = devm_ioremap_resource(&pdev->dev, res);
++	io_base = devm_ioremap_resource(dev, res);
+ 	if (IS_ERR(io_base))
+ 		return PTR_ERR(io_base);
+ 
+ 	array_size = STM32_MUTEX_NUM_LOCKS * sizeof(struct hwspinlock);
+-	hw = devm_kzalloc(&pdev->dev, sizeof(*hw) + array_size, GFP_KERNEL);
++	hw = devm_kzalloc(dev, sizeof(*hw) + array_size, GFP_KERNEL);
+ 	if (!hw)
+ 		return -ENOMEM;
+ 
+-	hw->clk = devm_clk_get(&pdev->dev, "hsem");
++	hw->clk = devm_clk_get(dev, "hsem");
+ 	if (IS_ERR(hw->clk))
+ 		return PTR_ERR(hw->clk);
+ 
+-	for (i = 0; i < STM32_MUTEX_NUM_LOCKS; i++)
+-		hw->bank.lock[i].priv = io_base + i * sizeof(u32);
++	ret = clk_prepare_enable(hw->clk);
++	if (ret) {
++		dev_err(dev, "Failed to prepare_enable clock\n");
++		return ret;
++	}
++
++	pm_runtime_get_noresume(dev);
++	pm_runtime_set_active(dev);
++	pm_runtime_enable(dev);
++	pm_runtime_put(dev);
+ 
+ 	platform_set_drvdata(pdev, hw);
+-	pm_runtime_enable(&pdev->dev);
+ 
+-	ret = hwspin_lock_register(&hw->bank, &pdev->dev, &stm32_hwspinlock_ops,
+-				   0, STM32_MUTEX_NUM_LOCKS);
++	ret = devm_add_action_or_reset(dev, stm32_hwspinlock_disable_clk, pdev);
++	if (ret) {
++		dev_err(dev, "Failed to register action\n");
++		return ret;
++	}
+ 
+-	if (ret)
+-		pm_runtime_disable(&pdev->dev);
+-
+-	return ret;
+-}
++	for (i = 0; i < STM32_MUTEX_NUM_LOCKS; i++)
++		hw->bank.lock[i].priv = io_base + i * sizeof(u32);
+ 
+-static int stm32_hwspinlock_remove(struct platform_device *pdev)
+-{
+-	struct stm32_hwspinlock *hw = platform_get_drvdata(pdev);
+-	int ret;
++	ret = devm_hwspin_lock_register(dev, &hw->bank, &stm32_hwspinlock_ops,
++					0, STM32_MUTEX_NUM_LOCKS);
+ 
+-	ret = hwspin_lock_unregister(&hw->bank);
+ 	if (ret)
+-		dev_err(&pdev->dev, "%s failed: %d\n", __func__, ret);
+-
+-	pm_runtime_disable(&pdev->dev);
++		dev_err(dev, "Failed to register hwspinlock\n");
+ 
+-	return 0;
++	return ret;
+ }
+ 
+ static int __maybe_unused stm32_hwspinlock_runtime_suspend(struct device *dev)
+@@ -137,7 +154,6 @@ MODULE_DEVICE_TABLE(of, stm32_hwpinlock_ids);
+ 
+ static struct platform_driver stm32_hwspinlock_driver = {
+ 	.probe		= stm32_hwspinlock_probe,
+-	.remove		= stm32_hwspinlock_remove,
+ 	.driver		= {
+ 		.name	= "stm32_hwspinlock",
+ 		.of_match_table = stm32_hwpinlock_ids,
 -- 
 2.17.1
 
