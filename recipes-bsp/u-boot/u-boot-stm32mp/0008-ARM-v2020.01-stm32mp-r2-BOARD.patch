@@ -1,0 +1,247 @@
+From c4ead8e3640dd3d0810bff2cbd4b6c14c2139a04 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@st.com>
+Date: Tue, 27 Oct 2020 11:48:28 +0100
+Subject: [PATCH 08/10] ARM-v2020.01-stm32mp-r2-BOARD
+
+---
+ board/st/stm32mp1/spl.c      |   4 ++
+ board/st/stm32mp1/stm32mp1.c | 136 +++++++++++++++++++++++------------
+ 2 files changed, 95 insertions(+), 45 deletions(-)
+
+diff --git a/board/st/stm32mp1/spl.c b/board/st/stm32mp1/spl.c
+index e65ff288ea..058d47e0e7 100644
+--- a/board/st/stm32mp1/spl.c
++++ b/board/st/stm32mp1/spl.c
+@@ -12,9 +12,13 @@
+ #include <power/pmic.h>
+ #include <power/stpmic1.h>
+ #include <asm/arch/ddr.h>
++#include <asm/arch/sys_proto.h>
+ 
+ void spl_board_init(void)
+ {
++	/* init DBGMU */
++	dbgmcu_init();
++
+ 	/* Keep vdd on during the reset cycle */
+ #if defined(CONFIG_PMIC_STPMIC1) && defined(CONFIG_SPL_POWER_SUPPORT)
+ 	struct udevice *dev;
+diff --git a/board/st/stm32mp1/stm32mp1.c b/board/st/stm32mp1/stm32mp1.c
+index 617d05d209..6dad00600e 100644
+--- a/board/st/stm32mp1/stm32mp1.c
++++ b/board/st/stm32mp1/stm32mp1.c
+@@ -22,6 +22,7 @@
+ #include <remoteproc.h>
+ #include <reset.h>
+ #include <syscon.h>
++#include <tee.h>
+ #include <usb.h>
+ #include <watchdog.h>
+ #include <asm/io.h>
+@@ -118,7 +119,7 @@ int checkboard(void)
+ 	const char *fdt_compat;
+ 	int fdt_compat_len;
+ 
+-	if (CONFIG_IS_ENABLED(STM32MP1_TRUSTED))
++	if (IS_ENABLED(CONFIG_STM32MP1_TRUSTED))
+ 		mode = "trusted";
+ 	else
+ 		mode = "basic";
+@@ -362,38 +363,14 @@ static void __maybe_unused led_error_blink(u32 nb_blink)
+ }
+ 
+ #ifdef CONFIG_ADC
+-static int board_check_usb_power(void)
++
++static int adc_measurement(ofnode node, int adc_count, int *min_uV, int *max_uV)
+ {
+ 	struct ofnode_phandle_args adc_args;
+ 	struct udevice *adc;
+-	ofnode node;
+ 	unsigned int raw;
+-	int max_uV = 0;
+-	int min_uV = USB_START_HIGH_THRESHOLD_UV;
+-	int ret, uV, adc_count;
+-	u32 nb_blink;
+-	u8 i;
+-	node = ofnode_path("/config");
+-	if (!ofnode_valid(node)) {
+-		debug("%s: no /config node?\n", __func__);
+-		return -ENOENT;
+-	}
+-
+-	/*
+-	 * Retrieve the ADC channels devices and get measurement
+-	 * for each of them
+-	 */
+-	adc_count = ofnode_count_phandle_with_args(node, "st,adc_usb_pd",
+-						   "#io-channel-cells");
+-	if (adc_count < 0) {
+-		if (adc_count == -ENOENT)
+-			return 0;
+-
+-		pr_err("%s: can't find adc channel (%d)\n", __func__,
+-		       adc_count);
+-
+-		return adc_count;
+-	}
++	int ret, uV;
++	int i;
+ 
+ 	for (i = 0; i < adc_count; i++) {
+ 		if (ofnode_parse_phandle_with_args(node, "st,adc_usb_pd",
+@@ -422,10 +399,10 @@ static int board_check_usb_power(void)
+ 		}
+ 		/* Convert to uV */
+ 		if (!adc_raw_to_uV(adc, raw, &uV)) {
+-			if (uV > max_uV)
+-				max_uV = uV;
+-			if (uV < min_uV)
+-				min_uV = uV;
++			if (uV > *max_uV)
++				*max_uV = uV;
++			if (uV < *min_uV)
++				*min_uV = uV;
+ 			pr_debug("%s: %s[%02d] = %u, %d uV\n", __func__,
+ 				 adc->name, adc_args.args[0], raw, uV);
+ 		} else {
+@@ -433,19 +410,62 @@ static int board_check_usb_power(void)
+ 			       __func__, adc->name, adc_args.args[0]);
+ 		}
+ 	}
++	return 0;
++}
++
++static int board_check_usb_power(void)
++{
++	ofnode node;
++	int max_uV = 0;
++	int min_uV = USB_START_HIGH_THRESHOLD_UV;
++	int adc_count, ret;
++	u32 nb_blink;
++	u8 i;
++	node = ofnode_path("/config");
++	if (!ofnode_valid(node)) {
++		debug("%s: no /config node?\n", __func__);
++		return -ENOENT;
++	}
+ 
+ 	/*
+-	 * If highest value is inside 1.23 Volts and 2.10 Volts, that means
+-	 * board is plugged on an USB-C 3A power supply and boot process can
+-	 * continue.
++	 * Retrieve the ADC channels devices and get measurement
++	 * for each of them
+ 	 */
+-	if (max_uV > USB_START_LOW_THRESHOLD_UV &&
+-	    max_uV <= USB_START_HIGH_THRESHOLD_UV &&
+-	    min_uV <= USB_LOW_THRESHOLD_UV)
+-		return 0;
++	adc_count = ofnode_count_phandle_with_args(node, "st,adc_usb_pd",
++						   "#io-channel-cells");
++	if (adc_count < 0) {
++		if (adc_count == -ENOENT)
++			return 0;
+ 
+-	pr_err("****************************************************\n");
++		pr_err("%s: can't find adc channel (%d)\n", __func__,
++		       adc_count);
++
++		return adc_count;
++	}
++
++	/* perform maximum of 2 ADC measurement to detect power supply current */
++	for (i = 0; i < 2; i++) {
++		ret = adc_measurement(node, adc_count, &min_uV, &max_uV);
++		if (ret)
++			return ret;
++
++		/*
++		 * If highest value is inside 1.23 Volts and 2.10 Volts, that means
++		 * board is plugged on an USB-C 3A power supply and boot process can
++		 * continue.
++		 */
++		if (max_uV > USB_START_LOW_THRESHOLD_UV &&
++		    max_uV <= USB_START_HIGH_THRESHOLD_UV &&
++		    min_uV <= USB_LOW_THRESHOLD_UV)
++			return 0;
++
++		if (i == 0) {
++			pr_debug("Previous ADC measurements was not the one expected, retry in 20ms\n");
++			mdelay(20);  /* equal to max tPDDebounce duration (min 10ms - max 20ms) */
++		}
++	}
+ 
++	pr_err("****************************************************\n");
+ 	/*
+ 	 * If highest and lowest value are either both below
+ 	 * USB_LOW_THRESHOLD_UV or both above USB_LOW_THRESHOLD_UV, that
+@@ -737,7 +757,7 @@ int board_init(void)
+ 
+ int board_late_init(void)
+ {
+-	char *boot_device;
++	char *boot_device, *boot_instance;
+ #ifdef CONFIG_ENV_VARS_UBOOT_RUNTIME_CONFIG
+ 	const void *fdt_compat;
+ 	int fdt_compat_len;
+@@ -770,7 +790,7 @@ int board_late_init(void)
+ 	if (!ret)
+ 		ret = misc_read(dev, STM32_BSEC_SHADOW(BSEC_OTP_BOARD),
+ 				&otp, sizeof(otp));
+-	if (!ret && otp) {
++	if (ret > 0 && otp) {
+ 		snprintf(buf, sizeof(buf), "0x%04x", otp >> 16);
+ 		env_set("board_id", buf);
+ 
+@@ -791,6 +811,25 @@ int board_late_init(void)
+ 	    (!strcmp(boot_device, "serial") || !strcmp(boot_device, "usb")))
+ 		env_set("bootdelay", "0");
+ 
++	/* define dynamic variables for FASTBOOT and ANDROID bootargs*/
++	if (CONFIG_IS_ENABLED(CONFIG_FASTBOOT_FLASH_MMC) &&
++	    boot_device && !strcmp(boot_device, "mmc")) {
++		boot_instance = env_get("boot_instance");
++		env_set("fastboot.boot_instance", boot_instance);
++	}
++	if (CONFIG_IS_ENABLED(OPTEE) &&
++	    tee_find_device(NULL, NULL, NULL, NULL)) {
++		if (CONFIG_IS_ENABLED(CONFIG_CMD_DTIMG))
++			env_set("android_bootargs", "androidboot.optee=true");
++		if (CONFIG_IS_ENABLED(FASTBOOT))
++			env_set("fastboot.boot_mode", "optee");
++	} else {
++		if (CONFIG_IS_ENABLED(CONFIG_CMD_DTIMG))
++			env_set("android_bootargs", "");
++		if (CONFIG_IS_ENABLED(FASTBOOT))
++			env_set("fastboot.boot_mode", "trusted");
++	}
++
+ 	return 0;
+ }
+ 
+@@ -939,12 +978,19 @@ int mmc_get_env_dev(void)
+ int ft_board_setup(void *blob, bd_t *bd)
+ {
+ #ifdef CONFIG_FDT_FIXUP_PARTITIONS
+-	struct node_info nodes[] = {
++	static const struct node_info nodes[] = {
+ 		{ "st,stm32f469-qspi",		MTD_DEV_TYPE_NOR,  },
+ 		{ "st,stm32f469-qspi",		MTD_DEV_TYPE_SPINAND},
+ 		{ "st,stm32mp15-fmc2",		MTD_DEV_TYPE_NAND, },
++		{ "st,stm32mp1-fmc2-nfc",	MTD_DEV_TYPE_NAND, },
+ 	};
+-	fdt_fixup_mtdparts(blob, nodes, ARRAY_SIZE(nodes));
++	char *boot_device;
++
++	/* Check the boot-source and don't update MTD for serial or usb boot */
++	boot_device = env_get("boot_device");
++	if (!boot_device ||
++	    (strcmp(boot_device, "serial") && strcmp(boot_device, "usb")))
++		fdt_fixup_mtdparts(blob, nodes, ARRAY_SIZE(nodes));
+ #endif
+ 
+ 	return 0;
+-- 
+2.17.1
+
