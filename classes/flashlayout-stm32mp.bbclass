@@ -352,7 +352,7 @@ def get_binaryname(labeltype, bootscheme, config, partition, d):
     bb.note('>>> Basename selected for %s: %s' % (binary_name, binary_name_base))
 
     # Treat TF-A, TEE, U-BOOT and U-BOOT-SPL binary rename case
-    if re.match('^tf-a.*$', binary_name_base) or re.match('^u-boot.*$', binary_name_base) or re.match('^tee-.*$', binary_name_base):
+    if re.match('^tf-a.*$', binary_name_base) or re.match('^u-boot.*$', binary_name_base) or re.match('^tee-.*$', binary_name_base) or re.match('^zImage-.*$', binary_name_base):
         file_name, file_ext = os.path.splitext(binary_name)
         # Init binary_type to use from labeltype
         binary_type = labeltype + '-' + bootscheme
@@ -373,6 +373,8 @@ def get_binaryname(labeltype, bootscheme, config, partition, d):
         # Append binary_type to binary name
         if re.match('^u-boot-spl.*$', binary_name_base):
             binary_name = file_name + file_ext + '-' + binary_type
+        elif re.match('^zImage.*$', binary_name_base):
+            binary_name = file_name + '-' + labeltype + file_ext
         else:
             binary_name = file_name + '-' + binary_type + file_ext
 

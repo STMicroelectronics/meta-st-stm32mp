@@ -2,10 +2,10 @@
 
 # Define extlinux console for stm32mp machine
 UBOOT_EXTLINUX_CONSOLE = "console=${@d.getVar('SERIAL_CONSOLE').split()[1]},${@d.getVar('SERIAL_CONSOLE').split()[0]}"
+# Define FIT option for extlinux file generation
+UBOOT_EXTLINUX_FIT = "${@bb.utils.contains('MACHINE_FEATURES', 'fit', '1', '0', d)}"
 # Define default FDTDIR for all configs
 UBOOT_EXTLINUX_FDTDIR = "/"
-# Define default MENU DESCRIPTION for all configs
-UBOOT_EXTLINUX_MENU_DESCRIPTION = "OpenSTLinux"
 # Define default boot config for all config
 UBOOT_EXTLINUX_DEFAULT_LABEL ?= "OpenSTLinux"
 # Define default INITRD for all configs
@@ -34,6 +34,13 @@ UBOOT_EXTLINUX_ROOT_target-sdcard = "root=PARTUUID=${DEVICE_PARTUUID_ROOTFS_SDCA
 UBOOT_EXTLINUX_ROOT_target-emmc = "root=PARTUUID=${DEVICE_PARTUUID_ROOTFS_EMMC}"
 # Define INITRD overrides for nand target
 UBOOT_EXTLINUX_INITRD_target-nand = ""
+
+# -----------------------------------------------------------------------------
+# Configure default labels
+# -----------------------------------------------------------------------------
+# Define MENU_DESCRIPTION for rootfs label to default one to force selection
+UBOOT_EXTLINUX_MENU_DESCRIPTION_rootfs = "OpenSTLinux"
+
 # -----------------------------------------------------------------------------
 # Append specific examples configs
 # -----------------------------------------------------------------------------
@@ -55,40 +62,30 @@ UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG_target-emmc += "${STM32MP_DT_FILES_EV}"
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG_target-nand += "${STM32MP_DT_FILES_ED}"
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG_target-nand += "${STM32MP_DT_FILES_EV}"
 # Define extra label configuration
-UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157c-dk2] += "stm32mp157c-dk2-a7"
-UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157c-dk2] += "stm32mp157c-dk2-m4"
-UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157c-ev1] += "stm32mp157c-ev1-a7"
-UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157c-ev1] += "stm32mp157c-ev1-m4"
+UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157c-dk2] += "stm32mp157c-dk2-a7-examples"
+UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157f-dk2] += "stm32mp157f-dk2-a7-examples"
+UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157c-ev1] += "stm32mp157c-ev1-a7-examples"
+UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157f-ev1] += "stm32mp157f-ev1-a7-examples"
 
-UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157f-dk2] += "stm32mp157f-dk2-a7"
-UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157f-dk2] += "stm32mp157f-dk2-m4"
-UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157f-ev1] += "stm32mp157f-ev1-a7"
-UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157f-ev1] += "stm32mp157f-ev1-m4"
+UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157c-dk2] += "stm32mp157c-dk2-m4-examples"
+UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157c-ev1] += "stm32mp157c-ev1-m4-examples"
+UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157f-dk2] += "stm32mp157f-dk2-m4-examples"
+UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157f-ev1] += "stm32mp157f-ev1-m4-examples"
 
 # -----------------------------------------------------------------------------
 # Configure A7 examples labels
 # -----------------------------------------------------------------------------
-# Define MENU DESCRIPTION overrides for new A7 labels
-UBOOT_EXTLINUX_MENU_DESCRIPTION_stm32mp157c-dk2-a7 = "stm32mp157c-dk2-a7-examples"
-UBOOT_EXTLINUX_MENU_DESCRIPTION_stm32mp157c-ev1-a7 = "stm32mp157c-ev1-a7-examples"
-UBOOT_EXTLINUX_MENU_DESCRIPTION_stm32mp157f-dk2-a7 = "stm32mp157f-dk2-a7-examples"
-UBOOT_EXTLINUX_MENU_DESCRIPTION_stm32mp157f-ev1-a7 = "stm32mp157f-ev1-a7-examples"
 # Define FDT overrides for new A7 labels
-UBOOT_EXTLINUX_FDT_stm32mp157c-dk2-a7 = "/stm32mp157c-dk2-a7-examples.dtb"
-UBOOT_EXTLINUX_FDT_stm32mp157c-ev1-a7 = "/stm32mp157c-ev1-a7-examples.dtb"
-UBOOT_EXTLINUX_FDT_stm32mp157f-dk2-a7 = "/stm32mp157f-dk2-a7-examples.dtb"
-UBOOT_EXTLINUX_FDT_stm32mp157f-ev1-a7 = "/stm32mp157f-ev1-a7-examples.dtb"
+UBOOT_EXTLINUX_FDT_stm32mp157c-dk2-a7-examples = "/stm32mp157c-dk2-a7-examples.dtb"
+UBOOT_EXTLINUX_FDT_stm32mp157c-ev1-a7-examples = "/stm32mp157c-ev1-a7-examples.dtb"
+UBOOT_EXTLINUX_FDT_stm32mp157f-dk2-a7-examples = "/stm32mp157f-dk2-a7-examples.dtb"
+UBOOT_EXTLINUX_FDT_stm32mp157f-ev1-a7-examples = "/stm32mp157f-ev1-a7-examples.dtb"
 
 # -----------------------------------------------------------------------------
 # Configure M4 examples labels
 # -----------------------------------------------------------------------------
-# Define MENU DESCRIPTION overrides for new A7 labels
-UBOOT_EXTLINUX_MENU_DESCRIPTION_stm32mp157c-dk2-m4 = "stm32mp157c-dk2-m4-examples"
-UBOOT_EXTLINUX_MENU_DESCRIPTION_stm32mp157c-ev1-m4 = "stm32mp157c-ev1-m4-examples"
-UBOOT_EXTLINUX_MENU_DESCRIPTION_stm32mp157f-dk2-m4 = "stm32mp157f-dk2-m4-examples"
-UBOOT_EXTLINUX_MENU_DESCRIPTION_stm32mp157f-ev1-m4 = "stm32mp157f-ev1-m4-examples"
 # Define FDT overrides for new M4 labels
-UBOOT_EXTLINUX_FDT_stm32mp157c-dk2-m4 = "/stm32mp157c-dk2-m4-examples.dtb"
-UBOOT_EXTLINUX_FDT_stm32mp157c-ev1-m4 = "/stm32mp157c-ev1-m4-examples.dtb"
-UBOOT_EXTLINUX_FDT_stm32mp157f-dk2-m4 = "/stm32mp157f-dk2-m4-examples.dtb"
-UBOOT_EXTLINUX_FDT_stm32mp157f-ev1-m4 = "/stm32mp157f-ev1-m4-examples.dtb"
+UBOOT_EXTLINUX_FDT_stm32mp157c-dk2-m4-examples = "/stm32mp157c-dk2-m4-examples.dtb"
+UBOOT_EXTLINUX_FDT_stm32mp157c-ev1-m4-examples = "/stm32mp157c-ev1-m4-examples.dtb"
+UBOOT_EXTLINUX_FDT_stm32mp157f-dk2-m4-examples = "/stm32mp157f-dk2-m4-examples.dtb"
+UBOOT_EXTLINUX_FDT_stm32mp157f-ev1-m4-examples = "/stm32mp157f-ev1-m4-examples.dtb"
