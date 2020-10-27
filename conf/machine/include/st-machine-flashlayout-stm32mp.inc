@@ -133,16 +133,21 @@ FLASHLAYOUT_TYPE_LABELS_sdcard = "${STM32MP_DT_FILES_DK} ${STM32MP_DT_FILES_ED} 
 
 # FLASHLAYOUT_PARTITION_IMAGES is initalized through PARTITIONS_CONFIG within 'flashlayout-stm32mp' class
 FLASHLAYOUT_PARTITION_IMAGES ?= ""
+# FLASHLAYOUT_BOOT_SEQUENCE is used to define the partition used at boot stage
+FLASHLAYOUT_BOOT_SEQUENCE_TRUSTED ?= "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl"
+FLASHLAYOUT_BOOT_SEQUENCE_OPTEE ?= "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl"
+FLASHLAYOUT_BOOT_SEQUENCE_NAND_TRUSTED ?= "fsbl1-boot ssbl-boot fsbl1 ssbl ssbl2"
+FLASHLAYOUT_BOOT_SEQUENCE_NAND_OPTEE ?= "fsbl1-boot ssbl-boot fsbl1 ssbl ssbl2"
 
-FLASHLAYOUT_PARTITION_LABELS_optee_emmc         = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl teeh teed teex ${FLASHLAYOUT_PARTITION_IMAGES}"
-FLASHLAYOUT_PARTITION_LABELS_optee_nand-4-256   = "fsbl1-boot ssbl-boot fsbl1 ssbl ssbl2 teeh teed teex ubifs"
-FLASHLAYOUT_PARTITION_LABELS_optee_nor-sdcard   = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl env teeh teed teex empty ${FLASHLAYOUT_PARTITION_IMAGES}"
-FLASHLAYOUT_PARTITION_LABELS_optee_sdcard       = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl teeh teed teex ${FLASHLAYOUT_PARTITION_IMAGES}"
+FLASHLAYOUT_PARTITION_LABELS_optee_emmc         = "${FLASHLAYOUT_BOOT_SEQUENCE_OPTEE} teeh teed teex ${FLASHLAYOUT_PARTITION_IMAGES}"
+FLASHLAYOUT_PARTITION_LABELS_optee_nand-4-256   = "${FLASHLAYOUT_BOOT_SEQUENCE_NAND_OPTEE} teeh teed teex ubifs"
+FLASHLAYOUT_PARTITION_LABELS_optee_nor-sdcard   = "${FLASHLAYOUT_BOOT_SEQUENCE_OPTEE} env teeh teed teex empty ${FLASHLAYOUT_PARTITION_IMAGES}"
+FLASHLAYOUT_PARTITION_LABELS_optee_sdcard       = "${FLASHLAYOUT_BOOT_SEQUENCE_OPTEE} teeh teed teex ${FLASHLAYOUT_PARTITION_IMAGES}"
 
-FLASHLAYOUT_PARTITION_LABELS_trusted_emmc       = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl ${FLASHLAYOUT_PARTITION_IMAGES}"
-FLASHLAYOUT_PARTITION_LABELS_trusted_nand-4-256 = "fsbl1-boot ssbl-boot fsbl1 ssbl ssbl2 ubifs"
-FLASHLAYOUT_PARTITION_LABELS_trusted_nor-sdcard = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl env empty ${FLASHLAYOUT_PARTITION_IMAGES}"
-FLASHLAYOUT_PARTITION_LABELS_trusted_sdcard     = "fsbl1-boot ssbl-boot fsbl1 fsbl2 ssbl ${FLASHLAYOUT_PARTITION_IMAGES}"
+FLASHLAYOUT_PARTITION_LABELS_trusted_emmc       = "${FLASHLAYOUT_BOOT_SEQUENCE_TRUSTED} ${FLASHLAYOUT_PARTITION_IMAGES}"
+FLASHLAYOUT_PARTITION_LABELS_trusted_nand-4-256 = "${FLASHLAYOUT_BOOT_SEQUENCE_NAND_TRUSTED} ubifs"
+FLASHLAYOUT_PARTITION_LABELS_trusted_nor-sdcard = "${FLASHLAYOUT_BOOT_SEQUENCE_TRUSTED} env empty ${FLASHLAYOUT_PARTITION_IMAGES}"
+FLASHLAYOUT_PARTITION_LABELS_trusted_sdcard     = "${FLASHLAYOUT_BOOT_SEQUENCE_TRUSTED} ${FLASHLAYOUT_PARTITION_IMAGES}"
 
 # -----------------------------------------------------------------------------
 # Partition properties configuration
@@ -167,6 +172,9 @@ FLASHLAYOUT_PARTITION_ENABLE_env        = "PED"
 # Due to association of u-boot and env, the ssbl partition need to be deleted
 FLASHLAYOUT_PARTITION_ENABLE_sdcard_ssbl = "PD"
 FLASHLAYOUT_PARTITION_ENABLE_emmc_ssbl   = "PD"
+# Due to potential swith between trused and optee, need to be delete teeh partitions
+FLASHLAYOUT_PARTITION_ENABLE_sdcard_teeh = "PD"
+FLASHLAYOUT_PARTITION_ENABLE_emmc_teeh   = "PD"
 
 # -----------------------------------------------------------------------------
 # Partition ID
@@ -260,10 +268,6 @@ FLASHLAYOUT_PARTITION_BIN2LOAD_ubifs        = "${IMAGE_LINK_NAME}_nand_4_256_mul
 # -----------------------------------------------------------------------------
 # We use specific tf-a serialboot mode for any bootscheme for fsbl1-boot
 FLASHLAYOUT_PARTITION_REPLACE_PATTERNS_fsbl1-boot_append = " optee;serialboot trusted;serialboot"
-# For u-boot the 'optee' bootscheme is the same than trusted so use 'trusted'
-FLASHLAYOUT_PARTITION_REPLACE_PATTERNS_ssbl-boot_append = " optee;trusted"
-FLASHLAYOUT_PARTITION_REPLACE_PATTERNS_ssbl_append = " optee;trusted"
-FLASHLAYOUT_PARTITION_REPLACE_PATTERNS_ssbl2_append = " optee;trusted"
 
 # The daughter board does not support Programmer mode, so use eval one
 # (valid for both fsbl1-boot and ssbl-boot)
