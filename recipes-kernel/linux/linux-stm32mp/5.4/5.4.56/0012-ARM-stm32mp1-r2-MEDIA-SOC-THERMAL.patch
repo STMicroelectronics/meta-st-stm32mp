@@ -1,29 +1,92 @@
-From 3da66d9a5ce2cb975d8ee48f47d497de85d79ccc Mon Sep 17 00:00:00 2001
-From: Christophe Priouzeau <christophe.priouzeau@st.com>
-Date: Fri, 10 Apr 2020 14:44:58 +0200
-Subject: [PATCH 12/23] ARM-stm32mp1-r1-MEDIA-SOC-THERMAL
+From 1d34419db80914e8fcd39e622a56c3fdf0b2fe30 Mon Sep 17 00:00:00 2001
+From: Lionel VITTE <lionel.vitte@st.com>
+Date: Mon, 5 Oct 2020 13:19:46 +0200
+Subject: [PATCH 12/22] ARM-stm32mp1-r2-rc8-MEDIA-SOC-THERMAL
 
 ---
- drivers/media/i2c/ov5640.c                |  77 +++--
- drivers/media/platform/stm32/stm32-cec.c  |  10 +-
- drivers/media/platform/stm32/stm32-dcmi.c |  51 ++-
- drivers/media/v4l2-core/v4l2-fwnode.c     |   3 +
- drivers/soc/Kconfig                       |   1 +
- drivers/soc/Makefile                      |   1 +
- drivers/soc/st/Kconfig                    |  17 +
- drivers/soc/st/Makefile                   |   2 +
- drivers/soc/st/stm32_hdp.c                | 242 ++++++++++++++
- drivers/soc/st/stm32_pm_domain.c          | 212 ++++++++++++
- drivers/thermal/st/stm_thermal.c          | 383 +++++++---------------
- include/media/v4l2-fwnode.h               |   2 +
- 12 files changed, 699 insertions(+), 302 deletions(-)
+ .../bindings/media/video-interfaces.txt       |   2 +
+ .../bindings/soc/stm32/stm32_hdp.txt          |  39 ++
+ drivers/media/i2c/ov5640.c                    |  77 +++-
+ drivers/media/platform/stm32/stm32-cec.c      |  10 +-
+ drivers/media/platform/stm32/stm32-dcmi.c     | 100 +++--
+ drivers/media/v4l2-core/v4l2-fwnode.c         |   3 +
+ drivers/soc/Kconfig                           |   1 +
+ drivers/soc/Makefile                          |   1 +
+ drivers/soc/st/Kconfig                        |  17 +
+ drivers/soc/st/Makefile                       |   2 +
+ drivers/soc/st/stm32_hdp.c                    | 242 +++++++++++
+ drivers/soc/st/stm32_pm_domain.c              | 212 ++++++++++
+ drivers/thermal/st/stm_thermal.c              | 383 ++++++------------
+ include/dt-bindings/soc/stm32-hdp.h           | 108 +++++
+ include/media/v4l2-fwnode.h                   |   2 +
+ 15 files changed, 882 insertions(+), 317 deletions(-)
+ create mode 100644 Documentation/devicetree/bindings/soc/stm32/stm32_hdp.txt
  create mode 100644 drivers/soc/st/Kconfig
  create mode 100644 drivers/soc/st/Makefile
  create mode 100644 drivers/soc/st/stm32_hdp.c
  create mode 100644 drivers/soc/st/stm32_pm_domain.c
+ create mode 100644 include/dt-bindings/soc/stm32-hdp.h
 
+diff --git a/Documentation/devicetree/bindings/media/video-interfaces.txt b/Documentation/devicetree/bindings/media/video-interfaces.txt
+index f884ada0bffc8..aff685a25aca9 100644
+--- a/Documentation/devicetree/bindings/media/video-interfaces.txt
++++ b/Documentation/devicetree/bindings/media/video-interfaces.txt
+@@ -149,6 +149,8 @@ Optional endpoint properties
+   as 0 (normal). This property is valid for serial busses only.
+ - strobe: Whether the clock signal is used as clock (0) or strobe (1). Used
+   with CCP2, for instance.
++- pclk-max-frequency: maximum pixel clock frequency admissible by video
++  host interface.
+ 
+ Example
+ -------
+diff --git a/Documentation/devicetree/bindings/soc/stm32/stm32_hdp.txt b/Documentation/devicetree/bindings/soc/stm32/stm32_hdp.txt
+new file mode 100644
+index 0000000000000..e2bd82f4980eb
+--- /dev/null
++++ b/Documentation/devicetree/bindings/soc/stm32/stm32_hdp.txt
+@@ -0,0 +1,39 @@
++STM32 - STM32MP1- HDP Pin configuration for STM32MP1
++=======================================================
++
++The Hardware Debug Port (HDP) allows the observation of internal signals. By using multiplexers,
++up to 16 signals for each of 8-bit output can be observed.
++
++Required Properties:
++
++  - compatible: Must be "st,stm32mp1-hdp"
++  - muxing-hdp: Indicates for each HDP pins selected which HDP output among the 16 available signals you want
++
++For each HDP pins you can select one of 16 signals which will be described in file : include/dt-bindings/soc/stm32-hdp.h
++
++Example
++-------
++
++In common dtsi file:
++
++hdp: hdp@5002a000 {
++	compatible = "st,stm32mp1-hdp";
++	reg = <0x5002a000 0x400>;
++	clocks = <&rcc HDP>;
++	clock-names = "hdp";
++};
++
++In board-specific file:
++
++In this example I've selected HDP0, HDP6 and HDP7, and for HDP0 the output signal is HDP0_GPOVAL_0,
++for HDP6 is HDP6_GPOVAL_6, and for HDP7 is HDP7_GPOVAL_7.
++
++&hdp {
++	pinctrl-names = "default", "sleep";
++	pinctrl-0 = <&hdp0_pins_a &hdp6_pins_a &hdp7_pins_a>;
++	pinctrl-1 = <&hdp0_pins_sleep_a &hdp6_pins_sleep_a &hdp7_pins_sleep_a>;
++
++	muxing-hdp = <(STM32_HDP(0, HDP0_GPOVAL_0) |
++		       STM32_HDP(6, HDP6_GPOVAL_6) |
++		       STM32_HDP(7, HDP7_GPOVAL_7))>;
++};
 diff --git a/drivers/media/i2c/ov5640.c b/drivers/media/i2c/ov5640.c
-index a398ea81e..3bee8eed7 100644
+index 266e947572c1e..6a1b50bec7c84 100644
 --- a/drivers/media/i2c/ov5640.c
 +++ b/drivers/media/i2c/ov5640.c
 @@ -63,6 +63,7 @@
@@ -244,7 +307,7 @@ index a398ea81e..3bee8eed7 100644
  		ret = hdl->error;
  		goto free_ctrls;
 diff --git a/drivers/media/platform/stm32/stm32-cec.c b/drivers/media/platform/stm32/stm32-cec.c
-index 8a86b2cc2..108f83c26 100644
+index 8a86b2cc22fab..108f83c264f84 100644
 --- a/drivers/media/platform/stm32/stm32-cec.c
 +++ b/drivers/media/platform/stm32/stm32-cec.c
 @@ -291,7 +291,9 @@ static int stm32_cec_probe(struct platform_device *pdev)
@@ -275,7 +338,7 @@ index 8a86b2cc2..108f83c26 100644
  		}
  	}
 diff --git a/drivers/media/platform/stm32/stm32-dcmi.c b/drivers/media/platform/stm32/stm32-dcmi.c
-index 9392e3409..2e78facd0 100644
+index 9392e3409fba0..7c8256441db33 100644
 --- a/drivers/media/platform/stm32/stm32-dcmi.c
 +++ b/drivers/media/platform/stm32/stm32-dcmi.c
 @@ -95,6 +95,9 @@ enum state {
@@ -306,6 +369,15 @@ index 9392e3409..2e78facd0 100644
  
  	/* Restart capture */
  	if (dcmi_restart_capture(dcmi))
+@@ -733,7 +736,7 @@ static int dcmi_start_streaming(struct vb2_queue *vq, unsigned int count)
+ 	if (ret < 0) {
+ 		dev_err(dcmi->dev, "%s: Failed to start streaming, cannot get sync (%d)\n",
+ 			__func__, ret);
+-		goto err_release_buffers;
++		goto err_pm_put;
+ 	}
+ 
+ 	ret = media_pipeline_start(&dcmi->vdev->entity, &dcmi->pipeline);
 @@ -784,8 +787,31 @@ static int dcmi_start_streaming(struct vb2_queue *vq, unsigned int count)
  		dcmi_set_crop(dcmi);
  
@@ -340,7 +412,16 @@ index 9392e3409..2e78facd0 100644
  
  	/* Enable dcmi */
  	reg_set(dcmi->regs, DCMI_CR, CR_ENABLE);
-@@ -884,7 +910,7 @@ static void dcmi_stop_streaming(struct vb2_queue *vq)
+@@ -837,8 +863,6 @@ static int dcmi_start_streaming(struct vb2_queue *vq, unsigned int count)
+ 
+ err_pm_put:
+ 	pm_runtime_put(dcmi->dev);
+-
+-err_release_buffers:
+ 	spin_lock_irq(&dcmi->irqlock);
+ 	/*
+ 	 * Return all buffers to vb2 in QUEUED state.
+@@ -884,7 +908,7 @@ static void dcmi_stop_streaming(struct vb2_queue *vq)
  
  	/* Stop all pending DMA operations */
  	mutex_lock(&dcmi->dma_lock);
@@ -349,7 +430,60 @@ index 9392e3409..2e78facd0 100644
  	mutex_unlock(&dcmi->dma_lock);
  
  	pm_runtime_put(dcmi->dev);
-@@ -1853,7 +1879,9 @@ static int dcmi_probe(struct platform_device *pdev)
+@@ -1576,6 +1600,22 @@ static const struct dcmi_format dcmi_formats[] = {
+ 		.fourcc = V4L2_PIX_FMT_JPEG,
+ 		.mbus_code = MEDIA_BUS_FMT_JPEG_1X8,
+ 		.bpp = 1,
++	}, {
++		.fourcc = V4L2_PIX_FMT_SBGGR8,
++		.mbus_code = MEDIA_BUS_FMT_SBGGR8_1X8,
++		.bpp = 1,
++	}, {
++		.fourcc = V4L2_PIX_FMT_SGBRG8,
++		.mbus_code = MEDIA_BUS_FMT_SGBRG8_1X8,
++		.bpp = 1,
++	}, {
++		.fourcc = V4L2_PIX_FMT_SGRBG8,
++		.mbus_code = MEDIA_BUS_FMT_SGRBG8_1X8,
++		.bpp = 1,
++	}, {
++		.fourcc = V4L2_PIX_FMT_SRGGB8,
++		.mbus_code = MEDIA_BUS_FMT_SRGGB8_1X8,
++		.bpp = 1,
+ 	},
+ };
+ 
+@@ -1747,6 +1787,15 @@ static int dcmi_graph_notify_bound(struct v4l2_async_notifier *notifier,
+ 
+ 	dev_dbg(dcmi->dev, "Subdev \"%s\" bound\n", subdev->name);
+ 
++	ret = video_register_device(dcmi->vdev, VFL_TYPE_GRABBER, -1);
++	if (ret) {
++		dev_err(dcmi->dev, "Failed to register video device\n");
++		return ret;
++	}
++
++	dev_dbg(dcmi->dev, "Device registered as %s\n",
++		video_device_node_name(dcmi->vdev));
++
+ 	/*
+ 	 * Link this sub-device to DCMI, it could be
+ 	 * a parallel camera sensor or a bridge
+@@ -1759,10 +1808,11 @@ static int dcmi_graph_notify_bound(struct v4l2_async_notifier *notifier,
+ 				    &dcmi->vdev->entity, 0,
+ 				    MEDIA_LNK_FL_IMMUTABLE |
+ 				    MEDIA_LNK_FL_ENABLED);
+-	if (ret)
++	if (ret) {
+ 		dev_err(dcmi->dev, "Failed to create media pad link with subdev \"%s\"\n",
+ 			subdev->name);
+-	else
++		video_unregister_device(dcmi->vdev);
++	} else
+ 		dev_dbg(dcmi->dev, "DCMI is now linked to \"%s\"\n",
+ 			subdev->name);
+ 
+@@ -1853,7 +1903,9 @@ static int dcmi_probe(struct platform_device *pdev)
  
  	dcmi->rstc = devm_reset_control_get_exclusive(&pdev->dev, NULL);
  	if (IS_ERR(dcmi->rstc)) {
@@ -360,7 +494,7 @@ index 9392e3409..2e78facd0 100644
  		return PTR_ERR(dcmi->rstc);
  	}
  
-@@ -1910,10 +1938,13 @@ static int dcmi_probe(struct platform_device *pdev)
+@@ -1910,10 +1962,13 @@ static int dcmi_probe(struct platform_device *pdev)
  		return PTR_ERR(mclk);
  	}
  
@@ -378,8 +512,52 @@ index 9392e3409..2e78facd0 100644
  	}
  
  	spin_lock_init(&dcmi->irqlock);
+@@ -1971,15 +2026,6 @@ static int dcmi_probe(struct platform_device *pdev)
+ 	}
+ 	dcmi->vdev->entity.flags |= MEDIA_ENT_FL_DEFAULT;
+ 
+-	ret = video_register_device(dcmi->vdev, VFL_TYPE_GRABBER, -1);
+-	if (ret) {
+-		dev_err(dcmi->dev, "Failed to register video device\n");
+-		goto err_media_entity_cleanup;
+-	}
+-
+-	dev_dbg(dcmi->dev, "Device registered as %s\n",
+-		video_device_node_name(dcmi->vdev));
+-
+ 	/* Buffer queue */
+ 	q->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+ 	q->io_modes = VB2_MMAP | VB2_READ | VB2_DMABUF;
+@@ -2000,7 +2046,7 @@ static int dcmi_probe(struct platform_device *pdev)
+ 
+ 	ret = dcmi_graph_init(dcmi);
+ 	if (ret < 0)
+-		goto err_media_entity_cleanup;
++		goto err_vb2_queue_release;
+ 
+ 	/* Reset device */
+ 	ret = reset_control_assert(dcmi->rstc);
+@@ -2026,7 +2072,10 @@ static int dcmi_probe(struct platform_device *pdev)
+ 	return 0;
+ 
+ err_cleanup:
++	v4l2_async_notifier_unregister(&dcmi->notifier);
+ 	v4l2_async_notifier_cleanup(&dcmi->notifier);
++err_vb2_queue_release:
++	vb2_queue_release(q);
+ err_media_entity_cleanup:
+ 	media_entity_cleanup(&dcmi->vdev->entity);
+ err_device_release:
+@@ -2048,6 +2097,7 @@ static int dcmi_remove(struct platform_device *pdev)
+ 
+ 	v4l2_async_notifier_unregister(&dcmi->notifier);
+ 	v4l2_async_notifier_cleanup(&dcmi->notifier);
++	vb2_queue_release(&dcmi->queue);
+ 	media_entity_cleanup(&dcmi->vdev->entity);
+ 	v4l2_device_unregister(&dcmi->v4l2_dev);
+ 	media_device_cleanup(&dcmi->mdev);
 diff --git a/drivers/media/v4l2-core/v4l2-fwnode.c b/drivers/media/v4l2-core/v4l2-fwnode.c
-index 3bd188878..7f370d6b7 100644
+index 3bd1888787eb3..7f370d6b7a143 100644
 --- a/drivers/media/v4l2-core/v4l2-fwnode.c
 +++ b/drivers/media/v4l2-core/v4l2-fwnode.c
 @@ -356,6 +356,9 @@ v4l2_fwnode_endpoint_parse_parallel_bus(struct fwnode_handle *fwnode,
@@ -393,7 +571,7 @@ index 3bd188878..7f370d6b7 100644
  	default:
  		bus->flags = flags;
 diff --git a/drivers/soc/Kconfig b/drivers/soc/Kconfig
-index 833e04a78..4ad5724f5 100644
+index 833e04a7835c5..4ad5724f5cefd 100644
 --- a/drivers/soc/Kconfig
 +++ b/drivers/soc/Kconfig
 @@ -14,6 +14,7 @@ source "drivers/soc/qcom/Kconfig"
@@ -405,7 +583,7 @@ index 833e04a78..4ad5724f5 100644
  source "drivers/soc/tegra/Kconfig"
  source "drivers/soc/ti/Kconfig"
 diff --git a/drivers/soc/Makefile b/drivers/soc/Makefile
-index 2ec355003..30d3dcabf 100644
+index 2ec3550035243..30d3dcabf3bb0 100644
 --- a/drivers/soc/Makefile
 +++ b/drivers/soc/Makefile
 @@ -20,6 +20,7 @@ obj-y				+= qcom/
@@ -418,7 +596,7 @@ index 2ec355003..30d3dcabf 100644
  obj-y				+= ti/
 diff --git a/drivers/soc/st/Kconfig b/drivers/soc/st/Kconfig
 new file mode 100644
-index 000000000..59db03150
+index 0000000000000..59db031505522
 --- /dev/null
 +++ b/drivers/soc/st/Kconfig
 @@ -0,0 +1,17 @@
@@ -441,7 +619,7 @@ index 000000000..59db03150
 +endif # ARCH_STM32
 diff --git a/drivers/soc/st/Makefile b/drivers/soc/st/Makefile
 new file mode 100644
-index 000000000..0fce1db16
+index 0000000000000..0fce1db166421
 --- /dev/null
 +++ b/drivers/soc/st/Makefile
 @@ -0,0 +1,2 @@
@@ -449,7 +627,7 @@ index 000000000..0fce1db16
 +obj-$(CONFIG_STM32_PM_DOMAINS) += stm32_pm_domain.o
 diff --git a/drivers/soc/st/stm32_hdp.c b/drivers/soc/st/stm32_hdp.c
 new file mode 100644
-index 000000000..6408ac68c
+index 0000000000000..6408ac68ca5f8
 --- /dev/null
 +++ b/drivers/soc/st/stm32_hdp.c
 @@ -0,0 +1,242 @@
@@ -697,7 +875,7 @@ index 000000000..6408ac68c
 +module_platform_driver(hdp_driver);
 diff --git a/drivers/soc/st/stm32_pm_domain.c b/drivers/soc/st/stm32_pm_domain.c
 new file mode 100644
-index 000000000..0386624c2
+index 0000000000000..0386624c20f2f
 --- /dev/null
 +++ b/drivers/soc/st/stm32_pm_domain.c
 @@ -0,0 +1,212 @@
@@ -914,7 +1092,7 @@ index 000000000..0386624c2
 +}
 +core_initcall(stm32_pm_domains_init);
 diff --git a/drivers/thermal/st/stm_thermal.c b/drivers/thermal/st/stm_thermal.c
-index cf9ddc52f..1cecf9544 100644
+index cf9ddc52f30e1..1cecf95449c3e 100644
 --- a/drivers/thermal/st/stm_thermal.c
 +++ b/drivers/thermal/st/stm_thermal.c
 @@ -30,7 +30,7 @@
@@ -1533,8 +1711,122 @@ index cf9ddc52f..1cecf9544 100644
  	dev_info(&pdev->dev, "%s: Driver initialized successfully\n",
  		 __func__);
  
+diff --git a/include/dt-bindings/soc/stm32-hdp.h b/include/dt-bindings/soc/stm32-hdp.h
+new file mode 100644
+index 0000000000000..d98665327281b
+--- /dev/null
++++ b/include/dt-bindings/soc/stm32-hdp.h
+@@ -0,0 +1,108 @@
++/* SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause) */
++/*
++ * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
++ * Author: Roullier Christophe <christophe.roullier@st.com>
++ * for STMicroelectronics.
++ */
++
++#ifndef _DT_BINDINGS_STM32_HDP_H
++#define _DT_BINDINGS_STM32_HDP_H
++
++#define STM32_HDP(port, value) ((value) << ((port) * 4))
++
++/* define HDP Pins number*/
++#define HDP0_PWR_PWRWAKE_SYS			0
++#define HDP0_CM4_SLEEPDEEP			1
++#define HDP0_PWR_STDBY_WKUP			2
++#define HDP0_PWR_ENCOMP_VDDCORE			3
++#define HDP0_BSEC_OUT_SEC_NIDEN			4
++#define HDP0_RCC_CM4_SLEEPDEEP			6
++#define HDP0_GPU_DBG7				7
++#define HDP0_DDRCTRL_LP_REQ			8
++#define HDP0_PWR_DDR_RET_ENABLE_N		9
++#define HDP0_GPOVAL_0				15
++
++#define HDP1_PWR_PWRWAKE_MCU			0
++#define HDP1_CM4_HALTED				1
++#define HDP1_CA7_NAXIERRIRQ			2
++#define HDP1_PWR_OKIN_MR			3
++#define HDP1_BSEC_OUT_SEC_DBGEN			4
++#define HDP1_EXTI_SYS_WAKEUP			5
++#define HDP1_RCC_PWRDS_MPU			6
++#define HDP1_GPU_DBG6				7
++#define HDP1_DDRCTRL_DFI_CTRLUPD_REQ		8
++#define HDP1_DDRCTRL_CACTIVE_DDRC_ASR		9
++#define HDP1_GPOVAL_1				15
++
++#define HDP2_PWR_PWRWAKE_MPU			0
++#define HDP2_CM4_RXEV				1
++#define HDP2_CA7_NPMUIRQ1			2
++#define HDP2_CA7_NFIQOUT1			3
++#define HDP2_BSEC_IN_RSTCORE_N			4
++#define HDP2_EXTI_C2_WAKEUP			5
++#define HDP2_RCC_PWRDS_MCU			6
++#define HDP2_GPU_DBG5				7
++#define HDP2_DDRCTRL_DFI_INIT_COMPLETE		8
++#define HDP2_DDRCTRL_PERF_OP_IS_REFRESH		9
++#define HDP2_DDRCTRL_GSKP_DFI_LP_REQ		10
++#define HDP2_GPOVAL_2				15
++
++#define HDP3_PWR_SEL_VTH_VDD_CORE		0
++#define HDP3_CM4_TXEV				1
++#define HDP3_CA7_NPMUIRQ0			2
++#define HDP3_CA7_NFIQOUT0			3
++#define HDP3_BSEC_OUT_SEC_DFTLOCK		4
++#define HDP3_EXTI_C1_WAKEUP			5
++#define HDP3_RCC_PWRDS_SYS			6
++#define HDP3_GPU_DBG4				7
++#define HDP3_DDRCTRL_STAT_DDRC_REG_SELREF_TYPE0	8
++#define HDP3_DDRCTRL_CACTIVE_1			9
++#define HDP3_GPOVAL_3				15
++
++#define HDP4_PWR_PDDS				0
++#define HDP4_CM4_SLEEPING			1
++#define HDP4_CA7_NRESET1			2
++#define HDP4_CA7_NIRQOUT1			3
++#define HDP4_BSEC_OUT_SEC_DFTEN			4
++#define HDP4_BSEC_OUT_SEC_DBGSWENABLE		5
++#define HDP4_ETH_OUT_PMT_INTR_O			6
++#define HDP4_GPU_DBG3				7
++#define HDP4_DDRCTRL_STAT_DDRC_REG_SELREF_TYPE1	8
++#define HDP4_DDRCTRL_CACTIVE_0			9
++#define HDP4_GPOVAL_4				15
++
++#define HDP5_CA7_STANDBYWFIL2			0
++#define HDP5_PWR_VTH_VDDCORE_ACK		1
++#define HDP5_CA7_NRESET0			2
++#define HDP5_CA7_NIRQOUT0			3
++#define HDP5_BSEC_IN_PWROK			4
++#define HDP5_BSEC_OUT_SEC_DEVICEEN		5
++#define HDP5_ETH_OUT_LPI_INTR_O			6
++#define HDP5_GPU_DBG2				7
++#define HDP5_DDRCTRL_CACTIVE_DDRC		8
++#define HDP5_DDRCTRL_WR_CREDIT_CNT		9
++#define HDP5_GPOVAL_5				15
++
++#define HDP6_CA7_STANDBYWFI1			0
++#define HDP6_CA7_STANDBYWFE1			1
++#define HDP6_CA7_EVENT0				2
++#define HDP6_CA7_DBGACK1			3
++#define HDP6_BSEC_OUT_SEC_SPNIDEN		5
++#define HDP6_ETH_OUT_MAC_SPEED_O1		6
++#define HDP6_GPU_DBG1				7
++#define HDP6_DDRCTRL_CSYSACK_DDRC		8
++#define HDP6_DDRCTRL_LPR_CREDIT_CNT		9
++#define HDP6_GPOVAL_6				15
++
++#define HDP7_CA7_STANDBYWFI0			0
++#define HDP7_CA7_STANDBYWFE0			1
++#define HDP7_CA7_DBGACK0			3
++#define HDP7_BSEC_OUT_FUSE_OK			4
++#define HDP7_BSEC_OUT_SEC_SPIDEN		5
++#define HDP7_ETH_OUT_MAC_SPEED_O0		6
++#define HDP7_GPU_DBG0				7
++#define HDP7_DDRCTRL_CSYSREQ_DDRC		8
++#define HDP7_DDRCTRL_HPR_CREDIT_CNT		9
++#define HDP7_GPOVAL_7				15
++
++#endif /* _DT_BINDINGS_STM32_HDP_H */
 diff --git a/include/media/v4l2-fwnode.h b/include/media/v4l2-fwnode.h
-index f6a7bcd13..c3dd47f14 100644
+index f6a7bcd131977..c3dd47f14c1ac 100644
 --- a/include/media/v4l2-fwnode.h
 +++ b/include/media/v4l2-fwnode.h
 @@ -50,11 +50,13 @@ struct v4l2_fwnode_bus_mipi_csi2 {

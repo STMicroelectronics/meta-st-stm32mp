@@ -1,6 +1,7 @@
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 
 inherit kernel
+inherit kernel-fitimage
 
 DEPENDS += "openssl-native util-linux-native libyaml-native"
 

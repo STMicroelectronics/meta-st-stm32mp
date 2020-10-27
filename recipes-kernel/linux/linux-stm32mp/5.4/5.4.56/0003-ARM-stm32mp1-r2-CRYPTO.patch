@@ -1,28 +1,41 @@
-From ad399098098fb0ed48ccab85bbc70e15de7777c0 Mon Sep 17 00:00:00 2001
-From: Christophe Priouzeau <christophe.priouzeau@st.com>
-Date: Fri, 10 Apr 2020 14:38:03 +0200
-Subject: [PATCH 03/23] ARM-stm32mp1-r1-CRYPTO
+From 0f32661351778c6c282c9509defdcec61abf7fab Mon Sep 17 00:00:00 2001
+From: Lionel VITTE <lionel.vitte@st.com>
+Date: Mon, 5 Oct 2020 13:19:41 +0200
+Subject: [PATCH 03/22] ARM-stm32mp1-r2-rc8-CRYPTO
 
 ---
- drivers/crypto/stm32/stm32-crc32.c | 228 +++++++++++++++-------
+ drivers/crypto/stm32/Kconfig       |   2 +
+ drivers/crypto/stm32/stm32-crc32.c |  99 +++++++++-
  drivers/crypto/stm32/stm32-cryp.c  | 300 +++++++++++++++++++++--------
  drivers/crypto/stm32/stm32-hash.c  |  57 ++++--
- 3 files changed, 417 insertions(+), 168 deletions(-)
+ 4 files changed, 348 insertions(+), 110 deletions(-)
 
+diff --git a/drivers/crypto/stm32/Kconfig b/drivers/crypto/stm32/Kconfig
+index 1aba9372cd232..425c68d42a5fe 100644
+--- a/drivers/crypto/stm32/Kconfig
++++ b/drivers/crypto/stm32/Kconfig
+@@ -3,6 +3,8 @@ config CRYPTO_DEV_STM32_CRC
+ 	tristate "Support for STM32 crc accelerators"
+ 	depends on ARCH_STM32
+ 	select CRYPTO_HASH
++	select CRYPTO_CRC32
++	select CRYPTO_CRC32C
+ 	help
+           This enables support for the CRC32 hw accelerator which can be found
+ 	  on STMicroelectronics STM32 SOC.
 diff --git a/drivers/crypto/stm32/stm32-crc32.c b/drivers/crypto/stm32/stm32-crc32.c
-index 9e11c3480..892d5b6eb 100644
+index e68b856d03b6e..22b301c684f09 100644
 --- a/drivers/crypto/stm32/stm32-crc32.c
 +++ b/drivers/crypto/stm32/stm32-crc32.c
-@@ -28,18 +28,23 @@
+@@ -6,6 +6,7 @@
  
- /* Registers values */
- #define CRC_CR_RESET            BIT(0)
--#define CRC_CR_REVERSE          (BIT(7) | BIT(6) | BIT(5))
--#define CRC_INIT_DEFAULT        0xFFFFFFFF
-+#define CRC_CR_REV_IN_WORD      (BIT(6) | BIT(5))
-+#define CRC_CR_REV_IN_BYTE      BIT(5)
-+#define CRC_CR_REV_OUT          BIT(7)
-+#define CRC32C_INIT_DEFAULT     0xFFFFFFFF
+ #include <linux/bitrev.h>
+ #include <linux/clk.h>
++#include <linux/crc32.h>
+ #include <linux/crc32poly.h>
+ #include <linux/module.h>
+ #include <linux/mod_devicetable.h>
+@@ -35,11 +36,16 @@
  
  #define CRC_AUTOSUSPEND_DELAY	50
  
@@ -35,96 +48,35 @@ index 9e11c3480..892d5b6eb 100644
  	struct device    *dev;
  	void __iomem     *regs;
  	struct clk       *clk;
--	u8               pending_data[sizeof(u32)];
--	size_t           nb_pending_bytes;
 +	spinlock_t       lock;
  };
  
  struct stm32_crc_list {
-@@ -59,14 +64,13 @@ struct stm32_crc_ctx {
- 
- struct stm32_crc_desc_ctx {
- 	u32    partial; /* crc32c: partial in first 4 bytes of that struct */
--	struct stm32_crc *crc;
- };
- 
- static int stm32_crc32_cra_init(struct crypto_tfm *tfm)
- {
- 	struct stm32_crc_ctx *mctx = crypto_tfm_ctx(tfm);
- 
--	mctx->key = CRC_INIT_DEFAULT;
-+	mctx->key = 0;
- 	mctx->poly = CRC32_POLY_LE;
- 	return 0;
- }
-@@ -75,7 +79,7 @@ static int stm32_crc32c_cra_init(struct crypto_tfm *tfm)
- {
- 	struct stm32_crc_ctx *mctx = crypto_tfm_ctx(tfm);
- 
--	mctx->key = CRC_INIT_DEFAULT;
-+	mctx->key = CRC32C_INIT_DEFAULT;
- 	mctx->poly = CRC32C_POLY_LE;
- 	return 0;
- }
-@@ -94,87 +98,135 @@ static int stm32_crc_setkey(struct crypto_shash *tfm, const u8 *key,
- 	return 0;
- }
- 
-+static struct stm32_crc *stm32_crc_get_next_crc(void)
-+{
-+	struct stm32_crc *crc;
-+
-+	spin_lock_bh(&crc_list.lock);
-+	crc = list_first_entry(&crc_list.dev_list, struct stm32_crc, list);
-+	if (crc)
-+		list_move_tail(&crc->list, &crc_list.dev_list);
-+	spin_unlock_bh(&crc_list.lock);
-+
-+	return crc;
-+}
-+
- static int stm32_crc_init(struct shash_desc *desc)
- {
+@@ -111,6 +117,7 @@ static int stm32_crc_init(struct shash_desc *desc)
  	struct stm32_crc_desc_ctx *ctx = shash_desc_ctx(desc);
  	struct stm32_crc_ctx *mctx = crypto_shash_ctx(desc->tfm);
  	struct stm32_crc *crc;
 +	unsigned long flags;
  
--	spin_lock_bh(&crc_list.lock);
--	list_for_each_entry(crc, &crc_list.dev_list, list) {
--		ctx->crc = crc;
--		break;
--	}
--	spin_unlock_bh(&crc_list.lock);
-+	crc = stm32_crc_get_next_crc();
-+	if (!crc)
-+		return -ENODEV;
-+
-+	pm_runtime_get_sync(crc->dev);
+ 	crc = stm32_crc_get_next_crc();
+ 	if (!crc)
+@@ -118,6 +125,8 @@ static int stm32_crc_init(struct shash_desc *desc)
  
--	pm_runtime_get_sync(ctx->crc->dev);
+ 	pm_runtime_get_sync(crc->dev);
+ 
 +	spin_lock_irqsave(&crc->lock, flags);
- 
++
  	/* Reset, set key, poly and configure in bit reverse mode */
--	writel_relaxed(bitrev32(mctx->key), ctx->crc->regs + CRC_INIT);
--	writel_relaxed(bitrev32(mctx->poly), ctx->crc->regs + CRC_POL);
--	writel_relaxed(CRC_CR_RESET | CRC_CR_REVERSE, ctx->crc->regs + CRC_CR);
-+	writel_relaxed(bitrev32(mctx->key), crc->regs + CRC_INIT);
-+	writel_relaxed(bitrev32(mctx->poly), crc->regs + CRC_POL);
-+	writel_relaxed(CRC_CR_RESET | CRC_CR_REV_IN_WORD | CRC_CR_REV_OUT,
-+		       crc->regs + CRC_CR);
- 
+ 	writel_relaxed(bitrev32(mctx->key), crc->regs + CRC_INIT);
+ 	writel_relaxed(bitrev32(mctx->poly), crc->regs + CRC_POL);
+@@ -127,14 +136,16 @@ static int stm32_crc_init(struct shash_desc *desc)
  	/* Store partial result */
--	ctx->partial = readl_relaxed(ctx->crc->regs + CRC_DR);
--	ctx->crc->nb_pending_bytes = 0;
-+	ctx->partial = readl_relaxed(crc->regs + CRC_DR);
+ 	ctx->partial = readl_relaxed(crc->regs + CRC_DR);
  
--	pm_runtime_mark_last_busy(ctx->crc->dev);
--	pm_runtime_put_autosuspend(ctx->crc->dev);
 +	spin_unlock_irqrestore(&crc->lock, flags);
 +
-+	pm_runtime_mark_last_busy(crc->dev);
-+	pm_runtime_put_autosuspend(crc->dev);
+ 	pm_runtime_mark_last_busy(crc->dev);
+ 	pm_runtime_put_autosuspend(crc->dev);
  
  	return 0;
  }
@@ -135,91 +87,37 @@ index 9e11c3480..892d5b6eb 100644
 +			size_t length)
  {
  	struct stm32_crc_desc_ctx *ctx = shash_desc_ctx(desc);
--	struct stm32_crc *crc = ctx->crc;
--	u32 *d32;
--	unsigned int i;
-+	struct stm32_crc_ctx *mctx = crypto_shash_ctx(desc->tfm);
-+	struct stm32_crc *crc;
-+	unsigned long flags;
-+
-+	crc = stm32_crc_get_next_crc();
-+	if (!crc)
-+		return -ENODEV;
+ 	struct stm32_crc_ctx *mctx = crypto_shash_ctx(desc->tfm);
+@@ -146,6 +157,16 @@ static int stm32_crc_update(struct shash_desc *desc, const u8 *d8,
  
  	pm_runtime_get_sync(crc->dev);
  
--	if (unlikely(crc->nb_pending_bytes)) {
--		while (crc->nb_pending_bytes != sizeof(u32) && length) {
--			/* Fill in pending data */
--			crc->pending_data[crc->nb_pending_bytes++] = *(d8++);
-+	spin_lock_irqsave(&crc->lock, flags);
++	if (!spin_trylock(&crc->lock)) {
++		/* Hardware is busy, calculate crc32 by software */
++		if (mctx->poly == CRC32_POLY_LE)
++			ctx->partial = crc32_le(ctx->partial, d8, length);
++		else
++			ctx->partial = __crc32c_le(ctx->partial, d8, length);
 +
-+	/*
-+	 * Restore previously calculated CRC for this context as init value
-+	 * Restore polynomial configuration
-+	 * Configure in register for word input data,
-+	 * Configure out register in reversed bit mode data.
-+	 */
-+	writel_relaxed(bitrev32(ctx->partial), crc->regs + CRC_INIT);
-+	writel_relaxed(bitrev32(mctx->poly), crc->regs + CRC_POL);
-+	writel_relaxed(CRC_CR_RESET | CRC_CR_REV_IN_WORD | CRC_CR_REV_OUT,
-+		       crc->regs + CRC_CR);
-+
-+	if (d8 != PTR_ALIGN(d8, sizeof(u32))) {
-+		/* Configure for byte data */
-+		writel_relaxed(CRC_CR_REV_IN_BYTE | CRC_CR_REV_OUT,
-+			       crc->regs + CRC_CR);
-+		while (d8 != PTR_ALIGN(d8, sizeof(u32)) && length) {
-+			writeb_relaxed(*d8++, crc->regs + CRC_DR);
- 			length--;
- 		}
--
--		if (crc->nb_pending_bytes == sizeof(u32)) {
--			/* Process completed pending data */
--			writel_relaxed(*(u32 *)crc->pending_data,
--				       crc->regs + CRC_DR);
--			crc->nb_pending_bytes = 0;
--		}
-+		/* Configure for word data */
-+		writel_relaxed(CRC_CR_REV_IN_WORD | CRC_CR_REV_OUT,
-+			       crc->regs + CRC_CR);
- 	}
- 
--	d32 = (u32 *)d8;
--	for (i = 0; i < length >> 2; i++)
--		/* Process 32 bits data */
--		writel_relaxed(*(d32++), crc->regs + CRC_DR);
-+	for (; length >= sizeof(u32); d8 += sizeof(u32), length -= sizeof(u32))
-+		writel_relaxed(*((u32 *)d8), crc->regs + CRC_DR);
-+
-+	if (length) {
-+		/* Configure for byte data */
-+		writel_relaxed(CRC_CR_REV_IN_BYTE | CRC_CR_REV_OUT,
-+			       crc->regs + CRC_CR);
-+		while (length--)
-+			writeb_relaxed(*d8++, crc->regs + CRC_DR);
++		goto pm_out;
 +	}
- 
++
+ 	/*
+ 	 * Restore previously calculated CRC for this context as init value
+ 	 * Restore polynomial configuration
+@@ -184,12 +205,41 @@ static int stm32_crc_update(struct shash_desc *desc, const u8 *d8,
  	/* Store partial result */
  	ctx->partial = readl_relaxed(crc->regs + CRC_DR);
  
-+	spin_unlock_irqrestore(&crc->lock, flags);
++	spin_unlock(&crc->lock);
 +
++pm_out:
  	pm_runtime_mark_last_busy(crc->dev);
  	pm_runtime_put_autosuspend(crc->dev);
  
--	/* Check for pending data (non 32 bits) */
--	length &= 3;
--	if (likely(!length))
--		return 0;
-+	return 0;
-+}
+ 	return 0;
+ }
  
--	if ((crc->nb_pending_bytes + length) >= sizeof(u32)) {
--		/* Shall not happen */
--		dev_err(crc->dev, "Pending data overflow\n");
--		return -EINVAL;
--	}
 +static int stm32_crc_update(struct shash_desc *desc, const u8 *d8,
 +			    unsigned int length)
 +{
@@ -228,11 +126,7 @@ index 9e11c3480..892d5b6eb 100644
 +	const u8 *cur;
 +	size_t size;
 +	int ret;
- 
--	d8 = (const u8 *)d32;
--	for (i = 0; i < length; i++)
--		/* Store pending data */
--		crc->pending_data[crc->nb_pending_bytes++] = *(d8++);
++
 +	if (!burst_sz)
 +		return burst_update(desc, d8, length);
 +
@@ -246,19 +140,14 @@ index 9e11c3480..892d5b6eb 100644
 +		if (ret)
 +			return ret;
 +	}
- 
- 	return 0;
- }
-@@ -204,6 +256,8 @@ static int stm32_crc_digest(struct shash_desc *desc, const u8 *data,
- 	return stm32_crc_init(desc) ?: stm32_crc_finup(desc, data, length, out);
- }
- 
-+static unsigned int refcnt;
-+static DEFINE_MUTEX(refcnt_lock);
- static struct shash_alg algs[] = {
- 	/* CRC-32 */
- 	{
-@@ -271,7 +325,9 @@ static int stm32_crc_probe(struct platform_device *pdev)
++
++	return 0;
++}
++
+ static int stm32_crc_final(struct shash_desc *desc, u8 *out)
+ {
+ 	struct stm32_crc_desc_ctx *ctx = shash_desc_ctx(desc);
+@@ -284,7 +334,9 @@ static int stm32_crc_probe(struct platform_device *pdev)
  
  	crc->clk = devm_clk_get(dev, NULL);
  	if (IS_ERR(crc->clk)) {
@@ -269,7 +158,7 @@ index 9e11c3480..892d5b6eb 100644
  		return PTR_ERR(crc->clk);
  	}
  
-@@ -286,20 +342,29 @@ static int stm32_crc_probe(struct platform_device *pdev)
+@@ -299,8 +351,11 @@ static int stm32_crc_probe(struct platform_device *pdev)
  
  	pm_runtime_get_noresume(dev);
  	pm_runtime_set_active(dev);
@@ -281,42 +170,7 @@ index 9e11c3480..892d5b6eb 100644
  	platform_set_drvdata(pdev, crc);
  
  	spin_lock(&crc_list.lock);
- 	list_add(&crc->list, &crc_list.dev_list);
- 	spin_unlock(&crc_list.lock);
- 
--	ret = crypto_register_shashes(algs, ARRAY_SIZE(algs));
--	if (ret) {
--		dev_err(dev, "Failed to register\n");
--		clk_disable_unprepare(crc->clk);
--		return ret;
-+	mutex_lock(&refcnt_lock);
-+	if (!refcnt) {
-+		ret = crypto_register_shashes(algs, ARRAY_SIZE(algs));
-+		if (ret) {
-+			mutex_unlock(&refcnt_lock);
-+			dev_err(dev, "Failed to register\n");
-+			clk_disable_unprepare(crc->clk);
-+			return ret;
-+		}
- 	}
-+	refcnt++;
-+	mutex_unlock(&refcnt_lock);
- 
- 	dev_info(dev, "Initialized\n");
- 
-@@ -320,7 +385,10 @@ static int stm32_crc_remove(struct platform_device *pdev)
- 	list_del(&crc->list);
- 	spin_unlock(&crc_list.lock);
- 
--	crypto_unregister_shashes(algs, ARRAY_SIZE(algs));
-+	mutex_lock(&refcnt_lock);
-+	if (!--refcnt)
-+		crypto_unregister_shashes(algs, ARRAY_SIZE(algs));
-+	mutex_unlock(&refcnt_lock);
- 
- 	pm_runtime_disable(crc->dev);
- 	pm_runtime_put_noidle(crc->dev);
-@@ -331,11 +399,39 @@ static int stm32_crc_remove(struct platform_device *pdev)
+@@ -353,11 +408,39 @@ static int stm32_crc_remove(struct platform_device *pdev)
  }
  
  #ifdef CONFIG_PM
@@ -357,7 +211,7 @@ index 9e11c3480..892d5b6eb 100644
  
  	return 0;
  }
-@@ -345,9 +441,9 @@ static int stm32_crc_runtime_resume(struct device *dev)
+@@ -367,9 +450,9 @@ static int stm32_crc_runtime_resume(struct device *dev)
  	struct stm32_crc *crc = dev_get_drvdata(dev);
  	int ret;
  
@@ -369,7 +223,7 @@ index 9e11c3480..892d5b6eb 100644
  		return ret;
  	}
  
-@@ -356,8 +452,8 @@ static int stm32_crc_runtime_resume(struct device *dev)
+@@ -378,8 +461,8 @@ static int stm32_crc_runtime_resume(struct device *dev)
  #endif
  
  static const struct dev_pm_ops stm32_crc_pm_ops = {
@@ -381,7 +235,7 @@ index 9e11c3480..892d5b6eb 100644
  			   stm32_crc_runtime_resume, NULL)
  };
 diff --git a/drivers/crypto/stm32/stm32-cryp.c b/drivers/crypto/stm32/stm32-cryp.c
-index ba5ea6434..fbf522dc3 100644
+index ba5ea6434f9ca..fbf522dc3d63f 100644
 --- a/drivers/crypto/stm32/stm32-cryp.c
 +++ b/drivers/crypto/stm32/stm32-cryp.c
 @@ -143,10 +143,10 @@ struct stm32_cryp {
@@ -1105,7 +959,7 @@ index ba5ea6434..fbf522dc3 100644
  	pm_runtime_put_noidle(dev);
  	pm_runtime_disable(dev);
 diff --git a/drivers/crypto/stm32/stm32-hash.c b/drivers/crypto/stm32/stm32-hash.c
-index cfc8e0e37..f8b0e1b28 100644
+index cfc8e0e37beec..f8b0e1b28971e 100644
 --- a/drivers/crypto/stm32/stm32-hash.c
 +++ b/drivers/crypto/stm32/stm32-hash.c
 @@ -507,6 +507,7 @@ static int stm32_hash_hmac_dma_send(struct stm32_hash_dev *hdev)

@@ -1,40 +1,197 @@
-From e0c91ba2bc4702d8ed587f7e200591cf135ade14 Mon Sep 17 00:00:00 2001
-From: Christophe Priouzeau <christophe.priouzeau@st.com>
-Date: Fri, 10 Apr 2020 14:43:27 +0200
-Subject: [PATCH 10/23] ARM-stm32mp1-r1-MAILBOX-REMOTEPROC-RPMSG
+From 16dc56ebda804f047d718c7531cb65fbb5176f99 Mon Sep 17 00:00:00 2001
+From: Lionel VITTE <lionel.vitte@st.com>
+Date: Mon, 5 Oct 2020 13:19:45 +0200
+Subject: [PATCH 10/22] ARM-stm32mp1-r2-rc8-MAILBOX-REMOTEPROC-RPMSG
 
 ---
- Documentation/remoteproc.txt           |  22 +
- drivers/mailbox/Kconfig                |   7 +
- drivers/mailbox/Makefile               |   2 +
- drivers/mailbox/arm-smc-mailbox.c      | 166 ++++++
- drivers/mailbox/stm32-ipcc.c           |  36 +-
- drivers/remoteproc/Kconfig             |  21 +
- drivers/remoteproc/Makefile            |   2 +
- drivers/remoteproc/remoteproc_core.c   |  55 +-
- drivers/remoteproc/rproc_srm_core.c    | 303 ++++++++++
- drivers/remoteproc/rproc_srm_core.h    |  98 ++++
- drivers/remoteproc/rproc_srm_dev.c     | 744 +++++++++++++++++++++++++
- drivers/remoteproc/stm32_rproc.c       | 314 ++++++++++-
- drivers/rpmsg/Kconfig                  |   9 +
- drivers/rpmsg/Makefile                 |   1 +
- drivers/rpmsg/rpmsg_core.c             |  19 +
- drivers/rpmsg/rpmsg_internal.h         |   2 +
- drivers/rpmsg/rpmsg_tty.c              | 310 +++++++++++
- drivers/rpmsg/virtio_rpmsg_bus.c       |  11 +
- include/linux/mailbox/arm-smccc-mbox.h |  20 +
- include/linux/remoteproc.h             |   2 +
- include/linux/rpmsg.h                  |   9 +
- 21 files changed, 2093 insertions(+), 60 deletions(-)
+ .../bindings/mailbox/stm32-ipcc.txt           |   4 +-
+ .../bindings/remoteproc/rproc-srm.txt         |  58 ++
+ .../bindings/remoteproc/stm32-rproc.txt       |  41 +-
+ Documentation/remoteproc.txt                  |  22 +
+ drivers/mailbox/Kconfig                       |   7 +
+ drivers/mailbox/Makefile                      |   2 +
+ drivers/mailbox/arm-smc-mailbox.c             | 166 ++++
+ drivers/mailbox/stm32-ipcc.c                  |  36 +-
+ drivers/remoteproc/Kconfig                    |  30 +
+ drivers/remoteproc/Makefile                   |   3 +
+ drivers/remoteproc/remoteproc_core.c          |  55 +-
+ drivers/remoteproc/rproc_srm_core.c           | 303 +++++++
+ drivers/remoteproc/rproc_srm_core.h           |  98 +++
+ drivers/remoteproc/rproc_srm_dev.c            | 744 ++++++++++++++++++
+ drivers/remoteproc/stm32_rproc.c              | 543 +++++++++++--
+ drivers/remoteproc/tee_remoteproc.c           | 379 +++++++++
+ drivers/rpmsg/Kconfig                         |   9 +
+ drivers/rpmsg/Makefile                        |   1 +
+ drivers/rpmsg/rpmsg_core.c                    |  19 +
+ drivers/rpmsg/rpmsg_internal.h                |   2 +
+ drivers/rpmsg/rpmsg_tty.c                     | 339 ++++++++
+ drivers/rpmsg/virtio_rpmsg_bus.c              |  11 +
+ include/linux/mailbox/arm-smccc-mbox.h        |  20 +
+ include/linux/remoteproc.h                    |   2 +
+ include/linux/rpmsg.h                         |   9 +
+ include/linux/tee_remoteproc.h                | 106 +++
+ 26 files changed, 2878 insertions(+), 131 deletions(-)
+ create mode 100644 Documentation/devicetree/bindings/remoteproc/rproc-srm.txt
  create mode 100644 drivers/mailbox/arm-smc-mailbox.c
  create mode 100644 drivers/remoteproc/rproc_srm_core.c
  create mode 100644 drivers/remoteproc/rproc_srm_core.h
  create mode 100644 drivers/remoteproc/rproc_srm_dev.c
+ create mode 100644 drivers/remoteproc/tee_remoteproc.c
  create mode 100644 drivers/rpmsg/rpmsg_tty.c
  create mode 100644 include/linux/mailbox/arm-smccc-mbox.h
+ create mode 100644 include/linux/tee_remoteproc.h
 
+diff --git a/Documentation/devicetree/bindings/mailbox/stm32-ipcc.txt b/Documentation/devicetree/bindings/mailbox/stm32-ipcc.txt
+index 1d2b7fee7b853..139c06a94b006 100644
+--- a/Documentation/devicetree/bindings/mailbox/stm32-ipcc.txt
++++ b/Documentation/devicetree/bindings/mailbox/stm32-ipcc.txt
+@@ -14,9 +14,9 @@ Required properties:
+                    property. Must contain the following entries:
+                    - "rx"
+                    - "tx"
+-                   - "wakeup"
+ - interrupts:   Interrupt specifiers for "rx channel occupied", "tx channel
+-                free" and "system wakeup".
++                free". If "wakeup-source" is set the rx interrupt is the
++                one used to wake up the system.
+ - #mbox-cells:  Number of cells required for the mailbox specifier. Must be 1.
+                 The data contained in the mbox specifier of the "mboxes"
+                 property in the client node is the mailbox channel index.
+diff --git a/Documentation/devicetree/bindings/remoteproc/rproc-srm.txt b/Documentation/devicetree/bindings/remoteproc/rproc-srm.txt
+new file mode 100644
+index 0000000000000..baa6e8e135e11
+--- /dev/null
++++ b/Documentation/devicetree/bindings/remoteproc/rproc-srm.txt
+@@ -0,0 +1,58 @@
++Remoteproc System Resource Manager
++----------------------------------
++
++The remoteproc SRM (System Resource Manager) handles resources allocated
++to remote processors.
++This makes it possible for remote proc to reserve and initialize system
++resources for a peripheral assigned to a coprocessor.
++
++The devices are grouped in a core node
++
++Core
++====
++Required properties:
++- compatible: should be "rproc-srm-core"
++
++Dev
++===
++Required properties:
++- compatible: should be "rproc-srm-dev"
++
++Optional properties:
++- reg: register base address and length
++- clocks: clocks required by the coprocessor
++- clock-names: see clock-bindings.txt
++- pinctrl-0: pins configurations required by the coprocessor
++	The SRM reserves the pins for the coprocessor, which prevents the local
++	processor to use them.
++- pinctrl-names: must be "default".
++- x-supply: power supplies required by the coprocessor
++- interrupts: external interrupts configurations required by the coprocessor.
++	This is optional since the configuration is done by the coprocessor.
++	When defined, the SRM (over)writes the configuration which allows the
++	interrupt controller to check for configuration conflicts.
++- interrupt-parent: see interrupts.txt
++- interrupt-names: see interrupts.txt
++
++Example:
++	system_resources {
++		compatible = "rproc-srm-core";
++
++		mmc0: sdhci@09060000 {
++			compatible = "rproc-srm-dev";
++			reg = <0x09060000 0x100>;
++			pinctrl-names = "default";
++			pinctrl-0 = <&m4_pinctrl_mmc0>;
++			clock-names = "mmc", "icn";
++			clocks = <&clk_s_c0_flexgen CLK_MMC_0>,
++				 <&clk_s_c0_flexgen CLK_RX_ICN_HVA>;
++			vdda-supply = <&vdda>;
++		};
++
++		button {
++			compatible = "rproc-srm-dev";
++			interrupt-parent = <&gpioa>;
++			interrupts = <5 1>;
++			interrupt-names = "gpio_key";
++		};
++	};
+diff --git a/Documentation/devicetree/bindings/remoteproc/stm32-rproc.txt b/Documentation/devicetree/bindings/remoteproc/stm32-rproc.txt
+index 5fa915a4b7360..4cea56fbded56 100644
+--- a/Documentation/devicetree/bindings/remoteproc/stm32-rproc.txt
++++ b/Documentation/devicetree/bindings/remoteproc/stm32-rproc.txt
+@@ -4,23 +4,24 @@ This document defines the binding for the remoteproc component that loads and
+ boots firmwares on the ST32MP family chipset.
+ 
+ Required properties:
+-- compatible:	Must be "st,stm32mp1-m4"
++- compatible:	Should be one of the following,
++	"st,stm32mp1-m4":  for non-authenticated remote processor firmware.
++	"st,stm32mp1-m4_optee": for OP-TEE authenticated remote processor
++				firmware.
+ - reg:		Address ranges of the RETRAM and MCU SRAM memories used by the
+ 		remote processor.
+-- resets:	Reference to a reset controller asserting the remote processor.
+-- st,syscfg-holdboot: Reference to the system configuration which holds the
+-		remote processor reset hold boot
+-	1st cell: phandle of syscon block
+-	2nd cell: register offset containing the hold boot setting
+-	3rd cell: register bitmask for the hold boot field
+-- st,syscfg-tz: Reference to the system configuration which holds the RCC trust
+-		zone mode
+-	1st cell: phandle to syscon block
+-	2nd cell: register offset containing the RCC trust zone mode setting
+-	3rd cell: register bitmask for the RCC trust zone mode bit
++- resets:	Reference to resets asserting:
++	- the remote processor
++	- the remote processor reset hold boot
++- reset-names:	Name of the MCU reset
++	- must be "mcu_rst" for the remote processor reset
++	- must be "hold_boot" for the remote processor hold boot
+ 
+ Optional properties:
+ - interrupts:	Should contain the watchdog interrupt
++- wakeup-source: Flag indicating whether remoteproc can wake up the system by
++		the watchdog interrupt. Only meaningful if the "interrupts"
++		property is defined.
+ - mboxes:	This property is required only if the rpmsg/virtio functionality
+ 		is used. List of phandle and mailbox channel specifiers:
+ 		- a channel (a) used to communicate through virtqueues with the
+@@ -48,6 +49,16 @@ Optional properties:
+ 	1st cell: phandle to syscon block
+ 	2nd cell: register offset containing the deep sleep setting
+ 	3rd cell: register bitmask for the deep sleep bit
++- st,syscfg-rsc-tbl: Reference to the system configuration controlling the
++		resource table address loaded by the bootloader
++	1st cell: phandle to syscon block
++	2nd cell: register offset containing the resource table address
++	3rd cell: register bitmask for the resource table address
++- st,syscfg-copro-state: Reference to the system configuration which returns the
++		coprocessor state.
++	1st cell: phandle to syscon block
++	2nd cell: register offset containing the coprocessor state
++	3rd cell: register bitmask for the coprocessor state
+ - st,auto-boot:	If defined, when remoteproc is probed, it loads the default
+ 		firmware and starts the remote processor.
+ 
+@@ -57,7 +68,7 @@ Example:
+ 		reg = <0x10000000 0x40000>,
+ 		      <0x30000000 0x40000>,
+ 		      <0x38000000 0x10000>;
+-		resets = <&rcc MCU_R>;
+-		st,syscfg-holdboot = <&rcc 0x10C 0x1>;
+-		st,syscfg-tz = <&rcc 0x000 0x1>;
++		resets = <&scmi0_reset RST_SCMI0_MCU>,
++			 <&scmi0_reset RST_SCMI0_MCU_HOLD_BOOT>;
++		reset-names = "mcu_rst", "hold_boot";
+ 	};
 diff --git a/Documentation/remoteproc.txt b/Documentation/remoteproc.txt
-index 03c3d2e56..5b217887b 100644
+index 03c3d2e568b04..5b217887b99c6 100644
 --- a/Documentation/remoteproc.txt
 +++ b/Documentation/remoteproc.txt
 @@ -357,3 +357,25 @@ Of course, RSC_VDEV resource entries are only good enough for static
@@ -64,7 +221,7 @@ index 03c3d2e56..5b217887b 100644
 +The resources handled by the SRM are defined in the DeviceTree: please read
 +Documentation/devicetree/bindings/remoteproc/rproc-srm.txt for details.
 diff --git a/drivers/mailbox/Kconfig b/drivers/mailbox/Kconfig
-index ab4eb750b..7707ee262 100644
+index ab4eb750bbddc..7707ee26251a4 100644
 --- a/drivers/mailbox/Kconfig
 +++ b/drivers/mailbox/Kconfig
 @@ -16,6 +16,13 @@ config ARM_MHU
@@ -82,7 +239,7 @@ index ab4eb750b..7707ee262 100644
  	tristate "i.MX Mailbox"
  	depends on ARCH_MXC || COMPILE_TEST
 diff --git a/drivers/mailbox/Makefile b/drivers/mailbox/Makefile
-index c22fad6f6..93918a84c 100644
+index c22fad6f696b7..93918a84c91b6 100644
 --- a/drivers/mailbox/Makefile
 +++ b/drivers/mailbox/Makefile
 @@ -7,6 +7,8 @@ obj-$(CONFIG_MAILBOX_TEST)	+= mailbox-test.o
@@ -96,7 +253,7 @@ index c22fad6f6..93918a84c 100644
  obj-$(CONFIG_ARMADA_37XX_RWTM_MBOX)	+= armada-37xx-rwtm-mailbox.o
 diff --git a/drivers/mailbox/arm-smc-mailbox.c b/drivers/mailbox/arm-smc-mailbox.c
 new file mode 100644
-index 000000000..a6ec56f41
+index 0000000000000..a6ec56f41f7f8
 --- /dev/null
 +++ b/drivers/mailbox/arm-smc-mailbox.c
 @@ -0,0 +1,166 @@
@@ -267,7 +424,7 @@ index 000000000..a6ec56f41
 +MODULE_DESCRIPTION("Generic ARM smc mailbox driver");
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/mailbox/stm32-ipcc.c b/drivers/mailbox/stm32-ipcc.c
-index 5c2d1e1f9..ef966887a 100644
+index 5c2d1e1f988b8..ef966887aa151 100644
 --- a/drivers/mailbox/stm32-ipcc.c
 +++ b/drivers/mailbox/stm32-ipcc.c
 @@ -52,7 +52,6 @@ struct stm32_ipcc {
@@ -360,7 +517,7 @@ index 5c2d1e1f9..ef966887a 100644
  	writel_relaxed(ipcc->xcr, ipcc->reg_proc + IPCC_XCR);
  
 diff --git a/drivers/remoteproc/Kconfig b/drivers/remoteproc/Kconfig
-index 94afdde4b..9d1436ddf 100644
+index 94afdde4bc9f1..626c1e4502f32 100644
 --- a/drivers/remoteproc/Kconfig
 +++ b/drivers/remoteproc/Kconfig
 @@ -14,6 +14,25 @@ config REMOTEPROC
@@ -398,11 +555,27 @@ index 94afdde4b..9d1436ddf 100644
  	help
  	  Say y here to support STM32 MCU processors via the
  	  remote processor framework.
+@@ -214,6 +235,15 @@ config STM32_RPROC
+ 
+ 	  This can be either built-in or a loadable module.
+ 
++
++config TEE_REMOTEPROC
++	tristate "trusted firmware Support by a Trusted Application"
++	depends on OPTEE
++	help
++	  Support for trusted remote processors firmware. The firmware
++	  authentication and/or decryption are managed by a trusted application.
++	  This can be either built-in or a loadable module.
++
+ endif # REMOTEPROC
+ 
+ endmenu
 diff --git a/drivers/remoteproc/Makefile b/drivers/remoteproc/Makefile
-index 00f09e658..0e8bad12b 100644
+index 00f09e658cb34..692a9a85963b5 100644
 --- a/drivers/remoteproc/Makefile
 +++ b/drivers/remoteproc/Makefile
-@@ -9,6 +9,8 @@ remoteproc-y				+= remoteproc_debugfs.o
+@@ -9,11 +9,14 @@ remoteproc-y				+= remoteproc_debugfs.o
  remoteproc-y				+= remoteproc_sysfs.o
  remoteproc-y				+= remoteproc_virtio.o
  remoteproc-y				+= remoteproc_elf_loader.o
@@ -411,8 +584,14 @@ index 00f09e658..0e8bad12b 100644
  obj-$(CONFIG_IMX_REMOTEPROC)		+= imx_rproc.o
  obj-$(CONFIG_OMAP_REMOTEPROC)		+= omap_remoteproc.o
  obj-$(CONFIG_WKUP_M3_RPROC)		+= wkup_m3_rproc.o
+ obj-$(CONFIG_DA8XX_REMOTEPROC)		+= da8xx_remoteproc.o
+ obj-$(CONFIG_KEYSTONE_REMOTEPROC)	+= keystone_remoteproc.o
++obj-$(CONFIG_TEE_REMOTEPROC)		+= tee_remoteproc.o
+ obj-$(CONFIG_QCOM_RPROC_COMMON)		+= qcom_common.o
+ obj-$(CONFIG_QCOM_Q6V5_COMMON)		+= qcom_q6v5.o
+ obj-$(CONFIG_QCOM_Q6V5_ADSP)		+= qcom_q6v5_adsp.o
 diff --git a/drivers/remoteproc/remoteproc_core.c b/drivers/remoteproc/remoteproc_core.c
-index b542debbc..cdbec7fc3 100644
+index ce92ae227aa10..e71a27dbe5cc2 100644
 --- a/drivers/remoteproc/remoteproc_core.c
 +++ b/drivers/remoteproc/remoteproc_core.c
 @@ -34,6 +34,7 @@
@@ -517,7 +696,7 @@ index b542debbc..cdbec7fc3 100644
  		ret = rproc_trigger_auto_boot(rproc);
  		if (ret < 0)
  			return ret;
-@@ -2144,6 +2179,8 @@ int rproc_del(struct rproc *rproc)
+@@ -2143,6 +2178,8 @@ int rproc_del(struct rproc *rproc)
  	list_del(&rproc->node);
  	mutex_unlock(&rproc_list_mutex);
  
@@ -528,7 +707,7 @@ index b542debbc..cdbec7fc3 100644
  	return 0;
 diff --git a/drivers/remoteproc/rproc_srm_core.c b/drivers/remoteproc/rproc_srm_core.c
 new file mode 100644
-index 000000000..fc61e8b35
+index 0000000000000..fc61e8b35686b
 --- /dev/null
 +++ b/drivers/remoteproc/rproc_srm_core.c
 @@ -0,0 +1,303 @@
@@ -837,7 +1016,7 @@ index 000000000..fc61e8b35
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/remoteproc/rproc_srm_core.h b/drivers/remoteproc/rproc_srm_core.h
 new file mode 100644
-index 000000000..7dffdb38f
+index 0000000000000..7dffdb38f4d46
 --- /dev/null
 +++ b/drivers/remoteproc/rproc_srm_core.h
 @@ -0,0 +1,98 @@
@@ -941,7 +1120,7 @@ index 000000000..7dffdb38f
 +#endif
 diff --git a/drivers/remoteproc/rproc_srm_dev.c b/drivers/remoteproc/rproc_srm_dev.c
 new file mode 100644
-index 000000000..6b164dad5
+index 0000000000000..6b164dad53ca1
 --- /dev/null
 +++ b/drivers/remoteproc/rproc_srm_dev.c
 @@ -0,0 +1,744 @@
@@ -1690,10 +1869,10 @@ index 000000000..6b164dad5
 +MODULE_DESCRIPTION("Remoteproc System Resource Manager driver - dev");
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/remoteproc/stm32_rproc.c b/drivers/remoteproc/stm32_rproc.c
-index 2cf4b2992..061562405 100644
+index 2cf4b2992bfcd..9ff1d416761b7 100644
 --- a/drivers/remoteproc/stm32_rproc.c
 +++ b/drivers/remoteproc/stm32_rproc.c
-@@ -15,9 +15,11 @@
+@@ -15,15 +15,15 @@
  #include <linux/of_address.h>
  #include <linux/of_device.h>
  #include <linux/of_reserved_mem.h>
@@ -1701,11 +1880,18 @@ index 2cf4b2992..061562405 100644
  #include <linux/regmap.h>
  #include <linux/remoteproc.h>
  #include <linux/reset.h>
++#include <linux/tee_remoteproc.h>
 +#include <linux/workqueue.h>
  
  #include "remoteproc_internal.h"
  
-@@ -31,9 +33,20 @@
+-#define HOLD_BOOT		0
+-#define RELEASE_BOOT		1
+-
+ #define MBOX_NB_VQ		2
+ #define MBOX_NB_MBX		3
+ 
+@@ -31,9 +31,27 @@
  #define STM32_SMC_REG_WRITE	0x1
  
  #define STM32_MBX_VQ0		"vq0"
@@ -1723,10 +1909,17 @@ index 2cf4b2992..061562405 100644
 +#define COPRO_STATE_STANDBY	4
 +#define COPRO_STATE_CRASH	5
 +
++/*
++ * Define a default index in future may come a global list of
++ * firmwares which list platforms and associated firmware(s)
++ */
++
++#define STM32_MP1_FW_ID    0
++
  struct stm32_syscon {
  	struct regmap *map;
  	u32 reg;
-@@ -58,6 +71,7 @@ struct stm32_mbox {
+@@ -58,17 +76,29 @@ struct stm32_mbox {
  	const unsigned char name[10];
  	struct mbox_chan *chan;
  	struct mbox_client client;
@@ -1734,22 +1927,31 @@ index 2cf4b2992..061562405 100644
  	int vq_id;
  };
  
-@@ -65,10 +79,14 @@ struct stm32_rproc {
+ struct stm32_rproc {
  	struct reset_control *rst;
- 	struct stm32_syscon hold_boot;
+-	struct stm32_syscon hold_boot;
++	struct reset_control *hold_boot;
  	struct stm32_syscon pdds;
 +	struct stm32_syscon copro_state;
 +	int wdg_irq;
  	u32 nb_rmems;
  	struct stm32_rproc_mem *rmems;
  	struct stm32_mbox mb[MBOX_NB_MBX];
+-	bool secured_soc;
 +	struct workqueue_struct *workqueue;
- 	bool secured_soc;
++	bool secured_fw;
++	bool fw_loaded;
++	struct tee_rproc *trproc;
 +	void __iomem *rsc_va;
++};
++
++struct stm32_rproc_conf {
++	bool secured_fw;
++	struct rproc_ops *ops;
  };
  
  static int stm32_rproc_pa_to_da(struct rproc *rproc, phys_addr_t pa, u64 *da)
-@@ -91,6 +109,28 @@ static int stm32_rproc_pa_to_da(struct rproc *rproc, phys_addr_t pa, u64 *da)
+@@ -91,6 +121,28 @@ static int stm32_rproc_pa_to_da(struct rproc *rproc, phys_addr_t pa, u64 *da)
  	return -EINVAL;
  }
  
@@ -1778,7 +1980,7 @@ index 2cf4b2992..061562405 100644
  static int stm32_rproc_mem_alloc(struct rproc *rproc,
  				 struct rproc_mem_entry *mem)
  {
-@@ -120,6 +160,15 @@ static int stm32_rproc_mem_release(struct rproc *rproc,
+@@ -120,6 +172,15 @@ static int stm32_rproc_mem_release(struct rproc *rproc,
  	return 0;
  }
  
@@ -1794,7 +1996,102 @@ index 2cf4b2992..061562405 100644
  static int stm32_rproc_of_memory_translations(struct rproc *rproc)
  {
  	struct device *parent, *dev = rproc->dev.parent;
-@@ -190,9 +239,34 @@ static int stm32_rproc_mbox_idx(struct rproc *rproc, const unsigned char *name)
+@@ -187,12 +248,135 @@ static int stm32_rproc_mbox_idx(struct rproc *rproc, const unsigned char *name)
+ 	return -EINVAL;
+ }
+ 
++static int stm32_rproc_tee_elf_sanity_check(struct rproc *rproc,
++					    const struct firmware *fw)
++{
++	struct stm32_rproc *ddata = rproc->priv;
++	unsigned int ret = 0;
++
++	if (!rproc->early_boot) {
++		ret = tee_rproc_load_fw(ddata->trproc, fw);
++		if (!ret)
++			ddata->fw_loaded = true;
++	}
++
++	return ret;
++}
++
++static int stm32_rproc_tee_elf_load(struct rproc *rproc,
++				    const struct firmware *fw)
++{
++	struct stm32_rproc *ddata = rproc->priv;
++	unsigned int ret;
++
++	/*
++	 * This function can be called by remote proc for recovery
++	 * without the sanity check. In this case we need to load the firmware
++	 * else nothing done here as the firmware has been preloaded for the
++	 * sanity check to be able to parse it for the resource table
++	 */
++	if (!ddata->fw_loaded && !rproc->early_boot) {
++		ret =  tee_rproc_load_fw(ddata->trproc, fw);
++		if (ret)
++			return ret;
++		/* update the resource table parameters */
++		if (rproc_tee_get_rsc_table(ddata->trproc)) {
++			/* no resource table: reset the related fields */
++			rproc->cached_table = NULL;
++			rproc->table_ptr = NULL;
++			rproc->table_sz = 0;
++		}
++	}
++
++	return 0;
++}
++
++static struct resource_table *
++stm32_rproc_tee_elf_find_loaded_rsc_table(struct rproc *rproc,
++					  const struct firmware *fw)
++{
++	struct stm32_rproc *ddata = rproc->priv;
++
++	return tee_rproc_get_loaded_rsc_table(ddata->trproc);
++}
++
++static int stm32_rproc_tee_start(struct rproc *rproc)
++{
++	struct stm32_rproc *ddata = rproc->priv;
++
++	if (!rproc->early_boot) {
++		return tee_rproc_start(ddata->trproc);
++	}
++
++	return 0;
++}
++
++static int stm32_rproc_tee_stop(struct rproc *rproc)
++{
++	struct stm32_rproc *ddata = rproc->priv;
++	int err, dummy_data, idx;
++
++	/* request shutdown of the remote processor */
++	if (rproc->state != RPROC_OFFLINE) {
++		idx = stm32_rproc_mbox_idx(rproc, STM32_MBX_SHUTDOWN);
++		if (idx >= 0 && ddata->mb[idx].chan) {
++			/* a dummy data is sent to allow to block on transmit */
++			err = mbox_send_message(ddata->mb[idx].chan,
++						&dummy_data);
++			if (err < 0)
++				dev_warn(&rproc->dev, "warning: remote FW shutdown without ack\n");
++		}
++	}
++
++	err = tee_rproc_stop(ddata->trproc);
++	if (err)
++		return err;
++
++	ddata->fw_loaded = false;
++
++	/* Reset early_boot state as we stop the co-processor */
++	rproc->early_boot = false;
++
++	return 0;
++}
++
  static int stm32_rproc_elf_load_rsc_table(struct rproc *rproc,
  					  const struct firmware *fw)
  {
@@ -1802,6 +2099,12 @@ index 2cf4b2992..061562405 100644
 -		dev_warn(&rproc->dev, "no resource table found for this firmware\n");
 +	struct resource_table *table = NULL;
 +	struct stm32_rproc *ddata = rproc->priv;
+ 
++	if (ddata->trproc) {
++		if (rproc_tee_get_rsc_table(ddata->trproc))
++			goto no_rsc_table;
++		return 0;
++	}
 +
 +	if (!rproc->early_boot) {
 +		if (rproc_elf_load_rsc_table(rproc, fw))
@@ -1822,16 +2125,16 @@ index 2cf4b2992..061562405 100644
 +		return 0;
 +	}
 +
++no_rsc_table:
 +	rproc->cached_table = NULL;
 +	rproc->table_ptr = NULL;
 +	rproc->table_sz = 0;
- 
-+no_rsc_table:
++
 +	dev_warn(&rproc->dev, "no resource table found for this firmware\n");
  	return 0;
  }
  
-@@ -252,6 +326,36 @@ static int stm32_rproc_parse_fw(struct rproc *rproc, const struct firmware *fw)
+@@ -252,6 +436,36 @@ static int stm32_rproc_parse_fw(struct rproc *rproc, const struct firmware *fw)
  	return stm32_rproc_elf_load_rsc_table(rproc, fw);
  }
  
@@ -1850,10 +2153,10 @@ index 2cf4b2992..061562405 100644
 +static int stm32_rproc_elf_sanity_check(struct rproc *rproc,
 +					const struct firmware *fw)
 +{
-+	if (!rproc->early_boot)
-+		return rproc_elf_sanity_check(rproc, fw);
++	if (rproc->early_boot)
++		return 0;
 +
-+	return 0;
++	return rproc_elf_sanity_check(rproc, fw);
 +}
 +
 +static u32 stm32_rproc_elf_get_boot_addr(struct rproc *rproc,
@@ -1868,7 +2171,7 @@ index 2cf4b2992..061562405 100644
  static irqreturn_t stm32_rproc_wdg(int irq, void *data)
  {
  	struct rproc *rproc = data;
-@@ -261,13 +365,22 @@ static irqreturn_t stm32_rproc_wdg(int irq, void *data)
+@@ -261,13 +475,22 @@ static irqreturn_t stm32_rproc_wdg(int irq, void *data)
  	return IRQ_HANDLED;
  }
  
@@ -1893,7 +2196,7 @@ index 2cf4b2992..061562405 100644
  }
  
  static void stm32_rproc_free_mbox(struct rproc *rproc)
-@@ -285,7 +398,7 @@ static void stm32_rproc_free_mbox(struct rproc *rproc)
+@@ -285,7 +508,7 @@ static void stm32_rproc_free_mbox(struct rproc *rproc)
  static const struct stm32_mbox stm32_rproc_mbox[MBOX_NB_MBX] = {
  	{
  		.name = STM32_MBX_VQ0,
@@ -1902,7 +2205,7 @@ index 2cf4b2992..061562405 100644
  		.client = {
  			.rx_callback = stm32_rproc_mb_callback,
  			.tx_block = false,
-@@ -293,7 +406,7 @@ static const struct stm32_mbox stm32_rproc_mbox[MBOX_NB_MBX] = {
+@@ -293,7 +516,7 @@ static const struct stm32_mbox stm32_rproc_mbox[MBOX_NB_MBX] = {
  	},
  	{
  		.name = STM32_MBX_VQ1,
@@ -1911,7 +2214,7 @@ index 2cf4b2992..061562405 100644
  		.client = {
  			.rx_callback = stm32_rproc_mb_callback,
  			.tx_block = false,
-@@ -310,7 +423,7 @@ static const struct stm32_mbox stm32_rproc_mbox[MBOX_NB_MBX] = {
+@@ -310,7 +533,7 @@ static const struct stm32_mbox stm32_rproc_mbox[MBOX_NB_MBX] = {
  	}
  };
  
@@ -1920,7 +2223,7 @@ index 2cf4b2992..061562405 100644
  {
  	struct stm32_rproc *ddata = rproc->priv;
  	struct device *dev = &rproc->dev;
-@@ -329,10 +442,18 @@ static void stm32_rproc_request_mbox(struct rproc *rproc)
+@@ -329,34 +552,18 @@ static void stm32_rproc_request_mbox(struct rproc *rproc)
  
  		ddata->mb[i].chan = mbox_request_channel_byname(cl, name);
  		if (IS_ERR(ddata->mb[i].chan)) {
@@ -1934,12 +2237,35 @@ index 2cf4b2992..061562405 100644
 +				  stm32_rproc_mb_vq_work);
 +		}
  	}
-+
+-}
+-
+-static int stm32_rproc_set_hold_boot(struct rproc *rproc, bool hold)
+-{
+-	struct stm32_rproc *ddata = rproc->priv;
+-	struct stm32_syscon hold_boot = ddata->hold_boot;
+-	struct arm_smccc_res smc_res;
+-	int val, err;
+-
+-	val = hold ? HOLD_BOOT : RELEASE_BOOT;
+-
+-	if (IS_ENABLED(CONFIG_HAVE_ARM_SMCCC) && ddata->secured_soc) {
+-		arm_smccc_smc(STM32_SMC_RCC, STM32_SMC_REG_WRITE,
+-			      hold_boot.reg, val, 0, 0, 0, 0, &smc_res);
+-		err = smc_res.a0;
+-	} else {
+-		err = regmap_update_bits(hold_boot.map, hold_boot.reg,
+-					 hold_boot.mask, val);
+-	}
+-
+-	if (err)
+-		dev_err(&rproc->dev, "failed to set hold boot\n");
+ 
+-	return err;
 +	return 0;
  }
  
- static int stm32_rproc_set_hold_boot(struct rproc *rproc, bool hold)
-@@ -389,7 +510,7 @@ static int stm32_rproc_start(struct rproc *rproc)
+ static void stm32_rproc_add_coredump_trace(struct rproc *rproc)
+@@ -389,7 +596,7 @@ static int stm32_rproc_start(struct rproc *rproc)
  	stm32_rproc_add_coredump_trace(rproc);
  
  	/* clear remote proc Deep Sleep */
@@ -1948,7 +2274,7 @@ index 2cf4b2992..061562405 100644
  		err = regmap_update_bits(ddata->pdds.map, ddata->pdds.reg,
  					 ddata->pdds.mask, 0);
  		if (err) {
-@@ -398,9 +519,15 @@ static int stm32_rproc_start(struct rproc *rproc)
+@@ -398,11 +605,17 @@ static int stm32_rproc_start(struct rproc *rproc)
  		}
  	}
  
@@ -1960,14 +2286,31 @@ index 2cf4b2992..061562405 100644
 +	 * is set to catch any crash.
 +	 */
 +	if (!rproc->early_boot) {
-+		err = stm32_rproc_set_hold_boot(rproc, false);
++		err = reset_control_deassert(ddata->hold_boot);
 +		if (err)
 +			return err;
 +	}
  
- 	return stm32_rproc_set_hold_boot(rproc, true);
+-	return stm32_rproc_set_hold_boot(rproc, true);
++	return reset_control_assert(ddata->hold_boot);
  }
-@@ -442,6 +569,21 @@ static int stm32_rproc_stop(struct rproc *rproc)
+ 
+ static int stm32_rproc_stop(struct rproc *rproc)
+@@ -422,9 +635,11 @@ static int stm32_rproc_stop(struct rproc *rproc)
+ 		}
+ 	}
+ 
+-	err = stm32_rproc_set_hold_boot(rproc, true);
+-	if (err)
++	err = reset_control_assert(ddata->hold_boot);
++	if (err) {
++		dev_err(&rproc->dev, "failed to assert the hold boot\n");
+ 		return err;
++	}
+ 
+ 	err = reset_control_assert(ddata->rst);
+ 	if (err) {
+@@ -442,6 +657,21 @@ static int stm32_rproc_stop(struct rproc *rproc)
  		}
  	}
  
@@ -1989,7 +2332,7 @@ index 2cf4b2992..061562405 100644
  	return 0;
  }
  
-@@ -471,11 +613,11 @@ static struct rproc_ops st_rproc_ops = {
+@@ -471,15 +701,42 @@ static struct rproc_ops st_rproc_ops = {
  	.start		= stm32_rproc_start,
  	.stop		= stm32_rproc_stop,
  	.kick		= stm32_rproc_kick,
@@ -2002,23 +2345,55 @@ index 2cf4b2992..061562405 100644
 +	.find_loaded_rsc_table = stm32_rproc_elf_find_loaded_rsc_table,
 +	.sanity_check	= stm32_rproc_elf_sanity_check,
 +	.get_boot_addr	= stm32_rproc_elf_get_boot_addr,
++};
++
++static struct rproc_ops st_rproc_tee_ops = {
++	.start		= stm32_rproc_tee_start,
++	.stop		= stm32_rproc_tee_stop,
++	.kick		= stm32_rproc_kick,
++	.parse_fw	= stm32_rproc_parse_fw,
++	.find_loaded_rsc_table = stm32_rproc_tee_elf_find_loaded_rsc_table,
++	.sanity_check	= stm32_rproc_tee_elf_sanity_check,
++	.load		= stm32_rproc_tee_elf_load,
++};
++
++static const struct stm32_rproc_conf  stm32_rproc_default_conf = {
++	.secured_fw = false,
++	.ops = &st_rproc_ops,
++};
++
++static const struct stm32_rproc_conf  stm32_rproc_tee_conf = {
++	.secured_fw = true,
++	.ops = &st_rproc_tee_ops,
  };
  
  static const struct of_device_id stm32_rproc_match[] = {
-@@ -512,8 +654,10 @@ static int stm32_rproc_parse_dt(struct platform_device *pdev)
+-	{ .compatible = "st,stm32mp1-m4" },
++	{
++		.compatible = "st,stm32mp1-m4",
++		.data = &stm32_rproc_default_conf,
++	},
++	{
++		.compatible = "st,stm32mp1-m4_optee",
++		.data = &stm32_rproc_tee_conf,
++	},
+ 	{},
+ };
+ MODULE_DEVICE_TABLE(of, stm32_rproc_match);
+@@ -512,8 +769,10 @@ static int stm32_rproc_parse_dt(struct platform_device *pdev)
  	struct device_node *np = dev->of_node;
  	struct rproc *rproc = platform_get_drvdata(pdev);
  	struct stm32_rproc *ddata = rproc->priv;
 -	struct stm32_syscon tz;
 -	unsigned int tzen;
-+	struct stm32_syscon tz, rsctbl;
++	struct stm32_syscon rsctbl;
 +	phys_addr_t rsc_pa;
 +	u32 rsc_da;
-+	unsigned int tzen, state;
++	unsigned int state;
  	int err, irq;
  
  	irq = platform_get_irq(pdev, 0);
-@@ -528,12 +672,21 @@ static int stm32_rproc_parse_dt(struct platform_device *pdev)
+@@ -528,47 +787,90 @@ static int stm32_rproc_parse_dt(struct platform_device *pdev)
  			return err;
  		}
  
@@ -2032,7 +2407,8 @@ index 2cf4b2992..061562405 100644
  		dev_info(dev, "wdg irq registered\n");
  	}
  
- 	ddata->rst = devm_reset_control_get_by_index(dev, 0);
+-	ddata->rst = devm_reset_control_get_by_index(dev, 0);
++	ddata->rst = devm_reset_control_get(dev, "mcu_rst");
  	if (IS_ERR(ddata->rst)) {
 -		dev_err(dev, "failed to get mcu reset\n");
 +		if (PTR_ERR(ddata->rst) != -EPROBE_DEFER)
@@ -2041,19 +2417,35 @@ index 2cf4b2992..061562405 100644
  		return PTR_ERR(ddata->rst);
  	}
  
-@@ -564,11 +717,62 @@ static int stm32_rproc_parse_dt(struct platform_device *pdev)
+-	/*
+-	 * if platform is secured the hold boot bit must be written by
+-	 * smc call and read normally.
+-	 * if not secure the hold boot bit could be read/write normally
+-	 */
+-	err = stm32_rproc_get_syscon(np, "st,syscfg-tz", &tz);
+-	if (err) {
+-		dev_err(dev, "failed to get tz syscfg\n");
+-		return err;
++	ddata->hold_boot = devm_reset_control_get(dev, "hold_boot");
++	if (IS_ERR(ddata->hold_boot)) {
++		if (PTR_ERR(ddata->hold_boot) != -EPROBE_DEFER)
++			dev_err(dev, "failed to get mcu reset\n");
++
++		return PTR_ERR(ddata->hold_boot);
+ 	}
  
- 	err = stm32_rproc_get_syscon(np, "st,syscfg-pdds", &ddata->pdds);
- 	if (err)
--		dev_warn(dev, "failed to get pdds\n");
+-	err = regmap_read(tz.map, tz.reg, &tzen);
+-	if (err) {
+-		dev_err(&rproc->dev, "failed to read tzen\n");
++	err = stm32_rproc_get_syscon(np, "st,syscfg-pdds", &ddata->pdds);
++	if (err)
 +		dev_warn(dev, "pdds not supported\n");
- 
- 	rproc->auto_boot = of_property_read_bool(np, "st,auto-boot");
- 
--	return stm32_rproc_of_memory_translations(rproc);
++
++	rproc->auto_boot = of_property_read_bool(np, "st,auto-boot");
++
 +	err = stm32_rproc_of_memory_translations(rproc);
 +	if (err)
-+		return err;
+ 		return err;
 +
 +	/* check if the coprocessor has been started from the bootloader */
 +	err = stm32_rproc_get_syscon(np, "st,syscfg-copro-state",
@@ -2062,24 +2454,33 @@ index 2cf4b2992..061562405 100644
 +		/* no copro_state syscon (optional) */
 +		dev_warn(dev, "copro_state not supported\n");
 +		goto bail;
-+	}
-+
+ 	}
+-	ddata->secured_soc = tzen & tz.mask;
+ 
+-	err = stm32_rproc_get_syscon(np, "st,syscfg-holdboot",
+-				     &ddata->hold_boot);
 +	err = regmap_read(ddata->copro_state.map, ddata->copro_state.reg,
 +			  &state);
-+	if (err) {
+ 	if (err) {
+-		dev_err(dev, "failed to get hold boot\n");
 +		dev_err(&rproc->dev, "failed to read copro state\n");
-+		return err;
-+	}
-+
+ 		return err;
+ 	}
+ 
+-	err = stm32_rproc_get_syscon(np, "st,syscfg-pdds", &ddata->pdds);
+-	if (err)
+-		dev_warn(dev, "failed to get pdds\n");
 +	if (state == COPRO_STATE_CRUN) {
 +		rproc->early_boot = true;
-+
+ 
+-	rproc->auto_boot = of_property_read_bool(np, "st,auto-boot");
 +		if (stm32_rproc_get_syscon(np, "st,syscfg-rsc-tbl", &rsctbl)) {
 +			/* no rsc table syscon (optional) */
 +			dev_warn(dev, "rsc tbl syscon not supported\n");
 +			goto bail;
 +		}
-+
+ 
+-	return stm32_rproc_of_memory_translations(rproc);
 +		err = regmap_read(rsctbl.map, rsctbl.reg, &rsc_da);
 +		if (err) {
 +			dev_err(&rproc->dev, "failed to read rsc tbl addr\n");
@@ -2106,10 +2507,33 @@ index 2cf4b2992..061562405 100644
  }
  
  static int stm32_rproc_probe(struct platform_device *pdev)
-@@ -589,14 +793,28 @@ static int stm32_rproc_probe(struct platform_device *pdev)
+@@ -576,6 +878,8 @@ static int stm32_rproc_probe(struct platform_device *pdev)
+ 	struct device *dev = &pdev->dev;
+ 	struct stm32_rproc *ddata;
+ 	struct device_node *np = dev->of_node;
++	const struct of_device_id *of_id;
++	const struct stm32_rproc_conf *conf;
+ 	struct rproc *rproc;
+ 	int ret;
+ 
+@@ -583,30 +887,69 @@ static int stm32_rproc_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return ret;
+ 
+-	rproc = rproc_alloc(dev, np->name, &st_rproc_ops, NULL, sizeof(*ddata));
++	of_id = of_match_device(stm32_rproc_match, &pdev->dev);
++	if (of_id)
++		conf = (const struct stm32_rproc_conf *)of_id->data;
++	else
++		return -EINVAL;
++
++	rproc = rproc_alloc(dev, np->name, conf->ops, NULL, sizeof(*ddata));
+ 	if (!rproc)
+ 		return -ENOMEM;
  
  	rproc->has_iommu = false;
  	ddata = rproc->priv;
++	ddata->secured_fw = conf->secured_fw;
 +	ddata->workqueue = create_workqueue(dev_name(dev));
 +	if (!ddata->workqueue) {
 +		dev_err(dev, "cannot create workqueue\n");
@@ -2123,22 +2547,37 @@ index 2cf4b2992..061562405 100644
  	if (ret)
 -		goto free_rproc;
 +		goto free_wkq;
- 
--	stm32_rproc_request_mbox(rproc);
-+	if (!rproc->early_boot) {
++
++	if (!rproc->early_boot && !ddata->secured_fw) {
 +		ret = stm32_rproc_stop(rproc);
 +		if (ret)
 +			goto free_wkq;
 +	}
-+
+ 
+-	stm32_rproc_request_mbox(rproc);
 +	ret = stm32_rproc_request_mbox(rproc);
 +	if (ret)
 +		goto free_wkq;
++
++	if (ddata->secured_fw) {
++		ddata->trproc = tee_rproc_register(dev, rproc,
++						   STM32_MP1_FW_ID);
++		if (IS_ERR_OR_NULL(ddata->trproc)) {
++			ret = -EPROBE_DEFER;
++			goto free_mb;
++		}
++	}
  
  	ret = rproc_add(rproc);
  	if (ret)
-@@ -606,7 +824,13 @@ static int stm32_rproc_probe(struct platform_device *pdev)
+-		goto free_mb;
++		goto free_tee;
  
+ 	return 0;
+ 
++free_tee:
++	if (ddata->trproc)
++		tee_rproc_unregister(ddata->trproc);
  free_mb:
  	stm32_rproc_free_mbox(rproc);
 +free_wkq:
@@ -2151,7 +2590,7 @@ index 2cf4b2992..061562405 100644
  	rproc_free(rproc);
  	return ret;
  }
-@@ -614,22 +838,68 @@ static int stm32_rproc_probe(struct platform_device *pdev)
+@@ -614,22 +957,70 @@ static int stm32_rproc_probe(struct platform_device *pdev)
  static int stm32_rproc_remove(struct platform_device *pdev)
  {
  	struct rproc *rproc = platform_get_drvdata(pdev);
@@ -2162,6 +2601,8 @@ index 2cf4b2992..061562405 100644
  		rproc_shutdown(rproc);
  
  	rproc_del(rproc);
++	if (ddata->trproc)
++		tee_rproc_unregister(ddata->trproc);
  	stm32_rproc_free_mbox(rproc);
 +	destroy_workqueue(ddata->workqueue);
 +
@@ -2220,8 +2661,393 @@ index 2cf4b2992..061562405 100644
  		.of_match_table = of_match_ptr(stm32_rproc_match),
  	},
  };
+diff --git a/drivers/remoteproc/tee_remoteproc.c b/drivers/remoteproc/tee_remoteproc.c
+new file mode 100644
+index 0000000000000..e48887d3de7c0
+--- /dev/null
++++ b/drivers/remoteproc/tee_remoteproc.c
+@@ -0,0 +1,379 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Copyright (C) STMicroelectronics 2020 - All Rights Reserved
++ * Authors: Arnaud Pouliquen <arnaud.pouliquen@st.com>
++ */
++
++#include <linux/firmware.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/of_address.h>
++#include <linux/of_device.h>
++#include <linux/of_reserved_mem.h>
++#include <linux/remoteproc.h>
++#include <linux/tee_drv.h>
++#include <linux/tee_remoteproc.h>
++
++#include "remoteproc_internal.h"
++
++#define MAX_TEE_PARAM_ARRY_MEMBER	4
++
++/*
++ * Authentication of the firmware and load in the remote processor memory
++ *
++ * [in]  params[0].value.a:	unique 32bit identifier of the firmware
++ * [in]	 params[1].memref:	buffer containing the image of the buffer
++ */
++#define TA_RPROC_FW_CMD_LOAD_FW		1
++
++/*
++ * start the remote processor
++ *
++ * [in]  params[0].value.a:	unique 32bit identifier of the firmware
++ */
++#define TA_RPROC_FW_CMD_START_FW	2
++
++/*
++ * stop the remote processor
++ *
++ * [in]  params[0].value.a:	unique 32bit identifier of the firmware
++ */
++#define TA_RPROC_FW_CMD_STOP_FW		3
++
++/*
++ * return the address of the resource table, or 0 if not found
++ * No chech is done to verify that the address returned is accessible by
++ * the non secure context. If the resource table is loaded in a protected
++ * memory the acces by the non secure context will lead to a data abort.
++ *
++ * [in]  params[0].value.a:	unique 32bit identifier of the firmware
++ * [out]  params[1].value.a:	32bit LSB resource table memory address
++ * [out]  params[1].value.b:	32bit MSB resource table memory address
++ * [out]  params[2].value.a:	32bit LSB resource table memory size
++ * [out]  params[2].value.b:	32bit MSB resource table memory size
++ */
++#define TA_RPROC_FW_CMD_GET_RSC_TABLE	4
++
++/*
++ * return the address of the core dump
++ *
++ * [in]  params[0].value.a:	unique 32bit identifier of the firmware
++ * [out] params[1].memref:	address of the core dump image if exist,
++ *				else return Null
++ */
++#define TA_RPROC_FW_CMD_GET_COREDUMP	5
++
++struct tee_rproc_mem {
++	char name[20];
++	void __iomem *cpu_addr;
++	phys_addr_t bus_addr;
++	u32 dev_addr;
++	size_t size;
++};
++
++struct tee_rproc_context {
++	struct list_head sessions;
++	struct tee_context *ctx;
++	struct device *dev;
++};
++
++struct tee_rproc_context pvt_data;
++
++static void prepare_args(struct tee_rproc *trproc, int cmd,
++			 struct tee_ioctl_invoke_arg *arg,
++			 struct tee_param *param, unsigned int num_params)
++{
++	memset(arg, 0, sizeof(*arg));
++	memset(param, 0, MAX_TEE_PARAM_ARRY_MEMBER * sizeof(*param));
++
++	arg->func = cmd;
++	arg->session = trproc->session_id;
++	arg->num_params = num_params + 1;
++
++	param[0] = (struct tee_param) {
++		.attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT,
++		.u.value.a = trproc->fw_id,
++	};
++}
++
++int tee_rproc_load_fw(struct tee_rproc *trproc, const struct firmware *fw)
++{
++	struct tee_ioctl_invoke_arg arg;
++	struct tee_param param[MAX_TEE_PARAM_ARRY_MEMBER];
++	struct tee_shm *fw_shm;
++	int ret;
++
++	/*
++	 * useless copy waiting that tee_shm_register and tee well support
++	 * kernel buffers registration
++	 */
++
++	fw_shm = tee_shm_alloc(pvt_data.ctx, fw->size,
++			       TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
++	if (IS_ERR(fw_shm))
++		return PTR_ERR(fw_shm);
++
++	memcpy(tee_shm_get_va(fw_shm, 0), fw->data, fw->size);
++
++	prepare_args(trproc, TA_RPROC_FW_CMD_LOAD_FW, &arg, param, 1);
++
++	/* provide the address of the firmware image */
++	param[1] = (struct tee_param) {
++		.attr = TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INPUT,
++		.u.memref = {
++			.shm = fw_shm,
++			.size = fw->size,
++			.shm_offs = 0,
++		},
++	};
++
++	ret = tee_client_invoke_func(pvt_data.ctx, &arg, param);
++	if (ret < 0 || arg.ret != 0) {
++		dev_err(pvt_data.dev,
++			"TA_RPROC_FW_CMD_LOAD_FW invoke failed TEE err: %x, ret:%x\n",
++			arg.ret, ret);
++		if (!ret)
++			ret = -EIO;
++	}
++
++	tee_shm_free(fw_shm);
++
++	return ret;
++}
++EXPORT_SYMBOL(tee_rproc_load_fw);
++
++int rproc_tee_get_rsc_table(struct tee_rproc *trproc)
++{
++	struct tee_ioctl_invoke_arg arg;
++	struct tee_param param[MAX_TEE_PARAM_ARRY_MEMBER];
++	struct rproc *rproc = trproc->rproc;
++	size_t rsc_size;
++	int ret;
++
++	prepare_args(trproc, TA_RPROC_FW_CMD_GET_RSC_TABLE, &arg, param, 2);
++
++	param[1].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_OUTPUT;
++	param[2].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_OUTPUT;
++
++	ret = tee_client_invoke_func(pvt_data.ctx, &arg, param);
++	if (ret < 0 || arg.ret != 0) {
++		dev_err(pvt_data.dev,
++			"TA_RPROC_FW_CMD_GET_RSC_TABLE invoke failed TEE err: %x, ret:%x\n",
++			arg.ret, ret);
++		return -EIO;
++	}
++
++	rsc_size = param[2].u.value.a;
++
++	/*
++	 * Store the resource table address that would be updated by the remote
++	 * core and the virtio.
++	 */
++	trproc->rsc_va = ioremap_wc(param[1].u.value.a, rsc_size);
++	if (IS_ERR_OR_NULL(trproc->rsc_va)) {
++		dev_err(pvt_data.dev, "Unable to map memory region: %lld+%zx\n",
++			param[1].u.value.a, rsc_size);
++		trproc->rsc_va = NULL;
++		return -ENOMEM;
++	}
++
++	/*
++	 * A cached table is requested as the physical address is not mapped yet
++	 * but remoteproc need to parse the table for resources.
++	 */
++	rproc->cached_table = kmemdup(trproc->rsc_va, rsc_size, GFP_KERNEL);
++	if (!rproc->cached_table)
++		return -ENOMEM;
++
++	rproc->table_ptr = rproc->cached_table;
++	rproc->table_sz = rsc_size;
++
++	return 0;
++}
++EXPORT_SYMBOL(rproc_tee_get_rsc_table);
++
++struct resource_table *tee_rproc_get_loaded_rsc_table(struct tee_rproc *trproc)
++{
++	return (struct resource_table *)trproc->rsc_va;
++}
++EXPORT_SYMBOL(tee_rproc_get_loaded_rsc_table);
++
++int tee_rproc_start(struct tee_rproc *trproc)
++{
++	struct tee_ioctl_invoke_arg arg;
++	struct tee_param param[MAX_TEE_PARAM_ARRY_MEMBER];
++	int ret;
++
++	prepare_args(trproc, TA_RPROC_FW_CMD_START_FW, &arg, param, 0);
++
++	ret = tee_client_invoke_func(pvt_data.ctx, &arg, param);
++	if (ret < 0 || arg.ret != 0) {
++		dev_err(pvt_data.dev,
++			"TA_RPROC_FW_CMD_START_FW invoke failed TEE err: %x, ret:%x\n",
++			arg.ret, ret);
++		if (!ret)
++			ret = -EIO;
++	}
++
++	return ret;
++}
++EXPORT_SYMBOL(tee_rproc_start);
++
++int tee_rproc_stop(struct tee_rproc *trproc)
++{
++	struct tee_ioctl_invoke_arg arg;
++	struct tee_param param[MAX_TEE_PARAM_ARRY_MEMBER];
++	int ret;
++
++	prepare_args(trproc, TA_RPROC_FW_CMD_STOP_FW, &arg, param, 0);
++
++	ret = tee_client_invoke_func(pvt_data.ctx, &arg, param);
++	if (ret < 0 || arg.ret != 0) {
++		dev_err(pvt_data.dev,
++			"TA_RPROC_FW_CMD_STOP_FW invoke failed TEE err: %x, ret:%x\n",
++			arg.ret, ret);
++		if (!ret)
++			ret = -EIO;
++	}
++	if (trproc->rsc_va)
++		iounmap(trproc->rsc_va);
++	trproc->rsc_va = NULL;
++
++	return ret;
++}
++EXPORT_SYMBOL(tee_rproc_stop);
++
++static const struct tee_client_device_id stm32_tee_fw_id_table[] = {
++	{UUID_INIT(0x80a4c275, 0x0a47, 0x4905,
++		   0x82, 0x85, 0x14, 0x86, 0xa9, 0x77, 0x1a, 0x08)},
++	{}
++};
++
++struct tee_rproc *tee_rproc_register(struct device *dev, struct rproc *rproc,
++				     unsigned int fw_id)
++{
++	struct tee_client_device *rproc_tee_device;
++	struct tee_ioctl_open_session_arg sess_arg;
++	struct tee_rproc *trproc;
++	int ret;
++
++	if (!pvt_data.ctx)
++		return ERR_PTR(-ENODEV);
++
++	trproc =  devm_kzalloc(dev, sizeof(*trproc), GFP_KERNEL);
++	if (!trproc)
++		return ERR_PTR(-ENOMEM);
++
++	rproc_tee_device = to_tee_client_device(pvt_data.dev);
++	memset(&sess_arg, 0, sizeof(sess_arg));
++
++	/* Open session with rproc_tee load Trusted App */
++	memcpy(sess_arg.uuid, rproc_tee_device->id.uuid.b, TEE_IOCTL_UUID_LEN);
++
++	/*
++	 * TODO: should we replace TEE_IOCTL_LOGIN_PUBLIC by
++	 * TEE_IOCTL_LOGIN_REE_KERNEL?
++	 */
++	sess_arg.clnt_login = TEE_IOCTL_LOGIN_PUBLIC;
++	sess_arg.num_params = 0;
++
++	ret = tee_client_open_session(pvt_data.ctx, &sess_arg, NULL);
++	if (ret < 0 || sess_arg.ret != 0) {
++		dev_err(dev, "tee_client_open_session failed, err: %x\n",
++			sess_arg.ret);
++		return ERR_PTR(ret);
++	}
++
++	trproc->rproc = rproc;
++	trproc->parent =  dev;
++	trproc->fw_id = fw_id;
++	trproc->session_id = sess_arg.session;
++
++	list_add_tail(&trproc->node, &pvt_data.sessions);
++
++	return trproc;
++}
++EXPORT_SYMBOL(tee_rproc_register);
++
++int tee_rproc_unregister(struct tee_rproc *trproc)
++{
++	int ret;
++
++	if (!pvt_data.ctx)
++		return -ENODEV;
++
++	ret = tee_client_close_session(pvt_data.ctx, trproc->session_id);
++	if (ret < 0) {
++		dev_err(trproc->parent,
++			"tee_client_close_session failed, err: %x\n", ret);
++	}
++
++	list_del(&trproc->node);
++
++	return ret;
++}
++EXPORT_SYMBOL(tee_rproc_unregister);
++
++static int tee_ctx_match(struct tee_ioctl_version_data *ver, const void *data)
++{
++	/* Today we support only the OP-TEE, could be extend to other tees */
++	return (ver->impl_id == TEE_IMPL_ID_OPTEE);
++}
++
++static int tee_rproc_probe(struct device *dev)
++{
++	/* Open context with TEE driver */
++	pvt_data.ctx = tee_client_open_context(NULL, tee_ctx_match, NULL,
++					       NULL);
++	if (IS_ERR(pvt_data.ctx))
++		return -ENODEV;
++
++	pvt_data.dev = dev;
++	INIT_LIST_HEAD(&pvt_data.sessions);
++
++	return 0;
++}
++
++static int tee_rproc_remove(struct device *dev)
++{
++	struct tee_rproc *entry, *tmp;
++
++	list_for_each_entry_safe(entry, tmp, &pvt_data.sessions, node) {
++		tee_client_close_session(pvt_data.ctx, entry->session_id);
++		list_del(&entry->node);
++		kfree(entry);
++	}
++
++	tee_client_close_context(pvt_data.ctx);
++	return 0;
++}
++
++MODULE_DEVICE_TABLE(tee, stm32_tee_fw_id_table);
++
++static struct tee_client_driver tee_rproc_fw_driver = {
++	.id_table	= stm32_tee_fw_id_table,
++	.driver		= {
++		.name		= KBUILD_MODNAME,
++		.bus		= &tee_bus_type,
++		.probe		= tee_rproc_probe,
++		.remove		= tee_rproc_remove,
++	},
++};
++
++static int __init tee_rproc_fw_mod_init(void)
++{
++	return driver_register(&tee_rproc_fw_driver.driver);
++}
++
++static void __exit tee_rproc_fw_mod_exit(void)
++{
++	driver_unregister(&tee_rproc_fw_driver.driver);
++}
++
++module_init(tee_rproc_fw_mod_init);
++module_exit(tee_rproc_fw_mod_exit);
++
++MODULE_DESCRIPTION("secure remote processor control driver");
++MODULE_AUTHOR("Arnaud Pouliquen <arnaud.pouliquen@st.com>");
++MODULE_LICENSE("GPL v2");
 diff --git a/drivers/rpmsg/Kconfig b/drivers/rpmsg/Kconfig
-index d0322b41e..88759a4c9 100644
+index d0322b41eca54..88759a4c90e43 100644
 --- a/drivers/rpmsg/Kconfig
 +++ b/drivers/rpmsg/Kconfig
 @@ -55,4 +55,13 @@ config RPMSG_VIRTIO
@@ -2239,7 +3065,7 @@ index d0322b41e..88759a4c9 100644
 +
  endmenu
 diff --git a/drivers/rpmsg/Makefile b/drivers/rpmsg/Makefile
-index 9aa859502..107145c63 100644
+index 9aa859502d275..107145c6316b0 100644
 --- a/drivers/rpmsg/Makefile
 +++ b/drivers/rpmsg/Makefile
 @@ -5,4 +5,5 @@ obj-$(CONFIG_RPMSG_QCOM_GLINK_RPM) += qcom_glink_rpm.o
@@ -2249,7 +3075,7 @@ index 9aa859502..107145c63 100644
 +obj-$(CONFIG_RPMSG_TTY)	+= rpmsg_tty.o
  obj-$(CONFIG_RPMSG_VIRTIO)	+= virtio_rpmsg_bus.o
 diff --git a/drivers/rpmsg/rpmsg_core.c b/drivers/rpmsg/rpmsg_core.c
-index e330ec4df..48f24503f 100644
+index e330ec4dfc337..48f24503fb34e 100644
 --- a/drivers/rpmsg/rpmsg_core.c
 +++ b/drivers/rpmsg/rpmsg_core.c
 @@ -283,6 +283,25 @@ int rpmsg_trysend_offchannel(struct rpmsg_endpoint *ept, u32 src, u32 dst,
@@ -2279,7 +3105,7 @@ index e330ec4df..48f24503f 100644
   * match an rpmsg channel with a channel info struct.
   * this is used to make sure we're not creating rpmsg devices for channels
 diff --git a/drivers/rpmsg/rpmsg_internal.h b/drivers/rpmsg/rpmsg_internal.h
-index 3fc83cd50..244292540 100644
+index 3fc83cd50e98f..244292540e583 100644
 --- a/drivers/rpmsg/rpmsg_internal.h
 +++ b/drivers/rpmsg/rpmsg_internal.h
 @@ -47,6 +47,7 @@ struct rpmsg_device_ops {
@@ -2300,10 +3126,10 @@ index 3fc83cd50..244292540 100644
  int rpmsg_register_device(struct rpmsg_device *rpdev);
 diff --git a/drivers/rpmsg/rpmsg_tty.c b/drivers/rpmsg/rpmsg_tty.c
 new file mode 100644
-index 000000000..57763898e
+index 0000000000000..d1cccdff8ed1e
 --- /dev/null
 +++ b/drivers/rpmsg/rpmsg_tty.c
-@@ -0,0 +1,310 @@
+@@ -0,0 +1,339 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
@@ -2328,7 +3154,7 @@ index 000000000..57763898e
 +static struct tty_port_operations  rpmsg_tty_port_ops = { };
 +
 +struct rpmsg_tty_port {
-+	struct tty_port		port;	/* TTY port data */
++	struct tty_port		*port;	/* TTY port data */
 +	struct list_head	list;	/* TTY device list */
 +	u32			id;	/* tty rpmsg index */
 +	spinlock_t		rx_lock; /* message reception lock */
@@ -2352,7 +3178,7 @@ index 000000000..57763898e
 +			     true);
 +
 +	spin_lock(&cport->rx_lock);
-+	space = tty_prepare_flip_string(&cport->port, &cbuf, len);
++	space = tty_prepare_flip_string(cport->port, &cbuf, len);
 +	if (space <= 0) {
 +		dev_err(&rpdev->dev, "No memory for tty_prepare_flip_string\n");
 +		spin_unlock(&cport->rx_lock);
@@ -2364,7 +3190,7 @@ index 000000000..57763898e
 +			 len, space);
 +
 +	memcpy(cbuf, data, space);
-+	tty_flip_buffer_push(&cport->port);
++	tty_flip_buffer_push(cport->port);
 +	spin_unlock(&cport->rx_lock);
 +
 +	return 0;
@@ -2376,7 +3202,7 @@ index 000000000..57763898e
 +
 +	mutex_lock(&rpmsg_tty_lock);
 +	list_for_each_entry(cport, &rpmsg_tty_list, list) {
-+		if (index  == cport->id) {
++		if (index == cport->id) {
 +			mutex_unlock(&rpmsg_tty_lock);
 +			return cport;
 +		}
@@ -2393,7 +3219,7 @@ index 000000000..57763898e
 +	if (!cport)
 +		return -ENODEV;
 +
-+	return tty_port_install(&cport->port, driver, tty);
++	return tty_port_install(cport->port, driver, tty);
 +}
 +
 +static int rpmsg_tty_open(struct tty_struct *tty, struct file *filp)
@@ -2408,11 +3234,7 @@ index 000000000..57763898e
 +
 +static void rpmsg_tty_close(struct tty_struct *tty, struct file *filp)
 +{
-+	struct rpmsg_tty_port *cport = rpmsg_tty_get(tty->index);
-+
-+	if (!cport)
-+		return;
-+	return tty_port_close(tty->port, tty, filp);
++	tty_port_close(tty->port, tty, filp);
 +}
 +
 +static int rpmsg_tty_write(struct tty_struct *tty, const unsigned char *buf,
@@ -2420,8 +3242,8 @@ index 000000000..57763898e
 +{
 +	int count, ret = 0;
 +	const unsigned char *tbuf;
-+	struct rpmsg_tty_port *cport = container_of(tty->port,
-+						struct rpmsg_tty_port, port);
++	struct rpmsg_tty_port *cport = rpmsg_tty_get(tty->index);
++
 +	struct rpmsg_device *rpdev = cport->rpdev;
 +	int msg_size;
 +
@@ -2461,8 +3283,7 @@ index 000000000..57763898e
 +
 +static int rpmsg_tty_write_room(struct tty_struct *tty)
 +{
-+	struct rpmsg_tty_port *cport = container_of(tty->port,
-+			struct rpmsg_tty_port, port);
++	struct rpmsg_tty_port *cport = rpmsg_tty_get(tty->index);
 +	struct rpmsg_device *rpdev = cport->rpdev;
 +
 +	/* report the space in the rpmsg buffer */
@@ -2482,26 +3303,20 @@ index 000000000..57763898e
 +	struct rpmsg_tty_port *cport, *tmp;
 +	unsigned int index;
 +	struct device *tty_dev;
++	int ret = 0;
 +
 +	cport = devm_kzalloc(&rpdev->dev, sizeof(*cport), GFP_KERNEL);
 +	if (!cport)
 +		return -ENOMEM;
 +
-+	tty_port_init(&cport->port);
-+	cport->port.ops = &rpmsg_tty_port_ops;
-+	spin_lock_init(&cport->rx_lock);
-+
-+	cport->port.low_latency = cport->port.flags | ASYNC_LOW_LATENCY;
-+
-+	cport->rpdev = rpdev;
-+
-+	/* get free index */
 +	mutex_lock(&rpmsg_tty_lock);
++
++	/* Get free index */
 +	for (index = 0; index < MAX_TTY_RPMSG_INDEX; index++) {
 +		bool id_found = false;
 +
 +		list_for_each_entry(tmp, &rpmsg_tty_list, list) {
-+			if (index  == tmp->id) {
++			if (index == tmp->id) {
 +				id_found = true;
 +				break;
 +			}
@@ -2510,35 +3325,69 @@ index 000000000..57763898e
 +			break;
 +	}
 +
-+	tty_dev = tty_port_register_device(&cport->port, rpmsg_tty_driver,
++	if (index >= MAX_TTY_RPMSG_INDEX) {
++		ret = -ENOSPC;
++		goto end_probe;
++	}
++
++	/*
++	 * the tty port allocation has to be independent from the tty device
++	 * The reason is that it can be use after device removing, for instance
++	 * if a user has opened it.
++	 * So it is not possible to release the port on device remove.
++	 * A solution is to store the port in the driver structure. The port
++	 * structure is reused on next probe to save memory.
++	 */
++	if (!rpmsg_tty_driver->ports[index]) {
++		/* first allocation of the port associated to the index */
++		rpmsg_tty_driver->ports[index] = kzalloc(sizeof(*cport->port),
++							 GFP_KERNEL);
++		if (!rpmsg_tty_driver->ports[index]) {
++			ret = -ENOMEM;
++			goto end_probe;
++		}
++	}
++
++	cport->port = rpmsg_tty_driver->ports[index];
++	tty_port_init(cport->port);
++	cport->port->ops = &rpmsg_tty_port_ops;
++
++	spin_lock_init(&cport->rx_lock);
++	cport->port->low_latency = cport->port->flags | ASYNC_LOW_LATENCY;
++	cport->rpdev = rpdev;
++
++	tty_dev = tty_port_register_device(cport->port, rpmsg_tty_driver,
 +					   index, &rpdev->dev);
 +	if (IS_ERR(tty_dev)) {
 +		dev_err(&rpdev->dev, "failed to register tty port\n");
-+		tty_port_destroy(&cport->port);
-+		mutex_unlock(&rpmsg_tty_lock);
-+		return PTR_ERR(tty_dev);
++		tty_port_destroy(cport->port);
++		ret = PTR_ERR(tty_dev);
++		goto end_probe;
 +	}
 +
 +	cport->id = index;
 +	list_add_tail(&cport->list, &rpmsg_tty_list);
-+	mutex_unlock(&rpmsg_tty_lock);
 +	dev_set_drvdata(&rpdev->dev, cport);
 +
 +	dev_info(&rpdev->dev, "new channel: 0x%x -> 0x%x : ttyRPMSG%d\n",
 +		 rpdev->src, rpdev->dst, index);
++end_probe:
++	mutex_unlock(&rpmsg_tty_lock);
 +
-+	return 0;
++	return ret;
 +}
 +
 +static void rpmsg_tty_remove(struct rpmsg_device *rpdev)
 +{
 +	struct rpmsg_tty_port *cport = dev_get_drvdata(&rpdev->dev);
++	struct tty_struct *tty;
 +
-+	/* User hang up to release the tty */
-+	if (tty_port_initialized(&cport->port))
-+		tty_port_tty_hangup(&cport->port, false);
-+	tty_port_destroy(&cport->port);
 +	tty_unregister_device(rpmsg_tty_driver, cport->id);
++	tty = tty_port_tty_get(cport->port);
++	if (tty) {
++		tty_vhangup(cport->port->tty);
++		tty_kref_put(tty);
++	}
 +	list_del(&cport->list);
 +
 +	dev_info(&rpdev->dev, "rpmsg tty device %d is removed\n", cport->id);
@@ -2603,8 +3452,14 @@ index 000000000..57763898e
 +
 +static void __exit rpmsg_tty_exit(void)
 +{
++	unsigned int index;
++
 +	unregister_rpmsg_driver(&rpmsg_tty_rmpsg_drv);
 +	tty_unregister_driver(rpmsg_tty_driver);
++
++	/* release port allocations */
++	for (index = 0; index < MAX_TTY_RPMSG_INDEX; index++)
++		kfree(rpmsg_tty_driver->ports[index]);
 +	put_tty_driver(rpmsg_tty_driver);
 +}
 +
@@ -2615,7 +3470,7 @@ index 000000000..57763898e
 +MODULE_DESCRIPTION("virtio remote processor messaging tty driver");
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/rpmsg/virtio_rpmsg_bus.c b/drivers/rpmsg/virtio_rpmsg_bus.c
-index 376ebbf88..31b6d053f 100644
+index 376ebbf880d66..31b6d053f8ff0 100644
 --- a/drivers/rpmsg/virtio_rpmsg_bus.c
 +++ b/drivers/rpmsg/virtio_rpmsg_bus.c
 @@ -175,6 +175,7 @@ static int virtio_rpmsg_trysendto(struct rpmsg_endpoint *ept, void *data,
@@ -2652,7 +3507,7 @@ index 376ebbf88..31b6d053f 100644
  {
 diff --git a/include/linux/mailbox/arm-smccc-mbox.h b/include/linux/mailbox/arm-smccc-mbox.h
 new file mode 100644
-index 000000000..d35fb89a7
+index 0000000000000..d35fb89a77f52
 --- /dev/null
 +++ b/include/linux/mailbox/arm-smccc-mbox.h
 @@ -0,0 +1,20 @@
@@ -2677,7 +3532,7 @@ index 000000000..d35fb89a7
 +
 +#endif /* _LINUX_ARM_SMCCC_MBOX_H_ */
 diff --git a/include/linux/remoteproc.h b/include/linux/remoteproc.h
-index 16ad66683..221f98b73 100644
+index 16ad66683ad0a..221f98b73b09c 100644
 --- a/include/linux/remoteproc.h
 +++ b/include/linux/remoteproc.h
 @@ -481,6 +481,7 @@ struct rproc_dump_segment {
@@ -2697,7 +3552,7 @@ index 16ad66683..221f98b73 100644
  
  /**
 diff --git a/include/linux/rpmsg.h b/include/linux/rpmsg.h
-index 9fe156d1c..2af767403 100644
+index 9fe156d1c018e..2af7674035aa7 100644
 --- a/include/linux/rpmsg.h
 +++ b/include/linux/rpmsg.h
 @@ -135,6 +135,7 @@ int rpmsg_trysend_offchannel(struct rpmsg_endpoint *ept, u32 src, u32 dst,
@@ -2723,6 +3578,118 @@ index 9fe156d1c..2af767403 100644
  #endif /* IS_ENABLED(CONFIG_RPMSG) */
  
  /* use a macro to avoid include chaining to get THIS_MODULE */
+diff --git a/include/linux/tee_remoteproc.h b/include/linux/tee_remoteproc.h
+new file mode 100644
+index 0000000000000..5d2d6ae492d0d
+--- /dev/null
++++ b/include/linux/tee_remoteproc.h
+@@ -0,0 +1,106 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Copyright(c) 2020 STMicroelectronics 2020
++ */
++
++#ifndef TEE_REMOTEPROC_H
++#define TEE_REMOTEPROC_H
++
++#include <linux/remoteproc.h>
++#include <linux/tee_drv.h>
++
++/**
++ * struct tee_rproc - TEE remoteproc structure
++ * @node:		Reference in list
++ * @rproc:		Remoteproc reference
++ * @parent:		Parent device
++ * @fw_id:		Identifier of the target firmware
++ * @session_id:		TEE session identifier
++ * @rsc_va:		Resource table virtual address.
++ */
++struct tee_rproc {
++	struct list_head node;
++
++	struct rproc *rproc;
++	struct device *parent;
++	u32 fw_id;
++	u32 session_id;
++	void *rsc_va;
++};
++
++#if IS_ENABLED(CONFIG_TEE_REMOTEPROC)
++
++struct tee_rproc *tee_rproc_register(struct device *dev, struct rproc *rproc,
++				     unsigned int fw_id);
++int tee_rproc_unregister(struct tee_rproc *trproc);
++
++int tee_rproc_load_fw(struct tee_rproc *trproc, const struct firmware *fw);
++int rproc_tee_get_rsc_table(struct tee_rproc *trproc);
++struct resource_table *tee_rproc_get_loaded_rsc_table(struct tee_rproc *trproc);
++int tee_rproc_start(struct tee_rproc *trproc);
++int tee_rproc_stop(struct tee_rproc *trproc);
++
++#else
++
++static inline struct tee_rproc *tee_rproc_register(struct device *dev,
++						   struct rproc *rproc,
++						   unsigned int fw_id)
++{
++	/* This shouldn't be possible */
++	WARN_ON(1);
++
++	return NULL;
++}
++
++static inline int tee_rproc_unregister(struct tee_rproc *trproc)
++{
++	/* This shouldn't be possible */
++	WARN_ON(1);
++
++	return 0;
++}
++
++static inline int tee_rproc_load_fw(struct tee_rproc *trproc,
++				    const struct firmware *fw)
++{
++	/* This shouldn't be possible */
++	WARN_ON(1);
++
++	return 0;
++}
++
++static inline int tee_rproc_start(struct tee_rproc *trproc)
++{
++	/* This shouldn't be possible */
++	WARN_ON(1);
++
++	return 0;
++}
++
++static inline int tee_rproc_stop(struct tee_rproc *trproc)
++{
++	/* This shouldn't be possible */
++	WARN_ON(1);
++
++	return 0;
++}
++
++static inline int rproc_tee_get_rsc_table(struct tee_rproc *trproc)
++{
++	/* This shouldn't be possible */
++	WARN_ON(1);
++
++	return 0;
++}
++
++static inline struct resource_table *
++	tee_rproc_get_loaded_rsc_table(struct tee_rproc *trproc)
++{
++	/* This shouldn't be possible */
++	WARN_ON(1);
++
++	return NULL;
++}
++
++#endif /* CONFIG_TEE_REMOTEPROC */
++#endif /* TEE_REMOTEPROC_H */
 -- 
 2.17.1
 
