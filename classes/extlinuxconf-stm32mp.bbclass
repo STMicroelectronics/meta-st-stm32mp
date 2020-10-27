@@ -71,6 +71,9 @@
 
 UBOOT_EXTLINUX_TARGETS ?= ""
 
+# Configure FIT kernel image for extlinux file creation
+UBOOT_EXTLINUX_FIT ??= "0"
+
 UBOOT_EXTLINUX_CONSOLE ??= "console=${console}"
 UBOOT_EXTLINUX_LABELS ??= "linux"
 UBOOT_EXTLINUX_FDT ??= ""
@@ -136,7 +139,13 @@ def create_extlinux_file(cfile, labels, data):
 
                 fdt = localdata.getVar('UBOOT_EXTLINUX_FDT')
 
-                if fdt:
+                fit = localdata.getVar('UBOOT_EXTLINUX_FIT')
+
+                if fit == '1':
+                    # Set specific kernel configuration if 'fit' feature is enabled
+                    kernel_image = kernel_image + '#conf@' + label + '.dtb'
+                    cfgfile.write('LABEL %s\n\tKERNEL %s\n' % (menu_description, kernel_image))
+                elif fdt:
                     cfgfile.write('LABEL %s\n\tKERNEL %s\n\tFDT %s\n' %
                                  (menu_description, kernel_image, fdt))
                 elif fdtdir:
@@ -172,6 +181,9 @@ python do_create_multiextlinux_config() {
     # an override for that target will be added back in while we're processing that target
     keep_overrides = list(filter(lambda x: x not in target_overrides, default_overrides))
 
+    # Init FIT parameter
+    fit_config = d.getVar('UBOOT_EXTLINUX_FIT')
+
     for target in targets.split():
         bb.note("Loop for '%s' target" % target)
 
@@ -201,9 +213,12 @@ python do_create_multiextlinux_config() {
         # Create extlinux folder
         bb.utils.mkdirhier(os.path.dirname(cfile))
 
-        # Go for config file creation
-        bb.note("Create %s/extlinux.conf file for %s labels" % (subdir, labels))
-        create_extlinux_file(cfile, labels, d)
+        # Standard extlinux file creation
+        if fit_config == '1':
+            bb.note("UBOOT_EXTLINUX_FIT set to '1'. Skip standard extlinux file creation")
+        else:
+            bb.note("Create %s/extlinux.conf file for %s labels" % (subdir, labels))
+            create_extlinux_file(cfile, labels, d)
 
         # Manage UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG
         extra_extlinuxtargetconfigflag = d.getVarFlags('UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG')
@@ -216,6 +231,25 @@ python do_create_multiextlinux_config() {
                 # Init extra config vars:
                 extra_extlinuxlabels = ""
                 extra_cfile = ""
+                # Specific case for 'fit' to automate configuration with device tree name
+                if fit_config == '1':
+                    # Override current 'labels' with 'config' from UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG
+                    # Under such configuration, UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG should contain the
+                    # list of supported device tree file (without '.dtb' suffix) to allow proper extlinux
+                    # file creation for each device tree file.
+                    bb.note(">>> Override default init to allow default extlinux file creation with %s config as extra label." % config)
+                    labels = config
+                    # Update extra config vars for this specific case:
+                    extra_extlinuxlabels = labels
+                    extra_cfile = os.path.join(d.getVar('B'), subdir , config + '_' + 'extlinux.conf')
+                    # Configure dynamically the default menu configuration if there is no specific one configured
+                    if d.getVar('UBOOT_EXTLINUX_DEFAULT_LABEL_%s' % config):
+                        bb.note(">>> Specific configuration for UBOOT_EXTLINUX_DEFAULT_LABEL var detected for %s label: %s" % (config, d.getVar('UBOOT_EXTLINUX_DEFAULT_LABEL_%s' % config)))
+                    else:
+                        bb.note(">>> Set UBOOT_EXTLINUX_DEFAULT_LABEL to %s" % config)
+                        d.setVar('UBOOT_EXTLINUX_DEFAULT_LABEL', config)
+
+                # Append extra configuration if any
                 for f, v in extra_extlinuxtargetconfigflag.items():
                     if config == f:
                         bb.note(">>> Loop for '%s' extra target config." % config)
@@ -238,7 +272,7 @@ do_create_multiextlinux_config[cleandirs] += "${B}"
 # Manage specific var dependency:
 # Because of local overrides within create_multiextlinux_config() function, we
 # need to make sure to add each variables to the vardeps list.
-UBOOT_EXTLINUX_TARGET_VARS = "LABELS BOOTPREFIXES TIMEOUT DEFAULT_LABEL TARGETS_EXTRA_CONFIG"
+UBOOT_EXTLINUX_TARGET_VARS = "FIT LABELS BOOTPREFIXES TIMEOUT DEFAULT_LABEL TARGETS_EXTRA_CONFIG"
 do_create_multiextlinux_config[vardeps] += "${@' '.join(['UBOOT_EXTLINUX_%s_%s' % (v, l) for v in d.getVar('UBOOT_EXTLINUX_TARGET_VARS').split() for l in d.getVar('UBOOT_EXTLINUX_TARGETS').split()])}"
 UBOOT_EXTLINUX_LABELS_VARS = "CONSOLE MENU_DESCRIPTION ROOT KERNEL_IMAGE FDTDIR FDT KERNEL_ARGS INITRD"
 UBOOT_EXTLINUX_LABELS_CONFIGURED = "${@" ".join(map(lambda t: "%s" % d.getVar("UBOOT_EXTLINUX_LABELS_%s" % t), d.getVar('UBOOT_EXTLINUX_TARGETS').split()))}"
