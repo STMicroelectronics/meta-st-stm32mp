@@ -1,16 +1,27 @@
-require tf-a-stm32mp-common_${PV}.inc
 require tf-a-stm32mp-common.inc
 
 SUMMARY = "Trusted Firmware-A SSP for STM32MP1"
+SECTION = "bootloaders"
 LICENSE = "BSD-3-Clause"
+LIC_FILES_CHKSUM = "file://license.rst;md5=1dd070c98a281d18d9eefd938729b031"
+
+SRC_URI = "git://github.com/ARM-software/arm-trusted-firmware.git;protocol=https;nobranch=1"
+SRCREV = "a04808c16cfc126d9fe572ae7c4b5a3d39de5796"
+
+SRC_URI += " \
+    file://0001-st-update-v2.2-r2.0.0.patch \
+    \
+    file://0100-v2.2-stm32mp-ssp-r2-rc2.patch \
+    "
+
+TF_VERSION = "2.2"
+PV = "${TF_VERSION}.r2"
+
+S = "${WORKDIR}/git"
 
 PROVIDES += "virtual/trusted-firmware-a-ssp"
 
 TFA_SHARED_SOURCES = "0"
-
-SRC_URI += " \
-    file://0100-st-update-ssp-v2.2-r2.0.0.patch \
-"
 
 TF_A_BASENAME = "tf-a-ssp"
 TF_A_CONFIG = "ssp"
@@ -33,8 +44,8 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'tf-a-stm32mp-
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
-SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/arm-trusted-firmware.git;protocol=https;branch=v${TF_VERSION}-stm32mp-ssp"
-SRCREV_class-devupstream = "3a5830ccfbcebfaa60540d50d42f0e37f3b532e9"
+SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/arm-trusted-firmware.git;protocol=https;branch=v${TF_VERSION}-r2-stm32mp-ssp"
+SRCREV_class-devupstream = "91745e6389486247c8a4b11cc428f9ce235f319e"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

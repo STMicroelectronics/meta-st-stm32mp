@@ -52,8 +52,10 @@ STAGING_TFA_DIR = "${TMPDIR}/work-shared/${MACHINE}/tfa-source"
 # Make sure to move ${S} to STAGING_TFA_DIR. We can't just
 # create the symlink in advance as the git fetcher can't cope with
 # the symlink.
-do_unpack[cleandirs] += " ${S} ${STAGING_TFA_DIR}"
-do_clean[cleandirs] += " ${S} ${STAGING_TFA_DIR}"
+do_unpack[cleandirs] += "${S}"
+do_unpack[cleandirs] += "${@bb.utils.contains('TFA_SHARED_SOURCES', '1', '${STAGING_TFA_DIR}', '', d)}"
+do_clean[cleandirs] += "${S}"
+do_clean[cleandirs] += "${@bb.utils.contains('TFA_SHARED_SOURCES', '1', '${STAGING_TFA_DIR}', '', d)}"
 base_do_unpack_append () {
     # Specific part to update devtool-source class
     if bb.data.inherits_class('devtool-source', d):
