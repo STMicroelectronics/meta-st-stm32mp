@@ -10,9 +10,10 @@ SRCREV = "a04808c16cfc126d9fe572ae7c4b5a3d39de5796"
 
 SRC_URI += " \
     file://0001-st-update-v2.2-r2.0.0.patch \
+    file://0002-st-update-v2.2-r2.1.0.patch \
     "
 
 TF_VERSION = "2.2"
-PV = "${TF_VERSION}.r1"
+PV = "${TF_VERSION}.r2"
 
 S = "${WORKDIR}/git"

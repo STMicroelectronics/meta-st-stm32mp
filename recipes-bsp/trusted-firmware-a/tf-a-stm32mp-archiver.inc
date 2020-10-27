@@ -33,7 +33,7 @@ NM=
 LOCAL_PATH=\$(PWD)
 
 EXTRA_OEMAKE=${EXTRA_OEMAKE}
-EXTRA_OEMAKE_SERIAL=$(subst STM32MP_SDMMC=1 STM32MP_EMMC=1 STM32MP_SPI_NOR=1 STM32MP_RAW_NAND=1 STM32MP_SPI_NAND=1,,${EXTRA_OEMAKE}) STM32MP_UART_PROGRAMMER=1 STM32MP_USB_PROGRAMMER=1
+EXTRA_OEMAKE_SERIAL=\$(filter-out STM32MP_SDMMC=1 STM32MP_EMMC=1 STM32MP_SPI_NOR=1 STM32MP_RAW_NAND=1 STM32MP_SPI_NAND=1,\$(EXTRA_OEMAKE)) STM32MP_UART_PROGRAMMER=1 STM32MP_USB_PROGRAMMER=1
 
 # Set default config
 ELF_DEBUG_ENABLE ?= ${ELF_DEBUG_ENABLE}
@@ -78,27 +78,31 @@ tf: host_tools
 		mkdir -p \$(LOCAL_PATH)/../build/\$\$config ; \\
 		if test -n "\$(TFA_DEVICETREE)" ; then \\
 			for dt in \$(TFA_DEVICETREE) ; do \\
-				if [ "\$(TF_A_CONFIG)" != "serialboot" ]; then \\
+				if [ "\$\$config" != "serialboot" ]; then \\
 					\$(MAKE) \$(EXTRA_OEMAKE) -C \$(LOCAL_PATH) DTB_FILE_NAME=\$\$dt.dtb BUILD_PLAT=\$(LOCAL_PATH)/../build/\$\$config \$\$add_extraoemake ; \\
 				else \\
 					\$(MAKE) \$(EXTRA_OEMAKE_SERIAL) -C \$(LOCAL_PATH) DTB_FILE_NAME=\$\$dt.dtb BUILD_PLAT=\$(LOCAL_PATH)/../build/\$\$config \$\$add_extraoemake ; \\
-				fi \\
+				fi ; \\
 				# Copy binary file with explicit name \\
 				cp -f \$(LOCAL_PATH)/../build/\$\$config/${TF_A_BASENAME}-\$\$dt.${TF_A_SUFFIX} \$(LOCAL_PATH)/../build/\$\$config/${TF_A_BASENAME}-\$\$dt-\$\$config.${TF_A_SUFFIX} ; \\
 				if [ "\$(TF_A_ENABLE_DEBUG_WRAPPER)" = "1" ]; then \\
 					# Generate wrapper for debugging \\
 					stm32wrapper4dbg -s \$(LOCAL_PATH)/../build/\$\$config/${TF_A_BASENAME}-\$\$dt.${TF_A_SUFFIX} -d \$(LOCAL_PATH)/../build/\$\$config/debug-${TF_A_BASENAME}-\$\$dt-\$\$config.${TF_A_SUFFIX} ; \\
-				fi \\
+				fi ; \\
 			done ; \\
 		else \\
-			\$(MAKE) \$(EXTRA_OEMAKE) -C \$(LOCAL_PATH) BUILD_PLAT=\$(LOCAL_PATH)/../build/\$\$config \$\$add_extraoemake; \\
+			if [ "\$\$config" != "serialboot" ]; then \\
+				\$(MAKE) \$(EXTRA_OEMAKE) -C \$(LOCAL_PATH) BUILD_PLAT=\$(LOCAL_PATH)/../build/\$\$config \$\$add_extraoemake; \\
+			else \\
+				\$(MAKE) \$(EXTRA_OEMAKE_SERIAL) -C \$(LOCAL_PATH) BUILD_PLAT=\$(LOCAL_PATH)/../build/\$\$config \$\$add_extraoemake; \\
+			fi ; \\
 			tf_version=\$\$(find \$(LOCAL_PATH)/../build/\$\$config -name ${TF_A_BASENAME}*.${TF_A_SUFFIX} -exec basename {} \; | sed "s/\.${TF_A_SUFFIX}//") ; \\
 			# Copy binary file with explicit name \\
 			cp -f \$(LOCAL_PATH)/../build/\$\$config/\$\$tf_version.${TF_A_SUFFIX} \$(LOCAL_PATH)/../build/\$\$config/\$\$tf_version-\$\$config.${TF_A_SUFFIX} ; \\
 			if [ "\$(TF_A_ENABLE_DEBUG_WRAPPER)" = "1" ]; then \\
 				# Generate wrapper for debugging \\
 				stm32wrapper4dbg -s \$(LOCAL_PATH)/../build/\$\$config/\$\$tf_version.${TF_A_SUFFIX} \$(LOCAL_PATH)/../build/\$\$config/debug-\$\$tf_version-\$\$config.${TF_A_SUFFIX} ; \\
-			fi \\
+			fi ; \\
 		fi ; \\
 		# Copy elf files with explicit name \\
 		if [ "\$(ELF_DEBUG_ENABLE)" = "1" ] ; then \\
