@@ -1,0 +1,4006 @@
+From ba1e2d25f9d6e43e9aec9b95895b63ce3150f056 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@st.com>
+Date: Tue, 27 Oct 2020 11:48:55 +0100
+Subject: [PATCH 09/10] ARM-v2020.01-stm32mp-r2-MISC-DRIVERS
+
+---
+ cmd/cache.c                                   |    5 +
+ common/image-fdt.c                            |   38 +-
+ .../phy/phy-stm32-usbphyc.txt                 |    1 +
+ drivers/dfu/dfu_mtd.c                         |    4 +-
+ drivers/i2c/stm32f7_i2c.c                     |   74 +-
+ drivers/memory/Kconfig                        |    9 +
+ drivers/memory/Makefile                       |    1 +
+ drivers/memory/stm32-fmc2-ebi.c               | 1056 +++++++++++++++++
+ drivers/mtd/nand/raw/stm32_fmc2_nand.c        |  499 ++++----
+ drivers/net/dwc_eth_qos.c                     |   18 +-
+ drivers/phy/phy-stm32-usbphyc.c               |   33 +-
+ drivers/ram/stm32mp1/stm32mp1_tests.c         |   69 +-
+ drivers/remoteproc/Kconfig                    |    8 +
+ drivers/remoteproc/Makefile                   |    1 +
+ drivers/remoteproc/rproc-optee.c              |  218 ++++
+ drivers/remoteproc/stm32_copro.c              |  235 ++--
+ drivers/reset/stm32-reset.c                   |   17 +-
+ drivers/usb/gadget/dwc2_udc_otg.c             |   59 +-
+ drivers/usb/gadget/dwc2_udc_otg_regs.h        |    2 +
+ include/configs/grpeach.h                     |    1 -
+ include/configs/pxa-common.h                  |    2 -
+ include/configs/stm32mp1.h                    |   12 +-
+ include/dt-bindings/reset/stm32mp1-resets.h   |    2 +
+ include/fdtdec.h                              |    5 +-
+ include/lmb.h                                 |   21 +
+ include/rproc_optee.h                         |  127 ++
+ include/usb/dwc2_udc.h                        |    1 +
+ lib/fdtdec.c                                  |   10 +-
+ lib/lmb.c                                     |   62 +-
+ lib/optee/optee.c                             |    9 +-
+ scripts/config_whitelist.txt                  |    1 -
+ 31 files changed, 2147 insertions(+), 453 deletions(-)
+ create mode 100644 drivers/memory/stm32-fmc2-ebi.c
+ create mode 100644 drivers/remoteproc/rproc-optee.c
+ create mode 100644 include/rproc_optee.h
+
+diff --git a/cmd/cache.c b/cmd/cache.c
+index 27dcec0931..7678615dd8 100644
+--- a/cmd/cache.c
++++ b/cmd/cache.c
+@@ -20,6 +20,10 @@ void __weak invalidate_icache_all(void)
+ 	puts("No arch specific invalidate_icache_all available!\n");
+ }
+ 
++__weak void noncached_set_region(void)
++{
++}
++
+ static int do_icache(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+ {
+ 	switch (argc) {
+@@ -64,6 +68,7 @@ static int do_dcache(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+ 			break;
+ 		case 1:
+ 			dcache_enable();
++			noncached_set_region();
+ 			break;
+ 		case 2:
+ 			flush_dcache_all();
+diff --git a/common/image-fdt.c b/common/image-fdt.c
+index 48388488d9..8b861c70a2 100644
+--- a/common/image-fdt.c
++++ b/common/image-fdt.c
+@@ -71,18 +71,20 @@ static const image_header_t *image_get_fdt(ulong fdt_addr)
+ #endif
+ 
+ static void boot_fdt_reserve_region(struct lmb *lmb, uint64_t addr,
+-				    uint64_t size)
++				    uint64_t size, enum lmb_flags flags)
+ {
+ 	long ret;
+ 
+-	ret = lmb_reserve(lmb, addr, size);
++	ret = lmb_reserve_flags(lmb, addr, size, flags);
+ 	if (ret >= 0) {
+-		debug("   reserving fdt memory region: addr=%llx size=%llx\n",
+-		      (unsigned long long)addr, (unsigned long long)size);
++		debug("   reserving fdt memory region: addr=%llx size=%llx flags=%x\n",
++		      (unsigned long long)addr,
++		      (unsigned long long)size, flags);
+ 	} else {
+ 		puts("ERROR: reserving fdt memory region failed ");
+-		printf("(addr=%llx size=%llx)\n",
+-		       (unsigned long long)addr, (unsigned long long)size);
++		printf("(addr=%llx size=%llx flags=%x)\n",
++		       (unsigned long long)addr,
++		       (unsigned long long)size, flags);
+ 	}
+ }
+ 
+@@ -102,6 +104,7 @@ void boot_fdt_add_mem_rsv_regions(struct lmb *lmb, void *fdt_blob)
+ 	int i, total, ret;
+ 	int nodeoffset, subnode;
+ 	struct fdt_resource res;
++	enum lmb_flags flags;
+ 
+ 	if (fdt_check_header(fdt_blob) != 0)
+ 		return;
+@@ -111,7 +114,7 @@ void boot_fdt_add_mem_rsv_regions(struct lmb *lmb, void *fdt_blob)
+ 	for (i = 0; i < total; i++) {
+ 		if (fdt_get_mem_rsv(fdt_blob, i, &addr, &size) != 0)
+ 			continue;
+-		boot_fdt_reserve_region(lmb, addr, size);
++		boot_fdt_reserve_region(lmb, addr, size, LMB_NONE);
+ 	}
+ 
+ 	/* process reserved-memory */
+@@ -123,9 +126,13 @@ void boot_fdt_add_mem_rsv_regions(struct lmb *lmb, void *fdt_blob)
+ 			ret = fdt_get_resource(fdt_blob, subnode, "reg", 0,
+ 					       &res);
+ 			if (!ret) {
++				flags = LMB_NONE;
++				if (fdtdec_get_bool(fdt_blob, subnode,
++						    "no-map"))
++					flags = LMB_NOMAP;
+ 				addr = res.start;
+ 				size = res.end - res.start + 1;
+-				boot_fdt_reserve_region(lmb, addr, size);
++				boot_fdt_reserve_region(lmb, addr, size, flags);
+ 			}
+ 
+ 			subnode = fdt_next_subnode(fdt_blob, subnode);
+@@ -543,6 +550,14 @@ int image_setup_libfdt(bootm_headers_t *images, void *blob,
+ 		printf("ERROR: arch-specific fdt fixup failed\n");
+ 		goto err;
+ 	}
++
++	fdt_ret = optee_copy_fdt_nodes(gd->fdt_blob, blob);
++	if (fdt_ret) {
++		printf("ERROR: transfer of optee nodes to new fdt failed: %s\n",
++		       fdt_strerror(fdt_ret));
++		goto err;
++	}
++
+ 	/* Update ethernet nodes */
+ 	fdt_fixup_ethernet(blob);
+ 	if (IMAGE_OF_BOARD_SETUP) {
+@@ -562,13 +577,6 @@ int image_setup_libfdt(bootm_headers_t *images, void *blob,
+ 		}
+ 	}
+ 
+-	fdt_ret = optee_copy_fdt_nodes(gd->fdt_blob, blob);
+-	if (fdt_ret) {
+-		printf("ERROR: transfer of optee nodes to new fdt failed: %s\n",
+-		       fdt_strerror(fdt_ret));
+-		goto err;
+-	}
+-
+ 	/* Delete the old LMB reservation */
+ 	if (lmb)
+ 		lmb_free(lmb, (phys_addr_t)(u32)(uintptr_t)blob,
+diff --git a/doc/device-tree-bindings/phy/phy-stm32-usbphyc.txt b/doc/device-tree-bindings/phy/phy-stm32-usbphyc.txt
+index 156229b2ed..3953489e3a 100644
+--- a/doc/device-tree-bindings/phy/phy-stm32-usbphyc.txt
++++ b/doc/device-tree-bindings/phy/phy-stm32-usbphyc.txt
+@@ -48,6 +48,7 @@ Required properties:
+ 
+ Optional properties:
+ - st,phy-tuning : phandle to the usb phy tuning node, see Phy tuning node below
++- vbus-supply: phandle to the regulator providing 5V vbus to the USB connector
+ 
+ Phy tuning node
+ ===============
+diff --git a/drivers/dfu/dfu_mtd.c b/drivers/dfu/dfu_mtd.c
+index 9528a7b4ee..7bc8f8a603 100644
+--- a/drivers/dfu/dfu_mtd.c
++++ b/drivers/dfu/dfu_mtd.c
+@@ -189,7 +189,7 @@ static int dfu_flush_medium_mtd(struct dfu_entity *dfu)
+ 	int ret;
+ 
+ 	/* in case of ubi partition, erase rest of the partition */
+-	if (dfu->data.nand.ubi) {
++	if (dfu->data.mtd.ubi) {
+ 		struct erase_info erase_op = {};
+ 
+ 		erase_op.mtd = dfu->data.mtd.info;
+@@ -227,7 +227,7 @@ static unsigned int dfu_polltimeout_mtd(struct dfu_entity *dfu)
+ 	 * ubi partition, as sectors which are not used need
+ 	 * to be erased
+ 	 */
+-	if (dfu->data.nand.ubi)
++	if (dfu->data.mtd.ubi)
+ 		return DFU_MANIFEST_POLL_TIMEOUT;
+ 
+ 	return DFU_DEFAULT_POLL_TIMEOUT;
+diff --git a/drivers/i2c/stm32f7_i2c.c b/drivers/i2c/stm32f7_i2c.c
+index 7321f80017..d68b7f4807 100644
+--- a/drivers/i2c/stm32f7_i2c.c
++++ b/drivers/i2c/stm32f7_i2c.c
+@@ -7,7 +7,9 @@
+ #include <clk.h>
+ #include <dm.h>
+ #include <i2c.h>
++#include <regmap.h>
+ #include <reset.h>
++#include <syscon.h>
+ 
+ #include <dm/device.h>
+ #include <linux/err.h>
+@@ -151,6 +153,7 @@ struct stm32_i2c_spec {
+  * @fall_time: Fall time (ns)
+  * @dnf: Digital filter coefficient (0-16)
+  * @analog_filter: Analog filter delay (On/Off)
++ * @fmp_clr_offset: Fast Mode Plus clear register offset from set register
+  */
+ struct stm32_i2c_setup {
+ 	u32 speed_freq;
+@@ -159,6 +162,7 @@ struct stm32_i2c_setup {
+ 	u32 fall_time;
+ 	u8 dnf;
+ 	bool analog_filter;
++	u32 fmp_clr_offset;
+ };
+ 
+ /**
+@@ -178,11 +182,26 @@ struct stm32_i2c_timings {
+ 	u8 scll;
+ };
+ 
++/**
++ * struct stm32_i2c_priv - private data of the controller
++ * @regs: I2C registers address
++ * @clk: hw i2c clock
++ * @setup: I2C timing setup parameters
++ * @speed: I2C clock frequency of the controller. Standard, Fast or Fast+
++ * @regmap: holds SYSCFG phandle for Fast Mode Plus bit
++ * @regmap_sreg: register address for setting Fast Mode Plus bits
++ * @regmap_creg: register address for clearing Fast Mode Plus bits
++ * @regmap_mask: mask for Fast Mode Plus bits
++ */
+ struct stm32_i2c_priv {
+ 	struct stm32_i2c_regs *regs;
+ 	struct clk clk;
+ 	struct stm32_i2c_setup *setup;
+ 	u32 speed;
++	struct regmap *regmap;
++	u32 regmap_sreg;
++	u32 regmap_creg;
++	u32 regmap_mask;
+ };
+ 
+ static const struct stm32_i2c_spec i2c_specs[] = {
+@@ -234,6 +253,14 @@ static const struct stm32_i2c_setup stm32f7_setup = {
+ 	.analog_filter = STM32_I2C_ANALOG_FILTER_ENABLE,
+ };
+ 
++static const struct stm32_i2c_setup stm32mp15_setup = {
++	.rise_time = STM32_I2C_RISE_TIME_DEFAULT,
++	.fall_time = STM32_I2C_FALL_TIME_DEFAULT,
++	.dnf = STM32_I2C_DNF_DEFAULT,
++	.analog_filter = STM32_I2C_ANALOG_FILTER_ENABLE,
++	.fmp_clr_offset = 0x40,
++};
++
+ static int stm32_i2c_check_device_busy(struct stm32_i2c_priv *i2c_priv)
+ {
+ 	struct stm32_i2c_regs *regs = i2c_priv->regs;
+@@ -758,6 +785,29 @@ static int stm32_i2c_setup_timing(struct stm32_i2c_priv *i2c_priv,
+ 	return 0;
+ }
+ 
++static int stm32_i2c_write_fm_plus_bits(struct stm32_i2c_priv *i2c_priv)
++{
++	int ret;
++	bool enable = i2c_priv->speed > I2C_SPEED_FAST_RATE;
++
++	/* Optional */
++	if (IS_ERR_OR_NULL(i2c_priv->regmap))
++		return 0;
++
++	if (i2c_priv->regmap_sreg == i2c_priv->regmap_creg)
++		ret = regmap_update_bits(i2c_priv->regmap,
++					 i2c_priv->regmap_sreg,
++					 i2c_priv->regmap_mask,
++					 enable ? i2c_priv->regmap_mask : 0);
++	else
++		ret = regmap_write(i2c_priv->regmap,
++				   enable ? i2c_priv->regmap_sreg :
++					    i2c_priv->regmap_creg,
++				   i2c_priv->regmap_mask);
++
++	return ret;
++}
++
+ static int stm32_i2c_hw_config(struct stm32_i2c_priv *i2c_priv)
+ {
+ 	struct stm32_i2c_regs *regs = i2c_priv->regs;
+@@ -772,6 +822,11 @@ static int stm32_i2c_hw_config(struct stm32_i2c_priv *i2c_priv)
+ 	/* Disable I2C */
+ 	clrbits_le32(&regs->cr1, STM32_I2C_CR1_PE);
+ 
++	/* Setup Fast mode plus if necessary */
++	ret = stm32_i2c_write_fm_plus_bits(i2c_priv);
++	if (ret)
++		return ret;
++
+ 	/* Timing settings */
+ 	timing |= STM32_I2C_TIMINGR_PRESC(t.presc);
+ 	timing |= STM32_I2C_TIMINGR_SCLDEL(t.scldel);
+@@ -847,6 +902,7 @@ static int stm32_ofdata_to_platdata(struct udevice *dev)
+ {
+ 	struct stm32_i2c_priv *i2c_priv = dev_get_priv(dev);
+ 	u32 rise_time, fall_time;
++	int ret;
+ 
+ 	i2c_priv->setup = (struct stm32_i2c_setup *)dev_get_driver_data(dev);
+ 	if (!i2c_priv->setup)
+@@ -860,6 +916,22 @@ static int stm32_ofdata_to_platdata(struct udevice *dev)
+ 	if (fall_time)
+ 		i2c_priv->setup->fall_time = fall_time;
+ 
++	/* Optional */
++	i2c_priv->regmap = syscon_regmap_lookup_by_phandle(dev,
++							   "st,syscfg-fmp");
++	if (!IS_ERR(i2c_priv->regmap)) {
++		u32 fmp[3];
++
++		ret = dev_read_u32_array(dev, "st,syscfg-fmp", fmp, 3);
++		if (ret)
++			return ret;
++
++		i2c_priv->regmap_sreg = fmp[1];
++		i2c_priv->regmap_creg = fmp[1] +
++					i2c_priv->setup->fmp_clr_offset;
++		i2c_priv->regmap_mask = fmp[2];
++	}
++
+ 	return 0;
+ }
+ 
+@@ -870,7 +942,7 @@ static const struct dm_i2c_ops stm32_i2c_ops = {
+ 
+ static const struct udevice_id stm32_i2c_of_match[] = {
+ 	{ .compatible = "st,stm32f7-i2c", .data = (ulong)&stm32f7_setup },
+-	{ .compatible = "st,stm32mp15-i2c", .data = (ulong)&stm32f7_setup },
++	{ .compatible = "st,stm32mp15-i2c", .data = (ulong)&stm32mp15_setup },
+ 	{}
+ };
+ 
+diff --git a/drivers/memory/Kconfig b/drivers/memory/Kconfig
+index 4fbb5aa217..7271892763 100644
+--- a/drivers/memory/Kconfig
++++ b/drivers/memory/Kconfig
+@@ -4,6 +4,15 @@
+ 
+ menu "Memory Controller drivers"
+ 
++config STM32_FMC2_EBI
++	bool "Support for FMC2 External Bus Interface on STM32MP SoCs"
++	depends on ARCH_STM32MP
++	help
++	  Select this option to enable the STM32 FMC2 External Bus Interface
++	  controller. This driver configures the transactions with external
++	  devices (like SRAM, ethernet adapters, FPGAs, LCD displays, ...) on
++	  SOCs containing the FMC2 External Bus Interface.
++
+ config TI_AEMIF
+ 	tristate "Texas Instruments AEMIF driver"
+ 	depends on ARCH_KEYSTONE
+diff --git a/drivers/memory/Makefile b/drivers/memory/Makefile
+index 238add0879..fec52efb60 100644
+--- a/drivers/memory/Makefile
++++ b/drivers/memory/Makefile
+@@ -1,2 +1,3 @@
+ 
++obj-$(CONFIG_STM32_FMC2_EBI) += stm32-fmc2-ebi.o
+ obj-$(CONFIG_TI_AEMIF) += ti-aemif.o
+diff --git a/drivers/memory/stm32-fmc2-ebi.c b/drivers/memory/stm32-fmc2-ebi.c
+new file mode 100644
+index 0000000000..d887a1e09d
+--- /dev/null
++++ b/drivers/memory/stm32-fmc2-ebi.c
+@@ -0,0 +1,1056 @@
++// SPDX-License-Identifier: GPL-2.0+ OR BSD-3-Clause
++/*
++ * Copyright (C) STMicroelectronics 2020
++ */
++
++#include <common.h>
++#include <clk.h>
++#include <dm.h>
++#include <reset.h>
++#include <linux/bitfield.h>
++#include <linux/err.h>
++#include <linux/iopoll.h>
++#include <linux/ioport.h>
++
++/* FMC2 Controller Registers */
++#define FMC2_BCR1			0x0
++#define FMC2_BTR1			0x4
++#define FMC2_BCR(x)			((x) * 0x8 + FMC2_BCR1)
++#define FMC2_BTR(x)			((x) * 0x8 + FMC2_BTR1)
++#define FMC2_PCSCNTR			0x20
++#define FMC2_BWTR1			0x104
++#define FMC2_BWTR(x)			((x) * 0x8 + FMC2_BWTR1)
++
++/* Register: FMC2_BCR1 */
++#define FMC2_BCR1_CCLKEN		BIT(20)
++#define FMC2_BCR1_FMC2EN		BIT(31)
++
++/* Register: FMC2_BCRx */
++#define FMC2_BCR_MBKEN			BIT(0)
++#define FMC2_BCR_MUXEN			BIT(1)
++#define FMC2_BCR_MTYP			GENMASK(3, 2)
++#define FMC2_BCR_MWID			GENMASK(5, 4)
++#define FMC2_BCR_FACCEN			BIT(6)
++#define FMC2_BCR_BURSTEN		BIT(8)
++#define FMC2_BCR_WAITPOL		BIT(9)
++#define FMC2_BCR_WAITCFG		BIT(11)
++#define FMC2_BCR_WREN			BIT(12)
++#define FMC2_BCR_WAITEN			BIT(13)
++#define FMC2_BCR_EXTMOD			BIT(14)
++#define FMC2_BCR_ASYNCWAIT		BIT(15)
++#define FMC2_BCR_CPSIZE			GENMASK(18, 16)
++#define FMC2_BCR_CBURSTRW		BIT(19)
++#define FMC2_BCR_NBLSET			GENMASK(23, 22)
++
++/* Register: FMC2_BTRx/FMC2_BWTRx */
++#define FMC2_BXTR_ADDSET		GENMASK(3, 0)
++#define FMC2_BXTR_ADDHLD		GENMASK(7, 4)
++#define FMC2_BXTR_DATAST		GENMASK(15, 8)
++#define FMC2_BXTR_BUSTURN		GENMASK(19, 16)
++#define FMC2_BTR_CLKDIV			GENMASK(23, 20)
++#define FMC2_BTR_DATLAT			GENMASK(27, 24)
++#define FMC2_BXTR_ACCMOD		GENMASK(29, 28)
++#define FMC2_BXTR_DATAHLD		GENMASK(31, 30)
++
++/* Register: FMC2_PCSCNTR */
++#define FMC2_PCSCNTR_CSCOUNT		GENMASK(15, 0)
++#define FMC2_PCSCNTR_CNTBEN(x)		BIT((x) + 16)
++
++#define FMC2_MAX_EBI_CE			4
++#define FMC2_MAX_BANKS			5
++
++#define FMC2_BCR_CPSIZE_0		0x0
++#define FMC2_BCR_CPSIZE_128		0x1
++#define FMC2_BCR_CPSIZE_256		0x2
++#define FMC2_BCR_CPSIZE_512		0x3
++#define FMC2_BCR_CPSIZE_1024		0x4
++
++#define FMC2_BCR_MWID_8			0x0
++#define FMC2_BCR_MWID_16		0x1
++
++#define FMC2_BCR_MTYP_SRAM		0x0
++#define FMC2_BCR_MTYP_PSRAM		0x1
++#define FMC2_BCR_MTYP_NOR		0x2
++
++#define FMC2_BXTR_EXTMOD_A		0x0
++#define FMC2_BXTR_EXTMOD_B		0x1
++#define FMC2_BXTR_EXTMOD_C		0x2
++#define FMC2_BXTR_EXTMOD_D		0x3
++
++#define FMC2_BCR_NBLSET_MAX		0x3
++#define FMC2_BXTR_ADDSET_MAX		0xf
++#define FMC2_BXTR_ADDHLD_MAX		0xf
++#define FMC2_BXTR_DATAST_MAX		0xff
++#define FMC2_BXTR_BUSTURN_MAX		0xf
++#define FMC2_BXTR_DATAHLD_MAX		0x3
++#define FMC2_BTR_CLKDIV_MAX		0xf
++#define FMC2_BTR_DATLAT_MAX		0xf
++#define FMC2_PCSCNTR_CSCOUNT_MAX	0xff
++
++#define FMC2_NSEC_PER_SEC		1000000000L
++
++enum stm32_fmc2_ebi_bank {
++	FMC2_EBI1 = 0,
++	FMC2_EBI2,
++	FMC2_EBI3,
++	FMC2_EBI4,
++	FMC2_NAND
++};
++
++enum stm32_fmc2_ebi_register_type {
++	FMC2_REG_BCR = 1,
++	FMC2_REG_BTR,
++	FMC2_REG_BWTR,
++	FMC2_REG_PCSCNTR
++};
++
++enum stm32_fmc2_ebi_transaction_type {
++	FMC2_ASYNC_MODE_1_SRAM = 0,
++	FMC2_ASYNC_MODE_1_PSRAM,
++	FMC2_ASYNC_MODE_A_SRAM,
++	FMC2_ASYNC_MODE_A_PSRAM,
++	FMC2_ASYNC_MODE_2_NOR,
++	FMC2_ASYNC_MODE_B_NOR,
++	FMC2_ASYNC_MODE_C_NOR,
++	FMC2_ASYNC_MODE_D_NOR,
++	FMC2_SYNC_READ_SYNC_WRITE_PSRAM,
++	FMC2_SYNC_READ_ASYNC_WRITE_PSRAM,
++	FMC2_SYNC_READ_SYNC_WRITE_NOR,
++	FMC2_SYNC_READ_ASYNC_WRITE_NOR
++};
++
++enum stm32_fmc2_ebi_buswidth {
++	FMC2_BUSWIDTH_8 = 8,
++	FMC2_BUSWIDTH_16 = 16
++};
++
++enum stm32_fmc2_ebi_cpsize {
++	FMC2_CPSIZE_0 = 0,
++	FMC2_CPSIZE_128 = 128,
++	FMC2_CPSIZE_256 = 256,
++	FMC2_CPSIZE_512 = 512,
++	FMC2_CPSIZE_1024 = 1024
++};
++
++struct stm32_fmc2_ebi {
++	struct clk clk;
++	fdt_addr_t io_base;
++	u8 bank_assigned;
++};
++
++/*
++ * struct stm32_fmc2_prop - STM32 FMC2 EBI property
++ * @name: the device tree binding name of the property
++ * @bprop: indicate that it is a boolean property
++ * @mprop: indicate that it is a mandatory property
++ * @reg_type: the register that have to be modified
++ * @reg_mask: the bit that have to be modified in the selected register
++ *            in case of it is a boolean property
++ * @reset_val: the default value that have to be set in case the property
++ *             has not been defined in the device tree
++ * @check: this callback ckecks that the property is compliant with the
++ *         transaction type selected
++ * @calculate: this callback is called to calculate for exemple a timing
++ *             set in nanoseconds in the device tree in clock cycles or in
++ *             clock period
++ * @set: this callback applies the values in the registers
++ */
++struct stm32_fmc2_prop {
++	const char *name;
++	bool bprop;
++	bool mprop;
++	int reg_type;
++	u32 reg_mask;
++	u32 reset_val;
++	int (*check)(struct stm32_fmc2_ebi *ebi,
++		     const struct stm32_fmc2_prop *prop, int cs);
++	u32 (*calculate)(struct stm32_fmc2_ebi *ebi, int cs, u32 setup);
++	int (*set)(struct stm32_fmc2_ebi *ebi,
++		   const struct stm32_fmc2_prop *prop,
++		   int cs, u32 setup);
++};
++
++static int stm32_fmc2_ebi_check_mux(struct stm32_fmc2_ebi *ebi,
++				    const struct stm32_fmc2_prop *prop,
++				    int cs)
++{
++	u32 bcr = readl(ebi->io_base + FMC2_BCR(cs));
++
++	if (bcr & FMC2_BCR_MTYP)
++		return 0;
++
++	return -EINVAL;
++}
++
++static int stm32_fmc2_ebi_check_waitcfg(struct stm32_fmc2_ebi *ebi,
++					const struct stm32_fmc2_prop *prop,
++					int cs)
++{
++	u32 bcr = readl(ebi->io_base + FMC2_BCR(cs));
++	u32 val = FIELD_PREP(FMC2_BCR_MTYP, FMC2_BCR_MTYP_NOR);
++
++	if ((bcr & FMC2_BCR_MTYP) == val && bcr & FMC2_BCR_BURSTEN)
++		return 0;
++
++	return -EINVAL;
++}
++
++static int stm32_fmc2_ebi_check_sync_trans(struct stm32_fmc2_ebi *ebi,
++					   const struct stm32_fmc2_prop *prop,
++					   int cs)
++{
++	u32 bcr = readl(ebi->io_base + FMC2_BCR(cs));
++
++	if (bcr & FMC2_BCR_BURSTEN)
++		return 0;
++
++	return -EINVAL;
++}
++
++static int stm32_fmc2_ebi_check_async_trans(struct stm32_fmc2_ebi *ebi,
++					    const struct stm32_fmc2_prop *prop,
++					    int cs)
++{
++	u32 bcr = readl(ebi->io_base + FMC2_BCR(cs));
++
++	if (!(bcr & FMC2_BCR_BURSTEN) || !(bcr & FMC2_BCR_CBURSTRW))
++		return 0;
++
++	return -EINVAL;
++}
++
++static int stm32_fmc2_ebi_check_cpsize(struct stm32_fmc2_ebi *ebi,
++				       const struct stm32_fmc2_prop *prop,
++				       int cs)
++{
++	u32 bcr = readl(ebi->io_base + FMC2_BCR(cs));
++	u32 val = FIELD_PREP(FMC2_BCR_MTYP, FMC2_BCR_MTYP_PSRAM);
++
++	if ((bcr & FMC2_BCR_MTYP) == val && bcr & FMC2_BCR_BURSTEN)
++		return 0;
++
++	return -EINVAL;
++}
++
++static int stm32_fmc2_ebi_check_address_hold(struct stm32_fmc2_ebi *ebi,
++					     const struct stm32_fmc2_prop *prop,
++					     int cs)
++{
++	u32 bcr = readl(ebi->io_base + FMC2_BCR(cs));
++	u32 bxtr = prop->reg_type == FMC2_REG_BWTR ?
++		   readl(ebi->io_base + FMC2_BWTR(cs)) :
++		   readl(ebi->io_base + FMC2_BTR(cs));
++	u32 val = FIELD_PREP(FMC2_BXTR_ACCMOD, FMC2_BXTR_EXTMOD_D);
++
++	if ((!(bcr & FMC2_BCR_BURSTEN) || !(bcr & FMC2_BCR_CBURSTRW)) &&
++	    ((bxtr & FMC2_BXTR_ACCMOD) == val || bcr & FMC2_BCR_MUXEN))
++		return 0;
++
++	return -EINVAL;
++}
++
++static int stm32_fmc2_ebi_check_clk_period(struct stm32_fmc2_ebi *ebi,
++					   const struct stm32_fmc2_prop *prop,
++					   int cs)
++{
++	u32 bcr = readl(ebi->io_base + FMC2_BCR(cs));
++	u32 bcr1 = cs ? readl(ebi->io_base + FMC2_BCR1) : bcr;
++
++	if (bcr & FMC2_BCR_BURSTEN && (!cs || !(bcr1 & FMC2_BCR1_CCLKEN)))
++		return 0;
++
++	return -EINVAL;
++}
++
++static int stm32_fmc2_ebi_check_cclk(struct stm32_fmc2_ebi *ebi,
++				     const struct stm32_fmc2_prop *prop,
++				     int cs)
++{
++	if (cs)
++		return -EINVAL;
++
++	return stm32_fmc2_ebi_check_sync_trans(ebi, prop, cs);
++}
++
++static u32 stm32_fmc2_ebi_ns_to_clock_cycles(struct stm32_fmc2_ebi *ebi,
++					     int cs, u32 setup)
++{
++	unsigned long hclk = clk_get_rate(&ebi->clk);
++	unsigned long hclkp = FMC2_NSEC_PER_SEC / (hclk / 1000);
++
++	return DIV_ROUND_UP(setup * 1000, hclkp);
++}
++
++static u32 stm32_fmc2_ebi_ns_to_clk_period(struct stm32_fmc2_ebi *ebi,
++					   int cs, u32 setup)
++{
++	u32 nb_clk_cycles = stm32_fmc2_ebi_ns_to_clock_cycles(ebi, cs, setup);
++	u32 bcr = readl(ebi->io_base + FMC2_BCR1);
++	u32 btr = bcr & FMC2_BCR1_CCLKEN || !cs ?
++		  readl(ebi->io_base + FMC2_BTR1) :
++		  readl(ebi->io_base + FMC2_BTR(cs));
++	u32 clk_period = FIELD_GET(FMC2_BTR_CLKDIV, btr) + 1;
++
++	return DIV_ROUND_UP(nb_clk_cycles, clk_period);
++}
++
++static int stm32_fmc2_ebi_get_reg(int reg_type, int cs, u32 *reg)
++{
++	switch (reg_type) {
++	case FMC2_REG_BCR:
++		*reg = FMC2_BCR(cs);
++		break;
++	case FMC2_REG_BTR:
++		*reg = FMC2_BTR(cs);
++		break;
++	case FMC2_REG_BWTR:
++		*reg = FMC2_BWTR(cs);
++		break;
++	case FMC2_REG_PCSCNTR:
++		*reg = FMC2_PCSCNTR;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int stm32_fmc2_ebi_set_bit_field(struct stm32_fmc2_ebi *ebi,
++					const struct stm32_fmc2_prop *prop,
++					int cs, u32 setup)
++{
++	u32 reg;
++	int ret;
++
++	ret = stm32_fmc2_ebi_get_reg(prop->reg_type, cs, &reg);
++	if (ret)
++		return ret;
++
++	clrsetbits_le32(ebi->io_base + reg, prop->reg_mask,
++			setup ? prop->reg_mask : 0);
++
++	return 0;
++}
++
++static int stm32_fmc2_ebi_set_trans_type(struct stm32_fmc2_ebi *ebi,
++					 const struct stm32_fmc2_prop *prop,
++					 int cs, u32 setup)
++{
++	u32 bcr_mask, bcr = FMC2_BCR_WREN;
++	u32 btr_mask, btr = 0;
++	u32 bwtr_mask, bwtr = 0;
++
++	bwtr_mask = FMC2_BXTR_ACCMOD;
++	btr_mask = FMC2_BXTR_ACCMOD;
++	bcr_mask = FMC2_BCR_MUXEN | FMC2_BCR_MTYP | FMC2_BCR_FACCEN |
++		   FMC2_BCR_WREN | FMC2_BCR_WAITEN | FMC2_BCR_BURSTEN |
++		   FMC2_BCR_EXTMOD | FMC2_BCR_CBURSTRW;
++
++	switch (setup) {
++	case FMC2_ASYNC_MODE_1_SRAM:
++		bcr |= FIELD_PREP(FMC2_BCR_MTYP, FMC2_BCR_MTYP_SRAM);
++		/*
++		 * MUXEN = 0, MTYP = 0, FACCEN = 0, BURSTEN = 0, WAITEN = 0,
++		 * WREN = 1, EXTMOD = 0, CBURSTRW = 0, ACCMOD = 0
++		 */
++		break;
++	case FMC2_ASYNC_MODE_1_PSRAM:
++		/*
++		 * MUXEN = 0, MTYP = 1, FACCEN = 0, BURSTEN = 0, WAITEN = 0,
++		 * WREN = 1, EXTMOD = 0, CBURSTRW = 0, ACCMOD = 0
++		 */
++		bcr |= FIELD_PREP(FMC2_BCR_MTYP, FMC2_BCR_MTYP_PSRAM);
++		break;
++	case FMC2_ASYNC_MODE_A_SRAM:
++		/*
++		 * MUXEN = 0, MTYP = 0, FACCEN = 0, BURSTEN = 0, WAITEN = 0,
++		 * WREN = 1, EXTMOD = 1, CBURSTRW = 0, ACCMOD = 0
++		 */
++		bcr |= FIELD_PREP(FMC2_BCR_MTYP, FMC2_BCR_MTYP_SRAM);
++		bcr |= FMC2_BCR_EXTMOD;
++		btr |= FIELD_PREP(FMC2_BXTR_ACCMOD, FMC2_BXTR_EXTMOD_A);
++		bwtr |= FIELD_PREP(FMC2_BXTR_ACCMOD, FMC2_BXTR_EXTMOD_A);
++		break;
++	case FMC2_ASYNC_MODE_A_PSRAM:
++		/*
++		 * MUXEN = 0, MTYP = 1, FACCEN = 0, BURSTEN = 0, WAITEN = 0,
++		 * WREN = 1, EXTMOD = 1, CBURSTRW = 0, ACCMOD = 0
++		 */
++		bcr |= FIELD_PREP(FMC2_BCR_MTYP, FMC2_BCR_MTYP_PSRAM);
++		bcr |= FMC2_BCR_EXTMOD;
++		btr |= FIELD_PREP(FMC2_BXTR_ACCMOD, FMC2_BXTR_EXTMOD_A);
++		bwtr |= FIELD_PREP(FMC2_BXTR_ACCMOD, FMC2_BXTR_EXTMOD_A);
++		break;
++	case FMC2_ASYNC_MODE_2_NOR:
++		/*
++		 * MUXEN = 0, MTYP = 2, FACCEN = 1, BURSTEN = 0, WAITEN = 0,
++		 * WREN = 1, EXTMOD = 0, CBURSTRW = 0, ACCMOD = 0
++		 */
++		bcr |= FIELD_PREP(FMC2_BCR_MTYP, FMC2_BCR_MTYP_NOR);
++		bcr |= FMC2_BCR_FACCEN;
++		break;
++	case FMC2_ASYNC_MODE_B_NOR:
++		/*
++		 * MUXEN = 0, MTYP = 2, FACCEN = 1, BURSTEN = 0, WAITEN = 0,
++		 * WREN = 1, EXTMOD = 1, CBURSTRW = 0, ACCMOD = 1
++		 */
++		bcr |= FIELD_PREP(FMC2_BCR_MTYP, FMC2_BCR_MTYP_NOR);
++		bcr |= FMC2_BCR_FACCEN | FMC2_BCR_EXTMOD;
++		btr |= FIELD_PREP(FMC2_BXTR_ACCMOD, FMC2_BXTR_EXTMOD_B);
++		bwtr |= FIELD_PREP(FMC2_BXTR_ACCMOD, FMC2_BXTR_EXTMOD_B);
++		break;
++	case FMC2_ASYNC_MODE_C_NOR:
++		/*
++		 * MUXEN = 0, MTYP = 2, FACCEN = 1, BURSTEN = 0, WAITEN = 0,
++		 * WREN = 1, EXTMOD = 1, CBURSTRW = 0, ACCMOD = 2
++		 */
++		bcr |= FIELD_PREP(FMC2_BCR_MTYP, FMC2_BCR_MTYP_NOR);
++		bcr |= FMC2_BCR_FACCEN | FMC2_BCR_EXTMOD;
++		btr |= FIELD_PREP(FMC2_BXTR_ACCMOD, FMC2_BXTR_EXTMOD_C);
++		bwtr |= FIELD_PREP(FMC2_BXTR_ACCMOD, FMC2_BXTR_EXTMOD_C);
++		break;
++	case FMC2_ASYNC_MODE_D_NOR:
++		/*
++		 * MUXEN = 0, MTYP = 2, FACCEN = 1, BURSTEN = 0, WAITEN = 0,
++		 * WREN = 1, EXTMOD = 1, CBURSTRW = 0, ACCMOD = 3
++		 */
++		bcr |= FIELD_PREP(FMC2_BCR_MTYP, FMC2_BCR_MTYP_NOR);
++		bcr |= FMC2_BCR_FACCEN | FMC2_BCR_EXTMOD;
++		btr |= FIELD_PREP(FMC2_BXTR_ACCMOD, FMC2_BXTR_EXTMOD_D);
++		bwtr |= FIELD_PREP(FMC2_BXTR_ACCMOD, FMC2_BXTR_EXTMOD_D);
++		break;
++	case FMC2_SYNC_READ_SYNC_WRITE_PSRAM:
++		/*
++		 * MUXEN = 0, MTYP = 1, FACCEN = 0, BURSTEN = 1, WAITEN = 0,
++		 * WREN = 1, EXTMOD = 0, CBURSTRW = 1, ACCMOD = 0
++		 */
++		bcr |= FIELD_PREP(FMC2_BCR_MTYP, FMC2_BCR_MTYP_PSRAM);
++		bcr |= FMC2_BCR_BURSTEN | FMC2_BCR_CBURSTRW;
++		break;
++	case FMC2_SYNC_READ_ASYNC_WRITE_PSRAM:
++		/*
++		 * MUXEN = 0, MTYP = 1, FACCEN = 0, BURSTEN = 1, WAITEN = 0,
++		 * WREN = 1, EXTMOD = 0, CBURSTRW = 0, ACCMOD = 0
++		 */
++		bcr |= FIELD_PREP(FMC2_BCR_MTYP, FMC2_BCR_MTYP_PSRAM);
++		bcr |= FMC2_BCR_BURSTEN;
++		break;
++	case FMC2_SYNC_READ_SYNC_WRITE_NOR:
++		/*
++		 * MUXEN = 0, MTYP = 2, FACCEN = 1, BURSTEN = 1, WAITEN = 0,
++		 * WREN = 1, EXTMOD = 0, CBURSTRW = 1, ACCMOD = 0
++		 */
++		bcr |= FIELD_PREP(FMC2_BCR_MTYP, FMC2_BCR_MTYP_NOR);
++		bcr |= FMC2_BCR_FACCEN | FMC2_BCR_BURSTEN | FMC2_BCR_CBURSTRW;
++		break;
++	case FMC2_SYNC_READ_ASYNC_WRITE_NOR:
++		/*
++		 * MUXEN = 0, MTYP = 2, FACCEN = 1, BURSTEN = 1, WAITEN = 0,
++		 * WREN = 1, EXTMOD = 0, CBURSTRW = 0, ACCMOD = 0
++		 */
++		bcr |= FIELD_PREP(FMC2_BCR_MTYP, FMC2_BCR_MTYP_NOR);
++		bcr |= FMC2_BCR_FACCEN | FMC2_BCR_BURSTEN;
++		break;
++	default:
++		/* Type of transaction not supported */
++		return -EINVAL;
++	}
++
++	if (bcr & FMC2_BCR_EXTMOD)
++		clrsetbits_le32(ebi->io_base + FMC2_BWTR(cs),
++				bwtr_mask, bwtr);
++	clrsetbits_le32(ebi->io_base + FMC2_BTR(cs), btr_mask, btr);
++	clrsetbits_le32(ebi->io_base + FMC2_BCR(cs), bcr_mask, bcr);
++
++	return 0;
++}
++
++static int stm32_fmc2_ebi_set_buswidth(struct stm32_fmc2_ebi *ebi,
++				       const struct stm32_fmc2_prop *prop,
++				       int cs, u32 setup)
++{
++	u32 val;
++
++	switch (setup) {
++	case FMC2_BUSWIDTH_8:
++		val = FIELD_PREP(FMC2_BCR_MWID, FMC2_BCR_MWID_8);
++		break;
++	case FMC2_BUSWIDTH_16:
++		val = FIELD_PREP(FMC2_BCR_MWID, FMC2_BCR_MWID_16);
++		break;
++	default:
++		/* Buswidth not supported */
++		return -EINVAL;
++	}
++
++	clrsetbits_le32(ebi->io_base + FMC2_BCR(cs), FMC2_BCR_MWID, val);
++
++	return 0;
++}
++
++static int stm32_fmc2_ebi_set_cpsize(struct stm32_fmc2_ebi *ebi,
++				     const struct stm32_fmc2_prop *prop,
++				     int cs, u32 setup)
++{
++	u32 val;
++
++	switch (setup) {
++	case FMC2_CPSIZE_0:
++		val = FIELD_PREP(FMC2_BCR_CPSIZE, FMC2_BCR_CPSIZE_0);
++		break;
++	case FMC2_CPSIZE_128:
++		val = FIELD_PREP(FMC2_BCR_CPSIZE, FMC2_BCR_CPSIZE_128);
++		break;
++	case FMC2_CPSIZE_256:
++		val = FIELD_PREP(FMC2_BCR_CPSIZE, FMC2_BCR_CPSIZE_256);
++		break;
++	case FMC2_CPSIZE_512:
++		val = FIELD_PREP(FMC2_BCR_CPSIZE, FMC2_BCR_CPSIZE_512);
++		break;
++	case FMC2_CPSIZE_1024:
++		val = FIELD_PREP(FMC2_BCR_CPSIZE, FMC2_BCR_CPSIZE_1024);
++		break;
++	default:
++		/* Cpsize not supported */
++		return -EINVAL;
++	}
++
++	clrsetbits_le32(ebi->io_base + FMC2_BCR(cs), FMC2_BCR_CPSIZE, val);
++
++	return 0;
++}
++
++static int stm32_fmc2_ebi_set_bl_setup(struct stm32_fmc2_ebi *ebi,
++				       const struct stm32_fmc2_prop *prop,
++				       int cs, u32 setup)
++{
++	u32 val;
++
++	val = min_t(u32, setup, FMC2_BCR_NBLSET_MAX);
++	val = FIELD_PREP(FMC2_BCR_NBLSET, val);
++	clrsetbits_le32(ebi->io_base + FMC2_BCR(cs), FMC2_BCR_NBLSET, val);
++
++	return 0;
++}
++
++static int stm32_fmc2_ebi_set_address_setup(struct stm32_fmc2_ebi *ebi,
++					    const struct stm32_fmc2_prop *prop,
++					    int cs, u32 setup)
++{
++	u32 bcr = readl(ebi->io_base + FMC2_BCR(cs));
++	u32 bxtr = prop->reg_type == FMC2_REG_BWTR ?
++		   readl(ebi->io_base + FMC2_BWTR(cs)) :
++		   readl(ebi->io_base + FMC2_BTR(cs));
++	u32 reg, val = FIELD_PREP(FMC2_BXTR_ACCMOD, FMC2_BXTR_EXTMOD_D);
++	int ret;
++
++	ret = stm32_fmc2_ebi_get_reg(prop->reg_type, cs, &reg);
++	if (ret)
++		return ret;
++
++	if ((bxtr & FMC2_BXTR_ACCMOD) == val || bcr & FMC2_BCR_MUXEN)
++		val = clamp_val(setup, 1, FMC2_BXTR_ADDSET_MAX);
++	else
++		val = min_t(u32, setup, FMC2_BXTR_ADDSET_MAX);
++	val = FIELD_PREP(FMC2_BXTR_ADDSET, val);
++	clrsetbits_le32(ebi->io_base + reg, FMC2_BXTR_ADDSET, val);
++
++	return 0;
++}
++
++static int stm32_fmc2_ebi_set_address_hold(struct stm32_fmc2_ebi *ebi,
++					   const struct stm32_fmc2_prop *prop,
++					   int cs, u32 setup)
++{
++	u32 val, reg;
++	int ret;
++
++	ret = stm32_fmc2_ebi_get_reg(prop->reg_type, cs, &reg);
++	if (ret)
++		return ret;
++
++	val = clamp_val(setup, 1, FMC2_BXTR_ADDHLD_MAX);
++	val = FIELD_PREP(FMC2_BXTR_ADDHLD, val);
++	clrsetbits_le32(ebi->io_base + reg, FMC2_BXTR_ADDHLD, val);
++
++	return 0;
++}
++
++static int stm32_fmc2_ebi_set_data_setup(struct stm32_fmc2_ebi *ebi,
++					 const struct stm32_fmc2_prop *prop,
++					 int cs, u32 setup)
++{
++	u32 val, reg;
++	int ret;
++
++	ret = stm32_fmc2_ebi_get_reg(prop->reg_type, cs, &reg);
++	if (ret)
++		return ret;
++
++	val = clamp_val(setup, 1, FMC2_BXTR_DATAST_MAX);
++	val = FIELD_PREP(FMC2_BXTR_DATAST, val);
++	clrsetbits_le32(ebi->io_base + reg, FMC2_BXTR_DATAST, val);
++
++	return 0;
++}
++
++static int stm32_fmc2_ebi_set_bus_turnaround(struct stm32_fmc2_ebi *ebi,
++					     const struct stm32_fmc2_prop *prop,
++					     int cs, u32 setup)
++{
++	u32 val, reg;
++	int ret;
++
++	ret = stm32_fmc2_ebi_get_reg(prop->reg_type, cs, &reg);
++	if (ret)
++		return ret;
++
++	val = setup ? min_t(u32, setup - 1, FMC2_BXTR_BUSTURN_MAX) : 0;
++	val = FIELD_PREP(FMC2_BXTR_BUSTURN, val);
++	clrsetbits_le32(ebi->io_base + reg, FMC2_BXTR_BUSTURN, val);
++
++	return 0;
++}
++
++static int stm32_fmc2_ebi_set_data_hold(struct stm32_fmc2_ebi *ebi,
++					const struct stm32_fmc2_prop *prop,
++					int cs, u32 setup)
++{
++	u32 val, reg;
++	int ret;
++
++	ret = stm32_fmc2_ebi_get_reg(prop->reg_type, cs, &reg);
++	if (ret)
++		return ret;
++
++	if (prop->reg_type == FMC2_REG_BWTR)
++		val = setup ? min_t(u32, setup - 1, FMC2_BXTR_DATAHLD_MAX) : 0;
++	else
++		val = min_t(u32, setup, FMC2_BXTR_DATAHLD_MAX);
++	val = FIELD_PREP(FMC2_BXTR_DATAHLD, val);
++	clrsetbits_le32(ebi->io_base + reg, FMC2_BXTR_DATAHLD, val);
++
++	return 0;
++}
++
++static int stm32_fmc2_ebi_set_clk_period(struct stm32_fmc2_ebi *ebi,
++					 const struct stm32_fmc2_prop *prop,
++					 int cs, u32 setup)
++{
++	u32 val;
++
++	val = setup ? clamp_val(setup - 1, 1, FMC2_BTR_CLKDIV_MAX) : 1;
++	val = FIELD_PREP(FMC2_BTR_CLKDIV, val);
++	clrsetbits_le32(ebi->io_base + FMC2_BTR(cs), FMC2_BTR_CLKDIV, val);
++
++	return 0;
++}
++
++static int stm32_fmc2_ebi_set_data_latency(struct stm32_fmc2_ebi *ebi,
++					   const struct stm32_fmc2_prop *prop,
++					   int cs, u32 setup)
++{
++	u32 val;
++
++	val = setup > 1 ? min_t(u32, setup - 2, FMC2_BTR_DATLAT_MAX) : 0;
++	val = FIELD_PREP(FMC2_BTR_DATLAT, val);
++	clrsetbits_le32(ebi->io_base + FMC2_BTR(cs), FMC2_BTR_DATLAT, val);
++
++	return 0;
++}
++
++static int stm32_fmc2_ebi_set_max_low_pulse(struct stm32_fmc2_ebi *ebi,
++					    const struct stm32_fmc2_prop *prop,
++					    int cs, u32 setup)
++{
++	u32 old_val, new_val, pcscntr;
++
++	if (setup < 1)
++		return 0;
++
++	pcscntr = readl(ebi->io_base + FMC2_PCSCNTR);
++
++	/* Enable counter for the bank */
++	setbits_le32(ebi->io_base + FMC2_PCSCNTR, FMC2_PCSCNTR_CNTBEN(cs));
++
++	new_val = min_t(u32, setup - 1, FMC2_PCSCNTR_CSCOUNT_MAX);
++	old_val = FIELD_GET(FMC2_PCSCNTR_CSCOUNT, pcscntr);
++	if (old_val && new_val > old_val)
++		/* Keep current counter value */
++		return 0;
++
++	new_val = FIELD_PREP(FMC2_PCSCNTR_CSCOUNT, new_val);
++	clrsetbits_le32(ebi->io_base + FMC2_PCSCNTR,
++			FMC2_PCSCNTR_CSCOUNT, new_val);
++
++	return 0;
++}
++
++static const struct stm32_fmc2_prop stm32_fmc2_child_props[] = {
++	/* st,fmc2-ebi-cs-trans-type must be the first property */
++	{
++		.name = "st,fmc2-ebi-cs-transaction-type",
++		.mprop = true,
++		.set = stm32_fmc2_ebi_set_trans_type,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-cclk-enable",
++		.bprop = true,
++		.reg_type = FMC2_REG_BCR,
++		.reg_mask = FMC2_BCR1_CCLKEN,
++		.check = stm32_fmc2_ebi_check_cclk,
++		.set = stm32_fmc2_ebi_set_bit_field,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-mux-enable",
++		.bprop = true,
++		.reg_type = FMC2_REG_BCR,
++		.reg_mask = FMC2_BCR_MUXEN,
++		.check = stm32_fmc2_ebi_check_mux,
++		.set = stm32_fmc2_ebi_set_bit_field,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-buswidth",
++		.reset_val = FMC2_BUSWIDTH_16,
++		.set = stm32_fmc2_ebi_set_buswidth,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-waitpol-high",
++		.bprop = true,
++		.reg_type = FMC2_REG_BCR,
++		.reg_mask = FMC2_BCR_WAITPOL,
++		.set = stm32_fmc2_ebi_set_bit_field,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-waitcfg-enable",
++		.bprop = true,
++		.reg_type = FMC2_REG_BCR,
++		.reg_mask = FMC2_BCR_WAITCFG,
++		.check = stm32_fmc2_ebi_check_waitcfg,
++		.set = stm32_fmc2_ebi_set_bit_field,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-wait-enable",
++		.bprop = true,
++		.reg_type = FMC2_REG_BCR,
++		.reg_mask = FMC2_BCR_WAITEN,
++		.check = stm32_fmc2_ebi_check_sync_trans,
++		.set = stm32_fmc2_ebi_set_bit_field,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-asyncwait-enable",
++		.bprop = true,
++		.reg_type = FMC2_REG_BCR,
++		.reg_mask = FMC2_BCR_ASYNCWAIT,
++		.check = stm32_fmc2_ebi_check_async_trans,
++		.set = stm32_fmc2_ebi_set_bit_field,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-cpsize",
++		.check = stm32_fmc2_ebi_check_cpsize,
++		.set = stm32_fmc2_ebi_set_cpsize,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-byte-lane-setup-ns",
++		.calculate = stm32_fmc2_ebi_ns_to_clock_cycles,
++		.set = stm32_fmc2_ebi_set_bl_setup,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-address-setup-ns",
++		.reg_type = FMC2_REG_BTR,
++		.reset_val = FMC2_BXTR_ADDSET_MAX,
++		.check = stm32_fmc2_ebi_check_async_trans,
++		.calculate = stm32_fmc2_ebi_ns_to_clock_cycles,
++		.set = stm32_fmc2_ebi_set_address_setup,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-address-hold-ns",
++		.reg_type = FMC2_REG_BTR,
++		.reset_val = FMC2_BXTR_ADDHLD_MAX,
++		.check = stm32_fmc2_ebi_check_address_hold,
++		.calculate = stm32_fmc2_ebi_ns_to_clock_cycles,
++		.set = stm32_fmc2_ebi_set_address_hold,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-data-setup-ns",
++		.reg_type = FMC2_REG_BTR,
++		.reset_val = FMC2_BXTR_DATAST_MAX,
++		.check = stm32_fmc2_ebi_check_async_trans,
++		.calculate = stm32_fmc2_ebi_ns_to_clock_cycles,
++		.set = stm32_fmc2_ebi_set_data_setup,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-bus-turnaround-ns",
++		.reg_type = FMC2_REG_BTR,
++		.reset_val = FMC2_BXTR_BUSTURN_MAX + 1,
++		.calculate = stm32_fmc2_ebi_ns_to_clock_cycles,
++		.set = stm32_fmc2_ebi_set_bus_turnaround,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-data-hold-ns",
++		.reg_type = FMC2_REG_BTR,
++		.check = stm32_fmc2_ebi_check_async_trans,
++		.calculate = stm32_fmc2_ebi_ns_to_clock_cycles,
++		.set = stm32_fmc2_ebi_set_data_hold,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-clk-period-ns",
++		.reset_val = FMC2_BTR_CLKDIV_MAX + 1,
++		.check = stm32_fmc2_ebi_check_clk_period,
++		.calculate = stm32_fmc2_ebi_ns_to_clock_cycles,
++		.set = stm32_fmc2_ebi_set_clk_period,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-data-latency-ns",
++		.check = stm32_fmc2_ebi_check_sync_trans,
++		.calculate = stm32_fmc2_ebi_ns_to_clk_period,
++		.set = stm32_fmc2_ebi_set_data_latency,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-write-address-setup-ns",
++		.reg_type = FMC2_REG_BWTR,
++		.reset_val = FMC2_BXTR_ADDSET_MAX,
++		.check = stm32_fmc2_ebi_check_async_trans,
++		.calculate = stm32_fmc2_ebi_ns_to_clock_cycles,
++		.set = stm32_fmc2_ebi_set_address_setup,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-write-address-hold-ns",
++		.reg_type = FMC2_REG_BWTR,
++		.reset_val = FMC2_BXTR_ADDHLD_MAX,
++		.check = stm32_fmc2_ebi_check_address_hold,
++		.calculate = stm32_fmc2_ebi_ns_to_clock_cycles,
++		.set = stm32_fmc2_ebi_set_address_hold,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-write-data-setup-ns",
++		.reg_type = FMC2_REG_BWTR,
++		.reset_val = FMC2_BXTR_DATAST_MAX,
++		.check = stm32_fmc2_ebi_check_async_trans,
++		.calculate = stm32_fmc2_ebi_ns_to_clock_cycles,
++		.set = stm32_fmc2_ebi_set_data_setup,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-write-bus-turnaround-ns",
++		.reg_type = FMC2_REG_BWTR,
++		.reset_val = FMC2_BXTR_BUSTURN_MAX + 1,
++		.calculate = stm32_fmc2_ebi_ns_to_clock_cycles,
++		.set = stm32_fmc2_ebi_set_bus_turnaround,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-write-data-hold-ns",
++		.reg_type = FMC2_REG_BWTR,
++		.check = stm32_fmc2_ebi_check_async_trans,
++		.calculate = stm32_fmc2_ebi_ns_to_clock_cycles,
++		.set = stm32_fmc2_ebi_set_data_hold,
++	},
++	{
++		.name = "st,fmc2-ebi-cs-max-low-pulse-ns",
++		.calculate = stm32_fmc2_ebi_ns_to_clock_cycles,
++		.set = stm32_fmc2_ebi_set_max_low_pulse,
++	},
++};
++
++static int stm32_fmc2_ebi_parse_prop(struct stm32_fmc2_ebi *ebi,
++				     ofnode node,
++				     const struct stm32_fmc2_prop *prop,
++				     int cs)
++{
++	u32 setup = 0;
++
++	if (!prop->set) {
++		pr_err("property %s is not well defined\n", prop->name);
++		return -EINVAL;
++	}
++
++	if (prop->check && prop->check(ebi, prop, cs))
++		/* Skip this property */
++		return 0;
++
++	if (prop->bprop) {
++		bool bprop;
++
++		bprop = ofnode_read_bool(node, prop->name);
++		if (prop->mprop && !bprop) {
++			pr_err("mandatory property %s not defined in the device tree\n",
++			       prop->name);
++			return -EINVAL;
++		}
++
++		if (bprop)
++			setup = 1;
++	} else {
++		u32 val;
++		int ret;
++
++		ret = ofnode_read_u32(node, prop->name, &val);
++		if (prop->mprop && ret) {
++			pr_err("mandatory property %s not defined in the device tree\n",
++			       prop->name);
++			return ret;
++		}
++
++		if (ret)
++			setup = prop->reset_val;
++		else if (prop->calculate)
++			setup = prop->calculate(ebi, cs, val);
++		else
++			setup = val;
++	}
++
++	return prop->set(ebi, prop, cs, setup);
++}
++
++static void stm32_fmc2_ebi_enable_bank(struct stm32_fmc2_ebi *ebi, int cs)
++{
++	setbits_le32(ebi->io_base + FMC2_BCR(cs), FMC2_BCR_MBKEN);
++}
++
++static void stm32_fmc2_ebi_disable_bank(struct stm32_fmc2_ebi *ebi, int cs)
++{
++	clrbits_le32(ebi->io_base + FMC2_BCR(cs), FMC2_BCR_MBKEN);
++}
++
++/* NWAIT signal can not be connected to EBI controller and NAND controller */
++static bool stm32_fmc2_ebi_nwait_used_by_ctrls(struct stm32_fmc2_ebi *ebi)
++{
++	unsigned int cs;
++	u32 bcr;
++
++	for (cs = 0; cs < FMC2_MAX_EBI_CE; cs++) {
++		if (!(ebi->bank_assigned & BIT(cs)))
++			continue;
++
++		bcr = readl(ebi->io_base + FMC2_BCR(cs));
++		if ((bcr & FMC2_BCR_WAITEN || bcr & FMC2_BCR_ASYNCWAIT) &&
++		    ebi->bank_assigned & BIT(FMC2_NAND))
++			return true;
++	}
++
++	return false;
++}
++
++static void stm32_fmc2_ebi_enable(struct stm32_fmc2_ebi *ebi)
++{
++	setbits_le32(ebi->io_base + FMC2_BCR1, FMC2_BCR1_FMC2EN);
++}
++
++static int stm32_fmc2_ebi_setup_cs(struct stm32_fmc2_ebi *ebi,
++				   ofnode node, u32 cs)
++{
++	unsigned int i;
++	int ret;
++
++	stm32_fmc2_ebi_disable_bank(ebi, cs);
++
++	for (i = 0; i < ARRAY_SIZE(stm32_fmc2_child_props); i++) {
++		const struct stm32_fmc2_prop *p = &stm32_fmc2_child_props[i];
++
++		ret = stm32_fmc2_ebi_parse_prop(ebi, node, p, cs);
++		if (ret) {
++			pr_err("property %s could not be set: %d\n",
++			       p->name, ret);
++			return ret;
++		}
++	}
++
++	stm32_fmc2_ebi_enable_bank(ebi, cs);
++
++	return 0;
++}
++
++static int stm32_fmc2_ebi_parse_dt(struct udevice *dev,
++				   struct stm32_fmc2_ebi *ebi)
++{
++	ofnode child;
++	bool child_found = false;
++	u32 bank;
++	int ret;
++
++	dev_for_each_subnode(child, dev) {
++		ret = ofnode_read_u32(child, "reg", &bank);
++		if (ret) {
++			pr_err("could not retrieve reg property: %d\n", ret);
++			return ret;
++		}
++
++		if (bank >= FMC2_MAX_BANKS) {
++			pr_err("invalid reg value: %d\n", bank);
++			return -EINVAL;
++		}
++
++		if (ebi->bank_assigned & BIT(bank)) {
++			pr_err("bank already assigned: %d\n", bank);
++			return -EINVAL;
++		}
++
++		if (bank < FMC2_MAX_EBI_CE) {
++			ret = stm32_fmc2_ebi_setup_cs(ebi, child, bank);
++			if (ret) {
++				pr_err("setup chip select %d failed: %d\n",
++				       bank, ret);
++				return ret;
++			}
++		}
++
++		ebi->bank_assigned |= BIT(bank);
++		child_found = true;
++	}
++
++	if (!child_found) {
++		pr_warn("no subnodes found, disable the driver.\n");
++		return -ENODEV;
++	}
++
++	if (stm32_fmc2_ebi_nwait_used_by_ctrls(ebi)) {
++		pr_err("NWAIT signal connected to EBI and NAND controllers\n");
++		return -EINVAL;
++	}
++
++	stm32_fmc2_ebi_enable(ebi);
++
++	return 0;
++}
++
++static int stm32_fmc2_ebi_probe(struct udevice *dev)
++{
++	struct stm32_fmc2_ebi *ebi = dev_get_priv(dev);
++	struct reset_ctl reset;
++	int ret;
++
++	ebi->io_base = dev_read_addr(dev);
++	if (ebi->io_base == FDT_ADDR_T_NONE)
++		return -EINVAL;
++
++	ret = clk_get_by_index(dev, 0, &ebi->clk);
++	if (ret)
++		return ret;
++
++	ret = clk_enable(&ebi->clk);
++	if (ret)
++		return ret;
++
++	ret = reset_get_by_index(dev, 0, &reset);
++	if (!ret) {
++		reset_assert(&reset);
++		udelay(2);
++		reset_deassert(&reset);
++	}
++
++	return stm32_fmc2_ebi_parse_dt(dev, ebi);
++}
++
++static const struct udevice_id stm32_fmc2_ebi_match[] = {
++	{.compatible = "st,stm32mp1-fmc2-ebi"},
++	{ /* Sentinel */ }
++};
++
++U_BOOT_DRIVER(stm32_fmc2_ebi) = {
++	.name = "stm32_fmc2_ebi",
++	.id = UCLASS_NOP,
++	.of_match = stm32_fmc2_ebi_match,
++	.probe = stm32_fmc2_ebi_probe,
++	.priv_auto_alloc_size = sizeof(struct stm32_fmc2_ebi),
++	.bind = dm_scan_fdt_dev,
++};
+diff --git a/drivers/mtd/nand/raw/stm32_fmc2_nand.c b/drivers/mtd/nand/raw/stm32_fmc2_nand.c
+index f3179cc21f..9897976947 100644
+--- a/drivers/mtd/nand/raw/stm32_fmc2_nand.c
++++ b/drivers/mtd/nand/raw/stm32_fmc2_nand.c
+@@ -9,6 +9,7 @@
+ #include <dm.h>
+ #include <nand.h>
+ #include <reset.h>
++#include <linux/bitfield.h>
+ #include <linux/iopoll.h>
+ #include <linux/ioport.h>
+ 
+@@ -56,20 +57,16 @@
+ /* Register: FMC2_PCR */
+ #define FMC2_PCR_PWAITEN		BIT(1)
+ #define FMC2_PCR_PBKEN			BIT(2)
+-#define FMC2_PCR_PWID_MASK		GENMASK(5, 4)
+-#define FMC2_PCR_PWID(x)		(((x) & 0x3) << 4)
++#define FMC2_PCR_PWID			GENMASK(5, 4)
+ #define FMC2_PCR_PWID_BUSWIDTH_8	0
+ #define FMC2_PCR_PWID_BUSWIDTH_16	1
+ #define FMC2_PCR_ECCEN			BIT(6)
+ #define FMC2_PCR_ECCALG			BIT(8)
+-#define FMC2_PCR_TCLR_MASK		GENMASK(12, 9)
+-#define FMC2_PCR_TCLR(x)		(((x) & 0xf) << 9)
++#define FMC2_PCR_TCLR			GENMASK(12, 9)
+ #define FMC2_PCR_TCLR_DEFAULT		0xf
+-#define FMC2_PCR_TAR_MASK		GENMASK(16, 13)
+-#define FMC2_PCR_TAR(x)			(((x) & 0xf) << 13)
++#define FMC2_PCR_TAR			GENMASK(16, 13)
+ #define FMC2_PCR_TAR_DEFAULT		0xf
+-#define FMC2_PCR_ECCSS_MASK		GENMASK(19, 17)
+-#define FMC2_PCR_ECCSS(x)		(((x) & 0x7) << 17)
++#define FMC2_PCR_ECCSS			GENMASK(19, 17)
+ #define FMC2_PCR_ECCSS_512		1
+ #define FMC2_PCR_ECCSS_2048		3
+ #define FMC2_PCR_BCHECC			BIT(24)
+@@ -79,17 +76,17 @@
+ #define FMC2_SR_NWRF			BIT(6)
+ 
+ /* Register: FMC2_PMEM */
+-#define FMC2_PMEM_MEMSET(x)		(((x) & 0xff) << 0)
+-#define FMC2_PMEM_MEMWAIT(x)		(((x) & 0xff) << 8)
+-#define FMC2_PMEM_MEMHOLD(x)		(((x) & 0xff) << 16)
+-#define FMC2_PMEM_MEMHIZ(x)		(((x) & 0xff) << 24)
++#define FMC2_PMEM_MEMSET		GENMASK(7, 0)
++#define FMC2_PMEM_MEMWAIT		GENMASK(15, 8)
++#define FMC2_PMEM_MEMHOLD		GENMASK(23, 16)
++#define FMC2_PMEM_MEMHIZ		GENMASK(31, 24)
+ #define FMC2_PMEM_DEFAULT		0x0a0a0a0a
+ 
+ /* Register: FMC2_PATT */
+-#define FMC2_PATT_ATTSET(x)		(((x) & 0xff) << 0)
+-#define FMC2_PATT_ATTWAIT(x)		(((x) & 0xff) << 8)
+-#define FMC2_PATT_ATTHOLD(x)		(((x) & 0xff) << 16)
+-#define FMC2_PATT_ATTHIZ(x)		(((x) & 0xff) << 24)
++#define FMC2_PATT_ATTSET		GENMASK(7, 0)
++#define FMC2_PATT_ATTWAIT		GENMASK(15, 8)
++#define FMC2_PATT_ATTHOLD		GENMASK(23, 16)
++#define FMC2_PATT_ATTHIZ		GENMASK(31, 24)
+ #define FMC2_PATT_DEFAULT		0x0a0a0a0a
+ 
+ /* Register: FMC2_BCHISR */
+@@ -102,31 +99,28 @@
+ /* Register: FMC2_BCHDSR0 */
+ #define FMC2_BCHDSR0_DUE		BIT(0)
+ #define FMC2_BCHDSR0_DEF		BIT(1)
+-#define FMC2_BCHDSR0_DEN_MASK		GENMASK(7, 4)
+-#define FMC2_BCHDSR0_DEN_SHIFT		4
++#define FMC2_BCHDSR0_DEN		GENMASK(7, 4)
+ 
+ /* Register: FMC2_BCHDSR1 */
+-#define FMC2_BCHDSR1_EBP1_MASK		GENMASK(12, 0)
+-#define FMC2_BCHDSR1_EBP2_MASK		GENMASK(28, 16)
+-#define FMC2_BCHDSR1_EBP2_SHIFT		16
++#define FMC2_BCHDSR1_EBP1		GENMASK(12, 0)
++#define FMC2_BCHDSR1_EBP2		GENMASK(28, 16)
+ 
+ /* Register: FMC2_BCHDSR2 */
+-#define FMC2_BCHDSR2_EBP3_MASK		GENMASK(12, 0)
+-#define FMC2_BCHDSR2_EBP4_MASK		GENMASK(28, 16)
+-#define FMC2_BCHDSR2_EBP4_SHIFT		16
++#define FMC2_BCHDSR2_EBP3		GENMASK(12, 0)
++#define FMC2_BCHDSR2_EBP4		GENMASK(28, 16)
+ 
+ /* Register: FMC2_BCHDSR3 */
+-#define FMC2_BCHDSR3_EBP5_MASK		GENMASK(12, 0)
+-#define FMC2_BCHDSR3_EBP6_MASK		GENMASK(28, 16)
+-#define FMC2_BCHDSR3_EBP6_SHIFT		16
++#define FMC2_BCHDSR3_EBP5		GENMASK(12, 0)
++#define FMC2_BCHDSR3_EBP6		GENMASK(28, 16)
+ 
+ /* Register: FMC2_BCHDSR4 */
+-#define FMC2_BCHDSR4_EBP7_MASK		GENMASK(12, 0)
+-#define FMC2_BCHDSR4_EBP8_MASK		GENMASK(28, 16)
+-#define FMC2_BCHDSR4_EBP8_SHIFT		16
++#define FMC2_BCHDSR4_EBP7		GENMASK(12, 0)
++#define FMC2_BCHDSR4_EBP8		GENMASK(28, 16)
+ 
+ #define FMC2_NSEC_PER_SEC		1000000000L
+ 
++#define FMC2_TIMEOUT_5S			5000000
++
+ enum stm32_fmc2_ecc {
+ 	FMC2_ECC_HAM = 1,
+ 	FMC2_ECC_BCH4 = 4,
+@@ -160,10 +154,10 @@ struct stm32_fmc2_nfc {
+ 	struct nand_hw_control base;
+ 	struct stm32_fmc2_nand nand;
+ 	struct nand_ecclayout ecclayout;
+-	void __iomem *io_base;
+-	void __iomem *data_base[FMC2_MAX_CE];
+-	void __iomem *cmd_base[FMC2_MAX_CE];
+-	void __iomem *addr_base[FMC2_MAX_CE];
++	fdt_addr_t io_base;
++	fdt_addr_t data_base[FMC2_MAX_CE];
++	fdt_addr_t cmd_base[FMC2_MAX_CE];
++	fdt_addr_t addr_base[FMC2_MAX_CE];
+ 	struct clk clk;
+ 
+ 	u8 cs_assigned;
+@@ -175,47 +169,42 @@ static inline struct stm32_fmc2_nfc *to_stm32_nfc(struct nand_hw_control *base)
+ 	return container_of(base, struct stm32_fmc2_nfc, base);
+ }
+ 
+-/* Timings configuration */
+-static void stm32_fmc2_timings_init(struct nand_chip *chip)
++static void stm32_fmc2_nfc_timings_init(struct nand_chip *chip)
+ {
+-	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	struct stm32_fmc2_nfc *nfc = to_stm32_nfc(chip->controller);
+ 	struct stm32_fmc2_nand *nand = to_fmc2_nand(chip);
+ 	struct stm32_fmc2_timings *timings = &nand->timings;
+-	u32 pcr = readl(fmc2->io_base + FMC2_PCR);
+ 	u32 pmem, patt;
+ 
+ 	/* Set tclr/tar timings */
+-	pcr &= ~FMC2_PCR_TCLR_MASK;
+-	pcr |= FMC2_PCR_TCLR(timings->tclr);
+-	pcr &= ~FMC2_PCR_TAR_MASK;
+-	pcr |= FMC2_PCR_TAR(timings->tar);
++	clrsetbits_le32(nfc->io_base + FMC2_PCR,
++			FMC2_PCR_TCLR | FMC2_PCR_TAR,
++			FIELD_PREP(FMC2_PCR_TCLR, timings->tclr) |
++			FIELD_PREP(FMC2_PCR_TAR, timings->tar));
+ 
+ 	/* Set tset/twait/thold/thiz timings in common bank */
+-	pmem = FMC2_PMEM_MEMSET(timings->tset_mem);
+-	pmem |= FMC2_PMEM_MEMWAIT(timings->twait);
+-	pmem |= FMC2_PMEM_MEMHOLD(timings->thold_mem);
+-	pmem |= FMC2_PMEM_MEMHIZ(timings->thiz);
++	pmem = FIELD_PREP(FMC2_PMEM_MEMSET, timings->tset_mem);
++	pmem |= FIELD_PREP(FMC2_PMEM_MEMWAIT, timings->twait);
++	pmem |= FIELD_PREP(FMC2_PMEM_MEMHOLD, timings->thold_mem);
++	pmem |= FIELD_PREP(FMC2_PMEM_MEMHIZ, timings->thiz);
++	writel(pmem, nfc->io_base + FMC2_PMEM);
+ 
+ 	/* Set tset/twait/thold/thiz timings in attribut bank */
+-	patt = FMC2_PATT_ATTSET(timings->tset_att);
+-	patt |= FMC2_PATT_ATTWAIT(timings->twait);
+-	patt |= FMC2_PATT_ATTHOLD(timings->thold_att);
+-	patt |= FMC2_PATT_ATTHIZ(timings->thiz);
+-
+-	writel(pcr, fmc2->io_base + FMC2_PCR);
+-	writel(pmem, fmc2->io_base + FMC2_PMEM);
+-	writel(patt, fmc2->io_base + FMC2_PATT);
++	patt = FIELD_PREP(FMC2_PATT_ATTSET, timings->tset_att);
++	patt |= FIELD_PREP(FMC2_PATT_ATTWAIT, timings->twait);
++	patt |= FIELD_PREP(FMC2_PATT_ATTHOLD, timings->thold_att);
++	patt |= FIELD_PREP(FMC2_PATT_ATTHIZ, timings->thiz);
++	writel(patt, nfc->io_base + FMC2_PATT);
+ }
+ 
+-/* Controller configuration */
+-static void stm32_fmc2_setup(struct nand_chip *chip)
++static void stm32_fmc2_nfc_setup(struct nand_chip *chip)
+ {
+-	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
+-	u32 pcr = readl(fmc2->io_base + FMC2_PCR);
++	struct stm32_fmc2_nfc *nfc = to_stm32_nfc(chip->controller);
++	u32 pcr = 0, pcr_mask;
+ 
+ 	/* Configure ECC algorithm (default configuration is Hamming) */
+-	pcr &= ~FMC2_PCR_ECCALG;
+-	pcr &= ~FMC2_PCR_BCHECC;
++	pcr_mask = FMC2_PCR_ECCALG;
++	pcr_mask |= FMC2_PCR_BCHECC;
+ 	if (chip->ecc.strength == FMC2_ECC_BCH8) {
+ 		pcr |= FMC2_PCR_ECCALG;
+ 		pcr |= FMC2_PCR_BCHECC;
+@@ -224,111 +213,95 @@ static void stm32_fmc2_setup(struct nand_chip *chip)
+ 	}
+ 
+ 	/* Set buswidth */
+-	pcr &= ~FMC2_PCR_PWID_MASK;
++	pcr_mask |= FMC2_PCR_PWID;
+ 	if (chip->options & NAND_BUSWIDTH_16)
+-		pcr |= FMC2_PCR_PWID(FMC2_PCR_PWID_BUSWIDTH_16);
++		pcr |= FIELD_PREP(FMC2_PCR_PWID, FMC2_PCR_PWID_BUSWIDTH_16);
+ 
+ 	/* Set ECC sector size */
+-	pcr &= ~FMC2_PCR_ECCSS_MASK;
+-	pcr |= FMC2_PCR_ECCSS(FMC2_PCR_ECCSS_512);
++	pcr_mask |= FMC2_PCR_ECCSS;
++	pcr |= FIELD_PREP(FMC2_PCR_ECCSS, FMC2_PCR_ECCSS_512);
+ 
+-	writel(pcr, fmc2->io_base + FMC2_PCR);
++	clrsetbits_le32(nfc->io_base + FMC2_PCR, pcr_mask, pcr);
+ }
+ 
+-/* Select target */
+-static void stm32_fmc2_select_chip(struct mtd_info *mtd, int chipnr)
++static void stm32_fmc2_nfc_select_chip(struct mtd_info *mtd, int chipnr)
+ {
+ 	struct nand_chip *chip = mtd_to_nand(mtd);
+-	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	struct stm32_fmc2_nfc *nfc = to_stm32_nfc(chip->controller);
+ 	struct stm32_fmc2_nand *nand = to_fmc2_nand(chip);
+ 
+ 	if (chipnr < 0 || chipnr >= nand->ncs)
+ 		return;
+ 
+-	if (nand->cs_used[chipnr] == fmc2->cs_sel)
++	if (nand->cs_used[chipnr] == nfc->cs_sel)
+ 		return;
+ 
+-	fmc2->cs_sel = nand->cs_used[chipnr];
+-	chip->IO_ADDR_R = fmc2->data_base[fmc2->cs_sel];
+-	chip->IO_ADDR_W = fmc2->data_base[fmc2->cs_sel];
+-
+-	/* FMC2 setup routine */
+-	stm32_fmc2_setup(chip);
++	nfc->cs_sel = nand->cs_used[chipnr];
++	chip->IO_ADDR_R = (void __iomem *)nfc->data_base[nfc->cs_sel];
++	chip->IO_ADDR_W = (void __iomem *)nfc->data_base[nfc->cs_sel];
+ 
+-	/* Apply timings */
+-	stm32_fmc2_timings_init(chip);
++	stm32_fmc2_nfc_setup(chip);
++	stm32_fmc2_nfc_timings_init(chip);
+ }
+ 
+-/* Set bus width to 16-bit or 8-bit */
+-static void stm32_fmc2_set_buswidth_16(struct stm32_fmc2_nfc *fmc2, bool set)
++static void stm32_fmc2_nfc_set_buswidth_16(struct stm32_fmc2_nfc *nfc,
++					   bool set)
+ {
+-	u32 pcr = readl(fmc2->io_base + FMC2_PCR);
++	u32 pcr;
+ 
+-	pcr &= ~FMC2_PCR_PWID_MASK;
+-	if (set)
+-		pcr |= FMC2_PCR_PWID(FMC2_PCR_PWID_BUSWIDTH_16);
+-	writel(pcr, fmc2->io_base + FMC2_PCR);
++	pcr = set ? FIELD_PREP(FMC2_PCR_PWID, FMC2_PCR_PWID_BUSWIDTH_16) :
++		    FIELD_PREP(FMC2_PCR_PWID, FMC2_PCR_PWID_BUSWIDTH_8);
++
++	clrsetbits_le32(nfc->io_base + FMC2_PCR, FMC2_PCR_PWID, pcr);
+ }
+ 
+-/* Enable/disable ECC */
+-static void stm32_fmc2_set_ecc(struct stm32_fmc2_nfc *fmc2, bool enable)
++static void stm32_fmc2_nfc_set_ecc(struct stm32_fmc2_nfc *nfc, bool enable)
+ {
+-	u32 pcr = readl(fmc2->io_base + FMC2_PCR);
+-
+-	pcr &= ~FMC2_PCR_ECCEN;
+-	if (enable)
+-		pcr |= FMC2_PCR_ECCEN;
+-	writel(pcr, fmc2->io_base + FMC2_PCR);
++	clrsetbits_le32(nfc->io_base + FMC2_PCR, FMC2_PCR_ECCEN,
++			enable ? FMC2_PCR_ECCEN : 0);
+ }
+ 
+-/* Clear irq sources in case of bch is used */
+-static inline void stm32_fmc2_clear_bch_irq(struct stm32_fmc2_nfc *fmc2)
++static void stm32_fmc2_nfc_clear_bch_irq(struct stm32_fmc2_nfc *nfc)
+ {
+-	writel(FMC2_BCHICR_CLEAR_IRQ, fmc2->io_base + FMC2_BCHICR);
++	writel(FMC2_BCHICR_CLEAR_IRQ, nfc->io_base + FMC2_BCHICR);
+ }
+ 
+-/* Send command and address cycles */
+-static void stm32_fmc2_cmd_ctrl(struct mtd_info *mtd, int cmd,
+-				unsigned int ctrl)
++static void stm32_fmc2_nfc_cmd_ctrl(struct mtd_info *mtd, int cmd,
++				    unsigned int ctrl)
+ {
+ 	struct nand_chip *chip = mtd_to_nand(mtd);
+-	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	struct stm32_fmc2_nfc *nfc = to_stm32_nfc(chip->controller);
+ 
+ 	if (cmd == NAND_CMD_NONE)
+ 		return;
+ 
+ 	if (ctrl & NAND_CLE) {
+-		writeb(cmd, fmc2->cmd_base[fmc2->cs_sel]);
++		writeb(cmd, nfc->cmd_base[nfc->cs_sel]);
+ 		return;
+ 	}
+ 
+-	writeb(cmd, fmc2->addr_base[fmc2->cs_sel]);
++	writeb(cmd, nfc->addr_base[nfc->cs_sel]);
+ }
+ 
+ /*
+  * Enable ECC logic and reset syndrome/parity bits previously calculated
+  * Syndrome/parity bits is cleared by setting the ECCEN bit to 0
+  */
+-static void stm32_fmc2_hwctl(struct mtd_info *mtd, int mode)
++static void stm32_fmc2_nfc_hwctl(struct mtd_info *mtd, int mode)
+ {
+ 	struct nand_chip *chip = mtd_to_nand(mtd);
+-	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	struct stm32_fmc2_nfc *nfc = to_stm32_nfc(chip->controller);
+ 
+-	stm32_fmc2_set_ecc(fmc2, false);
++	stm32_fmc2_nfc_set_ecc(nfc, false);
+ 
+ 	if (chip->ecc.strength != FMC2_ECC_HAM) {
+-		u32 pcr = readl(fmc2->io_base + FMC2_PCR);
++		clrsetbits_le32(nfc->io_base + FMC2_PCR, FMC2_PCR_WEN,
++				mode == NAND_ECC_WRITE ? FMC2_PCR_WEN : 0);
+ 
+-		if (mode == NAND_ECC_WRITE)
+-			pcr |= FMC2_PCR_WEN;
+-		else
+-			pcr &= ~FMC2_PCR_WEN;
+-		writel(pcr, fmc2->io_base + FMC2_PCR);
+-
+-		stm32_fmc2_clear_bch_irq(fmc2);
++		stm32_fmc2_nfc_clear_bch_irq(nfc);
+ 	}
+ 
+-	stm32_fmc2_set_ecc(fmc2, true);
++	stm32_fmc2_nfc_set_ecc(nfc, true);
+ }
+ 
+ /*
+@@ -336,35 +309,34 @@ static void stm32_fmc2_hwctl(struct mtd_info *mtd, int mode)
+  * ECC is 3 bytes for 512 bytes of data (supports error correction up to
+  * max of 1-bit)
+  */
+-static int stm32_fmc2_ham_calculate(struct mtd_info *mtd, const u8 *data,
+-				    u8 *ecc)
++static int stm32_fmc2_nfc_ham_calculate(struct mtd_info *mtd, const u8 *data,
++					u8 *ecc)
+ {
+ 	struct nand_chip *chip = mtd_to_nand(mtd);
+-	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	struct stm32_fmc2_nfc *nfc = to_stm32_nfc(chip->controller);
+ 	u32 heccr, sr;
+ 	int ret;
+ 
+-	ret = readl_poll_timeout(fmc2->io_base + FMC2_SR, sr,
+-				 sr & FMC2_SR_NWRF, 10000);
++	ret = readl_poll_timeout(nfc->io_base + FMC2_SR, sr,
++				 sr & FMC2_SR_NWRF, FMC2_TIMEOUT_5S);
+ 	if (ret < 0) {
+ 		pr_err("Ham timeout\n");
+ 		return ret;
+ 	}
+ 
+-	heccr = readl(fmc2->io_base + FMC2_HECCR);
++	heccr = readl(nfc->io_base + FMC2_HECCR);
+ 
+ 	ecc[0] = heccr;
+ 	ecc[1] = heccr >> 8;
+ 	ecc[2] = heccr >> 16;
+ 
+-	/* Disable ecc */
+-	stm32_fmc2_set_ecc(fmc2, false);
++	stm32_fmc2_nfc_set_ecc(nfc, false);
+ 
+ 	return 0;
+ }
+ 
+-static int stm32_fmc2_ham_correct(struct mtd_info *mtd, u8 *dat,
+-				  u8 *read_ecc, u8 *calc_ecc)
++static int stm32_fmc2_nfc_ham_correct(struct mtd_info *mtd, u8 *dat,
++				      u8 *read_ecc, u8 *calc_ecc)
+ {
+ 	u8 bit_position = 0, b0, b1, b2;
+ 	u32 byte_addr = 0, b;
+@@ -421,30 +393,30 @@ static int stm32_fmc2_ham_correct(struct mtd_info *mtd, u8 *dat,
+  * max of 4-bit/8-bit)
+  */
+ 
+-static int stm32_fmc2_bch_calculate(struct mtd_info *mtd, const u8 *data,
+-				    u8 *ecc)
++static int stm32_fmc2_nfc_bch_calculate(struct mtd_info *mtd, const u8 *data,
++					u8 *ecc)
+ {
+ 	struct nand_chip *chip = mtd_to_nand(mtd);
+-	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	struct stm32_fmc2_nfc *nfc = to_stm32_nfc(chip->controller);
+ 	u32 bchpbr, bchisr;
+ 	int ret;
+ 
+ 	/* Wait until the BCH code is ready */
+-	ret = readl_poll_timeout(fmc2->io_base + FMC2_BCHISR, bchisr,
+-				 bchisr & FMC2_BCHISR_EPBRF, 10000);
++	ret = readl_poll_timeout(nfc->io_base + FMC2_BCHISR, bchisr,
++				 bchisr & FMC2_BCHISR_EPBRF, FMC2_TIMEOUT_5S);
+ 	if (ret < 0) {
+ 		pr_err("Bch timeout\n");
+ 		return ret;
+ 	}
+ 
+ 	/* Read parity bits */
+-	bchpbr = readl(fmc2->io_base + FMC2_BCHPBR1);
++	bchpbr = readl(nfc->io_base + FMC2_BCHPBR1);
+ 	ecc[0] = bchpbr;
+ 	ecc[1] = bchpbr >> 8;
+ 	ecc[2] = bchpbr >> 16;
+ 	ecc[3] = bchpbr >> 24;
+ 
+-	bchpbr = readl(fmc2->io_base + FMC2_BCHPBR2);
++	bchpbr = readl(nfc->io_base + FMC2_BCHPBR2);
+ 	ecc[4] = bchpbr;
+ 	ecc[5] = bchpbr >> 8;
+ 	ecc[6] = bchpbr >> 16;
+@@ -452,49 +424,46 @@ static int stm32_fmc2_bch_calculate(struct mtd_info *mtd, const u8 *data,
+ 	if (chip->ecc.strength == FMC2_ECC_BCH8) {
+ 		ecc[7] = bchpbr >> 24;
+ 
+-		bchpbr = readl(fmc2->io_base + FMC2_BCHPBR3);
++		bchpbr = readl(nfc->io_base + FMC2_BCHPBR3);
+ 		ecc[8] = bchpbr;
+ 		ecc[9] = bchpbr >> 8;
+ 		ecc[10] = bchpbr >> 16;
+ 		ecc[11] = bchpbr >> 24;
+ 
+-		bchpbr = readl(fmc2->io_base + FMC2_BCHPBR4);
++		bchpbr = readl(nfc->io_base + FMC2_BCHPBR4);
+ 		ecc[12] = bchpbr;
+ 	}
+ 
+-	/* Disable ecc */
+-	stm32_fmc2_set_ecc(fmc2, false);
++	stm32_fmc2_nfc_set_ecc(nfc, false);
+ 
+ 	return 0;
+ }
+ 
+-/* BCH algorithm correction */
+-static int stm32_fmc2_bch_correct(struct mtd_info *mtd, u8 *dat,
+-				  u8 *read_ecc, u8 *calc_ecc)
++static int stm32_fmc2_nfc_bch_correct(struct mtd_info *mtd, u8 *dat,
++				      u8 *read_ecc, u8 *calc_ecc)
+ {
+ 	struct nand_chip *chip = mtd_to_nand(mtd);
+-	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	struct stm32_fmc2_nfc *nfc = to_stm32_nfc(chip->controller);
+ 	u32 bchdsr0, bchdsr1, bchdsr2, bchdsr3, bchdsr4, bchisr;
+ 	u16 pos[8];
+ 	int i, ret, den, eccsize = chip->ecc.size;
+ 	unsigned int nb_errs = 0;
+ 
+ 	/* Wait until the decoding error is ready */
+-	ret = readl_poll_timeout(fmc2->io_base + FMC2_BCHISR, bchisr,
+-				 bchisr & FMC2_BCHISR_DERF, 10000);
++	ret = readl_poll_timeout(nfc->io_base + FMC2_BCHISR, bchisr,
++				 bchisr & FMC2_BCHISR_DERF, FMC2_TIMEOUT_5S);
+ 	if (ret < 0) {
+ 		pr_err("Bch timeout\n");
+ 		return ret;
+ 	}
+ 
+-	bchdsr0 = readl(fmc2->io_base + FMC2_BCHDSR0);
+-	bchdsr1 = readl(fmc2->io_base + FMC2_BCHDSR1);
+-	bchdsr2 = readl(fmc2->io_base + FMC2_BCHDSR2);
+-	bchdsr3 = readl(fmc2->io_base + FMC2_BCHDSR3);
+-	bchdsr4 = readl(fmc2->io_base + FMC2_BCHDSR4);
++	bchdsr0 = readl(nfc->io_base + FMC2_BCHDSR0);
++	bchdsr1 = readl(nfc->io_base + FMC2_BCHDSR1);
++	bchdsr2 = readl(nfc->io_base + FMC2_BCHDSR2);
++	bchdsr3 = readl(nfc->io_base + FMC2_BCHDSR3);
++	bchdsr4 = readl(nfc->io_base + FMC2_BCHDSR4);
+ 
+-	/* Disable ECC */
+-	stm32_fmc2_set_ecc(fmc2, false);
++	stm32_fmc2_nfc_set_ecc(nfc, false);
+ 
+ 	/* No errors found */
+ 	if (likely(!(bchdsr0 & FMC2_BCHDSR0_DEF)))
+@@ -504,16 +473,16 @@ static int stm32_fmc2_bch_correct(struct mtd_info *mtd, u8 *dat,
+ 	if (unlikely(bchdsr0 & FMC2_BCHDSR0_DUE))
+ 		return -EBADMSG;
+ 
+-	pos[0] = bchdsr1 & FMC2_BCHDSR1_EBP1_MASK;
+-	pos[1] = (bchdsr1 & FMC2_BCHDSR1_EBP2_MASK) >> FMC2_BCHDSR1_EBP2_SHIFT;
+-	pos[2] = bchdsr2 & FMC2_BCHDSR2_EBP3_MASK;
+-	pos[3] = (bchdsr2 & FMC2_BCHDSR2_EBP4_MASK) >> FMC2_BCHDSR2_EBP4_SHIFT;
+-	pos[4] = bchdsr3 & FMC2_BCHDSR3_EBP5_MASK;
+-	pos[5] = (bchdsr3 & FMC2_BCHDSR3_EBP6_MASK) >> FMC2_BCHDSR3_EBP6_SHIFT;
+-	pos[6] = bchdsr4 & FMC2_BCHDSR4_EBP7_MASK;
+-	pos[7] = (bchdsr4 & FMC2_BCHDSR4_EBP8_MASK) >> FMC2_BCHDSR4_EBP8_SHIFT;
++	pos[0] = FIELD_GET(FMC2_BCHDSR1_EBP1, bchdsr1);
++	pos[1] = FIELD_GET(FMC2_BCHDSR1_EBP2, bchdsr1);
++	pos[2] = FIELD_GET(FMC2_BCHDSR2_EBP3, bchdsr2);
++	pos[3] = FIELD_GET(FMC2_BCHDSR2_EBP4, bchdsr2);
++	pos[4] = FIELD_GET(FMC2_BCHDSR3_EBP5, bchdsr3);
++	pos[5] = FIELD_GET(FMC2_BCHDSR3_EBP6, bchdsr3);
++	pos[6] = FIELD_GET(FMC2_BCHDSR4_EBP7, bchdsr4);
++	pos[7] = FIELD_GET(FMC2_BCHDSR4_EBP8, bchdsr4);
+ 
+-	den = (bchdsr0 & FMC2_BCHDSR0_DEN_MASK) >> FMC2_BCHDSR0_DEN_SHIFT;
++	den = FIELD_GET(FMC2_BCHDSR0_DEN, bchdsr0);
+ 	for (i = 0; i < den; i++) {
+ 		if (pos[i] < eccsize * 8) {
+ 			__change_bit(pos[i], (unsigned long *)dat);
+@@ -524,9 +493,9 @@ static int stm32_fmc2_bch_correct(struct mtd_info *mtd, u8 *dat,
+ 	return nb_errs;
+ }
+ 
+-static int stm32_fmc2_read_page(struct mtd_info *mtd,
+-				struct nand_chip *chip, u8 *buf,
+-				int oob_required, int page)
++static int stm32_fmc2_nfc_read_page(struct mtd_info *mtd,
++				    struct nand_chip *chip, u8 *buf,
++				    int oob_required, int page)
+ {
+ 	int i, s, stat, eccsize = chip->ecc.size;
+ 	int eccbytes = chip->ecc.bytes;
+@@ -575,21 +544,19 @@ static int stm32_fmc2_read_page(struct mtd_info *mtd,
+ 	return max_bitflips;
+ }
+ 
+-/* Controller initialization */
+-static void stm32_fmc2_init(struct stm32_fmc2_nfc *fmc2)
++static void stm32_fmc2_nfc_init(struct stm32_fmc2_nfc *nfc, bool has_parent)
+ {
+-	u32 pcr = readl(fmc2->io_base + FMC2_PCR);
+-	u32 bcr1 = readl(fmc2->io_base + FMC2_BCR1);
++	u32 pcr = readl(nfc->io_base + FMC2_PCR);
+ 
+ 	/* Set CS used to undefined */
+-	fmc2->cs_sel = -1;
++	nfc->cs_sel = -1;
+ 
+ 	/* Enable wait feature and nand flash memory bank */
+ 	pcr |= FMC2_PCR_PWAITEN;
+ 	pcr |= FMC2_PCR_PBKEN;
+ 
+ 	/* Set buswidth to 8 bits mode for identification */
+-	pcr &= ~FMC2_PCR_PWID_MASK;
++	pcr &= ~FMC2_PCR_PWID;
+ 
+ 	/* ECC logic is disabled */
+ 	pcr &= ~FMC2_PCR_ECCEN;
+@@ -600,32 +567,31 @@ static void stm32_fmc2_init(struct stm32_fmc2_nfc *fmc2)
+ 	pcr &= ~FMC2_PCR_WEN;
+ 
+ 	/* Set default ECC sector size */
+-	pcr &= ~FMC2_PCR_ECCSS_MASK;
+-	pcr |= FMC2_PCR_ECCSS(FMC2_PCR_ECCSS_2048);
++	pcr &= ~FMC2_PCR_ECCSS;
++	pcr |= FIELD_PREP(FMC2_PCR_ECCSS, FMC2_PCR_ECCSS_2048);
+ 
+ 	/* Set default tclr/tar timings */
+-	pcr &= ~FMC2_PCR_TCLR_MASK;
+-	pcr |= FMC2_PCR_TCLR(FMC2_PCR_TCLR_DEFAULT);
+-	pcr &= ~FMC2_PCR_TAR_MASK;
+-	pcr |= FMC2_PCR_TAR(FMC2_PCR_TAR_DEFAULT);
++	pcr &= ~FMC2_PCR_TCLR;
++	pcr |= FIELD_PREP(FMC2_PCR_TCLR, FMC2_PCR_TCLR_DEFAULT);
++	pcr &= ~FMC2_PCR_TAR;
++	pcr |= FIELD_PREP(FMC2_PCR_TAR, FMC2_PCR_TAR_DEFAULT);
+ 
+ 	/* Enable FMC2 controller */
+-	bcr1 |= FMC2_BCR1_FMC2EN;
++	if (!has_parent)
++		setbits_le32(nfc->io_base + FMC2_BCR1, FMC2_BCR1_FMC2EN);
+ 
+-	writel(bcr1, fmc2->io_base + FMC2_BCR1);
+-	writel(pcr, fmc2->io_base + FMC2_PCR);
+-	writel(FMC2_PMEM_DEFAULT, fmc2->io_base + FMC2_PMEM);
+-	writel(FMC2_PATT_DEFAULT, fmc2->io_base + FMC2_PATT);
++	writel(pcr, nfc->io_base + FMC2_PCR);
++	writel(FMC2_PMEM_DEFAULT, nfc->io_base + FMC2_PMEM);
++	writel(FMC2_PATT_DEFAULT, nfc->io_base + FMC2_PATT);
+ }
+ 
+-/* Controller timings */
+-static void stm32_fmc2_calc_timings(struct nand_chip *chip,
+-				    const struct nand_sdr_timings *sdrt)
++static void stm32_fmc2_nfc_calc_timings(struct nand_chip *chip,
++					const struct nand_sdr_timings *sdrt)
+ {
+-	struct stm32_fmc2_nfc *fmc2 = to_stm32_nfc(chip->controller);
++	struct stm32_fmc2_nfc *nfc = to_stm32_nfc(chip->controller);
+ 	struct stm32_fmc2_nand *nand = to_fmc2_nand(chip);
+ 	struct stm32_fmc2_timings *tims = &nand->timings;
+-	unsigned long hclk = clk_get_rate(&fmc2->clk);
++	unsigned long hclk = clk_get_rate(&nfc->clk);
+ 	unsigned long hclkp = FMC2_NSEC_PER_SEC / (hclk / 1000);
+ 	unsigned long timing, tar, tclr, thiz, twait;
+ 	unsigned long tset_mem, tset_att, thold_mem, thold_att;
+@@ -749,31 +715,28 @@ static void stm32_fmc2_calc_timings(struct nand_chip *chip,
+ 	tims->thold_att = clamp_val(timing, 1, FMC2_PMEM_PATT_TIMING_MASK);
+ }
+ 
+-static int stm32_fmc2_setup_interface(struct mtd_info *mtd, int chipnr,
+-				      const struct nand_data_interface *conf)
++static int stm32_fmc2_nfc_setup_interface(struct mtd_info *mtd, int chipnr,
++					  const struct nand_data_interface *cf)
+ {
+ 	struct nand_chip *chip = mtd_to_nand(mtd);
+ 	const struct nand_sdr_timings *sdrt;
+ 
+-	sdrt = nand_get_sdr_timings(conf);
++	sdrt = nand_get_sdr_timings(cf);
+ 	if (IS_ERR(sdrt))
+ 		return PTR_ERR(sdrt);
+ 
+ 	if (chipnr == NAND_DATA_IFACE_CHECK_ONLY)
+ 		return 0;
+ 
+-	stm32_fmc2_calc_timings(chip, sdrt);
+-
+-	/* Apply timings */
+-	stm32_fmc2_timings_init(chip);
++	stm32_fmc2_nfc_calc_timings(chip, sdrt);
++	stm32_fmc2_nfc_timings_init(chip);
+ 
+ 	return 0;
+ }
+ 
+-/* NAND callbacks setup */
+-static void stm32_fmc2_nand_callbacks_setup(struct nand_chip *chip)
++static void stm32_fmc2_nfc_nand_callbacks_setup(struct nand_chip *chip)
+ {
+-	chip->ecc.hwctl = stm32_fmc2_hwctl;
++	chip->ecc.hwctl = stm32_fmc2_nfc_hwctl;
+ 
+ 	/*
+ 	 * Specific callbacks to read/write a page depending on
+@@ -781,17 +744,17 @@ static void stm32_fmc2_nand_callbacks_setup(struct nand_chip *chip)
+ 	 */
+ 	if (chip->ecc.strength == FMC2_ECC_HAM) {
+ 		/* Hamming is used */
+-		chip->ecc.calculate = stm32_fmc2_ham_calculate;
+-		chip->ecc.correct = stm32_fmc2_ham_correct;
++		chip->ecc.calculate = stm32_fmc2_nfc_ham_calculate;
++		chip->ecc.correct = stm32_fmc2_nfc_ham_correct;
+ 		chip->ecc.bytes = chip->options & NAND_BUSWIDTH_16 ? 4 : 3;
+ 		chip->ecc.options |= NAND_ECC_GENERIC_ERASED_CHECK;
+ 		return;
+ 	}
+ 
+ 	/* BCH is used */
+-	chip->ecc.read_page = stm32_fmc2_read_page;
+-	chip->ecc.calculate = stm32_fmc2_bch_calculate;
+-	chip->ecc.correct = stm32_fmc2_bch_correct;
++	chip->ecc.read_page = stm32_fmc2_nfc_read_page;
++	chip->ecc.calculate = stm32_fmc2_nfc_bch_calculate;
++	chip->ecc.correct = stm32_fmc2_nfc_bch_correct;
+ 
+ 	if (chip->ecc.strength == FMC2_ECC_BCH8)
+ 		chip->ecc.bytes = chip->options & NAND_BUSWIDTH_16 ? 14 : 13;
+@@ -799,8 +762,7 @@ static void stm32_fmc2_nand_callbacks_setup(struct nand_chip *chip)
+ 		chip->ecc.bytes = chip->options & NAND_BUSWIDTH_16 ? 8 : 7;
+ }
+ 
+-/* FMC2 caps */
+-static int stm32_fmc2_calc_ecc_bytes(int step_size, int strength)
++static int stm32_fmc2_nfc_calc_ecc_bytes(int step_size, int strength)
+ {
+ 	/* Hamming */
+ 	if (strength == FMC2_ECC_HAM)
+@@ -814,15 +776,13 @@ static int stm32_fmc2_calc_ecc_bytes(int step_size, int strength)
+ 	return 8;
+ }
+ 
+-NAND_ECC_CAPS_SINGLE(stm32_fmc2_ecc_caps, stm32_fmc2_calc_ecc_bytes,
++NAND_ECC_CAPS_SINGLE(stm32_fmc2_nfc_ecc_caps, stm32_fmc2_nfc_calc_ecc_bytes,
+ 		     FMC2_ECC_STEP_SIZE,
+ 		     FMC2_ECC_HAM, FMC2_ECC_BCH4, FMC2_ECC_BCH8);
+ 
+-/* FMC2 probe */
+-static int stm32_fmc2_parse_child(struct stm32_fmc2_nfc *fmc2,
+-				  ofnode node)
++static int stm32_fmc2_nfc_parse_child(struct stm32_fmc2_nfc *nfc, ofnode node)
+ {
+-	struct stm32_fmc2_nand *nand = &fmc2->nand;
++	struct stm32_fmc2_nand *nand = &nfc->nand;
+ 	u32 cs[FMC2_MAX_CE];
+ 	int ret, i;
+ 
+@@ -842,19 +802,19 @@ static int stm32_fmc2_parse_child(struct stm32_fmc2_nfc *fmc2,
+ 	}
+ 
+ 	for (i = 0; i < nand->ncs; i++) {
+-		if (cs[i] > FMC2_MAX_CE) {
++		if (cs[i] >= FMC2_MAX_CE) {
+ 			pr_err("Invalid reg value: %d\n",
+ 			       nand->cs_used[i]);
+ 			return -EINVAL;
+ 		}
+ 
+-		if (fmc2->cs_assigned & BIT(cs[i])) {
++		if (nfc->cs_assigned & BIT(cs[i])) {
+ 			pr_err("Cs already assigned: %d\n",
+ 			       nand->cs_used[i]);
+ 			return -EINVAL;
+ 		}
+ 
+-		fmc2->cs_assigned |= BIT(cs[i]);
++		nfc->cs_assigned |= BIT(cs[i]);
+ 		nand->cs_used[i] = cs[i];
+ 	}
+ 
+@@ -863,8 +823,8 @@ static int stm32_fmc2_parse_child(struct stm32_fmc2_nfc *fmc2,
+ 	return 0;
+ }
+ 
+-static int stm32_fmc2_parse_dt(struct udevice *dev,
+-			       struct stm32_fmc2_nfc *fmc2)
++static int stm32_fmc2_nfc_parse_dt(struct udevice *dev,
++				   struct stm32_fmc2_nfc *nfc)
+ {
+ 	ofnode child;
+ 	int ret, nchips = 0;
+@@ -883,7 +843,7 @@ static int stm32_fmc2_parse_dt(struct udevice *dev,
+ 	}
+ 
+ 	dev_for_each_subnode(child, dev) {
+-		ret = stm32_fmc2_parse_child(fmc2, child);
++		ret = stm32_fmc2_nfc_parse_child(nfc, child);
+ 		if (ret)
+ 			return ret;
+ 	}
+@@ -891,69 +851,98 @@ static int stm32_fmc2_parse_dt(struct udevice *dev,
+ 	return 0;
+ }
+ 
+-static int stm32_fmc2_probe(struct udevice *dev)
++static struct udevice *stm32_fmc2_nfc_get_cdev(struct udevice *dev)
+ {
+-	struct stm32_fmc2_nfc *fmc2 = dev_get_priv(dev);
+-	struct stm32_fmc2_nand *nand = &fmc2->nand;
++	struct udevice *pdev = dev_get_parent(dev);
++	struct udevice *cdev = NULL;
++	bool ebi_found = false;
++
++	if (pdev && ofnode_device_is_compatible(dev_ofnode(pdev),
++						"st,stm32mp1-fmc2-ebi"))
++		ebi_found = true;
++
++	if (ofnode_device_is_compatible(dev_ofnode(dev),
++					"st,stm32mp1-fmc2-nfc")) {
++		if (ebi_found)
++			cdev = pdev;
++
++		return cdev;
++	}
++
++	if (!ebi_found)
++		cdev = dev;
++
++	return cdev;
++}
++
++static int stm32_fmc2_nfc_probe(struct udevice *dev)
++{
++	struct stm32_fmc2_nfc *nfc = dev_get_priv(dev);
++	struct stm32_fmc2_nand *nand = &nfc->nand;
+ 	struct nand_chip *chip = &nand->chip;
+ 	struct mtd_info *mtd = &chip->mtd;
+ 	struct nand_ecclayout *ecclayout;
+-	struct resource resource;
++	struct udevice *cdev;
+ 	struct reset_ctl reset;
+ 	int oob_index, chip_cs, mem_region, ret;
+ 	unsigned int i;
++	int start_region = 0;
++	fdt_addr_t addr;
++
++	spin_lock_init(&nfc->controller.lock);
++	init_waitqueue_head(&nfc->controller.wq);
+ 
+-	spin_lock_init(&fmc2->controller.lock);
+-	init_waitqueue_head(&fmc2->controller.wq);
++	cdev = stm32_fmc2_nfc_get_cdev(dev);
++	if (!cdev)
++		return -EINVAL;
+ 
+-	ret = stm32_fmc2_parse_dt(dev, fmc2);
++	ret = stm32_fmc2_nfc_parse_dt(dev, nfc);
+ 	if (ret)
+ 		return ret;
+ 
+-	/* Get resources */
+-	ret = dev_read_resource(dev, 0, &resource);
+-	if (ret) {
+-		pr_err("Resource io_base not found");
+-		return ret;
+-	}
+-	fmc2->io_base = (void __iomem *)resource.start;
++	nfc->io_base = dev_read_addr(cdev);
++	if (nfc->io_base == FDT_ADDR_T_NONE)
++		return -EINVAL;
++
++	if (dev == cdev)
++		start_region = 1;
+ 
+-	for (chip_cs = 0, mem_region = 1; chip_cs < FMC2_MAX_CE;
++	for (chip_cs = 0, mem_region = start_region; chip_cs < FMC2_MAX_CE;
+ 	     chip_cs++, mem_region += 3) {
+-		if (!(fmc2->cs_assigned & BIT(chip_cs)))
++		if (!(nfc->cs_assigned & BIT(chip_cs)))
+ 			continue;
+ 
+-		ret = dev_read_resource(dev, mem_region, &resource);
+-		if (ret) {
++		addr = dev_read_addr_index(dev, mem_region);
++		if (addr == FDT_ADDR_T_NONE) {
+ 			pr_err("Resource data_base not found for cs%d",
+ 			       chip_cs);
+ 			return ret;
+ 		}
+-		fmc2->data_base[chip_cs] = (void __iomem *)resource.start;
++		nfc->data_base[chip_cs] = addr;
+ 
+-		ret = dev_read_resource(dev, mem_region + 1, &resource);
+-		if (ret) {
++		addr = dev_read_addr_index(dev, mem_region + 1);
++		if (addr == FDT_ADDR_T_NONE) {
+ 			pr_err("Resource cmd_base not found for cs%d",
+ 			       chip_cs);
+ 			return ret;
+ 		}
+-		fmc2->cmd_base[chip_cs] = (void __iomem *)resource.start;
++		nfc->cmd_base[chip_cs] = addr;
+ 
+-		ret = dev_read_resource(dev, mem_region + 2, &resource);
+-		if (ret) {
++		addr = dev_read_addr_index(dev, mem_region + 2);
++		if (addr == FDT_ADDR_T_NONE) {
+ 			pr_err("Resource addr_base not found for cs%d",
+ 			       chip_cs);
+ 			return ret;
+ 		}
+-		fmc2->addr_base[chip_cs] = (void __iomem *)resource.start;
++		nfc->addr_base[chip_cs] = addr;
+ 	}
+ 
+ 	/* Enable the clock */
+-	ret = clk_get_by_index(dev, 0, &fmc2->clk);
++	ret = clk_get_by_index(cdev, 0, &nfc->clk);
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = clk_enable(&fmc2->clk);
++	ret = clk_enable(&nfc->clk);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -965,13 +954,12 @@ static int stm32_fmc2_probe(struct udevice *dev)
+ 		reset_deassert(&reset);
+ 	}
+ 
+-	/* FMC2 init routine */
+-	stm32_fmc2_init(fmc2);
++	stm32_fmc2_nfc_init(nfc, dev != cdev);
+ 
+-	chip->controller = &fmc2->base;
+-	chip->select_chip = stm32_fmc2_select_chip;
+-	chip->setup_data_interface = stm32_fmc2_setup_interface;
+-	chip->cmd_ctrl = stm32_fmc2_cmd_ctrl;
++	chip->controller = &nfc->base;
++	chip->select_chip = stm32_fmc2_nfc_select_chip;
++	chip->setup_data_interface = stm32_fmc2_nfc_setup_interface;
++	chip->cmd_ctrl = stm32_fmc2_nfc_cmd_ctrl;
+ 	chip->chip_delay = FMC2_RB_DELAY_US;
+ 	chip->options |= NAND_BUSWIDTH_AUTO | NAND_NO_SUBPAGE_WRITE |
+ 			 NAND_USE_BOUNCE_BUFFER;
+@@ -981,7 +969,6 @@ static int stm32_fmc2_probe(struct udevice *dev)
+ 	chip->ecc.size = FMC2_ECC_STEP_SIZE;
+ 	chip->ecc.strength = FMC2_ECC_BCH8;
+ 
+-	/* Scan to find existence of the device */
+ 	ret = nand_scan_ident(mtd, nand->ncs, NULL);
+ 	if (ret)
+ 		return ret;
+@@ -998,7 +985,7 @@ static int stm32_fmc2_probe(struct udevice *dev)
+ 		return -EINVAL;
+ 	}
+ 
+-	ret = nand_check_ecc_caps(chip, &stm32_fmc2_ecc_caps,
++	ret = nand_check_ecc_caps(chip, &stm32_fmc2_nfc_ecc_caps,
+ 				  mtd->oobsize - FMC2_BBM_LEN);
+ 	if (ret) {
+ 		pr_err("No valid ECC settings set\n");
+@@ -1008,11 +995,10 @@ static int stm32_fmc2_probe(struct udevice *dev)
+ 	if (chip->bbt_options & NAND_BBT_USE_FLASH)
+ 		chip->bbt_options |= NAND_BBT_NO_OOB;
+ 
+-	/* NAND callbacks setup */
+-	stm32_fmc2_nand_callbacks_setup(chip);
++	stm32_fmc2_nfc_nand_callbacks_setup(chip);
+ 
+ 	/* Define ECC layout */
+-	ecclayout = &fmc2->ecclayout;
++	ecclayout = &nfc->ecclayout;
+ 	ecclayout->eccbytes = chip->ecc.bytes *
+ 			      (mtd->writesize / chip->ecc.size);
+ 	oob_index = FMC2_BBM_LEN;
+@@ -1022,11 +1008,9 @@ static int stm32_fmc2_probe(struct udevice *dev)
+ 	ecclayout->oobfree->length = mtd->oobsize - ecclayout->oobfree->offset;
+ 	chip->ecc.layout = ecclayout;
+ 
+-	/* Configure bus width to 16-bit */
+ 	if (chip->options & NAND_BUSWIDTH_16)
+-		stm32_fmc2_set_buswidth_16(fmc2, true);
++		stm32_fmc2_nfc_set_buswidth_16(nfc, true);
+ 
+-	/* Scan the device to fill MTD data-structures */
+ 	ret = nand_scan_tail(mtd);
+ 	if (ret)
+ 		return ret;
+@@ -1034,16 +1018,17 @@ static int stm32_fmc2_probe(struct udevice *dev)
+ 	return nand_register(0, mtd);
+ }
+ 
+-static const struct udevice_id stm32_fmc2_match[] = {
++static const struct udevice_id stm32_fmc2_nfc_match[] = {
+ 	{ .compatible = "st,stm32mp15-fmc2" },
++	{ .compatible = "st,stm32mp1-fmc2-nfc" },
+ 	{ /* Sentinel */ }
+ };
+ 
+-U_BOOT_DRIVER(stm32_fmc2_nand) = {
+-	.name = "stm32_fmc2_nand",
++U_BOOT_DRIVER(stm32_fmc2_nfc) = {
++	.name = "stm32_fmc2_nfc",
+ 	.id = UCLASS_MTD,
+-	.of_match = stm32_fmc2_match,
+-	.probe = stm32_fmc2_probe,
++	.of_match = stm32_fmc2_nfc_match,
++	.probe = stm32_fmc2_nfc_probe,
+ 	.priv_auto_alloc_size = sizeof(struct stm32_fmc2_nfc),
+ };
+ 
+@@ -1053,9 +1038,9 @@ void board_nand_init(void)
+ 	int ret;
+ 
+ 	ret = uclass_get_device_by_driver(UCLASS_MTD,
+-					  DM_GET_DRIVER(stm32_fmc2_nand),
++					  DM_GET_DRIVER(stm32_fmc2_nfc),
+ 					  &dev);
+ 	if (ret && ret != -ENODEV)
+-		pr_err("Failed to initialize STM32 FMC2 NAND controller. (error %d)\n",
++		pr_err("Failed to initialize STM32 FMC2 NFC controller. (error %d)\n",
+ 		       ret);
+ }
+diff --git a/drivers/net/dwc_eth_qos.c b/drivers/net/dwc_eth_qos.c
+index fad78100b7..bf416dd524 100644
+--- a/drivers/net/dwc_eth_qos.c
++++ b/drivers/net/dwc_eth_qos.c
+@@ -1287,9 +1287,9 @@ static int eqos_start(struct udevice *dev)
+ 		struct eqos_desc *rx_desc = &(eqos->rx_descs[i]);
+ 		rx_desc->des0 = (u32)(ulong)(eqos->rx_dma_buf +
+ 					     (i * EQOS_MAX_PACKET_SIZE));
+-		rx_desc->des3 |= EQOS_DESC3_OWN | EQOS_DESC3_BUF1V;
++		rx_desc->des3 = EQOS_DESC3_OWN | EQOS_DESC3_BUF1V;
++		eqos->config->ops->eqos_flush_desc(rx_desc);
+ 	}
+-	eqos->config->ops->eqos_flush_desc(eqos->descs);
+ 
+ 	writel(0, &eqos->dma_regs->ch0_txdesc_list_haddress);
+ 	writel((ulong)eqos->tx_descs, &eqos->dma_regs->ch0_txdesc_list_address);
+@@ -1418,7 +1418,8 @@ static int eqos_send(struct udevice *dev, void *packet, int length)
+ 	tx_desc->des3 = EQOS_DESC3_OWN | EQOS_DESC3_FD | EQOS_DESC3_LD | length;
+ 	eqos->config->ops->eqos_flush_desc(tx_desc);
+ 
+-	writel((ulong)(tx_desc + 1), &eqos->dma_regs->ch0_txdesc_tail_pointer);
++	writel((ulong)(&(eqos->tx_descs[eqos->tx_desc_idx])),
++		&eqos->dma_regs->ch0_txdesc_tail_pointer);
+ 
+ 	for (i = 0; i < 1000000; i++) {
+ 		eqos->config->ops->eqos_inval_desc(tx_desc);
+@@ -1441,6 +1442,7 @@ static int eqos_recv(struct udevice *dev, int flags, uchar **packetp)
+ 	debug("%s(dev=%p, flags=%x):\n", __func__, dev, flags);
+ 
+ 	rx_desc = &(eqos->rx_descs[eqos->rx_desc_idx]);
++	eqos->config->ops->eqos_inval_desc(rx_desc);
+ 	if (rx_desc->des3 & EQOS_DESC3_OWN) {
+ 		debug("%s: RX packet not available\n", __func__);
+ 		return -EAGAIN;
+@@ -1473,6 +1475,11 @@ static int eqos_free_pkt(struct udevice *dev, uchar *packet, int length)
+ 	}
+ 
+ 	rx_desc = &(eqos->rx_descs[eqos->rx_desc_idx]);
++
++	rx_desc->des0 = 0;
++	mb();
++	eqos->config->ops->eqos_flush_desc(rx_desc);
++	eqos->config->ops->eqos_inval_buffer(packet, length);
+ 	rx_desc->des0 = (u32)(ulong)packet;
+ 	rx_desc->des1 = 0;
+ 	rx_desc->des2 = 0;
+@@ -1481,7 +1488,7 @@ static int eqos_free_pkt(struct udevice *dev, uchar *packet, int length)
+ 	 * writes to the rest of the descriptor too.
+ 	 */
+ 	mb();
+-	rx_desc->des3 |= EQOS_DESC3_OWN | EQOS_DESC3_BUF1V;
++	rx_desc->des3 = EQOS_DESC3_OWN | EQOS_DESC3_BUF1V;
+ 	eqos->config->ops->eqos_flush_desc(rx_desc);
+ 
+ 	writel((ulong)rx_desc, &eqos->dma_regs->ch0_rxdesc_tail_pointer);
+@@ -1535,6 +1542,9 @@ static int eqos_probe_resources_core(struct udevice *dev)
+ 	}
+ 	debug("%s: rx_pkt=%p\n", __func__, eqos->rx_pkt);
+ 
++	eqos->config->ops->eqos_inval_buffer(eqos->rx_dma_buf,
++			EQOS_MAX_PACKET_SIZE * EQOS_DESCRIPTORS_RX);
++
+ 	debug("%s: OK\n", __func__);
+ 	return 0;
+ 
+diff --git a/drivers/phy/phy-stm32-usbphyc.c b/drivers/phy/phy-stm32-usbphyc.c
+index c12260842e..0fe39507a9 100644
+--- a/drivers/phy/phy-stm32-usbphyc.c
++++ b/drivers/phy/phy-stm32-usbphyc.c
+@@ -56,6 +56,7 @@ struct stm32_usbphyc {
+ 	struct udevice *vdda1v8;
+ 	struct stm32_usbphyc_phy {
+ 		struct udevice *vdd;
++		struct udevice *vbus;
+ 		bool init;
+ 		bool powered;
+ 	} phys[MAX_PHYS];
+@@ -241,6 +242,11 @@ static int stm32_usbphyc_phy_power_on(struct phy *phy)
+ 		if (ret)
+ 			return ret;
+ 	}
++	if (usbphyc_phy->vbus) {
++		ret = regulator_set_enable(usbphyc_phy->vbus, true);
++		if (ret)
++			return ret;
++	}
+ 
+ 	usbphyc_phy->powered = true;
+ 
+@@ -259,6 +265,11 @@ static int stm32_usbphyc_phy_power_off(struct phy *phy)
+ 	if (stm32_usbphyc_is_powered(usbphyc))
+ 		return 0;
+ 
++	if (usbphyc_phy->vbus) {
++		ret = regulator_set_enable(usbphyc_phy->vbus, false);
++		if (ret)
++			return ret;
++	}
+ 	if (usbphyc_phy->vdd) {
+ 		ret = regulator_set_enable_if_allowed(usbphyc_phy->vdd, false);
+ 		if (ret)
+@@ -268,7 +279,7 @@ static int stm32_usbphyc_phy_power_off(struct phy *phy)
+ 	return 0;
+ }
+ 
+-static int stm32_usbphyc_get_regulator(struct udevice *dev, ofnode node,
++static int stm32_usbphyc_get_regulator(ofnode node,
+ 				       char *supply_name,
+ 				       struct udevice **regulator)
+ {
+@@ -278,19 +289,14 @@ static int stm32_usbphyc_get_regulator(struct udevice *dev, ofnode node,
+ 	ret = ofnode_parse_phandle_with_args(node, supply_name,
+ 					     NULL, 0, 0,
+ 					     &regulator_phandle);
+-	if (ret) {
+-		dev_err(dev, "Can't find %s property (%d)\n", supply_name, ret);
++	if (ret)
+ 		return ret;
+-	}
+ 
+ 	ret = uclass_get_device_by_ofnode(UCLASS_REGULATOR,
+ 					  regulator_phandle.node,
+ 					  regulator);
+-
+-	if (ret) {
+-		dev_err(dev, "Can't get %s regulator (%d)\n", supply_name, ret);
++	if (ret)
+ 		return ret;
+-	}
+ 
+ 	return 0;
+ }
+@@ -377,10 +383,17 @@ static int stm32_usbphyc_probe(struct udevice *dev)
+ 
+ 		usbphyc_phy->init = false;
+ 		usbphyc_phy->powered = false;
+-		ret = stm32_usbphyc_get_regulator(dev, node, "phy-supply",
++		ret = stm32_usbphyc_get_regulator(node, "phy-supply",
+ 						  &usbphyc_phy->vdd);
+-		if (ret)
++		if (ret) {
++			dev_err(dev, "Can't get phy-supply regulator\n");
+ 			return ret;
++		}
++
++		ret = stm32_usbphyc_get_regulator(node, "vbus-supply",
++						  &usbphyc_phy->vbus);
++		if (ret)
++			usbphyc_phy->vbus = NULL;
+ 
+ 		node = dev_read_next_subnode(node);
+ 	}
+diff --git a/drivers/ram/stm32mp1/stm32mp1_tests.c b/drivers/ram/stm32mp1/stm32mp1_tests.c
+index cc7b429baa..b15c47b633 100644
+--- a/drivers/ram/stm32mp1/stm32mp1_tests.c
++++ b/drivers/ram/stm32mp1/stm32mp1_tests.c
+@@ -11,6 +11,8 @@
+ 
+ #define ADDR_INVALID	0xFFFFFFFF
+ 
++#define PATTERN_DEFAULT	"-"
++
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+ static int get_bufsize(char *string, int argc, char *argv[], int arg_nb,
+@@ -29,9 +31,9 @@ static int get_bufsize(char *string, int argc, char *argv[], int arg_nb,
+ 				argv[arg_nb], min_size);
+ 			return -1;
+ 		}
+-		if (value & 0x3) {
+-			sprintf(string, "unaligned size %s",
+-				argv[arg_nb]);
++		if (value & (min_size - 1)) {
++			sprintf(string, "unaligned size %s (min=%d)",
++				argv[arg_nb], min_size);
+ 			return -1;
+ 		}
+ 		*bufsize = value;
+@@ -100,6 +102,10 @@ static int get_pattern(char *string, int argc, char *argv[], int arg_nb,
+ 	unsigned long value;
+ 
+ 	if (argc > arg_nb) {
++		if (!strcmp(argv[arg_nb], PATTERN_DEFAULT)) {
++			*pattern = default_pattern;
++			return 0;
++		}
+ 		if (strict_strtoul(argv[arg_nb], 16, &value) < 0) {
+ 			sprintf(string, "invalid %d parameter %s",
+ 				arg_nb, argv[arg_nb]);
+@@ -439,7 +445,7 @@ static enum test_result test_addressbus(struct stm32mp1_ddrctl *ctl,
+ 	u32 bufsize;
+ 	u32 error;
+ 
+-	if (get_bufsize(string, argc, argv, 0, &bufsize, 4 * 1024, 4))
++	if (get_bufsize(string, argc, argv, 0, &bufsize, STM32_DDR_SIZE, 4))
+ 		return TEST_ERROR;
+ 	if (!is_power_of_2(bufsize)) {
+ 		sprintf(string, "size 0x%x is not a power of 2",
+@@ -449,6 +455,7 @@ static enum test_result test_addressbus(struct stm32mp1_ddrctl *ctl,
+ 	if (get_addr(string, argc, argv, 1, &addr))
+ 		return TEST_ERROR;
+ 
++	printf("running at 0x%08x length 0x%x\n", addr, bufsize);
+ 	error = (u32)addressbus((u32 *)addr, bufsize);
+ 	if (error) {
+ 		sprintf(string, "0x%x: error for address 0x%x",
+@@ -916,10 +923,12 @@ static enum test_result test_freq_pattern(struct stm32mp1_ddrctl *ctl,
+ 	enum test_result res = TEST_PASSED, pattern_res;
+ 	int i, bus_width;
+ 	const u32 **patterns;
+-	u32 bufsize;
++	u32 bufsize, addr;
+ 
+ 	if (get_bufsize(string, argc, argv, 0, &bufsize, 4 * 1024, 128))
+ 		return TEST_ERROR;
++	if (get_addr(string, argc, argv, 1, &addr))
++		return TEST_ERROR;
+ 
+ 	switch (readl(&ctl->mstr) & DDRCTRL_MSTR_DATA_BUS_WIDTH_MASK) {
+ 	case DDRCTRL_MSTR_DATA_BUS_WIDTH_HALF:
+@@ -932,15 +941,14 @@ static enum test_result test_freq_pattern(struct stm32mp1_ddrctl *ctl,
+ 	}
+ 
+ 	printf("running test pattern at 0x%08x length 0x%x width = %d\n",
+-	       STM32_DDR_BASE, bufsize, bus_width);
++	       addr, bufsize, bus_width);
+ 
+ 	patterns =
+ 		(const u32 **)(bus_width == 16 ? patterns_x16 : patterns_x32);
+ 
+ 	for (i = 0; i < NB_PATTERN; i++) {
+ 		printf("test data pattern %s:", patterns_comments[i]);
+-		pattern_res = test_loop(patterns[i], (u32 *)STM32_DDR_BASE,
+-					bufsize);
++		pattern_res = test_loop(patterns[i], (u32 *)addr, bufsize);
+ 		if (pattern_res != TEST_PASSED)	{
+ 			printf("Failed\n");
+ 			return pattern_res;
+@@ -1338,17 +1346,52 @@ static enum test_result test_all(struct stm32mp1_ddrctl *ctl,
+ 				 char *string, int argc, char *argv[])
+ {
+ 	enum test_result res = TEST_PASSED, result;
+-	int i, nb_error = 0;
++	int i, j, nb_error = 0, len;
+ 	u32 loop = 0, nb_loop;
++	int argc_test;
++	char *argv_test[4];
++	char loop_string[] = "1";
++	char pattern_string[] = PATTERN_DEFAULT;
++	u32 *addr;
+ 
+ 	if (get_nb_loop(string, argc, argv, 0, &nb_loop, 1))
+ 		return TEST_ERROR;
+ 
++	if (get_addr(string, argc, argv, 2, (u32 *)&addr))
++		return TEST_ERROR;
++
+ 	while (!nb_error) {
+ 		/* execute all the test except the lasts which are infinite */
+ 		for (i = 1; i < test_nb - NB_TEST_INFINITE; i++) {
++			argc_test = 0;
++			j = 0;
++			len = strlen(test[i].usage);
++			if (argc > 1 && j < len &&
++			    !strncmp("[size]", &test[i].usage[j], 6)) {
++				argv_test[argc_test++] = argv[1];
++				j += 7;
++			}
++			if (argc > 2) {
++				if (j < len &&
++				    !strncmp("[loop]", &test[i].usage[j], 6)) {
++					argv_test[argc_test++] = loop_string;
++					j += 7;
++				}
++				if (j < len &&
++				    !strncmp("[pattern]", &test[i].usage[j],
++					     9)) {
++					argv_test[argc_test++] = pattern_string;
++					j += 10;
++				}
++				if (j < len &&
++				    !strncmp("[addr]", &test[i].usage[j], 6)) {
++					argv_test[argc_test++] = argv[2];
++					j += 7;
++				}
++			}
+ 			printf("execute %d:%s\n", (int)i, test[i].name);
+-			result = test[i].fct(ctl, phy, string, 0, NULL);
++			result = test[i].fct(ctl, phy, string,
++					     argc_test, argv_test);
+ 			printf("result %d:%s = ", (int)i, test[i].name);
+ 			if (result != TEST_PASSED) {
+ 				nb_error++;
+@@ -1379,7 +1422,7 @@ static enum test_result test_all(struct stm32mp1_ddrctl *ctl,
+  ****************************************************************/
+ 
+ const struct test_desc test[] = {
+-	{test_all, "All", "[loop]", "Execute all tests", 1 },
++	{test_all, "All", "[loop] [size] [addr]", "Execute all tests", 3 },
+ 	{test_databus, "Simple DataBus", "[addr]",
+ 	 "Verifies each data line by walking 1 on fixed address",
+ 	 1
+@@ -1416,9 +1459,9 @@ const struct test_desc test[] = {
+ 	 "Verifies r/w and memcopy(burst for pseudo random value.",
+ 	 3
+ 	},
+-	{test_freq_pattern, "FrequencySelectivePattern", "[size]",
++	{test_freq_pattern, "FrequencySelectivePattern", "[size] [addr]",
+ 	 "write & test patterns: Mostly Zero, Mostly One and F/n",
+-	 1
++	 2
+ 	},
+ 	{test_blockseq, "BlockSequential", "[size] [loop] [addr]",
+ 	 "test incremental pattern",
+diff --git a/drivers/remoteproc/Kconfig b/drivers/remoteproc/Kconfig
+index 7c2e4804b5..3e1c9ed54f 100644
+--- a/drivers/remoteproc/Kconfig
++++ b/drivers/remoteproc/Kconfig
+@@ -12,6 +12,14 @@ config REMOTEPROC
+ 	bool
+ 	depends on DM
+ 
++config REMOTEPROC_OPTEE
++	bool "Support for the remoteproc in OPTEE"
++	depends on REMOTEPROC
++	depends on OPTEE
++	help
++	  Say y here to support remote processor firmware management by the
++	  trusted execution environment.
++
+ # Please keep the configuration alphabetically sorted.
+ config K3_SYSTEM_CONTROLLER
+ 	bool "Support for TI' K3 System Controller"
+diff --git a/drivers/remoteproc/Makefile b/drivers/remoteproc/Makefile
+index 69ae7bd1e8..d6c5f54fb7 100644
+--- a/drivers/remoteproc/Makefile
++++ b/drivers/remoteproc/Makefile
+@@ -5,6 +5,7 @@
+ #
+ 
+ obj-$(CONFIG_$(SPL_)REMOTEPROC) += rproc-uclass.o rproc-elf-loader.o
++obj-$(CONFIG_REMOTEPROC_OPTEE) += rproc-optee.o
+ 
+ # Remote proc drivers - Please keep this list alphabetically sorted.
+ obj-$(CONFIG_K3_SYSTEM_CONTROLLER) += k3_system_controller.o
+diff --git a/drivers/remoteproc/rproc-optee.c b/drivers/remoteproc/rproc-optee.c
+new file mode 100644
+index 0000000000..8e9f51ada0
+--- /dev/null
++++ b/drivers/remoteproc/rproc-optee.c
+@@ -0,0 +1,218 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Copyright (C) STMicroelectronics 2020 - All Rights Reserved
++ * Authors: Arnaud Pouliquen <arnaud.pouliquen@st.com>
++ */
++
++#include <dm.h>
++#include <errno.h>
++#include <remoteproc.h>
++#include <rproc_optee.h>
++#include <tee.h>
++
++#define TA_REMOTEPROC_UUID  { 0x80a4c275, 0x0a47, 0x4905, \
++		   { 0x82, 0x85, 0x14, 0x86, 0xa9, 0x77, 0x1a, 0x08} }
++
++/* The function IDs implemented in the associated TA */
++
++/*
++ * Authentication of the firmware and load in the remote processor memory.
++ *
++ * [in]  params[0].value.a:	unique 32bit identifier of the firmware
++ * [in]  params[1].memref:	buffer containing the image of the firmware
++ */
++#define TA_RPROC_FW_CMD_LOAD_FW		1
++
++/*
++ * Start the remote processor.
++ *
++ * [in]  params[0].value.a:	unique 32bit identifier of the firmware
++ */
++#define TA_RPROC_FW_CMD_START_FW	2
++
++/*
++ * Stop the remote processor.
++ *
++ * [in]  params[0].value.a:	unique 32bit identifier of the firmware
++ */
++#define TA_RPROC_FW_CMD_STOP_FW		3
++
++/*
++ * Return the physical address of the resource table, or 0 if not found
++ * No check is done to verify that the address returned is accessible by the
++ * non secure world. If the resource table is loaded in a protected memory,
++ * then accesses from non-secure world will likely fail.
++ *
++ * [in]  params[0].value.a:	unique 32bit identifier of the firmware
++ * [out] params[1].value.a:	32bit LSB resource table memory address
++ * [out] params[1].value.b:	32bit MSB resource table memory address
++ * [out] params[2].value.a:	32bit LSB resource table memory size
++ * [out] params[2].value.b:	32bit MSB resource table memory size
++ */
++#define TA_RPROC_FW_CMD_GET_RSC_TABLE	4
++
++/*
++ * Get remote processor firmware core dump. If found, return either
++ * TEE_SUCCESS on successful completion or TEE_ERROR_SHORT_BUFFER if output
++ * buffer is too short to store the core dump.
++ *
++ * [in]  params[0].value.a:	unique 32bit identifier of the firmware
++ * [out] params[1].memref:	Core dump, if found
++ */
++#define TA_RPROC_FW_CMD_GET_COREDUMP	5
++
++static void prepare_args(struct rproc_optee *trproc, int cmd,
++			 struct tee_invoke_arg *arg, uint num_param,
++			 struct tee_param *param)
++{
++	memset(arg, 0, sizeof(*arg));
++	memset(param, 0, num_param * sizeof(*param));
++
++	arg->func = cmd;
++	arg->session = trproc->session;
++
++	param[0] = (struct tee_param) {
++		.attr = TEE_PARAM_ATTR_TYPE_VALUE_INPUT,
++		.u.value.a = trproc->fw_id,
++	};
++}
++
++int rproc_optee_load(struct rproc_optee *trproc, ulong addr, ulong size)
++{
++	struct tee_invoke_arg arg;
++	struct tee_param param[2];
++	struct tee_shm *fw_shm;
++	int rc;
++
++	rc = tee_shm_register(trproc->tee, (void *)addr, size, 0, &fw_shm);
++	if (rc)
++		return rc;
++
++	prepare_args(trproc, TA_RPROC_FW_CMD_LOAD_FW, &arg, 2, param);
++
++	/* Provide the address and size of the firmware image */
++	param[1] = (struct tee_param){
++		.attr = TEE_PARAM_ATTR_TYPE_MEMREF_INPUT,
++		.u.memref = {
++			.shm = fw_shm,
++			.size = size,
++			.shm_offs = 0,
++		},
++	};
++
++	rc = tee_invoke_func(trproc->tee, &arg, 2, param);
++	if (rc < 0 || arg.ret != 0) {
++		dev_err(trproc->tee,
++			"TA_RPROC_FW_CMD_LOAD_FW invoke failed TEE err: %x, err:%x\n",
++			arg.ret, rc);
++		if (!rc)
++			rc = -EIO;
++	}
++
++	tee_shm_free(fw_shm);
++
++	return rc;
++}
++
++int rproc_optee_get_rsc_table(struct rproc_optee *trproc, phys_addr_t *rsc_addr,
++			      phys_size_t *rsc_size)
++{
++	struct tee_invoke_arg arg;
++	struct tee_param param[3];
++	int rc;
++
++	prepare_args(trproc, TA_RPROC_FW_CMD_GET_RSC_TABLE, &arg, 3, param);
++
++	param[1].attr = TEE_PARAM_ATTR_TYPE_VALUE_OUTPUT;
++	param[2].attr = TEE_PARAM_ATTR_TYPE_VALUE_OUTPUT;
++
++	rc = tee_invoke_func(trproc->tee, &arg, 3, param);
++	if (rc < 0 || arg.ret != 0) {
++		dev_err(trproc->tee,
++			"TA_RPROC_FW_CMD_GET_RSC_TABLE invoke failed TEE err: %x, err:%x\n",
++			arg.ret, rc);
++		if (!rc)
++			rc = -EIO;
++
++		return rc;
++	}
++
++	*rsc_size = (phys_size_t)
++			(param[2].u.value.b << 32 | param[2].u.value.a);
++	*rsc_addr = (phys_addr_t)
++			(param[1].u.value.b << 32 | param[1].u.value.a);
++
++	return 0;
++}
++
++int rproc_optee_start(struct rproc_optee *trproc)
++{
++	struct tee_invoke_arg arg;
++	struct tee_param param;
++	int rc;
++
++	prepare_args(trproc, TA_RPROC_FW_CMD_START_FW, &arg, 1, &param);
++
++	rc =  tee_invoke_func(trproc->tee, &arg, 1, &param);
++	if (rc < 0 || arg.ret != 0) {
++		dev_err(trproc->tee,
++			"TA_RPROC_FW_CMD_START_FW invoke failed TEE err: %x, err:%x\n",
++			arg.ret, rc);
++		if (!rc)
++			rc = -EIO;
++	}
++
++	return rc;
++}
++
++int rproc_optee_stop(struct rproc_optee *trproc)
++{
++	struct tee_invoke_arg arg;
++	struct tee_param param;
++	int rc;
++
++	prepare_args(trproc, TA_RPROC_FW_CMD_STOP_FW, &arg, 1, &param);
++
++	rc =  tee_invoke_func(trproc->tee, &arg, 1, &param);
++	if (rc < 0 || arg.ret != 0) {
++		dev_err(trproc->tee,
++			"TA_RPROC_FW_CMD_STOP_FW invoke failed TEE err: %x, err:%x\n",
++			arg.ret, rc);
++		if (!rc)
++			rc = -EIO;
++	}
++
++	return rc;
++}
++
++int rproc_optee_open(struct rproc_optee *trproc)
++{
++	struct udevice *tee = NULL;
++	const struct tee_optee_ta_uuid uuid = TA_REMOTEPROC_UUID;
++	struct tee_open_session_arg arg = { };
++	int rc;
++
++	if (!trproc)
++		return -EINVAL;
++
++	tee = tee_find_device(tee, NULL, NULL, NULL);
++	if (!tee)
++		return -ENODEV;
++
++	tee_optee_ta_uuid_to_octets(arg.uuid, &uuid);
++	rc = tee_open_session(tee, &arg, 0, NULL);
++	if (!rc) {
++		trproc->tee = tee;
++		trproc->session = arg.session;
++	}
++
++	return 0;
++}
++
++int rproc_optee_close(struct rproc_optee *trproc)
++{
++	if (!trproc->tee)
++		return -ENODEV;
++
++	return tee_close_session(trproc->tee, trproc->session);
++}
+diff --git a/drivers/remoteproc/stm32_copro.c b/drivers/remoteproc/stm32_copro.c
+index b8e62e52eb..35ac4a7eab 100644
+--- a/drivers/remoteproc/stm32_copro.c
++++ b/drivers/remoteproc/stm32_copro.c
+@@ -7,31 +7,22 @@
+ #include <dm.h>
+ #include <errno.h>
+ #include <fdtdec.h>
+-#include <regmap.h>
+ #include <remoteproc.h>
++#include <rproc_optee.h>
+ #include <reset.h>
+-#include <syscon.h>
+ #include <asm/io.h>
+-#include <asm/arch/stm32mp1_smc.h>
+ 
+-#define RCC_GCR_HOLD_BOOT	0
+-#define RCC_GCR_RELEASE_BOOT	1
++#define STM32MP15_M4_FW_ID 0
+ 
+ /**
+  * struct stm32_copro_privdata - power processor private data
+  * @reset_ctl:		reset controller handle
+- * @hold_boot_regmap:	regmap for remote processor reset hold boot
+- * @hold_boot_offset:	offset of the register controlling the hold boot setting
+- * @hold_boot_mask:	bitmask of the register for the hold boot field
+- * @secured_soc:	TZEN flag (register protection)
++ * @hold_boot:		hold boot controller handle
+  * @rsc_table_addr:	resource table address
+  */
+ struct stm32_copro_privdata {
+ 	struct reset_ctl reset_ctl;
+-	struct regmap *hold_boot_regmap;
+-	uint hold_boot_offset;
+-	uint hold_boot_mask;
+-	bool secured_soc;
++	struct reset_ctl hold_boot;
+ 	ulong rsc_table_addr;
+ };
+ 
+@@ -43,98 +34,51 @@ struct stm32_copro_privdata {
+ static int stm32_copro_probe(struct udevice *dev)
+ {
+ 	struct stm32_copro_privdata *priv;
+-	struct regmap *regmap;
+-	const fdt32_t *cell;
+-	uint tz_offset, tz_mask, tzen;
+-	int len, ret;
++	int ret;
+ 
+ 	priv = dev_get_priv(dev);
+ 
+-	regmap = syscon_regmap_lookup_by_phandle(dev, "st,syscfg-holdboot");
+-	if (IS_ERR(regmap)) {
+-		dev_err(dev, "unable to find holdboot regmap (%ld)\n",
+-			PTR_ERR(regmap));
+-		return PTR_ERR(regmap);
+-	}
+-
+-	cell = dev_read_prop(dev, "st,syscfg-holdboot", &len);
+-	if (len < 3 * sizeof(fdt32_t)) {
+-		dev_err(dev, "holdboot offset and mask not available\n");
+-		return -EINVAL;
+-	}
+-
+-	priv->hold_boot_regmap = regmap;
+-	priv->hold_boot_offset = fdtdec_get_number(cell + 1, 1);
+-	priv->hold_boot_mask = fdtdec_get_number(cell + 2, 1);
+-
+-	ret = reset_get_by_index(dev, 0, &priv->reset_ctl);
++	ret = reset_get_by_name(dev, "mcu_rst", &priv->reset_ctl);
+ 	if (ret) {
+ 		dev_err(dev, "failed to get reset (%d)\n", ret);
+ 		return ret;
+ 	}
+ 
+-	regmap = syscon_regmap_lookup_by_phandle(dev, "st,syscfg-tz");
+-	if (IS_ERR(regmap)) {
+-		dev_dbg(dev, "unable to find tz regmap (%ld)\n",
+-			PTR_ERR(regmap));
+-		return -EINVAL;
+-	}
+-
+-	cell = dev_read_prop(dev, "st,syscfg-tz", &len);
+-	if (3 * sizeof(fdt32_t) - len > 0) {
+-		dev_dbg(dev, "tz offset and mask not available\n");
+-		return -EINVAL;
+-	}
+-
+-	tz_offset = fdtdec_get_number(cell + 1, 1);
+-
+-	tz_mask = fdtdec_get_number(cell + 2, 1);
+-
+-	ret = regmap_read(regmap, tz_offset, &tzen);
++	ret = reset_get_by_name(dev, "hold_boot", &priv->hold_boot);
+ 	if (ret) {
+-		dev_dbg(dev, "failed to read soc secure state\n");
++		dev_err(dev, "failed to get hold boot (%d)\n", ret);
+ 		return ret;
+ 	}
+ 
+-	priv->secured_soc = !!(tzen & tz_mask);
+-
+ 	dev_dbg(dev, "probed\n");
+ 
+ 	return 0;
+ }
+ 
+ /**
+- * stm32_copro_set_hold_boot() - Hold boot bit management
++ * stm32_copro_optee_probe() - Open a session toward rproc trusted application
+  * @dev:	corresponding STM32 remote processor device
+- * @hold:	hold boot value
+  * @return 0 if all went ok, else corresponding -ve error
+  */
+-static int stm32_copro_set_hold_boot(struct udevice *dev, bool hold)
++static int stm32_copro_optee_probe(struct udevice *dev)
+ {
+-	struct stm32_copro_privdata *priv;
+-	uint val;
+-	int ret;
++	struct rproc_optee *trproc = dev_get_priv(dev);
+ 
+-	priv = dev_get_priv(dev);
+-
+-	val = hold ? RCC_GCR_HOLD_BOOT : RCC_GCR_RELEASE_BOOT;
++	trproc->fw_id = (u32)dev_get_driver_data(dev);
+ 
+-	if (priv->secured_soc) {
+-		return stm32_smc_exec(STM32_SMC_RCC, STM32_SMC_REG_WRITE,
+-				      priv->hold_boot_offset, val);
+-	}
++	return rproc_optee_open(trproc);
++}
+ 
+-	/*
+-	 * Note: shall run an SMC call (STM32_SMC_RCC) if platform is secured.
+-	 * To be updated when the code for this SMC service is available which
+-	 * is not the case for the time being.
+-	 */
+-	ret = regmap_update_bits(priv->hold_boot_regmap, priv->hold_boot_offset,
+-				 priv->hold_boot_mask, val);
+-	if (ret)
+-		dev_err(dev, "failed to set hold boot\n");
++/**
++ * stm32_copro_optee_remove() - Close the rproc trusted application session
++ * @dev:	corresponding STM32 remote processor device
++ * @return 0 if all went ok, else corresponding -ve error
++ */
++static int stm32_copro_optee_remove(struct udevice *dev)
++{
++	struct rproc_optee *trproc = dev_get_priv(dev);
+ 
+-	return ret;
++	return rproc_optee_close(trproc);
+ }
+ 
+ /**
+@@ -180,9 +124,11 @@ static int stm32_copro_load(struct udevice *dev, ulong addr, ulong size)
+ 
+ 	priv = dev_get_priv(dev);
+ 
+-	ret = stm32_copro_set_hold_boot(dev, true);
+-	if (ret)
++	ret = reset_assert(&priv->hold_boot);
++	if (ret) {
++		dev_err(dev, "Unable to assert hold boot (ret=%d)\n", ret);
+ 		return ret;
++	}
+ 
+ 	ret = reset_assert(&priv->reset_ctl);
+ 	if (ret) {
+@@ -199,6 +145,18 @@ static int stm32_copro_load(struct udevice *dev, ulong addr, ulong size)
+ 	return rproc_elf32_load_image(dev, addr, size);
+ }
+ 
++/**
++ * stm32_copro_optee_load() - Request OP−TEE to load the remote processor firmware
++ * @dev:	corresponding OP-TEE remote processor device
++ * @return 0 if all went ok, else corresponding -ve error
++ */
++static int stm32_copro_optee_load(struct udevice *dev, ulong addr, ulong size)
++{
++	struct rproc_optee *trproc = dev_get_priv(dev);
++
++	return rproc_optee_load(trproc, addr, size);
++}
++
+ /**
+  * stm32_copro_start() - Start the STM32 remote processor
+  * @dev:	corresponding STM32 remote processor device
+@@ -211,23 +169,54 @@ static int stm32_copro_start(struct udevice *dev)
+ 
+ 	priv = dev_get_priv(dev);
+ 
+-	/* move hold boot from true to false start the copro */
+-	ret = stm32_copro_set_hold_boot(dev, false);
+-	if (ret)
++	ret = reset_deassert(&priv->hold_boot);
++	if (ret) {
++		dev_err(dev, "Unable to deassert hold boot (ret=%d)\n", ret);
+ 		return ret;
++	}
+ 
+ 	/*
+ 	 * Once copro running, reset hold boot flag to avoid copro
+-	 * rebooting autonomously
++	 * rebooting autonomously (error should never occur)
+ 	 */
+-	ret = stm32_copro_set_hold_boot(dev, true);
+-	writel(ret ? TAMP_COPRO_STATE_OFF : TAMP_COPRO_STATE_CRUN,
+-	       TAMP_COPRO_STATE);
+-	if (!ret)
+-		/* Store rsc_address in bkp register */
+-		writel(priv->rsc_table_addr, TAMP_COPRO_RSC_TBL_ADDRESS);
+-
+-	return ret;
++	ret = reset_assert(&priv->hold_boot);
++	if (ret)
++		dev_err(dev, "Unable to assert hold boot (ret=%d)\n", ret);
++
++	/* indicates that copro is running */
++	writel(TAMP_COPRO_STATE_CRUN, TAMP_COPRO_STATE);
++	/* Store rsc_address in bkp register */
++	writel(priv->rsc_table_addr, TAMP_COPRO_RSC_TBL_ADDRESS);
++
++	return 0;
++}
++
++/**
++ * stm32_copro_optee_start() - Request OP−TEE to start the STM32 remote processor
++ * @dev:	corresponding OP-TEE remote processor device
++ * @return 0 if all went ok, else corresponding -ve error
++ */
++static int stm32_copro_optee_start(struct udevice *dev)
++{
++	struct rproc_optee *trproc = dev_get_priv(dev);
++	phys_addr_t rsc_addr;
++	phys_size_t rsc_size;
++	int ret;
++
++	ret = rproc_optee_get_rsc_table(trproc, &rsc_addr, &rsc_size);
++	if (ret)
++		return ret;
++
++	ret = rproc_optee_start(trproc);
++	if (ret)
++		return ret;
++
++	/* indicates that copro is running */
++	writel(TAMP_COPRO_STATE_CRUN, TAMP_COPRO_STATE);
++	/* Store rsc_address in bkp register */
++	writel(rsc_addr, TAMP_COPRO_RSC_TBL_ADDRESS);
++
++	return 0;
+ }
+ 
+ /**
+@@ -242,9 +231,11 @@ static int stm32_copro_reset(struct udevice *dev)
+ 
+ 	priv = dev_get_priv(dev);
+ 
+-	ret = stm32_copro_set_hold_boot(dev, true);
+-	if (ret)
++	ret = reset_assert(&priv->hold_boot);
++	if (ret) {
++		dev_err(dev, "Unable to assert hold boot (ret=%d)\n", ret);
+ 		return ret;
++	}
+ 
+ 	ret = reset_assert(&priv->reset_ctl);
+ 	if (ret) {
+@@ -267,6 +258,35 @@ static int stm32_copro_stop(struct udevice *dev)
+ 	return stm32_copro_reset(dev);
+ }
+ 
++/**
++ * stm32_copro_optee_reset() - Request OP−TEE to reset the STM32 remote processor
++ * @dev:	corresponding STM32 remote processor device
++ * @return 0 if all went ok, else corresponding -ve error
++ */
++static int stm32_copro_optee_reset(struct udevice *dev)
++{
++	struct rproc_optee *trproc = dev_get_priv(dev);
++	int ret;
++
++	ret = rproc_optee_stop(trproc);
++	if (ret)
++		return ret;
++
++	writel(TAMP_COPRO_STATE_OFF, TAMP_COPRO_STATE);
++
++	return 0;
++}
++
++/**
++ * stm32_copro_optee_stop() - Request OP−TEE to stop the STM32 remote processor
++ * @dev:	corresponding STM32 remote processor device
++ * @return 0 if all went ok, else corresponding -ve error
++ */
++static int stm32_copro_optee_stop(struct udevice *dev)
++{
++	return stm32_copro_optee_reset(dev);
++}
++
+ /**
+  * stm32_copro_is_running() - Is the STM32 remote processor running
+  * @dev:	corresponding STM32 remote processor device
+@@ -299,3 +319,28 @@ U_BOOT_DRIVER(stm32_copro) = {
+ 	.probe = stm32_copro_probe,
+ 	.priv_auto_alloc_size = sizeof(struct stm32_copro_privdata),
+ };
++
++static const struct dm_rproc_ops stm32_copro_optee_ops = {
++	.load = stm32_copro_optee_load,
++	.start = stm32_copro_optee_start,
++	.stop = stm32_copro_optee_stop,
++	.reset = stm32_copro_optee_reset,
++	.is_running = stm32_copro_is_running,
++	.device_to_virt = stm32_copro_device_to_virt,
++};
++
++static const struct udevice_id stm32_copro_optee_ids[] = {
++	{ .compatible = "st,stm32mp1-m4_optee", .data = STM32MP15_M4_FW_ID },
++	{}
++};
++
++U_BOOT_DRIVER(stm32_copro_optee) = {
++	.name = "stm32_m4_proc_optee",
++	.of_match = stm32_copro_optee_ids,
++	.id = UCLASS_REMOTEPROC,
++	.ops = &stm32_copro_optee_ops,
++	.probe = stm32_copro_optee_probe,
++	.remove = stm32_copro_optee_remove,
++	.priv_auto_alloc_size = sizeof(struct rproc_optee),
++	.flags = DM_FLAG_OS_PREPARE,
++};
+diff --git a/drivers/reset/stm32-reset.c b/drivers/reset/stm32-reset.c
+index 16d3dba749..bb481d3ee3 100644
+--- a/drivers/reset/stm32-reset.c
++++ b/drivers/reset/stm32-reset.c
+@@ -11,6 +11,9 @@
+ #include <stm32_rcc.h>
+ #include <asm/io.h>
+ 
++/* offset of register without set/clear management */
++#define RCC_MP_GCR_OFFSET 0x10C
++
+ /* reset clear offset for STM32MP RCC */
+ #define RCC_CL 0x4
+ 
+@@ -37,8 +40,11 @@ static int stm32_reset_assert(struct reset_ctl *reset_ctl)
+ 	      reset_ctl->id, bank, offset);
+ 
+ 	if (dev_get_driver_data(reset_ctl->dev) == STM32MP1)
+-		/* reset assert is done in rcc set register */
+-		writel(BIT(offset), priv->base + bank);
++		if (bank != RCC_MP_GCR_OFFSET)
++			/* reset assert is done in rcc set register */
++			writel(BIT(offset), priv->base + bank);
++		else
++			clrbits_le32(priv->base + bank, BIT(offset));
+ 	else
+ 		setbits_le32(priv->base + bank, BIT(offset));
+ 
+@@ -54,8 +60,11 @@ static int stm32_reset_deassert(struct reset_ctl *reset_ctl)
+ 	      reset_ctl->id, bank, offset);
+ 
+ 	if (dev_get_driver_data(reset_ctl->dev) == STM32MP1)
+-		/* reset deassert is done in rcc clr register */
+-		writel(BIT(offset), priv->base + bank + RCC_CL);
++		if (bank != RCC_MP_GCR_OFFSET)
++			/* reset deassert is done in rcc clr register */
++			writel(BIT(offset), priv->base + bank + RCC_CL);
++		else
++			setbits_le32(priv->base + bank, BIT(offset));
+ 	else
+ 		clrbits_le32(priv->base + bank, BIT(offset));
+ 
+diff --git a/drivers/usb/gadget/dwc2_udc_otg.c b/drivers/usb/gadget/dwc2_udc_otg.c
+index 35495e41fc..554bf2bd8d 100644
+--- a/drivers/usb/gadget/dwc2_udc_otg.c
++++ b/drivers/usb/gadget/dwc2_udc_otg.c
+@@ -1068,6 +1068,9 @@ static int dwc2_udc_otg_ofdata_to_platdata(struct udevice *dev)
+ 	platdata->force_b_session_valid =
+ 		dev_read_bool(dev, "u-boot,force-b-session-valid");
+ 
++	platdata->force_vbus_detection =
++		dev_read_bool(dev, "u-boot,force-vbus-detection");
++
+ 	/* force platdata according compatible */
+ 	drvdata = dev_get_driver_data(dev);
+ 	if (drvdata) {
+@@ -1160,31 +1163,45 @@ static int dwc2_udc_otg_probe(struct udevice *dev)
+ 	if (ret)
+ 		return ret;
+ 
+-	if (CONFIG_IS_ENABLED(DM_REGULATOR) &&
+-	    platdata->activate_stm_id_vb_detection &&
+-	    !platdata->force_b_session_valid) {
+-		ret = device_get_supply_regulator(dev, "usb33d-supply",
+-						  &priv->usb33d_supply);
+-		if (ret) {
+-			dev_err(dev, "can't get voltage level detector supply\n");
+-			return ret;
++	if (platdata->activate_stm_id_vb_detection) {
++		if (CONFIG_IS_ENABLED(DM_REGULATOR) &&
++		    (!platdata->force_b_session_valid ||
++		     platdata->force_vbus_detection)) {
++			ret = device_get_supply_regulator(dev, "usb33d-supply",
++							  &priv->usb33d_supply);
++			if (ret) {
++				dev_err(dev, "can't get voltage level detector supply\n");
++				return ret;
++			}
++			ret = regulator_set_enable(priv->usb33d_supply, true);
++			if (ret) {
++				dev_err(dev, "can't enable voltage level detector supply\n");
++				return ret;
++			}
+ 		}
+-		ret = regulator_set_enable(priv->usb33d_supply, true);
+-		if (ret) {
+-			dev_err(dev, "can't enable voltage level detector supply\n");
+-			return ret;
++
++		if (platdata->force_b_session_valid &&
++		    !platdata->force_vbus_detection) {
++			/* Override VBUS detection: enable then value*/
++			setbits_le32(&usbotg_reg->gotgctl, VB_VALOEN);
++			setbits_le32(&usbotg_reg->gotgctl, VB_VALOVAL);
++		} else {
++			/* Enable VBUS sensing */
++			setbits_le32(&usbotg_reg->ggpio,
++				     GGPIO_STM32_OTG_GCCFG_VBDEN);
++		}
++		if (platdata->force_b_session_valid) {
++			/* Override B session bits: enable then value */
++			setbits_le32(&usbotg_reg->gotgctl, A_VALOEN | B_VALOEN);
++			setbits_le32(&usbotg_reg->gotgctl,
++				     A_VALOVAL | B_VALOVAL);
++		} else {
++			/* Enable ID detection */
++			setbits_le32(&usbotg_reg->ggpio,
++				     GGPIO_STM32_OTG_GCCFG_IDEN);
+ 		}
+-		/* Enable vbus sensing */
+-		setbits_le32(&usbotg_reg->ggpio,
+-			     GGPIO_STM32_OTG_GCCFG_VBDEN |
+-			     GGPIO_STM32_OTG_GCCFG_IDEN);
+ 	}
+ 
+-	if (platdata->force_b_session_valid)
+-		/* Override B session bits : value and enable */
+-		setbits_le32(&usbotg_reg->gotgctl,
+-			     A_VALOEN | A_VALOVAL | B_VALOEN | B_VALOVAL);
+-
+ 	ret = dwc2_udc_probe(platdata);
+ 	if (ret)
+ 		return ret;
+diff --git a/drivers/usb/gadget/dwc2_udc_otg_regs.h b/drivers/usb/gadget/dwc2_udc_otg_regs.h
+index 434db5ba39..a4f7d54368 100644
+--- a/drivers/usb/gadget/dwc2_udc_otg_regs.h
++++ b/drivers/usb/gadget/dwc2_udc_otg_regs.h
+@@ -93,6 +93,8 @@ struct dwc2_usbotg_reg {
+ #define B_VALOEN			BIT(6)
+ #define A_VALOVAL			BIT(5)
+ #define A_VALOEN			BIT(4)
++#define VB_VALOVAL			BIT(3)
++#define VB_VALOEN			BIT(2)
+ 
+ /* DWC2_UDC_OTG_GOTINT */
+ #define GOTGINT_SES_END_DET		(1<<2)
+diff --git a/include/configs/grpeach.h b/include/configs/grpeach.h
+index b875f9b132..af5b92443e 100644
+--- a/include/configs/grpeach.h
++++ b/include/configs/grpeach.h
+@@ -16,7 +16,6 @@
+ 
+ /* Miscellaneous */
+ #define CONFIG_SYS_PBSIZE	256
+-#define CONFIG_SYS_ARM_CACHE_WRITETHROUGH
+ #define CONFIG_CMDLINE_TAG
+ 
+ /* Internal RAM Size (RZ/A1=3M, RZ/A1M=5M, RZ/A1H=10M) */
+diff --git a/include/configs/pxa-common.h b/include/configs/pxa-common.h
+index e25800a095..2632d48cc9 100644
+--- a/include/configs/pxa-common.h
++++ b/include/configs/pxa-common.h
+@@ -8,8 +8,6 @@
+ #ifndef	__CONFIG_PXA_COMMON_H__
+ #define	__CONFIG_PXA_COMMON_H__
+ 
+-#define	CONFIG_SYS_ARM_CACHE_WRITETHROUGH
+-
+ /*
+  * KGDB
+  */
+diff --git a/include/configs/stm32mp1.h b/include/configs/stm32mp1.h
+index 7b4fe484d3..becca68a78 100644
+--- a/include/configs/stm32mp1.h
++++ b/include/configs/stm32mp1.h
+@@ -168,7 +168,7 @@
+ 
+ #define STM32MP_ANDROID \
+ 	"suffix=a\0" \
+-	"dtimg_addr=0xc4500000\0" \
++	"dtimg_addr=0xc44FFF80\0" \
+ 	"android_mmc_splash="\
+ 		"if part start mmc ${devnum} splash splash_start && " \
+ 		   "part size mmc ${devnum} splash splash_size;"\
+@@ -186,22 +186,20 @@
+ 		   "dtimg start ${dtimg_addr} ${dt_index} fdt_addr_r;"\
+ 		"fi\0" \
+ 	"android_mmc_kernel="\
+-		"if part start mmc ${devnum} boot_${suffix} boot_start &&" \
++		"if part start mmc ${devnum} boot_${suffix} boot_start && " \
+ 		   "part size mmc ${devnum} boot_${suffix} boot_size;"\
+ 		"then " \
+ 		   "mmc read ${kernel_addr_r} ${boot_start} ${boot_size};" \
+-		   "part nb mmc ${devnum} system_${suffix} rootpart_nb;" \
+-		   "env set bootargs" \
+-		     "root=/dev/mmcblk${devnum}p${rootpart_nb} " \
++		   "env set bootargs ${android_bootargs} " \
+ 		     "androidboot.serialno=${serial#} " \
+-		     "androidboot.slot_suffix=_${suffix};"\
++		     "androidboot.slot_suffix=_${suffix};" \
+ 		"fi\0" \
+ 	"android_mmc_boot="\
+ 		"mmc dev ${devnum};"\
+ 		"run android_mmc_splash;" \
+ 		"run android_mmc_fdt;" \
+ 		"run android_mmc_kernel;" \
+-		"bootm ${kernel_addr_r} - ${fdt_addr_r};\0" \
++		"bootm ${kernel_addr_r} ${kernel_addr_r} ${fdt_addr_r};\0" \
+ 	"bootcmd_android=" \
+ 		"env set mmc_boot run android_mmc_boot;" \
+ 		"run bootcmd_stm32mp\0"
+diff --git a/include/dt-bindings/reset/stm32mp1-resets.h b/include/dt-bindings/reset/stm32mp1-resets.h
+index bc71924faa..f3a0ed3178 100644
+--- a/include/dt-bindings/reset/stm32mp1-resets.h
++++ b/include/dt-bindings/reset/stm32mp1-resets.h
+@@ -7,6 +7,7 @@
+ #ifndef _DT_BINDINGS_STM32MP1_RESET_H_
+ #define _DT_BINDINGS_STM32MP1_RESET_H_
+ 
++#define MCU_HOLD_BOOT_R	2144
+ #define LTDC_R		3072
+ #define DSI_R		3076
+ #define DDRPERFM_R	3080
+@@ -117,5 +118,6 @@
+ #define RST_SCMI0_RNG1		8
+ #define RST_SCMI0_MDMA		9
+ #define RST_SCMI0_MCU		10
++#define RST_SCMI0_MCU_HOLD_BOOT	11
+ 
+ #endif /* _DT_BINDINGS_STM32MP1_RESET_H_ */
+diff --git a/include/fdtdec.h b/include/fdtdec.h
+index 696e0fd024..a6446aa624 100644
+--- a/include/fdtdec.h
++++ b/include/fdtdec.h
+@@ -1035,7 +1035,7 @@ static inline int fdtdec_set_phandle(void *blob, int node, uint32_t phandle)
+  *     };
+  *     uint32_t phandle;
+  *
+- *     fdtdec_add_reserved_memory(fdt, "framebuffer", &fb, &phandle);
++ *     fdtdec_add_reserved_memory(fdt, "framebuffer", &fb, &phandle, false);
+  *
+  * This results in the following subnode being added to the top-level
+  * /reserved-memory node:
+@@ -1062,11 +1062,12 @@ static inline int fdtdec_set_phandle(void *blob, int node, uint32_t phandle)
+  * @param carveout	information about the carveout region
+  * @param phandlep	return location for the phandle of the carveout region
+  *			can be NULL if no phandle should be added
++ * @param no_map	add "no-map" property if true
+  * @return 0 on success or a negative error code on failure
+  */
+ int fdtdec_add_reserved_memory(void *blob, const char *basename,
+ 			       const struct fdt_memory *carveout,
+-			       uint32_t *phandlep);
++			       uint32_t *phandlep, bool no_map);
+ 
+ /**
+  * fdtdec_get_carveout() - reads a carveout from an FDT
+diff --git a/include/lmb.h b/include/lmb.h
+index 3b338dfee0..dab635030d 100644
+--- a/include/lmb.h
++++ b/include/lmb.h
+@@ -14,9 +14,20 @@
+ 
+ #define MAX_LMB_REGIONS 8
+ 
++/**
++ * enum lmb_flags - definition of memory region attributes
++ * @LMB_NONE: no special request
++ * @LMB_NOMAP: don't add to mmu configuration
++ */
++enum lmb_flags {
++	LMB_NONE		= 0x0,	/* No special request */
++	LMB_NOMAP		= 0x4,	/* don't add to mmu config */
++};
++
+ struct lmb_property {
+ 	phys_addr_t base;
+ 	phys_size_t size;
++	enum lmb_flags flags;
+ };
+ 
+ struct lmb_region {
+@@ -36,6 +47,8 @@ extern void lmb_init_and_reserve_range(struct lmb *lmb, phys_addr_t base,
+ 				       phys_size_t size, void *fdt_blob);
+ extern long lmb_add(struct lmb *lmb, phys_addr_t base, phys_size_t size);
+ extern long lmb_reserve(struct lmb *lmb, phys_addr_t base, phys_size_t size);
++extern long lmb_reserve_flags(struct lmb *lmb, phys_addr_t base,
++			      phys_size_t size, enum lmb_flags flags);
+ extern phys_addr_t lmb_alloc(struct lmb *lmb, phys_size_t size, ulong align);
+ extern phys_addr_t lmb_alloc_base(struct lmb *lmb, phys_size_t size, ulong align,
+ 			    phys_addr_t max_addr);
+@@ -45,6 +58,7 @@ extern phys_addr_t lmb_alloc_addr(struct lmb *lmb, phys_addr_t base,
+ 				  phys_size_t size);
+ extern phys_size_t lmb_get_free_size(struct lmb *lmb, phys_addr_t addr);
+ extern int lmb_is_reserved(struct lmb *lmb, phys_addr_t addr);
++extern int lmb_is_reserved_flags(struct lmb *lmb, phys_addr_t addr, int flags);
+ extern long lmb_free(struct lmb *lmb, phys_addr_t base, phys_size_t size);
+ 
+ extern void lmb_dump_all(struct lmb *lmb);
+@@ -58,6 +72,13 @@ lmb_size_bytes(struct lmb_region *type, unsigned long region_nr)
+ void board_lmb_reserve(struct lmb *lmb);
+ void arch_lmb_reserve(struct lmb *lmb);
+ 
++/* Low level functions */
++
++static inline bool lmb_is_nomap(struct lmb_property *m)
++{
++	return !!(m->flags & LMB_NOMAP);
++}
++
+ #endif /* __KERNEL__ */
+ 
+ #endif /* _LINUX_LMB_H */
+diff --git a/include/rproc_optee.h b/include/rproc_optee.h
+new file mode 100644
+index 0000000000..13193bbe77
+--- /dev/null
++++ b/include/rproc_optee.h
+@@ -0,0 +1,127 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Copyright (C) STMicroelectronics 2020 - All Rights Reserved
++ */
++
++#ifndef _RPROC_OPTEE_H_
++#define _RPROC_OPTEE_H_
++
++/**
++ * struct rproc_optee - TEE remoteproc structure
++ * @tee:	TEE device
++ * @fw_id:	Identifier of the target firmware
++ * @session:	TEE session identifier
++ */
++struct rproc_optee {
++	struct udevice *tee;
++	u32 fw_id;
++	u32 session;
++};
++
++#if IS_ENABLED(CONFIG_REMOTEPROC_OPTEE)
++
++/**
++ * rproc_optee_open() - open a rproc tee session
++ *
++ * Open a session towards the trusted application in charge of the remote
++ * processor.
++ *
++ * @trproc: OPTEE remoteproc context structure
++ *
++ * @return 0 if the session is opened, or an appropriate error value.
++ */
++int rproc_optee_open(struct rproc_optee *trproc);
++
++/**
++ * rproc_optee_close() - close a rproc tee session
++ *
++ * Close the trusted application session in charge of the remote processor.
++ *
++ * @trproc: OPTEE remoteproc context structure
++ *
++ * @return 0 on success, or an appropriate error value.
++ */
++int rproc_optee_close(struct rproc_optee *trproc);
++
++/**
++ * rproc_optee_start() - Request OP-TEE to start a remote processor
++ *
++ * @trproc: OPTEE remoteproc context structure
++ *
++ * @return 0 on success, or an appropriate error value.
++ */
++int rproc_optee_start(struct rproc_optee *trproc);
++
++/**
++ * rproc_optee_stop() - Request OP-TEE to stop a remote processor
++ *
++ * @trproc: OPTEE remoteproc context structure
++ *
++ * @return 0 on success, or an appropriate error value.
++ */
++int rproc_optee_stop(struct rproc_optee *trproc);
++
++/**
++ * rproc_optee_get_rsc_table() - Request OP-TEE the resource table
++ *
++ * Get the address and the size of the resource table. If no resource table is
++ * found, the size and address are null.
++ *
++ * @trproc: OPTEE remoteproc context structure
++ * @rsc_addr:  out the physical address of the resource table returned
++ * @rsc_size:  out the size of the resource table
++ *
++ * @return 0 on success, or an appropriate error value.
++ */
++int rproc_optee_get_rsc_table(struct rproc_optee *trproc, phys_addr_t *rsc_addr,
++			      phys_size_t *rsc_size);
++
++/**
++ * rproc_optee_load() - load an signed ELF image
++ *
++ * @trproc: OPTEE remoteproc context structure
++ * @addr:	valid ELF image address
++ * @size:	size of the image
++ *
++ * @return 0 if the image is successfully loaded, else appropriate error value.
++ */
++int rproc_optee_load(struct rproc_optee *trproc, ulong addr, ulong size);
++
++#else
++
++static inline int  rproc_optee_open(struct rproc_optee *trproc)
++{
++	return -ENOSYS;
++}
++
++static inline int  rproc_optee_close(struct rproc_optee *trproc)
++{
++	return -ENOSYS;
++}
++
++static inline int  rproc_optee_start(struct rproc_optee *trproc)
++{
++	return -ENOSYS;
++}
++
++static inline int  rproc_optee_stop(struct rproc_optee *trproc)
++{
++	return -ENOSYS;
++}
++
++static inline int  rproc_optee_get_rsc_table(struct rproc_optee *trproc,
++					     phys_addr_t *rsc_addr,
++					     phys_size_t *rsc_size)
++{
++	return -ENOSYS;
++}
++
++static inline int  rproc_optee_load(struct rproc_optee *trproc, ulong addr,
++				    ulong size)
++{
++	return -ENOSYS;
++}
++
++#endif
++
++#endif	/* _RPROC_OPTEE_H_ */
+diff --git a/include/usb/dwc2_udc.h b/include/usb/dwc2_udc.h
+index a2af381a66..aa37e957b4 100644
+--- a/include/usb/dwc2_udc.h
++++ b/include/usb/dwc2_udc.h
+@@ -28,6 +28,7 @@ struct dwc2_plat_otg_data {
+ 	unsigned int	tx_fifo_sz_array[DWC2_MAX_HW_ENDPOINTS];
+ 	unsigned char   tx_fifo_sz_nb;
+ 	bool		force_b_session_valid;
++	bool		force_vbus_detection;
+ 	bool		activate_stm_id_vb_detection;
+ };
+ 
+diff --git a/lib/fdtdec.c b/lib/fdtdec.c
+index 61af3472e6..63df8e1ba1 100644
+--- a/lib/fdtdec.c
++++ b/lib/fdtdec.c
+@@ -1272,7 +1272,7 @@ static int fdtdec_init_reserved_memory(void *blob)
+ 
+ int fdtdec_add_reserved_memory(void *blob, const char *basename,
+ 			       const struct fdt_memory *carveout,
+-			       uint32_t *phandlep)
++			       uint32_t *phandlep, bool no_map)
+ {
+ 	fdt32_t cells[4] = {}, *ptr = cells;
+ 	uint32_t upper, lower, phandle;
+@@ -1369,6 +1369,12 @@ int fdtdec_add_reserved_memory(void *blob, const char *basename,
+ 	if (err < 0)
+ 		return err;
+ 
++	if (no_map) {
++		err = fdt_setprop(blob, node, "no-map", NULL, 0);
++		if (err < 0)
++			return err;
++	}
++
+ 	/* return the phandle for the new node for the caller to use */
+ 	if (phandlep)
+ 		*phandlep = phandle;
+@@ -1439,7 +1445,7 @@ int fdtdec_set_carveout(void *blob, const char *node, const char *prop_name,
+ 		return -FDT_ERR_BADOFFSET;
+ 	}
+ 
+-	err = fdtdec_add_reserved_memory(blob, name, carveout, &phandle);
++	err = fdtdec_add_reserved_memory(blob, name, carveout, &phandle, false);
+ 	if (err < 0) {
+ 		debug("failed to add reserved memory: %d\n", err);
+ 		return err;
+diff --git a/lib/lmb.c b/lib/lmb.c
+index b3b84e4d37..2f15610419 100644
+--- a/lib/lmb.c
++++ b/lib/lmb.c
+@@ -25,6 +25,8 @@ void lmb_dump_all(struct lmb *lmb)
+ 		      (unsigned long long)lmb->memory.region[i].base);
+ 		debug("		   .size   = 0x%llx\n",
+ 		      (unsigned long long)lmb->memory.region[i].size);
++		debug("		   .flags   = 0x%x\n",
++		      lmb->memory.region[i].flags);
+ 	}
+ 
+ 	debug("\n    reserved.cnt	   = 0x%lx\n",
+@@ -36,6 +38,8 @@ void lmb_dump_all(struct lmb *lmb)
+ 		      (unsigned long long)lmb->reserved.region[i].base);
+ 		debug("		     .size = 0x%llx\n",
+ 		      (unsigned long long)lmb->reserved.region[i].size);
++		debug("		     .flags = 0x%x\n",
++		      lmb->reserved.region[i].flags);
+ 	}
+ #endif /* DEBUG */
+ }
+@@ -78,6 +82,7 @@ static void lmb_remove_region(struct lmb_region *rgn, unsigned long r)
+ 	for (i = r; i < rgn->cnt - 1; i++) {
+ 		rgn->region[i].base = rgn->region[i + 1].base;
+ 		rgn->region[i].size = rgn->region[i + 1].size;
++		rgn->region[i].flags = rgn->region[i + 1].flags;
+ 	}
+ 	rgn->cnt--;
+ }
+@@ -139,7 +144,8 @@ void lmb_init_and_reserve_range(struct lmb *lmb, phys_addr_t base,
+ }
+ 
+ /* This routine called with relocation disabled. */
+-static long lmb_add_region(struct lmb_region *rgn, phys_addr_t base, phys_size_t size)
++static long lmb_add_region_flags(struct lmb_region *rgn, phys_addr_t base,
++				 phys_size_t size, enum lmb_flags flags)
+ {
+ 	unsigned long coalesced = 0;
+ 	long adjacent, i;
+@@ -147,6 +153,7 @@ static long lmb_add_region(struct lmb_region *rgn, phys_addr_t base, phys_size_t
+ 	if (rgn->cnt == 0) {
+ 		rgn->region[0].base = base;
+ 		rgn->region[0].size = size;
++		rgn->region[0].flags = flags;
+ 		rgn->cnt = 1;
+ 		return 0;
+ 	}
+@@ -155,18 +162,27 @@ static long lmb_add_region(struct lmb_region *rgn, phys_addr_t base, phys_size_t
+ 	for (i = 0; i < rgn->cnt; i++) {
+ 		phys_addr_t rgnbase = rgn->region[i].base;
+ 		phys_size_t rgnsize = rgn->region[i].size;
++		phys_size_t rgnflags = rgn->region[i].flags;
+ 
+-		if ((rgnbase == base) && (rgnsize == size))
+-			/* Already have this region, so we're done */
+-			return 0;
++		if (rgnbase == base && rgnsize == size) {
++			if (flags == rgnflags)
++				/* Already have this region, so we're done */
++				return 0;
++			else
++				return -1; /* regions with new flags */
++		}
+ 
+ 		adjacent = lmb_addrs_adjacent(base, size, rgnbase, rgnsize);
+ 		if (adjacent > 0) {
++			if (flags != rgnflags)
++				break;
+ 			rgn->region[i].base -= size;
+ 			rgn->region[i].size += size;
+ 			coalesced++;
+ 			break;
+ 		} else if (adjacent < 0) {
++			if (flags != rgnflags)
++				break;
+ 			rgn->region[i].size += size;
+ 			coalesced++;
+ 			break;
+@@ -177,8 +193,10 @@ static long lmb_add_region(struct lmb_region *rgn, phys_addr_t base, phys_size_t
+ 	}
+ 
+ 	if ((i < rgn->cnt - 1) && lmb_regions_adjacent(rgn, i, i + 1)) {
+-		lmb_coalesce_regions(rgn, i, i + 1);
+-		coalesced++;
++		if (rgn->region[i].flags == rgn->region[i + 1].flags) {
++			lmb_coalesce_regions(rgn, i, i + 1);
++			coalesced++;
++		}
+ 	}
+ 
+ 	if (coalesced)
+@@ -191,9 +209,11 @@ static long lmb_add_region(struct lmb_region *rgn, phys_addr_t base, phys_size_t
+ 		if (base < rgn->region[i].base) {
+ 			rgn->region[i + 1].base = rgn->region[i].base;
+ 			rgn->region[i + 1].size = rgn->region[i].size;
++			rgn->region[i + 1].flags = rgn->region[i].flags;
+ 		} else {
+ 			rgn->region[i + 1].base = base;
+ 			rgn->region[i + 1].size = size;
++			rgn->region[i + 1].flags = flags;
+ 			break;
+ 		}
+ 	}
+@@ -201,6 +221,7 @@ static long lmb_add_region(struct lmb_region *rgn, phys_addr_t base, phys_size_t
+ 	if (base < rgn->region[0].base) {
+ 		rgn->region[0].base = base;
+ 		rgn->region[0].size = size;
++		rgn->region[0].flags = flags;
+ 	}
+ 
+ 	rgn->cnt++;
+@@ -208,6 +229,12 @@ static long lmb_add_region(struct lmb_region *rgn, phys_addr_t base, phys_size_t
+ 	return 0;
+ }
+ 
++static long lmb_add_region(struct lmb_region *rgn, phys_addr_t base,
++			   phys_size_t size)
++{
++	return lmb_add_region_flags(rgn, base, size, LMB_NONE);
++}
++
+ /* This routine may be called with relocation disabled. */
+ long lmb_add(struct lmb *lmb, phys_addr_t base, phys_size_t size)
+ {
+@@ -262,14 +289,21 @@ long lmb_free(struct lmb *lmb, phys_addr_t base, phys_size_t size)
+ 	 * beginging of the hole and add the region after hole.
+ 	 */
+ 	rgn->region[i].size = base - rgn->region[i].base;
+-	return lmb_add_region(rgn, end + 1, rgnend - end);
++	return lmb_add_region_flags(rgn, end + 1, rgnend - end,
++				    rgn->region[i].flags);
+ }
+ 
+-long lmb_reserve(struct lmb *lmb, phys_addr_t base, phys_size_t size)
++long lmb_reserve_flags(struct lmb *lmb, phys_addr_t base, phys_size_t size,
++		       enum lmb_flags flags)
+ {
+ 	struct lmb_region *_rgn = &(lmb->reserved);
+ 
+-	return lmb_add_region(_rgn, base, size);
++	return lmb_add_region_flags(_rgn, base, size, flags);
++}
++
++long lmb_reserve(struct lmb *lmb, phys_addr_t base, phys_size_t size)
++{
++	return lmb_reserve_flags(lmb, base, size, LMB_NONE);
+ }
+ 
+ static long lmb_overlaps_region(struct lmb_region *rgn, phys_addr_t base,
+@@ -404,7 +438,7 @@ phys_size_t lmb_get_free_size(struct lmb *lmb, phys_addr_t addr)
+ 	return 0;
+ }
+ 
+-int lmb_is_reserved(struct lmb *lmb, phys_addr_t addr)
++int lmb_is_reserved_flags(struct lmb *lmb, phys_addr_t addr, int flags)
+ {
+ 	int i;
+ 
+@@ -412,11 +446,17 @@ int lmb_is_reserved(struct lmb *lmb, phys_addr_t addr)
+ 		phys_addr_t upper = lmb->reserved.region[i].base +
+ 			lmb->reserved.region[i].size - 1;
+ 		if ((addr >= lmb->reserved.region[i].base) && (addr <= upper))
+-			return 1;
++			return !!((lmb->reserved.region[i].flags & flags)
++				   == flags);
+ 	}
+ 	return 0;
+ }
+ 
++int lmb_is_reserved(struct lmb *lmb, phys_addr_t addr)
++{
++	return lmb_is_reserved_flags(lmb, addr, LMB_NONE);
++}
++
+ __weak void board_lmb_reserve(struct lmb *lmb)
+ {
+ 	/* please define platform specific board_lmb_reserve() */
+diff --git a/lib/optee/optee.c b/lib/optee/optee.c
+index 79b058a17a..5aa99964aa 100644
+--- a/lib/optee/optee.c
++++ b/lib/optee/optee.c
+@@ -154,8 +154,9 @@ int optee_copy_fdt_nodes(const void *old_blob, void *new_blob)
+ 	/* optee inserts its memory regions as reserved-memory nodes */
+ 	nodeoffset = fdt_subnode_offset(old_blob, 0, "reserved-memory");
+ 	if (nodeoffset >= 0) {
+-		subnode = fdt_first_subnode(old_blob, nodeoffset);
+-		while (subnode >= 0) {
++		for (subnode = fdt_first_subnode(old_blob, nodeoffset);
++		     subnode >= 0;
++		     subnode = fdt_next_subnode(old_blob, subnode)) {
+ 			const char *name = fdt_get_name(old_blob,
+ 							subnode, NULL);
+ 			if (!name)
+@@ -189,14 +190,12 @@ int optee_copy_fdt_nodes(const void *old_blob, void *new_blob)
+ 				ret = fdtdec_add_reserved_memory(new_blob,
+ 								 nodename,
+ 								 &carveout,
+-								 NULL);
++								 NULL, true);
+ 				free(oldname);
+ 
+ 				if (ret < 0)
+ 					return ret;
+ 			}
+-
+-			subnode = fdt_next_subnode(old_blob, subnode);
+ 		}
+ 	}
+ 
+diff --git a/scripts/config_whitelist.txt b/scripts/config_whitelist.txt
+index db089bed1a..a8767d4554 100644
+--- a/scripts/config_whitelist.txt
++++ b/scripts/config_whitelist.txt
+@@ -1791,7 +1791,6 @@ CONFIG_SYS_AMASK4
+ CONFIG_SYS_AMASK5
+ CONFIG_SYS_AMASK6
+ CONFIG_SYS_AMASK7
+-CONFIG_SYS_ARM_CACHE_WRITETHROUGH
+ CONFIG_SYS_AT91_CPU_NAME
+ CONFIG_SYS_AT91_MAIN_CLOCK
+ CONFIG_SYS_AT91_PLLA
+-- 
+2.17.1
+
