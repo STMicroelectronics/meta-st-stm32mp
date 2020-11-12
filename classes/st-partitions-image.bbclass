@@ -63,8 +63,10 @@ python __anonymous () {
                             bb.debug(1, "Set IMAGE_PARTITION_MOUNTPOINT to %s for %s partition image." % (items[2], items[0]))
                             d.setVar('IMAGE_PARTITION_MOUNTPOINT_pn-%s' % d.expand(items[0]), items[2])
                         if items[3]:
-                            bb.debug(1, "Set IMAGE_ROOTFS_SIZE to %s for %s partition image." % (items[3], items[0]))
-                            d.setVar('IMAGE_ROOTFS_SIZE_pn-%s' % d.expand(items[0]), items[3])
+                            if items[2]:
+                                # Mount point available, so we're dealing with partition image
+                                bb.debug(1, "Set IMAGE_ROOTFS_SIZE to %s for %s partition image." % (items[3], items[0]))
+                                d.setVar('IMAGE_ROOTFS_SIZE_pn-%s' % d.expand(items[0]), items[3])
                         else:
                             bb.fatal('[PARTITIONS_CONFIG] Missing size setting for %s image' % items[0])
 
