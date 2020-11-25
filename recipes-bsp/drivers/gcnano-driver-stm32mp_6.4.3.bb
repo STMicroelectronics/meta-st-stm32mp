@@ -3,8 +3,8 @@ LICENSE = "GPLv1 & MIT"
 # Note get md5sum with: $ head -n 53 Makefile | md5sum
 LIC_FILES_CHKSUM = "file://Makefile;endline=53;md5=3ad4e99418a2e0f339ecdc29ac648351"
 
-SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries;protocol=https;branch=gcnano-6.4.3-binaries"
-SRCREV = "6b0972cc5466627372d4dcee0227c9828c6ff881"
+SRC_URI = "git://gerrit.st.com:29418/oeivi/oe/st/gcnano-binaries;protocol=ssh;branch=gcnano-6.4.3-binaries"
+SRCREV = "dfbcb767ca2f09b421b6387ce10b0371904e0cb1"
 
 GCNANO_VERSION = "6.4.3"
 
