@@ -1,3 +1,7 @@
+DEPENDS = "hidapi-stm32mp"
+
+RDEPENDS_${PN} += "libusb1 hidapi-stm32mp"
+
 inherit pkgconfig autotools-brokensep gettext
 
 SRC_URI = " \
@@ -21,6 +25,7 @@ DEPENDS_class-nativesdk = "nativesdk-hidapi-stm32mp"
 RDEPENDS_${PN} += "libusb1 hidapi-stm32mp"
 
 EXTRA_OECONF = " \
+    --disable-doxygen-html \
     --disable-werror \
     --enable-stlink \
     --enable-cmsis-dap \
@@ -28,6 +33,9 @@ EXTRA_OECONF = " \
     HIDAPI_CFLAGS=-I${STAGING_INCDIR}/hidapi \
     HIDAPI_LIBS=-L${STAGING_LIBDIR}\ -lhidapi-libusb \
 "
+
+# Can't be built with ccache
+CCACHE_DISABLE = "1"
 
 do_configure() {
     ./bootstrap nosubmodule
