@@ -1,3 +1,7 @@
+DEPENDS = "hidapi-stm32mp"
+
+RDEPENDS_${PN} = "libusb1 hidapi-stm32mp"
+
 inherit pkgconfig autotools-brokensep gettext
 
 SRC_URI = " \
@@ -14,13 +18,8 @@ S = "${WORKDIR}/git"
 
 BBCLASSEXTEND += "native nativesdk"
 
-DEPENDS += "hidapi-stm32mp"
-DEPENDS_class-native = "hidapi-stm32mp-native"
-DEPENDS_class-nativesdk = "nativesdk-hidapi-stm32mp"
-
-RDEPENDS_${PN} += "libusb1 hidapi-stm32mp"
-
 EXTRA_OECONF = " \
+    --disable-doxygen-html \
     --disable-werror \
     --enable-stlink \
     --enable-cmsis-dap \
@@ -51,3 +50,6 @@ FILES_${PN} = " \
   ${datadir}/openocd/* \
   ${bindir}/openocd \
   "
+
+# Can't be built with ccache
+CCACHE_DISABLE = "1"
