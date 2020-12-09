@@ -1,0 +1,368 @@
+From d01ad88a0a1864c1721d0ebe056c1437f9f1f024 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Tue, 8 Jun 2021 16:25:23 +0200
+Subject: [PATCH] st-update v2.2-stm32mp-r2.2
+
+---
+ drivers/st/clk/stm32mp1_clk.c           |  5 ++-
+ fdts/stm32mp15xx-dkx.dtsi               |  1 -
+ fdts/stm32mp15xx-edx.dtsi               |  1 -
+ include/drivers/st/stm32mp1_ddr_regs.h  |  4 +-
+ include/drivers/st/stm32mp1_rcc.h       | 16 ++++++++
+ plat/st/common/include/stm32mp_common.h |  1 +
+ plat/st/common/include/stm32mp_dt.h     |  1 +
+ plat/st/common/stm32mp_common.c         | 16 ++++++++
+ plat/st/common/stm32mp_crypto_lib.c     |  7 +++-
+ plat/st/common/stm32mp_dt.c             | 50 +++++++++++++++++++++----
+ plat/st/stm32mp1/platform.mk            |  2 +-
+ plat/st/stm32mp1/sp_min/sp_min_setup.c  | 19 ++++++++++
+ plat/st/stm32mp1/stm32mp1_def.h         |  3 ++
+ plat/st/stm32mp1/stm32mp1_helper.S      | 13 +++++++
+ 14 files changed, 123 insertions(+), 16 deletions(-)
+
+diff --git a/drivers/st/clk/stm32mp1_clk.c b/drivers/st/clk/stm32mp1_clk.c
+index 04e42c18aa..914b6d0b35 100644
+--- a/drivers/st/clk/stm32mp1_clk.c
++++ b/drivers/st/clk/stm32mp1_clk.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (C) 2018-2020, STMicroelectronics - All Rights Reserved
++ * Copyright (C) 2018-2021, STMicroelectronics - All Rights Reserved
+  *
+  * SPDX-License-Identifier: GPL-2.0+ OR BSD-3-Clause
+  */
+@@ -1832,7 +1832,8 @@ static void stm32mp1_set_rtcsrc(unsigned int clksrc, bool lse_css)
+ 	    (clksrc != (uint32_t)CLK_RTC_DISABLED)) {
+ 		mmio_clrsetbits_32(address,
+ 				   RCC_BDCR_RTCSRC_MASK,
+-				   clksrc << RCC_BDCR_RTCSRC_SHIFT);
++				   (clksrc & RCC_SELR_SRC_MASK) <<
++				   RCC_BDCR_RTCSRC_SHIFT);
+ 
+ 		mmio_setbits_32(address, RCC_BDCR_RTCCKEN);
+ 	}
+diff --git a/fdts/stm32mp15xx-dkx.dtsi b/fdts/stm32mp15xx-dkx.dtsi
+index c12a653973..54d17ccb5e 100644
+--- a/fdts/stm32mp15xx-dkx.dtsi
++++ b/fdts/stm32mp15xx-dkx.dtsi
+@@ -208,7 +208,6 @@
+ 				regulator-name = "vdd_usb";
+ 				regulator-min-microvolt = <3300000>;
+ 				regulator-max-microvolt = <3300000>;
+-				regulator-always-on;
+ 				standby-ddr-sr {
+ 					regulator-off-in-suspend;
+ 				};
+diff --git a/fdts/stm32mp15xx-edx.dtsi b/fdts/stm32mp15xx-edx.dtsi
+index 60c903a18d..67ae16c2bb 100644
+--- a/fdts/stm32mp15xx-edx.dtsi
++++ b/fdts/stm32mp15xx-edx.dtsi
+@@ -213,7 +213,6 @@
+ 				regulator-name = "vdd_usb";
+ 				regulator-min-microvolt = <3300000>;
+ 				regulator-max-microvolt = <3300000>;
+-				regulator-always-on;
+ 				standby-ddr-sr {
+ 					regulator-off-in-suspend;
+ 				};
+diff --git a/include/drivers/st/stm32mp1_ddr_regs.h b/include/drivers/st/stm32mp1_ddr_regs.h
+index af232a308d..cd028563cc 100644
+--- a/include/drivers/st/stm32mp1_ddr_regs.h
++++ b/include/drivers/st/stm32mp1_ddr_regs.h
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2017-2019, STMicroelectronics - All Rights Reserved
++ * Copyright (c) 2017-2021, STMicroelectronics - All Rights Reserved
+  *
+  * SPDX-License-Identifier: GPL-2.0+ OR BSD-3-Clause
+  */
+@@ -284,7 +284,7 @@ struct stm32mp1_ddrphy {
+ #define DDRCTRL_PWRCTL_EN_DFI_DRAM_CLK_DISABLE	BIT(3)
+ #define DDRCTRL_PWRCTL_SELFREF_SW		BIT(5)
+ 
+-#define DDRCTRL_PWRTMG_SELFREF_TO_X32_MASK	GENMASK(19, 12)
++#define DDRCTRL_PWRTMG_SELFREF_TO_X32_MASK	GENMASK(23, 16)
+ #define DDRCTRL_PWRTMG_SELFREF_TO_X32_0		BIT(16)
+ 
+ #define DDRCTRL_RFSHCTL3_DIS_AUTO_REFRESH	BIT(0)
+diff --git a/include/drivers/st/stm32mp1_rcc.h b/include/drivers/st/stm32mp1_rcc.h
+index 91c6f087b6..a6428147d2 100644
+--- a/include/drivers/st/stm32mp1_rcc.h
++++ b/include/drivers/st/stm32mp1_rcc.h
+@@ -569,6 +569,22 @@
+ #define RCC_FMCCKSELR_FMCSRC_MASK		GENMASK(1, 0)
+ #define RCC_FMCCKSELR_FMCSRC_SHIFT		0
+ 
++/* RCC_APB1RSTSETR register fields */
++#define RCC_APB1RSTSETR_USART2RST		BIT(14)
++#define RCC_APB1RSTSETR_USART3RST		BIT(15)
++#define RCC_APB1RSTSETR_UART4RST		BIT(16)
++#define RCC_APB1RSTSETR_UART5RST		BIT(17)
++#define RCC_APB1RSTSETR_UART7RST		BIT(18)
++#define RCC_APB1RSTSETR_UART8RST		BIT(19)
++
++/* RCC_APB1RSTCLRR register fields */
++#define RCC_APB1RSTCLRR_USART2RST		BIT(14)
++#define RCC_APB1RSTCLRR_USART3RST		BIT(15)
++#define RCC_APB1RSTCLRR_UART4RST		BIT(16)
++#define RCC_APB1RSTCLRR_UART5RST		BIT(17)
++#define RCC_APB1RSTCLRR_UART7RST		BIT(18)
++#define RCC_APB1RSTCLRR_UART8RST		BIT(19)
++
+ /* RCC_USBCKSELR register fields */
+ #define RCC_USBCKSELR_USBPHYSRC_MASK		GENMASK(1, 0)
+ #define RCC_USBCKSELR_USBPHYSRC_SHIFT		0
+diff --git a/plat/st/common/include/stm32mp_common.h b/plat/st/common/include/stm32mp_common.h
+index ab419f15f3..73e445aed3 100644
+--- a/plat/st/common/include/stm32mp_common.h
++++ b/plat/st/common/include/stm32mp_common.h
+@@ -23,6 +23,7 @@ bool stm32mp_is_closed_device(void);
+ bool stm32mp_is_auth_supported(void);
+ 
+ const char *stm32mp_get_cpu_supply_name(void);
++const char *stm32mp_get_usb_phy_supply_name(void);
+ 
+ /* Return the base address of the DDR controller */
+ uintptr_t stm32mp_ddrctrl_base(void);
+diff --git a/plat/st/common/include/stm32mp_dt.h b/plat/st/common/include/stm32mp_dt.h
+index 873bed5511..e25766d6de 100644
+--- a/plat/st/common/include/stm32mp_dt.h
++++ b/plat/st/common/include/stm32mp_dt.h
+@@ -50,6 +50,7 @@ int dt_get_all_opp_freqvolt(uint32_t *count, uint32_t *freq_khz_array,
+ 			    uint32_t *voltage_mv_array);
+ uint32_t dt_get_pwr_vdd_voltage(void);
+ const char *dt_get_cpu_regulator_name(void);
++const char *dt_get_usb_phy_regulator_name(void);
+ const char *dt_get_board_model(void);
+ int fdt_get_gpio_bank_pinctrl_node(unsigned int bank);
+ int fdt_get_gpioz_nbpins_from_dt(void);
+diff --git a/plat/st/common/stm32mp_common.c b/plat/st/common/stm32mp_common.c
+index e838995cc3..eb4640961b 100644
+--- a/plat/st/common/stm32mp_common.c
++++ b/plat/st/common/stm32mp_common.c
+@@ -170,6 +170,22 @@ const char *stm32mp_get_cpu_supply_name(void)
+ 	return supply;
+ }
+ 
++/* Return USB phy supply name */
++const char *stm32mp_get_usb_phy_supply_name(void)
++{
++	const char *supply = NULL;
++
++	if (dt_pmic_status() > 0) {
++		const char *regulator = dt_get_usb_phy_regulator_name();
++
++		if (regulator != NULL) {
++			dt_pmic_find_supply(&supply, regulator);
++		}
++	}
++
++	return supply;
++}
++
+ #if TRUSTED_BOARD_BOOT
+ /* Save pointer to last loaded header */
+ static boot_api_image_header_t *latest_stm32_header;
+diff --git a/plat/st/common/stm32mp_crypto_lib.c b/plat/st/common/stm32mp_crypto_lib.c
+index 6e8c6355d7..60a9023a5b 100644
+--- a/plat/st/common/stm32mp_crypto_lib.c
++++ b/plat/st/common/stm32mp_crypto_lib.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2020, STMicroelectronics - All Rights Reserved
++ * Copyright (c) 2020-2021, STMicroelectronics - All Rights Reserved
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -29,6 +29,7 @@ static void crypto_lib_init(void)
+ {
+ 	boot_api_context_t *boot_context =
+ 		(boot_api_context_t *)stm32mp_get_boot_ctx_address();
++	int ret;
+ 
+ 	if (!stm32mp_is_auth_supported()) {
+ 		return;
+@@ -38,7 +39,9 @@ static void crypto_lib_init(void)
+ 	auth_ops.verify_signature =
+ 		boot_context->bootrom_ecdsa_verify_signature;
+ 
+-	if (stm32_hash_register() != 0) {
++	ret = stm32_hash_register();
++	if (ret != 0) {
++		ERROR("HASH init (%d)\n", ret);
+ 		panic();
+ 	}
+ }
+diff --git a/plat/st/common/stm32mp_dt.c b/plat/st/common/stm32mp_dt.c
+index f6de0b62a2..c250cab2c6 100644
+--- a/plat/st/common/stm32mp_dt.c
++++ b/plat/st/common/stm32mp_dt.c
+@@ -651,20 +651,17 @@ uint32_t dt_get_pwr_vdd_voltage(void)
+ }
+ 
+ /*******************************************************************************
+- * This function retrieves CPU regulator name from DT.
+- * Returns string taken from supply node, NULL otherwise.
++ * This function return the real regulator name from DT.
+  ******************************************************************************/
+-const char *dt_get_cpu_regulator_name(void)
++static const char *dt_get_regulator_name(int node, const char *regu_name)
+ {
+-	int node;
+ 	const fdt32_t *cuint;
+ 
+-	node = fdt_path_offset(fdt, "/cpus/cpu@0");
+-	if (node < 0) {
++	if ((node < 0) || (regu_name == NULL)) {
+ 		return NULL;
+ 	}
+ 
+-	cuint = fdt_getprop(fdt, node, "cpu-supply", NULL);
++	cuint = fdt_getprop(fdt, node, regu_name, NULL);
+ 	if (cuint == NULL) {
+ 		return NULL;
+ 	}
+@@ -677,6 +674,45 @@ const char *dt_get_cpu_regulator_name(void)
+ 	return (const char *)fdt_getprop(fdt, node, "regulator-name", NULL);
+ }
+ 
++/*******************************************************************************
++ * This function retrieves CPU regulator name from DT.
++ * Returns string taken from supply node, NULL otherwise.
++ ******************************************************************************/
++const char *dt_get_cpu_regulator_name(void)
++{
++	int node = fdt_path_offset(fdt, "/cpus/cpu@0");
++
++	if (node < 0) {
++		return NULL;
++	}
++
++	return dt_get_regulator_name(node, "cpu-supply");
++}
++
++/*******************************************************************************
++ * This function retrieves USB phy regulator name from DT.
++ * Returns string taken from supply node, NULL otherwise.
++ ******************************************************************************/
++const char *dt_get_usb_phy_regulator_name(void)
++{
++	int node = fdt_node_offset_by_compatible(fdt, -1, DT_USBPHYC_COMPAT);
++	int subnode;
++	const char *reg_name = NULL;
++
++	if (node < 0) {
++		return NULL;
++	}
++
++	fdt_for_each_subnode(subnode, fdt, node) {
++		reg_name = dt_get_regulator_name(subnode, "phy-supply");
++		if (reg_name != NULL) {
++			return reg_name;
++		}
++	}
++
++	return NULL;
++}
++
+ /*******************************************************************************
+  * This function retrieves board model from DT
+  * Returns string taken from model node, NULL otherwise
+diff --git a/plat/st/stm32mp1/platform.mk b/plat/st/stm32mp1/platform.mk
+index 12bf617b24..7a2242cb55 100644
+--- a/plat/st/stm32mp1/platform.mk
++++ b/plat/st/stm32mp1/platform.mk
+@@ -10,7 +10,7 @@ BL2_AT_EL3		:=	1
+ USE_COHERENT_MEM	:=	0
+ 
+ # Add specific ST version
+-ST_VERSION 		:=	r2.1
++ST_VERSION 		:=	r2.2
+ VERSION_STRING		:=	v${VERSION_MAJOR}.${VERSION_MINOR}-${ST_VERSION}(${BUILD_TYPE}):${BUILD_STRING}
+ 
+ TRUSTED_BOARD_BOOT	:=	1
+diff --git a/plat/st/stm32mp1/sp_min/sp_min_setup.c b/plat/st/stm32mp1/sp_min/sp_min_setup.c
+index f0af4af132..4a353658e9 100644
+--- a/plat/st/stm32mp1/sp_min/sp_min_setup.c
++++ b/plat/st/stm32mp1/sp_min/sp_min_setup.c
+@@ -157,6 +157,23 @@ static void initialize_pll1_settings(void)
+ 	}
+ }
+ 
++static void disable_usb_phy_regulator(void)
++{
++	if (dt_pmic_status() > 0) {
++		const char *name = stm32mp_get_usb_phy_supply_name();
++		int ret;
++
++		if (name == NULL) {
++			return;
++		}
++
++		ret = stpmic1_regulator_disable(name);
++		if (ret < 0) {
++			WARN("USBPHYC phy-supply (%s) disable failed\n", name);
++		}
++	}
++}
++
+ /*******************************************************************************
+  * Interrupt handler for FIQ (secure IRQ)
+  ******************************************************************************/
+@@ -401,6 +418,8 @@ void sp_min_early_platform_setup2(u_register_t arg0, u_register_t arg1,
+ 		initialize_pmic();
+ 	}
+ 
++	disable_usb_phy_regulator();
++
+ 	initialize_pll1_settings();
+ 
+ 	stm32mp1_init_lp_states();
+diff --git a/plat/st/stm32mp1/stm32mp1_def.h b/plat/st/stm32mp1/stm32mp1_def.h
+index 4fc7838735..8ee9126a92 100644
+--- a/plat/st/stm32mp1/stm32mp1_def.h
++++ b/plat/st/stm32mp1/stm32mp1_def.h
+@@ -334,6 +334,8 @@ enum ddr_type {
+ #define DEBUG_UART_TX_CLKSRC		RCC_UART24CKSELR_HSI
+ #define DEBUG_UART_TX_EN_REG		RCC_MP_APB1ENSETR
+ #define DEBUG_UART_TX_EN		RCC_MP_APB1ENSETR_UART4EN
++#define DEBUG_UART_RST_REG		RCC_APB1RSTSETR
++#define DEBUG_UART_RST_BIT		RCC_APB1RSTSETR_UART4RST
+ 
+ /*******************************************************************************
+  * STM32MP1 ETZPC
+@@ -582,6 +584,7 @@ static inline uint32_t tamp_bkpr(uint32_t idx)
+ #define DT_OPP_COMPAT			"operating-points-v2"
+ #define DT_PWR_COMPAT			"st,stm32mp1,pwr-reg"
+ #define DT_RCC_CLK_COMPAT		"st,stm32mp1-rcc"
++#define DT_USBPHYC_COMPAT		"st,stm32mp1-usbphyc"
+ 
+ #define DT_PLL1_NODE_NAME		"st,pll@0"
+ 
+diff --git a/plat/st/stm32mp1/stm32mp1_helper.S b/plat/st/stm32mp1/stm32mp1_helper.S
+index cea39c16a5..cddd50ed7e 100644
+--- a/plat/st/stm32mp1/stm32mp1_helper.S
++++ b/plat/st/stm32mp1/stm32mp1_helper.S
+@@ -245,6 +245,19 @@ endfunc plat_my_core_pos
+ 	 * ---------------------------------------------
+ 	 */
+ func plat_crash_console_init
++	/* Reset UART peripheral */
++	ldr	r1, =(RCC_BASE + DEBUG_UART_RST_REG)
++	ldr	r2, =DEBUG_UART_RST_BIT
++	str	r2, [r1]
++1:
++	ldr	r0, [r1]
++	ands	r0, r2
++	beq	1b
++	str	r2, [r1, #4] /* RSTCLR register */
++2:
++	ldr	r0, [r1]
++	ands	r0, r2
++	bne	2b
+ 	/* Enable GPIOs for UART TX */
+ 	ldr	r1, =(RCC_BASE + DEBUG_UART_TX_GPIO_BANK_CLK_REG)
+ 	ldr	r2, [r1]
+-- 
+2.17.1
+

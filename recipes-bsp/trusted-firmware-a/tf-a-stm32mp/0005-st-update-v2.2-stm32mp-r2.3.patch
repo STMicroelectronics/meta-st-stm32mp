@@ -1,0 +1,335 @@
+From e73edc5eb6bf6b9627d0e40e34f87c14c045a7f5 Mon Sep 17 00:00:00 2001
+From: Lionel Vitte <lionel.vitte@st.com>
+Date: Wed, 29 Sep 2021 16:15:45 +0200
+Subject: [PATCH] st-update v2.2-stm32mp-r2.3
+
+---
+ drivers/st/clk/stm32mp1_clk.c               |  5 ++
+ drivers/st/ddr/stm32mp1_ddr.c               | 11 ++--
+ drivers/st/gpio/stm32_gpio.c                |  9 +++-
+ drivers/st/uart/aarch32/stm32_console.S     | 11 ++--
+ include/drivers/st/stm32_gpio.h             |  3 +-
+ include/drivers/st/stm32mp1_ddr_regs.h      |  1 +
+ plat/st/common/include/stm32mp_common.h     |  1 +
+ plat/st/stm32mp1/bl2_plat_setup.c           | 18 +++++--
+ plat/st/stm32mp1/include/stm32mp1_private.h |  4 +-
+ plat/st/stm32mp1/platform.mk                |  2 +-
+ plat/st/stm32mp1/stm32mp1_private.c         | 59 ++++++++++++++++++++-
+ 11 files changed, 108 insertions(+), 16 deletions(-)
+
+diff --git a/drivers/st/clk/stm32mp1_clk.c b/drivers/st/clk/stm32mp1_clk.c
+index 914b6d0b3..6b583d8e5 100644
+--- a/drivers/st/clk/stm32mp1_clk.c
++++ b/drivers/st/clk/stm32mp1_clk.c
+@@ -1196,6 +1196,7 @@ static bool clock_is_always_on(unsigned long id)
+ 	case CK_AXI:
+ 	case CK_MPU:
+ 	case CK_MCU:
++	case RTC:
+ 		return true;
+ 	default:
+ 		return false;
+@@ -3307,6 +3308,10 @@ void stm32mp1_clock_resume(void)
+ 	for (idx = 0U; idx < NB_GATES; idx++) {
+ 		struct stm32mp1_clk_gate const *gate = gate_ref(idx);
+ 
++		if (clock_is_always_on(gate->index)) {
++			continue;
++		}
++
+ 		if (gate_is_non_secure(gate)) {
+ 			continue;
+ 		}
+diff --git a/drivers/st/ddr/stm32mp1_ddr.c b/drivers/st/ddr/stm32mp1_ddr.c
+index db8247522..f44d035f2 100644
+--- a/drivers/st/ddr/stm32mp1_ddr.c
++++ b/drivers/st/ddr/stm32mp1_ddr.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (C) 2018-2020, STMicroelectronics - All Rights Reserved
++ * Copyright (C) 2018-2021, STMicroelectronics - All Rights Reserved
+  *
+  * SPDX-License-Identifier: GPL-2.0+ OR BSD-3-Clause
+  */
+@@ -998,9 +998,14 @@ void stm32mp1_ddr_init(struct ddr_info *priv,
+ 		/*
+ 		 * 10. configure PUBL PIR register to specify which training
+ 		 *     step to run
+-		 * Warning : RVTRN  is not supported by this PUBL
++		 *     RVTRN is executed only on LPDDR2/LPDDR3
+ 		 */
+-		stm32mp1_ddrphy_init(priv->phy, DDRPHYC_PIR_QSTRN);
++		pir = DDRPHYC_PIR_QSTRN;
++		if ((config->c_reg.mstr & DDRCTRL_MSTR_DDR3) == 0U) {
++			pir |= DDRPHYC_PIR_RVTRN;
++		}
++
++		stm32mp1_ddrphy_init(priv->phy, pir);
+ 
+ 		/* 11. monitor PUB PGSR.IDONE to poll cpmpletion of training
+ 		 *     sequence
+diff --git a/drivers/st/gpio/stm32_gpio.c b/drivers/st/gpio/stm32_gpio.c
+index a6c8dd0f5..4d25e0521 100644
+--- a/drivers/st/gpio/stm32_gpio.c
++++ b/drivers/st/gpio/stm32_gpio.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2016-2020, STMicroelectronics - All Rights Reserved
++ * Copyright (c) 2016-2021, STMicroelectronics - All Rights Reserved
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -282,3 +282,10 @@ void set_gpio_secure_cfg(uint32_t bank, uint32_t pin, bool secure)
+ 
+ 	stm32mp_clk_disable(clock);
+ }
++
++void set_gpio_reset_cfg(uint32_t bank, uint32_t pin)
++{
++	set_gpio(bank, pin, GPIO_MODE_ANALOG, GPIO_SPEED_LOW,
++		 GPIO_NO_PULL, GPIO_ALTERNATE_(0), DT_DISABLED);
++	set_gpio_secure_cfg(bank, pin, stm32_gpio_is_secure_at_reset(bank));
++}
+diff --git a/drivers/st/uart/aarch32/stm32_console.S b/drivers/st/uart/aarch32/stm32_console.S
+index 0fabcc82e..3cdb46abb 100644
+--- a/drivers/st/uart/aarch32/stm32_console.S
++++ b/drivers/st/uart/aarch32/stm32_console.S
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2018-2019, ARM Limited and Contributors. All rights reserved.
++ * Copyright (c) 2018-2021, ARM Limited and Contributors. All rights reserved.
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -45,7 +45,12 @@ func console_stm32_core_init
+ 	/* Check the input base address */
+ 	cmp	r0, #0
+ 	beq	core_init_fail
+-#if defined(IMAGE_BL2)
++#if !defined(IMAGE_BL2)
++	/* Skip UART initialization if it is already enabled */
++	ldr	r3, [r0, #USART_CR1]
++	ands	r3, r3, #USART_CR1_UE
++	bne	1f
++#endif /* IMAGE_BL2 */
+ 	/* Check baud rate and uart clock for sanity */
+ 	cmp	r1, #0
+ 	beq	core_init_fail
+@@ -78,7 +83,7 @@ teack_loop:
+ 	ldr	r3, [r0, #USART_ISR]
+ 	tst	r3, #USART_ISR_TEACK
+ 	beq	teack_loop
+-#endif /* IMAGE_BL2 */
++1:
+ 	mov	r0, #1
+ 	bx	lr
+ core_init_fail:
+diff --git a/include/drivers/st/stm32_gpio.h b/include/drivers/st/stm32_gpio.h
+index e241f584f..b07234515 100644
+--- a/include/drivers/st/stm32_gpio.h
++++ b/include/drivers/st/stm32_gpio.h
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2015-2019, STMicroelectronics - All Rights Reserved
++ * Copyright (c) 2015-2021, STMicroelectronics - All Rights Reserved
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -52,6 +52,7 @@ int dt_set_pinctrl_config(int node);
+ void set_gpio(uint32_t bank, uint32_t pin, uint32_t mode, uint32_t speed,
+ 	      uint32_t pull, uint32_t alternate, uint8_t status);
+ void set_gpio_secure_cfg(uint32_t bank, uint32_t pin, bool secure);
++void set_gpio_reset_cfg(uint32_t bank, uint32_t pin);
+ #endif /*__ASSEMBLER__*/
+ 
+ #endif /* STM32_GPIO_H */
+diff --git a/include/drivers/st/stm32mp1_ddr_regs.h b/include/drivers/st/stm32mp1_ddr_regs.h
+index cd028563c..48042e41d 100644
+--- a/include/drivers/st/stm32mp1_ddr_regs.h
++++ b/include/drivers/st/stm32mp1_ddr_regs.h
+@@ -353,6 +353,7 @@ struct stm32mp1_ddrphy {
+ #define DDRPHYC_PIR_DRAMRST			BIT(5)
+ #define DDRPHYC_PIR_DRAMINIT			BIT(6)
+ #define DDRPHYC_PIR_QSTRN			BIT(7)
++#define DDRPHYC_PIR_RVTRN			BIT(8)
+ #define DDRPHYC_PIR_ICPC			BIT(16)
+ #define DDRPHYC_PIR_ZCALBYP			BIT(30)
+ #define DDRPHYC_PIR_INITSTEPS_MASK		GENMASK(31, 7)
+diff --git a/plat/st/common/include/stm32mp_common.h b/plat/st/common/include/stm32mp_common.h
+index 73e445aed..c9ef20af6 100644
+--- a/plat/st/common/include/stm32mp_common.h
++++ b/plat/st/common/include/stm32mp_common.h
+@@ -85,6 +85,7 @@ uintptr_t get_uart_address(uint32_t instance_nb);
+ uintptr_t stm32_get_gpio_bank_base(unsigned int bank);
+ unsigned long stm32_get_gpio_bank_clock(unsigned int bank);
+ uint32_t stm32_get_gpio_bank_offset(unsigned int bank);
++bool stm32_gpio_is_secure_at_reset(unsigned int bank);
+ 
+ /* Print CPU information */
+ void stm32mp_print_cpuinfo(void);
+diff --git a/plat/st/stm32mp1/bl2_plat_setup.c b/plat/st/stm32mp1/bl2_plat_setup.c
+index 746348d9e..0dc6655db 100644
+--- a/plat/st/stm32mp1/bl2_plat_setup.c
++++ b/plat/st/stm32mp1/bl2_plat_setup.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2015-2020, ARM Limited and Contributors. All rights reserved.
++ * Copyright (c) 2015-2021, ARM Limited and Contributors. All rights reserved.
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -338,6 +338,7 @@ void bl2_el3_plat_arch_setup(void)
+ 		tamp_bkpr(BOOT_API_CORE1_MAGIC_NUMBER_TAMP_BCK_REG_IDX);
+ 	uint32_t bkpr_core1_addr =
+ 		tamp_bkpr(BOOT_API_CORE1_BRANCH_ADDRESS_TAMP_BCK_REG_IDX);
++	uint32_t rstsr;
+ 
+ 	mmap_add_region(BL_CODE_BASE, BL_CODE_BASE,
+ 			BL_CODE_END - BL_CODE_BASE,
+@@ -421,10 +422,12 @@ void bl2_el3_plat_arch_setup(void)
+ 		      TAMP_BKP_SEC_NUMBER << TAMP_BKP_SEC_WDPROT_SHIFT |
+ 		      TAMP_BKP_SEC_NUMBER << TAMP_BKP_SEC_RWDPROT_SHIFT);
+ 
+-	if ((boot_context->boot_action !=
+-	     BOOT_API_CTX_BOOT_ACTION_WAKEUP_CSTANDBY) &&
+-	    (boot_context->boot_action !=
+-	     BOOT_API_CTX_BOOT_ACTION_WAKEUP_STANDBY)) {
++	rstsr = mmio_read_32(stm32mp_rcc_base() + RCC_MP_RSTSCLRR);
++	if (((boot_context->boot_action !=
++	      BOOT_API_CTX_BOOT_ACTION_WAKEUP_CSTANDBY) &&
++	     (boot_context->boot_action !=
++	      BOOT_API_CTX_BOOT_ACTION_WAKEUP_STANDBY)) ||
++	    ((rstsr & RCC_MP_RSTSCLRR_PADRSTF) != 0U)) {
+ 		mmio_write_32(bkpr_core1_addr, 0);
+ 		mmio_write_32(bkpr_core1_magic, 0);
+ 	}
+@@ -461,6 +464,11 @@ void bl2_el3_plat_arch_setup(void)
+ 
+ 	initialize_clock();
+ 
++#if STM32MP_USB_PROGRAMMER
++	/* Deconfigure all UART RX pins configured by ROM code */
++	stm32mp1_deconfigure_uart_pins();
++#endif
++
+ 	result = dt_get_stdout_uart_info(&dt_uart_info);
+ 
+ 	if ((result <= 0) ||
+diff --git a/plat/st/stm32mp1/include/stm32mp1_private.h b/plat/st/stm32mp1/include/stm32mp1_private.h
+index e9fadb063..db29db8fc 100644
+--- a/plat/st/stm32mp1/include/stm32mp1_private.h
++++ b/plat/st/stm32mp1/include/stm32mp1_private.h
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2015-2019, ARM Limited and Contributors. All rights reserved.
++ * Copyright (c) 2015-2021, ARM Limited and Contributors. All rights reserved.
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -32,6 +32,8 @@ void stm32mp1_syscfg_init(void);
+ void stm32mp1_syscfg_enable_io_compensation(void);
+ void stm32mp1_syscfg_disable_io_compensation(void);
+ 
++void stm32mp1_deconfigure_uart_pins(void);
++
+ void stm32mp1_init_scmi_server(void);
+ void stm32mp1_pm_save_scmi_state(uint8_t *state, size_t size);
+ void stm32mp1_pm_restore_scmi_state(uint8_t *state, size_t size);
+diff --git a/plat/st/stm32mp1/platform.mk b/plat/st/stm32mp1/platform.mk
+index 7a2242cb5..d0b11a2f1 100644
+--- a/plat/st/stm32mp1/platform.mk
++++ b/plat/st/stm32mp1/platform.mk
+@@ -10,7 +10,7 @@ BL2_AT_EL3		:=	1
+ USE_COHERENT_MEM	:=	0
+ 
+ # Add specific ST version
+-ST_VERSION 		:=	r2.2
++ST_VERSION 		:=	r2.3
+ VERSION_STRING		:=	v${VERSION_MAJOR}.${VERSION_MINOR}-${ST_VERSION}(${BUILD_TYPE}):${BUILD_STRING}
+ 
+ TRUSTED_BOARD_BOOT	:=	1
+diff --git a/plat/st/stm32mp1/stm32mp1_private.c b/plat/st/stm32mp1/stm32mp1_private.c
+index b94857bcb..ef85f95d0 100644
+--- a/plat/st/stm32mp1/stm32mp1_private.c
++++ b/plat/st/stm32mp1/stm32mp1_private.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2015-2020, ARM Limited and Contributors. All rights reserved.
++ * Copyright (c) 2015-2021, ARM Limited and Contributors. All rights reserved.
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -12,6 +12,7 @@
+ 
+ #include <arch_helpers.h>
+ #include <drivers/arm/gicv2.h>
++#include <drivers/st/stm32_gpio.h>
+ #include <drivers/st/stm32_iwdg.h>
+ #include <drivers/st/stm32mp_dummy_regulator.h>
+ #include <drivers/st/stm32mp_pmic.h>
+@@ -290,6 +291,62 @@ void __dead2 stm32mp_plat_reset(int cpu)
+ 	stm32mp_wait_cpu_reset();
+ }
+ 
++bool stm32_gpio_is_secure_at_reset(unsigned int bank)
++{
++	if (bank == GPIO_BANK_Z) {
++		return true;
++	}
++
++	return false;
++}
++
++#if STM32MP_USB_PROGRAMMER
++struct gpio_bank_pin_list {
++	uint32_t bank;
++	uint32_t pin;
++};
++
++static const struct gpio_bank_pin_list gpio_list[] = {
++	{	/* USART2_RX: GPIOA3 */
++		.bank = 0,
++		.pin = 3,
++	},
++	{	/* USART3_RX: GPIOB12 */
++		.bank = 1,
++		.pin = 12,
++	},
++	{	/* UART4_RX: GPIOB2 */
++		.bank = 1,
++		.pin = 2,
++	},
++	{	/* UART5_RX: GPIOB4 */
++		.bank = 1,
++		.pin = 5,
++	},
++	{	/* USART6_RX: GPIOC7 */
++		.bank = 2,
++		.pin = 7,
++	},
++	{	/* UART7_RX: GPIOF6 */
++		.bank = 5,
++		.pin = 6,
++	},
++	{	/* UART8_RX: GPIOE0 */
++		.bank = 4,
++		.pin = 0,
++	},
++};
++
++void stm32mp1_deconfigure_uart_pins(void)
++{
++	size_t i;
++
++	for (i = 0; i < ARRAY_SIZE(gpio_list); i++) {
++		set_gpio_reset_cfg(gpio_list[i].bank, gpio_list[i].pin);
++	}
++}
++#endif
++
+ unsigned long stm32_get_gpio_bank_clock(unsigned int bank)
+ {
+ 	if (bank == GPIO_BANK_Z) {
+-- 
+2.25.1
+
