@@ -1,0 +1,284 @@
+From aa54c3880500fc479aed328c32bb0e95ce98b139 Mon Sep 17 00:00:00 2001
+From: Lionel VITTE <lionel.vitte@st.com>
+Date: Mon, 4 Oct 2021 17:15:58 +0200
+Subject: [PATCH] ARM-v2020.01-stm32mp-r2.2-rc2
+
+---
+ Makefile                                   |  2 +-
+ board/st/stm32mp1/fit_copro_kernel_dtb.its | 18 ++++++++++++--
+ board/st/stm32mp1/fit_kernel_dtb.its       |  6 ++---
+ board/st/stm32mp1/stm32mp1.c               |  6 ++---
+ drivers/dfu/dfu_mtd.c                      |  5 +---
+ drivers/gpio/stm32_gpio.c                  | 28 +++++++++++-----------
+ drivers/pinctrl/pinctrl_stm32.c            | 24 +++++++++----------
+ drivers/ram/stm32mp1/stm32mp1_ddr.c        |  8 +++++--
+ drivers/ram/stm32mp1/stm32mp1_ddr_regs.h   |  1 +
+ 9 files changed, 57 insertions(+), 41 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 64b0560af5..eb03cf630b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3,7 +3,7 @@
+ VERSION = 2020
+ PATCHLEVEL = 01
+ SUBLEVEL =
+-EXTRAVERSION = -stm32mp-r2
++EXTRAVERSION = -stm32mp-r2.2
+ NAME =
+ 
+ # *DOCUMENTATION*
+diff --git a/board/st/stm32mp1/fit_copro_kernel_dtb.its b/board/st/stm32mp1/fit_copro_kernel_dtb.its
+index 3e08fd943e..dc43639af4 100644
+--- a/board/st/stm32mp1/fit_copro_kernel_dtb.its
++++ b/board/st/stm32mp1/fit_copro_kernel_dtb.its
+@@ -1,6 +1,20 @@
+ /*
+  * Compilation:
+  * mkimage -f fit_copro_kernel_dtb.its fit_copro_kernel_dtb.itb
++ *
++ * M4 firmware to load with remoteproc: rproc-m4-fw.elf
++ *
++ * Files in linux build dir:
++ * - arch/arm/boot/zImage
++ * - arch/arm/boot/dts/stm32mp157c-dk2.dtb
++ * - arch/arm/boot/dts/stm32mp157c-ev1.dtb
++ *
++ * load mmc 0:4 $kernel_addr_r fit_copro_kernel_dtb.itb
++ * bootm $kernel_addr_r
++ * bootm $kernel_addr_r#dk2
++ * bootm $kernel_addr_r#ev1
++ * bootm $kernel_addr_r#dk2-m4
++ * bootm $kernel_addr_r#ev1-m4
+  */
+ 
+ /dts-v1/;
+@@ -29,8 +43,8 @@
+ 			arch = "arm";
+ 			os = "linux";
+ 			compression = "none";
+-			load = <0xC0008000>;
+-			entry = <0xC0008000>;
++			load = <0xC4000000>;
++			entry = <0xC4000000>;
+ 			hash-1 {
+ 				algo = "sha1";
+ 			};
+diff --git a/board/st/stm32mp1/fit_kernel_dtb.its b/board/st/stm32mp1/fit_kernel_dtb.its
+index 18d03ebf3c..8456a3c460 100644
+--- a/board/st/stm32mp1/fit_kernel_dtb.its
++++ b/board/st/stm32mp1/fit_kernel_dtb.its
+@@ -3,7 +3,7 @@
+  * mkimage -f fit_kernel_dtb.its fit_kernel_dtb.itb
+  *
+  * Files in linux build dir:
+- * - arch/arm/boot/zImage
++ * - arch/arm/boot/Image (gzipped in Image.gz)
+  * - arch/arm/boot/dts/stm32mp157c-dk2.dtb
+  * - arch/arm/boot/dts/stm32mp157c-ev1.dtb
+  *
+@@ -23,11 +23,11 @@
+ 	images {
+ 		kernel {
+ 			description = "Linux kernel";
+-			data = /incbin/("zImage");
++			data = /incbin/("Image.gz");
+ 			type = "kernel";
+ 			arch = "arm";
+ 			os = "linux";
+-			compression = "none";
++			compression = "gzip";
+ 			load = <0xC0008000>;
+ 			entry = <0xC0008000>;
+ 			hash-1 {
+diff --git a/board/st/stm32mp1/stm32mp1.c b/board/st/stm32mp1/stm32mp1.c
+index 6dad00600e..de15bf22d5 100644
+--- a/board/st/stm32mp1/stm32mp1.c
++++ b/board/st/stm32mp1/stm32mp1.c
+@@ -812,19 +812,19 @@ int board_late_init(void)
+ 		env_set("bootdelay", "0");
+ 
+ 	/* define dynamic variables for FASTBOOT and ANDROID bootargs*/
+-	if (CONFIG_IS_ENABLED(CONFIG_FASTBOOT_FLASH_MMC) &&
++	if (CONFIG_IS_ENABLED(FASTBOOT_FLASH_MMC) &&
+ 	    boot_device && !strcmp(boot_device, "mmc")) {
+ 		boot_instance = env_get("boot_instance");
+ 		env_set("fastboot.boot_instance", boot_instance);
+ 	}
+ 	if (CONFIG_IS_ENABLED(OPTEE) &&
+ 	    tee_find_device(NULL, NULL, NULL, NULL)) {
+-		if (CONFIG_IS_ENABLED(CONFIG_CMD_DTIMG))
++		if (CONFIG_IS_ENABLED(CMD_DTIMG))
+ 			env_set("android_bootargs", "androidboot.optee=true");
+ 		if (CONFIG_IS_ENABLED(FASTBOOT))
+ 			env_set("fastboot.boot_mode", "optee");
+ 	} else {
+-		if (CONFIG_IS_ENABLED(CONFIG_CMD_DTIMG))
++		if (CONFIG_IS_ENABLED(CMD_DTIMG))
+ 			env_set("android_bootargs", "");
+ 		if (CONFIG_IS_ENABLED(FASTBOOT))
+ 			env_set("fastboot.boot_mode", "trusted");
+diff --git a/drivers/dfu/dfu_mtd.c b/drivers/dfu/dfu_mtd.c
+index 7bc8f8a603..1b3109d302 100644
+--- a/drivers/dfu/dfu_mtd.c
++++ b/drivers/dfu/dfu_mtd.c
+@@ -237,7 +237,6 @@ int dfu_fill_entity_mtd(struct dfu_entity *dfu, char *devstr, char *s)
+ {
+ 	char *st;
+ 	struct mtd_info *mtd;
+-	bool has_pages;
+ 	int ret, part;
+ 
+ 	mtd = get_mtd_device_nm(devstr);
+@@ -247,9 +246,7 @@ int dfu_fill_entity_mtd(struct dfu_entity *dfu, char *devstr, char *s)
+ 
+ 	dfu->dev_type = DFU_DEV_MTD;
+ 	dfu->data.mtd.info = mtd;
+-
+-	has_pages = mtd->type == MTD_NANDFLASH || mtd->type == MTD_MLCNANDFLASH;
+-	dfu->max_buf_size = has_pages ? mtd->erasesize : 0;
++	dfu->max_buf_size = mtd->erasesize;
+ 
+ 	st = strsep(&s, " ");
+ 	if (!strcmp(st, "raw")) {
+diff --git a/drivers/gpio/stm32_gpio.c b/drivers/gpio/stm32_gpio.c
+index a7c89a478c..799ff75ecd 100644
+--- a/drivers/gpio/stm32_gpio.c
++++ b/drivers/gpio/stm32_gpio.c
+@@ -207,11 +207,11 @@ static int stm32_gpio_set_dir_flags(struct udevice *dev, unsigned int offset,
+ 
+ 	} else if (flags & GPIOD_IS_IN) {
+ 		stm32_gpio_set_moder(regs, idx, STM32_GPIO_MODE_IN);
+-		if (flags & GPIOD_PULL_UP)
+-			stm32_gpio_set_pupd(regs, idx, STM32_GPIO_PUPD_UP);
+-		else if (flags & GPIOD_PULL_DOWN)
+-			stm32_gpio_set_pupd(regs, idx, STM32_GPIO_PUPD_DOWN);
+ 	}
++	if (flags & GPIOD_PULL_UP)
++		stm32_gpio_set_pupd(regs, idx, STM32_GPIO_PUPD_UP);
++	else if (flags & GPIOD_PULL_DOWN)
++		stm32_gpio_set_pupd(regs, idx, STM32_GPIO_PUPD_DOWN);
+ 
+ 	return 0;
+ }
+@@ -238,16 +238,16 @@ static int stm32_gpio_get_dir_flags(struct udevice *dev, unsigned int offset,
+ 		break;
+ 	case STM32_GPIO_MODE_IN:
+ 		dir_flags |= GPIOD_IS_IN;
+-		switch (stm32_gpio_get_pupd(regs, idx)) {
+-		case STM32_GPIO_PUPD_UP:
+-			dir_flags |= GPIOD_PULL_UP;
+-			break;
+-		case STM32_GPIO_PUPD_DOWN:
+-			dir_flags |= GPIOD_PULL_DOWN;
+-			break;
+-		default:
+-			break;
+-		}
++		break;
++	default:
++		break;
++	}
++	switch (stm32_gpio_get_pupd(regs, idx)) {
++	case STM32_GPIO_PUPD_UP:
++		dir_flags |= GPIOD_PULL_UP;
++		break;
++	case STM32_GPIO_PUPD_DOWN:
++		dir_flags |= GPIOD_PULL_DOWN;
+ 		break;
+ 	default:
+ 		break;
+diff --git a/drivers/pinctrl/pinctrl_stm32.c b/drivers/pinctrl/pinctrl_stm32.c
+index 4511cd7a45..125a5edd2d 100644
+--- a/drivers/pinctrl/pinctrl_stm32.c
++++ b/drivers/pinctrl/pinctrl_stm32.c
+@@ -39,15 +39,15 @@ static const char * const pinmux_mode[PINMUX_MODE_COUNT] = {
+ 	"alt function",
+ };
+ 
+-static const char * const pinmux_output[] = {
+-	[STM32_GPIO_PUPD_NO] = "bias-disable",
+-	[STM32_GPIO_PUPD_UP] = "bias-pull-up",
+-	[STM32_GPIO_PUPD_DOWN] = "bias-pull-down",
++static const char * const pinmux_bias[] = {
++	[STM32_GPIO_PUPD_NO] = "",
++	[STM32_GPIO_PUPD_UP] = "pull-up",
++	[STM32_GPIO_PUPD_DOWN] = "pull-down",
+ };
+ 
+ static const char * const pinmux_input[] = {
+-	[STM32_GPIO_OTYPE_PP] = "drive-push-pull",
+-	[STM32_GPIO_OTYPE_OD] = "drive-open-drain",
++	[STM32_GPIO_OTYPE_PP] = "push-pull",
++	[STM32_GPIO_OTYPE_OD] = "open-drain",
+ };
+ 
+ static int stm32_pinctrl_get_af(struct udevice *dev, unsigned int offset)
+@@ -204,6 +204,7 @@ static int stm32_pinctrl_get_pin_muxing(struct udevice *dev,
+ 	dev_dbg(dev, "selector = %d gpio_idx = %d mode = %d\n",
+ 		selector, gpio_idx, mode);
+ 	priv = dev_get_priv(gpio_dev);
++	pupd = (readl(&priv->regs->pupdr) >> (gpio_idx * 2)) & PUPD_MASK;
+ 
+ 
+ 	switch (mode) {
+@@ -215,20 +216,19 @@ static int stm32_pinctrl_get_pin_muxing(struct udevice *dev,
+ 		break;
+ 	case GPIOF_FUNC:
+ 		af_num = stm32_pinctrl_get_af(gpio_dev, gpio_idx);
+-		snprintf(buf, size, "%s %d", pinmux_mode[mode], af_num);
++		snprintf(buf, size, "%s %d %s", pinmux_mode[mode], af_num,
++			 pinmux_bias[pupd]);
+ 		break;
+ 	case GPIOF_OUTPUT:
+-		pupd = (readl(&priv->regs->pupdr) >> (gpio_idx * 2)) &
+-		       PUPD_MASK;
+ 		snprintf(buf, size, "%s %s %s",
+-			 pinmux_mode[mode], pinmux_output[pupd],
++			 pinmux_mode[mode], pinmux_bias[pupd],
+ 			 label ? label : "");
+ 		break;
+ 	case GPIOF_INPUT:
+ 		otype = (readl(&priv->regs->otyper) >> gpio_idx) & OTYPE_MSK;
+-		snprintf(buf, size, "%s %s %s",
++		snprintf(buf, size, "%s %s %s %s",
+ 			 pinmux_mode[mode], pinmux_input[otype],
+-			 label ? label : "");
++			 pinmux_bias[pupd], label ? label : "");
+ 		break;
+ 	}
+ 
+diff --git a/drivers/ram/stm32mp1/stm32mp1_ddr.c b/drivers/ram/stm32mp1/stm32mp1_ddr.c
+index 11b14ae652..4e6af9815a 100644
+--- a/drivers/ram/stm32mp1/stm32mp1_ddr.c
++++ b/drivers/ram/stm32mp1/stm32mp1_ddr.c
+@@ -821,8 +821,12 @@ start:
+  */
+ 
+ /* 10. configure PUBL PIR register to specify which training step to run */
+-	/* warning : RVTRN  is not supported by this PUBL */
+-		stm32mp1_ddrphy_init(priv->phy, DDRPHYC_PIR_QSTRN);
++		/* RVTRN is excuted only on LPDDR2/LPDDR3 */
++		if (config->c_reg.mstr & DDRCTRL_MSTR_DDR3)
++			pir = DDRPHYC_PIR_QSTRN;
++		else
++			pir = DDRPHYC_PIR_QSTRN | DDRPHYC_PIR_RVTRN;
++		stm32mp1_ddrphy_init(priv->phy, pir);
+ 
+ /* 11. monitor PUB PGSR.IDONE to poll cpmpletion of training sequence */
+ 		ddrphy_idone_wait(priv->phy);
+diff --git a/drivers/ram/stm32mp1/stm32mp1_ddr_regs.h b/drivers/ram/stm32mp1/stm32mp1_ddr_regs.h
+index afd93c518e..c7d6c2aab5 100644
+--- a/drivers/ram/stm32mp1/stm32mp1_ddr_regs.h
++++ b/drivers/ram/stm32mp1/stm32mp1_ddr_regs.h
+@@ -308,6 +308,7 @@ struct stm32mp1_ddrphy {
+ #define DDRPHYC_PIR_DRAMRST			BIT(5)
+ #define DDRPHYC_PIR_DRAMINIT			BIT(6)
+ #define DDRPHYC_PIR_QSTRN			BIT(7)
++#define DDRPHYC_PIR_RVTRN			BIT(8)
+ #define DDRPHYC_PIR_ICPC			BIT(16)
+ #define DDRPHYC_PIR_ZCALBYP			BIT(30)
+ #define DDRPHYC_PIR_INITSTEPS_MASK		GENMASK(31, 7)
+-- 
+2.17.1
+

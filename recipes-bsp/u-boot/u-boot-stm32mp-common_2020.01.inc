@@ -26,6 +26,7 @@ SRC_URI += "\
     file://0008-ARM-v2020.01-stm32mp-r2-BOARD.patch \
     file://0009-ARM-v2020.01-stm32mp-r2-MISC-DRIVERS.patch \
     file://0010-ARM-v2020.01-stm32mp-r2-CONFIG.patch \
+    file://0011-ARM-v2020.01-stm32mp-r2.2.patch \
     \
     file://0099-Add-external-var-to-allow-build-of-new-devicetree-fi.patch \
     file://remove-redundant-yyloc-global.patch \
@@ -42,7 +43,7 @@ S = "${WORKDIR}/git"
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/u-boot.git;protocol=https;branch=v${U_BOOT_VERSION}-stm32mp"
-SRCREV_class-devupstream = "7d786860495d4d121a13f949cdca589ebfb281bf"
+SRCREV_class-devupstream = "d543131c5835b2ca010d8169a06dbca3014355fd"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github
