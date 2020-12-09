@@ -1,7 +1,7 @@
-From d2f5d4b3ec672e5ded9270780386098a0d34ce89 Mon Sep 17 00:00:00 2001
+From 6889992c7414102fff590ead6f1f9314c229f510 Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Mon, 5 Oct 2020 13:19:52 +0200
-Subject: [PATCH 19/22] ARM-stm32mp1-r2-rc8-MISC-CPUIDLE-MM
+Date: Thu, 25 Nov 2021 13:10:07 +0100
+Subject: [PATCH 19/22] ARM-stm32mp1-r2.3-MISC-CPUIDLE-MM
 
 ---
  CONTRIBUTING.md                               |   30 +
@@ -10,12 +10,13 @@ Subject: [PATCH 19/22] ARM-stm32mp1-r2-rc8-MISC-CPUIDLE-MM
  drivers/cpuidle/Kconfig.arm                   |    8 +
  drivers/cpuidle/Makefile                      |    1 +
  drivers/cpuidle/cpuidle-stm32.c               |  276 ++++
+ drivers/gpio/gpiolib.c                        |    7 +
  drivers/memory/Kconfig                        |   10 +
  drivers/memory/Makefile                       |    1 +
  drivers/memory/stm32-fmc2-ebi.c               | 1206 +++++++++++++++++
  include/linux/pm_wakeup.h                     |   10 +
  kernel/power/suspend.c                        |    1 -
- 11 files changed, 1799 insertions(+), 3 deletions(-)
+ 12 files changed, 1806 insertions(+), 3 deletions(-)
  create mode 100644 CONTRIBUTING.md
  create mode 100644 Documentation/devicetree/bindings/memory-controllers/st,stm32-fmc2-ebi.yaml
  create mode 100644 drivers/cpuidle/cpuidle-stm32.c
@@ -23,7 +24,7 @@ Subject: [PATCH 19/22] ARM-stm32mp1-r2-rc8-MISC-CPUIDLE-MM
 
 diff --git a/CONTRIBUTING.md b/CONTRIBUTING.md
 new file mode 100644
-index 0000000000000..3d1bacd78a543
+index 000000000..3d1bacd78
 --- /dev/null
 +++ b/CONTRIBUTING.md
 @@ -0,0 +1,30 @@
@@ -59,7 +60,7 @@ index 0000000000000..3d1bacd78a543
 +Merge will not be done directly in GitHub but it will need first to follow internal integration process before public deliver in a standard release. The Pull request will stay open until it is merged and delivered.
 diff --git a/Documentation/devicetree/bindings/memory-controllers/st,stm32-fmc2-ebi.yaml b/Documentation/devicetree/bindings/memory-controllers/st,stm32-fmc2-ebi.yaml
 new file mode 100644
-index 0000000000000..70eaf739036bc
+index 000000000..70eaf7390
 --- /dev/null
 +++ b/Documentation/devicetree/bindings/memory-controllers/st,stm32-fmc2-ebi.yaml
 @@ -0,0 +1,252 @@
@@ -316,7 +317,7 @@ index 0000000000000..70eaf739036bc
 +
 +...
 diff --git a/drivers/block/loop.c b/drivers/block/loop.c
-index 565e35e69f249..d5c969284e42d 100644
+index ffbe79241..f392e1286 100644
 --- a/drivers/block/loop.c
 +++ b/drivers/block/loop.c
 @@ -462,7 +462,7 @@ static void lo_complete_rq(struct request *rq)
@@ -328,7 +329,7 @@ index 565e35e69f249..d5c969284e42d 100644
  		goto end_io;
  	}
  
-@@ -1970,7 +1970,10 @@ static void loop_handle_cmd(struct loop_cmd *cmd)
+@@ -1973,7 +1973,10 @@ static void loop_handle_cmd(struct loop_cmd *cmd)
   failed:
  	/* complete non-aio request */
  	if (!cmd->use_aio || ret) {
@@ -341,7 +342,7 @@ index 565e35e69f249..d5c969284e42d 100644
  	}
  }
 diff --git a/drivers/cpuidle/Kconfig.arm b/drivers/cpuidle/Kconfig.arm
-index d8530475493cb..5e5cdbe7ed3cb 100644
+index d85304754..5e5cdbe7e 100644
 --- a/drivers/cpuidle/Kconfig.arm
 +++ b/drivers/cpuidle/Kconfig.arm
 @@ -81,6 +81,14 @@ config ARM_EXYNOS_CPUIDLE
@@ -360,7 +361,7 @@ index d8530475493cb..5e5cdbe7ed3cb 100644
  	bool "CPU Idle Driver for mvebu v7 family processors"
  	depends on ARCH_MVEBU && !ARM64
 diff --git a/drivers/cpuidle/Makefile b/drivers/cpuidle/Makefile
-index ee70d5cc5b996..0b198896b61a0 100644
+index ee70d5cc5..0b198896b 100644
 --- a/drivers/cpuidle/Makefile
 +++ b/drivers/cpuidle/Makefile
 @@ -22,6 +22,7 @@ obj-$(CONFIG_ARM_AT91_CPUIDLE)          += cpuidle-at91.o
@@ -373,7 +374,7 @@ index ee70d5cc5b996..0b198896b61a0 100644
  # MIPS drivers
 diff --git a/drivers/cpuidle/cpuidle-stm32.c b/drivers/cpuidle/cpuidle-stm32.c
 new file mode 100644
-index 0000000000000..d3413386cc7fe
+index 000000000..d3413386c
 --- /dev/null
 +++ b/drivers/cpuidle/cpuidle-stm32.c
 @@ -0,0 +1,276 @@
@@ -653,8 +654,26 @@ index 0000000000000..d3413386cc7fe
 +MODULE_AUTHOR("<>");
 +MODULE_DESCRIPTION("STM32 cpu idle driver");
 +MODULE_LICENSE("GPL v2");
+diff --git a/drivers/gpio/gpiolib.c b/drivers/gpio/gpiolib.c
+index abdf448b1..da0d2e7ea 100644
+--- a/drivers/gpio/gpiolib.c
++++ b/drivers/gpio/gpiolib.c
+@@ -3128,6 +3128,13 @@ int gpiod_direction_output(struct gpio_desc *desc, int value)
+ 	}
+ 
+ set_output_value:
++	if (test_bit(FLAG_PULL_UP, &desc->flags))
++		gpio_set_config(gc, gpio_chip_hwgpio(desc),
++				PIN_CONFIG_BIAS_PULL_UP);
++	else if (test_bit(FLAG_PULL_DOWN, &desc->flags))
++		gpio_set_config(gc, gpio_chip_hwgpio(desc),
++				PIN_CONFIG_BIAS_PULL_DOWN);
++
+ 	return gpiod_direction_output_raw_commit(desc, value);
+ 
+ set_output_flag:
 diff --git a/drivers/memory/Kconfig b/drivers/memory/Kconfig
-index 9bddca2923301..c651aaf7d72bc 100644
+index 9bddca292..c651aaf7d 100644
 --- a/drivers/memory/Kconfig
 +++ b/drivers/memory/Kconfig
 @@ -163,6 +163,16 @@ config PL353_SMC
@@ -675,7 +694,7 @@ index 9bddca2923301..c651aaf7d72bc 100644
  source "drivers/memory/tegra/Kconfig"
  
 diff --git a/drivers/memory/Makefile b/drivers/memory/Makefile
-index 27b493435e61c..c7d36db6a5e9f 100644
+index 27b493435..c7d36db6a 100644
 --- a/drivers/memory/Makefile
 +++ b/drivers/memory/Makefile
 @@ -21,6 +21,7 @@ obj-$(CONFIG_JZ4780_NEMC)	+= jz4780-nemc.o
@@ -688,7 +707,7 @@ index 27b493435e61c..c7d36db6a5e9f 100644
  obj-$(CONFIG_TEGRA_MC)		+= tegra/
 diff --git a/drivers/memory/stm32-fmc2-ebi.c b/drivers/memory/stm32-fmc2-ebi.c
 new file mode 100644
-index 0000000000000..4d5758c419c55
+index 000000000..4d5758c41
 --- /dev/null
 +++ b/drivers/memory/stm32-fmc2-ebi.c
 @@ -0,0 +1,1206 @@
@@ -1899,7 +1918,7 @@ index 0000000000000..4d5758c419c55
 +MODULE_DESCRIPTION("STMicroelectronics STM32 FMC2 ebi driver");
 +MODULE_LICENSE("GPL v2");
 diff --git a/include/linux/pm_wakeup.h b/include/linux/pm_wakeup.h
-index 661efa029c963..faee74f369e78 100644
+index 661efa029..faee74f36 100644
 --- a/include/linux/pm_wakeup.h
 +++ b/include/linux/pm_wakeup.h
 @@ -79,6 +79,11 @@ static inline bool device_may_wakeup(struct device *dev)
@@ -1927,7 +1946,7 @@ index 661efa029c963..faee74f369e78 100644
  
  static inline void __pm_stay_awake(struct wakeup_source *ws) {}
 diff --git a/kernel/power/suspend.c b/kernel/power/suspend.c
-index 27f149f5d4a9f..4581702e8cdd2 100644
+index 27f149f5d..4581702e8 100644
 --- a/kernel/power/suspend.c
 +++ b/kernel/power/suspend.c
 @@ -34,7 +34,6 @@

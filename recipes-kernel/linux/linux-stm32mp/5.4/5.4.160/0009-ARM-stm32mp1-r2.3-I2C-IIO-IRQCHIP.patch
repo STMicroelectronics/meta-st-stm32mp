@@ -1,7 +1,7 @@
-From 7d5ade3a72ec6ff24276380a84c15c2b048a5c16 Mon Sep 17 00:00:00 2001
+From d7680580eb4545c766ed013571eead6f0fbc0b4e Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Mon, 5 Oct 2020 13:19:44 +0200
-Subject: [PATCH 09/22] ARM-stm32mp1-r2-rc8-I2C-IIO-IRQCHIP
+Date: Thu, 25 Nov 2021 13:10:01 +0100
+Subject: [PATCH 09/22] ARM-stm32mp1-r2.3-I2C-IIO-IRQCHIP
 
 ---
  drivers/i2c/busses/Kconfig                |   1 +
@@ -9,18 +9,18 @@ Subject: [PATCH 09/22] ARM-stm32mp1-r2-rc8-I2C-IIO-IRQCHIP
  drivers/i2c/busses/i2c-stm32f4.c          |   4 +-
  drivers/i2c/busses/i2c-stm32f7.c          | 623 ++++++++++++++++++----
  drivers/iio/adc/sd_adc_modulator.c        |  84 ++-
- drivers/iio/adc/stm32-adc-core.c          |  97 ++--
+ drivers/iio/adc/stm32-adc-core.c          |  88 +--
  drivers/iio/adc/stm32-adc-core.h          |   9 +
  drivers/iio/adc/stm32-adc.c               | 146 +++--
  drivers/iio/adc/stm32-dfsdm-adc.c         | 136 ++++-
  drivers/iio/dac/stm32-dac-core.c          | 153 ++++--
  drivers/iio/dac/stm32-dac.c               |  94 +++-
  drivers/iio/trigger/stm32-timer-trigger.c | 164 +++++-
- drivers/irqchip/irq-stm32-exti.c          | 274 +++++++---
- 13 files changed, 1461 insertions(+), 343 deletions(-)
+ drivers/irqchip/irq-stm32-exti.c          | 260 ++++++---
+ 13 files changed, 1441 insertions(+), 340 deletions(-)
 
 diff --git a/drivers/i2c/busses/Kconfig b/drivers/i2c/busses/Kconfig
-index 146ce40d8e0aa..19f05c44f6f91 100644
+index 2d08a8719..104caebb6 100644
 --- a/drivers/i2c/busses/Kconfig
 +++ b/drivers/i2c/busses/Kconfig
 @@ -1008,6 +1008,7 @@ config I2C_STM32F7
@@ -32,7 +32,7 @@ index 146ce40d8e0aa..19f05c44f6f91 100644
  	  Enable this option to add support for STM32 I2C controller embedded
  	  in STM32F7 SoCs.
 diff --git a/drivers/i2c/busses/i2c-stm32.c b/drivers/i2c/busses/i2c-stm32.c
-index 1da347e6a3586..448c0df71eab9 100644
+index 1da347e6a..448c0df71 100644
 --- a/drivers/i2c/busses/i2c-stm32.c
 +++ b/drivers/i2c/busses/i2c-stm32.c
 @@ -25,9 +25,11 @@ struct stm32_i2c_dma *stm32_i2c_dma_request(struct device *dev,
@@ -92,7 +92,7 @@ index 1da347e6a3586..448c0df71eab9 100644
  	return ERR_PTR(ret);
  }
 diff --git a/drivers/i2c/busses/i2c-stm32f4.c b/drivers/i2c/busses/i2c-stm32f4.c
-index ba600d77a3f88..1b8cad506ad75 100644
+index ba600d77a..1b8cad506 100644
 --- a/drivers/i2c/busses/i2c-stm32f4.c
 +++ b/drivers/i2c/busses/i2c-stm32f4.c
 @@ -797,8 +797,10 @@ static int stm32f4_i2c_probe(struct platform_device *pdev)
@@ -108,7 +108,7 @@ index ba600d77a3f88..1b8cad506ad75 100644
  	}
  	reset_control_assert(rst);
 diff --git a/drivers/i2c/busses/i2c-stm32f7.c b/drivers/i2c/busses/i2c-stm32f7.c
-index b2634afe066d3..f59c45a4f61b2 100644
+index a7977eef2..ad02c4365 100644
 --- a/drivers/i2c/busses/i2c-stm32f7.c
 +++ b/drivers/i2c/busses/i2c-stm32f7.c
 @@ -18,6 +18,7 @@
@@ -137,7 +137,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  #define STM32F7_I2C_CR1_SBC			BIT(16)
  #define STM32F7_I2C_CR1_RXDMAEN			BIT(15)
  #define STM32F7_I2C_CR1_TXDMAEN			BIT(14)
-@@ -119,6 +124,7 @@
+@@ -121,6 +126,7 @@
  				(((n) & STM32F7_I2C_ISR_ADDCODE_MASK) >> 17)
  #define STM32F7_I2C_ISR_DIR			BIT(16)
  #define STM32F7_I2C_ISR_BUSY			BIT(15)
@@ -145,7 +145,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  #define STM32F7_I2C_ISR_PECERR			BIT(11)
  #define STM32F7_I2C_ISR_ARLO			BIT(9)
  #define STM32F7_I2C_ISR_BERR			BIT(8)
-@@ -132,6 +138,7 @@
+@@ -134,6 +140,7 @@
  #define STM32F7_I2C_ISR_TXE			BIT(0)
  
  /* STM32F7 I2C Interrupt Clear */
@@ -153,7 +153,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  #define STM32F7_I2C_ICR_PECCF			BIT(11)
  #define STM32F7_I2C_ICR_ARLOCF			BIT(9)
  #define STM32F7_I2C_ICR_BERRCF			BIT(8)
-@@ -148,7 +155,7 @@
+@@ -150,7 +157,7 @@
  
  #define STM32F7_I2C_MAX_LEN			0xff
  #define STM32F7_I2C_DMA_LEN_MIN			0x16
@@ -161,8 +161,8 @@ index b2634afe066d3..f59c45a4f61b2 100644
 +#define STM32F7_I2C_MAX_SLAVE			0x3
  
  #define STM32F7_I2C_DNF_DEFAULT			0
- #define STM32F7_I2C_DNF_MAX			16
-@@ -168,11 +175,25 @@
+ #define STM32F7_I2C_DNF_MAX			15
+@@ -170,11 +177,25 @@
  
  #define STM32F7_AUTOSUSPEND_DELAY		(HZ / 100)
  
@@ -190,7 +190,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
   * @fall_max: Max fall time of both SDA and SCL signals (ns)
   * @rise_max: Max rise time of both SDA and SCL signals (ns)
   * @hddat_min: Min data hold time (ns)
-@@ -183,8 +204,6 @@
+@@ -185,8 +206,6 @@
   */
  struct stm32f7_i2c_spec {
  	u32 rate;
@@ -199,7 +199,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  	u32 fall_max;
  	u32 rise_max;
  	u32 hddat_min;
-@@ -196,22 +215,22 @@ struct stm32f7_i2c_spec {
+@@ -198,22 +217,22 @@ struct stm32f7_i2c_spec {
  
  /**
   * struct stm32f7_i2c_setup - private I2C timing setup parameters
@@ -224,7 +224,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  };
  
  /**
-@@ -260,14 +279,38 @@ struct stm32f7_i2c_msg {
+@@ -262,14 +281,38 @@ struct stm32f7_i2c_msg {
  	u8 smbus_buf[I2C_SMBUS_BLOCK_MAX + 3] __aligned(4);
  };
  
@@ -264,7 +264,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
   * @msg: Pointer to data to be written
   * @msg_num: number of I2C messages to be executed
   * @msg_id: message identifiant
-@@ -276,20 +319,28 @@ struct stm32f7_i2c_msg {
+@@ -278,20 +321,28 @@ struct stm32f7_i2c_msg {
   * @timing: I2C computed timings
   * @slave: list of slave devices registered on the I2C bus
   * @slave_running: slave device currently used
@@ -294,7 +294,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  	struct i2c_msg *msg;
  	unsigned int msg_num;
  	unsigned int msg_id;
-@@ -298,11 +349,18 @@ struct stm32f7_i2c_dev {
+@@ -300,11 +351,18 @@ struct stm32f7_i2c_dev {
  	struct stm32f7_i2c_timings timing;
  	struct i2c_client *slave[STM32F7_I2C_MAX_SLAVE];
  	struct i2c_client *slave_running;
@@ -313,7 +313,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  };
  
  /*
-@@ -312,11 +370,13 @@ struct stm32f7_i2c_dev {
+@@ -314,11 +372,13 @@ struct stm32f7_i2c_dev {
   * Table10. Characteristics of the SDA and SCL bus lines for Standard, Fast,
   * and Fast-mode Plus I2C-bus devices
   */
@@ -331,7 +331,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  		.fall_max = 300,
  		.rise_max = 1000,
  		.hddat_min = 0,
-@@ -325,10 +385,9 @@ static struct stm32f7_i2c_spec i2c_specs[] = {
+@@ -327,10 +387,9 @@ static struct stm32f7_i2c_spec i2c_specs[] = {
  		.l_min = 4700,
  		.h_min = 4000,
  	},
@@ -345,7 +345,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  		.fall_max = 300,
  		.rise_max = 300,
  		.hddat_min = 0,
-@@ -337,10 +396,9 @@ static struct stm32f7_i2c_spec i2c_specs[] = {
+@@ -339,10 +398,9 @@ static struct stm32f7_i2c_spec i2c_specs[] = {
  		.l_min = 1300,
  		.h_min = 600,
  	},
@@ -359,7 +359,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  		.fall_max = 100,
  		.rise_max = 120,
  		.hddat_min = 0,
-@@ -358,6 +416,14 @@ static const struct stm32f7_i2c_setup stm32f7_setup = {
+@@ -360,6 +418,14 @@ static const struct stm32f7_i2c_setup stm32f7_setup = {
  	.analog_filter = STM32F7_I2C_ANALOG_FILTER_ENABLE,
  };
  
@@ -374,7 +374,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  static inline void stm32f7_i2c_set_bits(void __iomem *reg, u32 mask)
  {
  	writel_relaxed(readl_relaxed(reg) | mask, reg);
-@@ -373,10 +439,24 @@ static void stm32f7_i2c_disable_irq(struct stm32f7_i2c_dev *i2c_dev, u32 mask)
+@@ -375,10 +441,24 @@ static void stm32f7_i2c_disable_irq(struct stm32f7_i2c_dev *i2c_dev, u32 mask)
  	stm32f7_i2c_clr_bits(i2c_dev->base + STM32F7_I2C_CR1, mask);
  }
  
@@ -399,7 +399,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  	u32 p_prev = STM32F7_PRESC_MAX;
  	u32 i2cclk = DIV_ROUND_CLOSEST(NSEC_PER_SEC,
  				       setup->clock_src);
-@@ -394,18 +474,19 @@ static int stm32f7_i2c_compute_timing(struct stm32f7_i2c_dev *i2c_dev,
+@@ -396,18 +476,19 @@ static int stm32f7_i2c_compute_timing(struct stm32f7_i2c_dev *i2c_dev,
  	u16 p, l, a, h;
  	int ret = 0;
  
@@ -426,7 +426,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  		return -EINVAL;
  	}
  
-@@ -416,12 +497,6 @@ static int stm32f7_i2c_compute_timing(struct stm32f7_i2c_dev *i2c_dev,
+@@ -418,12 +499,6 @@ static int stm32f7_i2c_compute_timing(struct stm32f7_i2c_dev *i2c_dev,
  		return -EINVAL;
  	}
  
@@ -439,7 +439,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  	/*  Analog and Digital Filters */
  	af_delay_min =
  		(setup->analog_filter ?
-@@ -431,13 +506,13 @@ static int stm32f7_i2c_compute_timing(struct stm32f7_i2c_dev *i2c_dev,
+@@ -433,13 +508,13 @@ static int stm32f7_i2c_compute_timing(struct stm32f7_i2c_dev *i2c_dev,
  		 STM32F7_I2C_ANALOG_FILTER_DELAY_MAX : 0);
  	dnf_delay = setup->dnf * i2cclk;
  
@@ -456,7 +456,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  
  	if (sdadel_min < 0)
  		sdadel_min = 0;
-@@ -492,8 +567,8 @@ static int stm32f7_i2c_compute_timing(struct stm32f7_i2c_dev *i2c_dev,
+@@ -494,8 +569,8 @@ static int stm32f7_i2c_compute_timing(struct stm32f7_i2c_dev *i2c_dev,
  
  	tsync = af_delay_min + dnf_delay + (2 * i2cclk);
  	s = NULL;
@@ -467,7 +467,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  
  	/*
  	 * Among Prescaler possibilities discovered above figures out SCL Low
-@@ -511,7 +586,7 @@ static int stm32f7_i2c_compute_timing(struct stm32f7_i2c_dev *i2c_dev,
+@@ -513,7 +588,7 @@ static int stm32f7_i2c_compute_timing(struct stm32f7_i2c_dev *i2c_dev,
  		for (l = 0; l < STM32F7_SCLL_MAX; l++) {
  			u32 tscl_l = (l + 1) * prescaler + tsync;
  
@@ -476,7 +476,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  			    (i2cclk >=
  			     ((tscl_l - af_delay_min - dnf_delay) / 4))) {
  				continue;
-@@ -523,7 +598,7 @@ static int stm32f7_i2c_compute_timing(struct stm32f7_i2c_dev *i2c_dev,
+@@ -525,7 +600,7 @@ static int stm32f7_i2c_compute_timing(struct stm32f7_i2c_dev *i2c_dev,
  					setup->rise_time + setup->fall_time;
  
  				if ((tscl >= clk_min) && (tscl <= clk_max) &&
@@ -485,7 +485,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  				    (i2cclk < tscl_h)) {
  					int clk_error = tscl - i2cbus;
  
-@@ -569,13 +644,23 @@ static int stm32f7_i2c_compute_timing(struct stm32f7_i2c_dev *i2c_dev,
+@@ -571,13 +646,23 @@ static int stm32f7_i2c_compute_timing(struct stm32f7_i2c_dev *i2c_dev,
  	return ret;
  }
  
@@ -511,7 +511,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  	setup->clock_src = clk_get_rate(i2c_dev->clk);
  
  	if (!setup->clock_src) {
-@@ -589,14 +674,12 @@ static int stm32f7_i2c_setup_timing(struct stm32f7_i2c_dev *i2c_dev,
+@@ -591,14 +676,12 @@ static int stm32f7_i2c_setup_timing(struct stm32f7_i2c_dev *i2c_dev,
  		if (ret) {
  			dev_err(i2c_dev->dev,
  				"failed to compute I2C timings.\n");
@@ -529,7 +529,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  			} else {
  				break;
  			}
-@@ -608,13 +691,15 @@ static int stm32f7_i2c_setup_timing(struct stm32f7_i2c_dev *i2c_dev,
+@@ -610,13 +693,15 @@ static int stm32f7_i2c_setup_timing(struct stm32f7_i2c_dev *i2c_dev,
  		return ret;
  	}
  
@@ -547,7 +547,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  	return 0;
  }
  
-@@ -1264,11 +1349,21 @@ static int stm32f7_i2c_get_free_slave_id(struct stm32f7_i2c_dev *i2c_dev,
+@@ -1273,11 +1358,21 @@ static int stm32f7_i2c_get_free_slave_id(struct stm32f7_i2c_dev *i2c_dev,
  	int i;
  
  	/*
@@ -573,7 +573,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  			continue;
  		if (!i2c_dev->slave[i]) {
  			*id = i;
-@@ -1276,6 +1371,7 @@ static int stm32f7_i2c_get_free_slave_id(struct stm32f7_i2c_dev *i2c_dev,
+@@ -1285,6 +1380,7 @@ static int stm32f7_i2c_get_free_slave_id(struct stm32f7_i2c_dev *i2c_dev,
  		}
  	}
  
@@ -581,7 +581,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  	dev_err(dev, "Slave 0x%x could not be registered\n", slave->addr);
  
  	return -EINVAL;
-@@ -1407,7 +1503,8 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
+@@ -1416,7 +1512,8 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
  
  	/* NACK received */
  	if (status & STM32F7_I2C_ISR_NACKF) {
@@ -591,7 +591,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  		writel_relaxed(STM32F7_I2C_ICR_NACKCF, base + STM32F7_I2C_ICR);
  		f7_msg->result = -ENXIO;
  	}
-@@ -1528,6 +1625,13 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
+@@ -1537,6 +1634,13 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
  		f7_msg->result = -EINVAL;
  	}
  
@@ -605,7 +605,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  	if (!i2c_dev->slave_running) {
  		u32 mask;
  		/* Disable interrupts */
-@@ -1671,6 +1775,9 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
+@@ -1680,6 +1784,9 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
  	return ret;
  }
  
@@ -615,7 +615,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  static int stm32f7_i2c_reg_slave(struct i2c_client *slave)
  {
  	struct stm32f7_i2c_dev *i2c_dev = i2c_get_adapdata(slave->adapter);
-@@ -1697,7 +1804,16 @@ static int stm32f7_i2c_reg_slave(struct i2c_client *slave)
+@@ -1706,7 +1813,16 @@ static int stm32f7_i2c_reg_slave(struct i2c_client *slave)
  	if (ret < 0)
  		return ret;
  
@@ -633,7 +633,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  		/* Configure Own Address 1 */
  		oar1 = readl_relaxed(i2c_dev->base + STM32F7_I2C_OAR1);
  		oar1 &= ~STM32F7_I2C_OAR1_MASK;
-@@ -1710,7 +1826,9 @@ static int stm32f7_i2c_reg_slave(struct i2c_client *slave)
+@@ -1719,7 +1835,9 @@ static int stm32f7_i2c_reg_slave(struct i2c_client *slave)
  		oar1 |= STM32F7_I2C_OAR1_OA1EN;
  		i2c_dev->slave[id] = slave;
  		writel_relaxed(oar1, i2c_dev->base + STM32F7_I2C_OAR1);
@@ -644,7 +644,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  		/* Configure Own Address 2 */
  		oar2 = readl_relaxed(i2c_dev->base + STM32F7_I2C_OAR2);
  		oar2 &= ~STM32F7_I2C_OAR2_MASK;
-@@ -1723,7 +1841,10 @@ static int stm32f7_i2c_reg_slave(struct i2c_client *slave)
+@@ -1732,7 +1850,10 @@ static int stm32f7_i2c_reg_slave(struct i2c_client *slave)
  		oar2 |= STM32F7_I2C_OAR2_OA2EN;
  		i2c_dev->slave[id] = slave;
  		writel_relaxed(oar2, i2c_dev->base + STM32F7_I2C_OAR2);
@@ -656,7 +656,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  		ret = -ENODEV;
  		goto pm_free;
  	}
-@@ -1738,6 +1859,9 @@ static int stm32f7_i2c_reg_slave(struct i2c_client *slave)
+@@ -1747,6 +1868,9 @@ static int stm32f7_i2c_reg_slave(struct i2c_client *slave)
  
  	ret = 0;
  pm_free:
@@ -666,7 +666,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  	pm_runtime_mark_last_busy(dev);
  	pm_runtime_put_autosuspend(dev);
  
-@@ -1761,18 +1885,20 @@ static int stm32f7_i2c_unreg_slave(struct i2c_client *slave)
+@@ -1770,18 +1894,20 @@ static int stm32f7_i2c_unreg_slave(struct i2c_client *slave)
  	if (ret < 0)
  		return ret;
  
@@ -690,7 +690,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  
  	pm_runtime_mark_last_busy(i2c_dev->dev);
  	pm_runtime_put_autosuspend(i2c_dev->dev);
-@@ -1780,6 +1906,31 @@ static int stm32f7_i2c_unreg_slave(struct i2c_client *slave)
+@@ -1789,6 +1915,31 @@ static int stm32f7_i2c_unreg_slave(struct i2c_client *slave)
  	return 0;
  }
  
@@ -722,7 +722,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  static int stm32f7_i2c_setup_fm_plus_bits(struct platform_device *pdev,
  					  struct stm32f7_i2c_dev *i2c_dev)
  {
-@@ -1801,7 +1952,137 @@ static int stm32f7_i2c_setup_fm_plus_bits(struct platform_device *pdev,
+@@ -1810,7 +1961,137 @@ static int stm32f7_i2c_setup_fm_plus_bits(struct platform_device *pdev,
  	if (ret)
  		return ret;
  
@@ -861,7 +861,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  }
  
  static u32 stm32f7_i2c_func(struct i2c_adapter *adap)
-@@ -1811,7 +2092,7 @@ static u32 stm32f7_i2c_func(struct i2c_adapter *adap)
+@@ -1820,7 +2101,7 @@ static u32 stm32f7_i2c_func(struct i2c_adapter *adap)
  		I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA |
  		I2C_FUNC_SMBUS_BLOCK_DATA | I2C_FUNC_SMBUS_BLOCK_PROC_CALL |
  		I2C_FUNC_SMBUS_PROC_CALL | I2C_FUNC_SMBUS_PEC |
@@ -870,7 +870,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  }
  
  static const struct i2c_algorithm stm32f7_i2c_algo = {
-@@ -1827,11 +2108,11 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
+@@ -1836,11 +2117,11 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
  	struct stm32f7_i2c_dev *i2c_dev;
  	const struct stm32f7_i2c_setup *setup;
  	struct resource *res;
@@ -884,7 +884,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  
  	i2c_dev = devm_kzalloc(&pdev->dev, sizeof(*i2c_dev), GFP_KERNEL);
  	if (!i2c_dev)
-@@ -1843,12 +2124,12 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
+@@ -1852,12 +2133,12 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
  		return PTR_ERR(i2c_dev->base);
  	phy_addr = (dma_addr_t)res->start;
  
@@ -902,7 +902,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  	}
  
  	irq_error = platform_get_irq(pdev, 1);
-@@ -1859,9 +2140,13 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
+@@ -1868,9 +2149,13 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
  		return irq_error ? : -ENOENT;
  	}
  
@@ -917,7 +917,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  		return PTR_ERR(i2c_dev->clk);
  	}
  
-@@ -1871,24 +2156,23 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
+@@ -1880,24 +2165,23 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
  		return ret;
  	}
  
@@ -953,7 +953,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  		goto clk_free;
  	}
  	reset_control_assert(rst);
-@@ -1897,14 +2181,14 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
+@@ -1906,14 +2190,14 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
  
  	i2c_dev->dev = &pdev->dev;
  
@@ -970,7 +970,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  		goto clk_free;
  	}
  
-@@ -1938,6 +2222,13 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
+@@ -1947,6 +2231,13 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
  	if (ret)
  		goto clk_free;
  
@@ -984,7 +984,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  	adap = &i2c_dev->adap;
  	i2c_set_adapdata(adap, i2c_dev);
  	snprintf(adap->name, sizeof(adap->name), "STM32F7 I2C(%pa)",
-@@ -1959,10 +2250,17 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
+@@ -1968,10 +2259,17 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
  		i2c_dev->dma = NULL;
  	else if (IS_ERR(i2c_dev->dma)) {
  		ret = PTR_ERR(i2c_dev->dma);
@@ -1006,7 +1006,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  	}
  
  	platform_set_drvdata(pdev, i2c_dev);
-@@ -1981,6 +2279,26 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
+@@ -1990,6 +2288,26 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
  	if (ret)
  		goto pm_disable;
  
@@ -1033,7 +1033,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  	dev_info(i2c_dev->dev, "STM32F7 I2C-%d bus adapter\n", adap->nr);
  
  	pm_runtime_mark_last_busy(i2c_dev->dev);
-@@ -1988,17 +2306,33 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
+@@ -1997,17 +2315,33 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
  
  	return 0;
  
@@ -1067,7 +1067,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  clk_free:
  	clk_disable_unprepare(i2c_dev->clk);
  
-@@ -2009,9 +2343,22 @@ static int stm32f7_i2c_remove(struct platform_device *pdev)
+@@ -2018,9 +2352,22 @@ static int stm32f7_i2c_remove(struct platform_device *pdev)
  {
  	struct stm32f7_i2c_dev *i2c_dev = platform_get_drvdata(pdev);
  
@@ -1090,7 +1090,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  	pm_runtime_put_noidle(i2c_dev->dev);
  	pm_runtime_disable(i2c_dev->dev);
  	pm_runtime_set_suspended(i2c_dev->dev);
-@@ -2022,23 +2369,60 @@ static int stm32f7_i2c_remove(struct platform_device *pdev)
+@@ -2031,23 +2378,60 @@ static int stm32f7_i2c_remove(struct platform_device *pdev)
  		i2c_dev->dma = NULL;
  	}
  
@@ -1154,7 +1154,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  {
  	struct stm32f7_i2c_dev *i2c_dev = dev_get_drvdata(dev);
  	int ret;
-@@ -2051,17 +2435,70 @@ static int stm32f7_i2c_runtime_resume(struct device *dev)
+@@ -2060,17 +2444,70 @@ static int stm32f7_i2c_runtime_resume(struct device *dev)
  		}
  	}
  
@@ -1227,7 +1227,7 @@ index b2634afe066d3..f59c45a4f61b2 100644
  };
  MODULE_DEVICE_TABLE(of, stm32f7_i2c_match);
 diff --git a/drivers/iio/adc/sd_adc_modulator.c b/drivers/iio/adc/sd_adc_modulator.c
-index 560d8c7d9d862..c0a6e89cd77a3 100644
+index 560d8c7d9..c0a6e89cd 100644
 --- a/drivers/iio/adc/sd_adc_modulator.c
 +++ b/drivers/iio/adc/sd_adc_modulator.c
 @@ -10,8 +10,7 @@
@@ -1350,7 +1350,7 @@ index 560d8c7d9d862..c0a6e89cd77a3 100644
  
  static struct platform_driver iio_sd_mod_adc = {
 diff --git a/drivers/iio/adc/stm32-adc-core.c b/drivers/iio/adc/stm32-adc-core.c
-index 74f3a2be17a64..614d774438b98 100644
+index 14d6a5372..614d77443 100644
 --- a/drivers/iio/adc/stm32-adc-core.c
 +++ b/drivers/iio/adc/stm32-adc-core.c
 @@ -38,21 +38,19 @@
@@ -1589,31 +1589,8 @@ index 74f3a2be17a64..614d774438b98 100644
  	ret = priv->cfg->clk_sel(pdev, priv);
  	if (ret < 0)
  		goto err_hw_stop;
-@@ -780,6 +806,13 @@ static int stm32_adc_core_runtime_resume(struct device *dev)
- {
- 	return stm32_adc_core_hw_start(dev);
- }
-+
-+static int stm32_adc_core_runtime_idle(struct device *dev)
-+{
-+	pm_runtime_mark_last_busy(dev);
-+
-+	return 0;
-+}
- #endif
- 
- static const struct dev_pm_ops stm32_adc_core_pm_ops = {
-@@ -787,7 +820,7 @@ static const struct dev_pm_ops stm32_adc_core_pm_ops = {
- 				pm_runtime_force_resume)
- 	SET_RUNTIME_PM_OPS(stm32_adc_core_runtime_suspend,
- 			   stm32_adc_core_runtime_resume,
--			   NULL)
-+			   stm32_adc_core_runtime_idle)
- };
- 
- static const struct stm32_adc_priv_cfg stm32f4_adc_priv_cfg = {
 diff --git a/drivers/iio/adc/stm32-adc-core.h b/drivers/iio/adc/stm32-adc-core.h
-index 2579d514c2a34..2322809bfd2f7 100644
+index 2579d514c..2322809bf 100644
 --- a/drivers/iio/adc/stm32-adc-core.h
 +++ b/drivers/iio/adc/stm32-adc-core.h
 @@ -51,10 +51,12 @@
@@ -1665,7 +1642,7 @@ index 2579d514c2a34..2322809bfd2f7 100644
  
  /* STM32H7_ADC_CCR - bit fields */
 diff --git a/drivers/iio/adc/stm32-adc.c b/drivers/iio/adc/stm32-adc.c
-index 94fde39d9ff7a..cd1bbecd54921 100644
+index 94fde39d9..cd1bbecd5 100644
 --- a/drivers/iio/adc/stm32-adc.c
 +++ b/drivers/iio/adc/stm32-adc.c
 @@ -102,7 +102,7 @@ struct stm32_adc_calib {
@@ -2012,7 +1989,7 @@ index 94fde39d9ff7a..cd1bbecd54921 100644
  
  static const struct of_device_id stm32_adc_of_match[] = {
 diff --git a/drivers/iio/adc/stm32-dfsdm-adc.c b/drivers/iio/adc/stm32-dfsdm-adc.c
-index c2948defa7853..b9a536a6c24f2 100644
+index c2948defa..b9a536a6c 100644
 --- a/drivers/iio/adc/stm32-dfsdm-adc.c
 +++ b/drivers/iio/adc/stm32-dfsdm-adc.c
 @@ -10,6 +10,7 @@
@@ -2244,7 +2221,7 @@ index c2948defa7853..b9a536a6c24f2 100644
  
  	indio_dev->num_channels = num_ch;
 diff --git a/drivers/iio/dac/stm32-dac-core.c b/drivers/iio/dac/stm32-dac-core.c
-index d0fb3124de076..7e5809ba0dee1 100644
+index d0fb3124d..7e5809ba0 100644
 --- a/drivers/iio/dac/stm32-dac-core.c
 +++ b/drivers/iio/dac/stm32-dac-core.c
 @@ -11,6 +11,7 @@
@@ -2506,7 +2483,7 @@ index d0fb3124de076..7e5809ba0dee1 100644
  };
  module_platform_driver(stm32_dac_driver);
 diff --git a/drivers/iio/dac/stm32-dac.c b/drivers/iio/dac/stm32-dac.c
-index cce26a3a6627c..f22c1d9129b28 100644
+index cce26a3a6..f22c1d912 100644
 --- a/drivers/iio/dac/stm32-dac.c
 +++ b/drivers/iio/dac/stm32-dac.c
 @@ -13,6 +13,7 @@
@@ -2667,7 +2644,7 @@ index cce26a3a6627c..f22c1d9129b28 100644
  };
  module_platform_driver(stm32_dac_driver);
 diff --git a/drivers/iio/trigger/stm32-timer-trigger.c b/drivers/iio/trigger/stm32-timer-trigger.c
-index f98510c714b57..7d8962d6566a1 100644
+index f98510c71..7d8962d65 100644
 --- a/drivers/iio/trigger/stm32-timer-trigger.c
 +++ b/drivers/iio/trigger/stm32-timer-trigger.c
 @@ -75,14 +75,27 @@ static const void *stm32h7_valids_table[][MAX_VALIDS] = {
@@ -2982,7 +2959,7 @@ index f98510c714b57..7d8962d6566a1 100644
  };
  module_platform_driver(stm32_timer_trigger_driver);
 diff --git a/drivers/irqchip/irq-stm32-exti.c b/drivers/irqchip/irq-stm32-exti.c
-index e00f2fa27f00e..0337c71d7b625 100644
+index a8322a4e1..0337c71d7 100644
 --- a/drivers/irqchip/irq-stm32-exti.c
 +++ b/drivers/irqchip/irq-stm32-exti.c
 @@ -25,7 +25,6 @@
@@ -3182,36 +3159,7 @@ index e00f2fa27f00e..0337c71d7b625 100644
  unlock:
  	irq_gc_unlock(gc);
  
-@@ -431,6 +429,16 @@ static void stm32_irq_ack(struct irq_data *d)
- 	irq_gc_unlock(gc);
- }
- 
-+/* directly set the target bit without reading first. */
-+static inline void stm32_exti_write_bit(struct irq_data *d, u32 reg)
-+{
-+	struct stm32_exti_chip_data *chip_data = irq_data_get_irq_chip_data(d);
-+	void __iomem *base = chip_data->host_data->base;
-+	u32 val = BIT(d->hwirq % IRQS_PER_BANK);
-+
-+	writel_relaxed(val, base + reg);
-+}
-+
- static inline u32 stm32_exti_set_bit(struct irq_data *d, u32 reg)
- {
- 	struct stm32_exti_chip_data *chip_data = irq_data_get_irq_chip_data(d);
-@@ -464,9 +472,9 @@ static void stm32_exti_h_eoi(struct irq_data *d)
- 
- 	raw_spin_lock(&chip_data->rlock);
- 
--	stm32_exti_set_bit(d, stm32_bank->rpr_ofst);
-+	stm32_exti_write_bit(d, stm32_bank->rpr_ofst);
- 	if (stm32_bank->fpr_ofst != UNDEF_REG)
--		stm32_exti_set_bit(d, stm32_bank->fpr_ofst);
-+		stm32_exti_write_bit(d, stm32_bank->fpr_ofst);
- 
- 	raw_spin_unlock(&chip_data->rlock);
- 
-@@ -504,15 +512,20 @@ static int stm32_exti_h_set_type(struct irq_data *d, unsigned int type)
+@@ -514,15 +512,20 @@ static int stm32_exti_h_set_type(struct irq_data *d, unsigned int type)
  {
  	struct stm32_exti_chip_data *chip_data = irq_data_get_irq_chip_data(d);
  	const struct stm32_exti_bank *stm32_bank = chip_data->reg_bank;
@@ -3235,7 +3183,7 @@ index e00f2fa27f00e..0337c71d7b625 100644
  
  	rtsr = readl_relaxed(base + stm32_bank->rtsr_ofst);
  	ftsr = readl_relaxed(base + stm32_bank->ftsr_ofst);
-@@ -525,10 +538,14 @@ static int stm32_exti_h_set_type(struct irq_data *d, unsigned int type)
+@@ -535,10 +538,14 @@ static int stm32_exti_h_set_type(struct irq_data *d, unsigned int type)
  	writel_relaxed(ftsr, base + stm32_bank->ftsr_ofst);
  
  unspinlock:
@@ -3251,7 +3199,7 @@ index e00f2fa27f00e..0337c71d7b625 100644
  	return err;
  }
  
-@@ -546,6 +563,9 @@ static int stm32_exti_h_set_wake(struct irq_data *d, unsigned int on)
+@@ -556,6 +563,9 @@ static int stm32_exti_h_set_wake(struct irq_data *d, unsigned int on)
  
  	raw_spin_unlock(&chip_data->rlock);
  
@@ -3261,7 +3209,7 @@ index e00f2fa27f00e..0337c71d7b625 100644
  	return 0;
  }
  
-@@ -555,7 +575,13 @@ static int stm32_exti_h_set_affinity(struct irq_data *d,
+@@ -565,7 +575,13 @@ static int stm32_exti_h_set_affinity(struct irq_data *d,
  	if (d->parent_data->chip)
  		return irq_chip_set_affinity_parent(d, dest, force);
  
@@ -3276,7 +3224,7 @@ index e00f2fa27f00e..0337c71d7b625 100644
  }
  
  static int __maybe_unused stm32_exti_h_suspend(void)
-@@ -604,45 +630,90 @@ static void stm32_exti_h_syscore_deinit(void)
+@@ -614,45 +630,90 @@ static void stm32_exti_h_syscore_deinit(void)
  	unregister_syscore_ops(&stm32_exti_h_syscore_ops);
  }
  
@@ -3377,7 +3325,7 @@ index e00f2fa27f00e..0337c71d7b625 100644
  	}
  
  	return 0;
-@@ -807,11 +878,12 @@ static int stm32_exti_probe(struct platform_device *pdev)
+@@ -817,11 +878,12 @@ static int stm32_exti_probe(struct platform_device *pdev)
  {
  	int ret, i;
  	struct device *dev = &pdev->dev;
@@ -3391,7 +3339,7 @@ index e00f2fa27f00e..0337c71d7b625 100644
  
  	host_data = devm_kzalloc(dev, sizeof(*host_data), GFP_KERNEL);
  	if (!host_data)
-@@ -879,6 +951,34 @@ static int stm32_exti_probe(struct platform_device *pdev)
+@@ -889,6 +951,34 @@ static int stm32_exti_probe(struct platform_device *pdev)
  	if (ret)
  		return ret;
  

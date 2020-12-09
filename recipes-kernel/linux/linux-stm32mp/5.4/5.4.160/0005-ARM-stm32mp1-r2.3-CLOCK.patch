@@ -1,7 +1,7 @@
-From 791f0dfb6aaf584e1a73c0aca77cb95d8dae8070 Mon Sep 17 00:00:00 2001
+From 11df46c1186a20c63be4410f2ff3e449eda18938 Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Mon, 5 Oct 2020 13:19:42 +0200
-Subject: [PATCH 05/22] ARM-stm32mp1-r2-rc8-CLOCK
+Date: Thu, 25 Nov 2021 13:09:59 +0100
+Subject: [PATCH 05/22] ARM-stm32mp1-r2.3-CLOCK
 
 ---
  drivers/clk/clk-composite.c               |  15 +
@@ -9,15 +9,15 @@ Subject: [PATCH 05/22] ARM-stm32mp1-r2-rc8-CLOCK
  drivers/clk/clk.c                         |   7 +-
  drivers/clocksource/Kconfig               |   4 +
  drivers/clocksource/Makefile              |   1 +
- drivers/clocksource/timer-stm32-lp.c      | 221 +++++
+ drivers/clocksource/timer-stm32-lp.c      | 219 +++++
  drivers/counter/stm32-lptimer-cnt.c       |   2 +-
  drivers/counter/stm32-timer-cnt.c         |  68 +-
  include/dt-bindings/clock/stm32mp1-clks.h |  33 +
- 9 files changed, 1026 insertions(+), 258 deletions(-)
+ 9 files changed, 1024 insertions(+), 258 deletions(-)
  create mode 100644 drivers/clocksource/timer-stm32-lp.c
 
 diff --git a/drivers/clk/clk-composite.c b/drivers/clk/clk-composite.c
-index 4f13a681ddfcd..853558156bda1 100644
+index 4f13a681d..853558156 100644
 --- a/drivers/clk/clk-composite.c
 +++ b/drivers/clk/clk-composite.c
 @@ -41,6 +41,18 @@ static unsigned long clk_composite_recalc_rate(struct clk_hw *hw,
@@ -50,7 +50,7 @@ index 4f13a681ddfcd..853558156bda1 100644
  			clk_composite_ops->determine_rate =
  				clk_composite_determine_rate;
 diff --git a/drivers/clk/clk-stm32mp1.c b/drivers/clk/clk-stm32mp1.c
-index a875649df8b8f..2a1de15cd9813 100644
+index a875649df..2a1de15cd 100644
 --- a/drivers/clk/clk-stm32mp1.c
 +++ b/drivers/clk/clk-stm32mp1.c
 @@ -5,15 +5,26 @@
@@ -1492,7 +1492,7 @@ index a875649df8b8f..2a1de15cd9813 100644
 +}
 +core_initcall(stm32mp1_clocks_init);
 diff --git a/drivers/clk/clk.c b/drivers/clk/clk.c
-index 36e9f38a38824..b986c72a497a0 100644
+index 6ff87cd86..fc6862ce2 100644
 --- a/drivers/clk/clk.c
 +++ b/drivers/clk/clk.c
 @@ -1717,6 +1717,7 @@ static void clk_reparent(struct clk_core *core, struct clk_core *new_parent)
@@ -1524,10 +1524,10 @@ index 36e9f38a38824..b986c72a497a0 100644
  }
  
 diff --git a/drivers/clocksource/Kconfig b/drivers/clocksource/Kconfig
-index f35a53ce8988a..19ec0a78a316a 100644
+index 9bfe4c5af..0afae726c 100644
 --- a/drivers/clocksource/Kconfig
 +++ b/drivers/clocksource/Kconfig
-@@ -292,6 +292,10 @@ config CLKSRC_STM32
+@@ -294,6 +294,10 @@ config CLKSRC_STM32
  	select CLKSRC_MMIO
  	select TIMER_OF
  
@@ -1539,7 +1539,7 @@ index f35a53ce8988a..19ec0a78a316a 100644
  	bool "Clocksource for MPS2 SoCs" if COMPILE_TEST
  	depends on GENERIC_SCHED_CLOCK
 diff --git a/drivers/clocksource/Makefile b/drivers/clocksource/Makefile
-index 4dfe4225ece78..c6eef37be9ccc 100644
+index 4dfe4225e..c6eef37be 100644
 --- a/drivers/clocksource/Makefile
 +++ b/drivers/clocksource/Makefile
 @@ -44,6 +44,7 @@ obj-$(CONFIG_BCM_KONA_TIMER)	+= bcm_kona_timer.o
@@ -1552,10 +1552,10 @@ index 4dfe4225ece78..c6eef37be9ccc 100644
  obj-$(CONFIG_CLKSRC_MPS2)	+= mps2-timer.o
 diff --git a/drivers/clocksource/timer-stm32-lp.c b/drivers/clocksource/timer-stm32-lp.c
 new file mode 100644
-index 0000000000000..db2841d0beb81
+index 000000000..90c10f378
 --- /dev/null
 +++ b/drivers/clocksource/timer-stm32-lp.c
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,219 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Copyright (C) STMicroelectronics 2019 - All Rights Reserved
@@ -1726,9 +1726,7 @@ index 0000000000000..db2841d0beb81
 +	}
 +
 +	if (of_property_read_bool(pdev->dev.parent->of_node, "wakeup-source")) {
-+		ret = device_init_wakeup(&pdev->dev, true);
-+		if (ret)
-+			goto out_clk_disable;
++		device_set_wakeup_capable(&pdev->dev, true);
 +
 +		ret = dev_pm_set_wake_irq(&pdev->dev, irq);
 +		if (ret)
@@ -1778,7 +1776,7 @@ index 0000000000000..db2841d0beb81
 +MODULE_DESCRIPTION("STMicroelectronics STM32 clockevent low power driver");
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/counter/stm32-lptimer-cnt.c b/drivers/counter/stm32-lptimer-cnt.c
-index bbc930a5962c6..28b63645c4118 100644
+index bbc930a59..28b63645c 100644
 --- a/drivers/counter/stm32-lptimer-cnt.c
 +++ b/drivers/counter/stm32-lptimer-cnt.c
 @@ -347,7 +347,7 @@ static const struct iio_chan_spec stm32_lptim_cnt_channels = {
@@ -1791,7 +1789,7 @@ index bbc930a5962c6..28b63645c4118 100644
   * @STM32_LPTIM_ENCODER_BOTH_EDGE: count on both edges (IN1 & IN2 quadrature)
   */
 diff --git a/drivers/counter/stm32-timer-cnt.c b/drivers/counter/stm32-timer-cnt.c
-index 644ba18a72ad5..6c51ff2cf5758 100644
+index 889ea7a6e..6df05db4e 100644
 --- a/drivers/counter/stm32-timer-cnt.c
 +++ b/drivers/counter/stm32-timer-cnt.c
 @@ -8,10 +8,10 @@
@@ -1822,7 +1820,7 @@ index 644ba18a72ad5..6c51ff2cf5758 100644
  	struct counter_device counter;
  	struct regmap *regmap;
  	struct clk *clk;
- 	u32 ceiling;
+ 	u32 max_arr;
 +	bool enabled;
 +	struct stm32_timer_regs bak;
  };
@@ -1833,7 +1831,7 @@ index 644ba18a72ad5..6c51ff2cf5758 100644
   * @STM32_COUNT_SLAVE_MODE_DISABLED: counts on internal clock when CEN=1
   * @STM32_COUNT_ENCODER_MODE_1: counts TI1FP1 edges, depending on TI2FP2 level
   * @STM32_COUNT_ENCODER_MODE_2: counts TI2FP2 edges, depending on TI1FP1 level
-@@ -231,6 +240,9 @@ static ssize_t stm32_count_enable_write(struct counter_device *counter,
+@@ -236,6 +245,9 @@ static ssize_t stm32_count_enable_write(struct counter_device *counter,
  			clk_disable(priv->clk);
  	}
  
@@ -1843,7 +1841,7 @@ index 644ba18a72ad5..6c51ff2cf5758 100644
  	return len;
  }
  
-@@ -365,10 +377,59 @@ static int stm32_timer_cnt_probe(struct platform_device *pdev)
+@@ -375,10 +387,59 @@ static int stm32_timer_cnt_probe(struct platform_device *pdev)
  	priv->counter.num_signals = ARRAY_SIZE(stm32_signals);
  	priv->counter.priv = priv;
  
@@ -1903,7 +1901,7 @@ index 644ba18a72ad5..6c51ff2cf5758 100644
  static const struct of_device_id stm32_timer_cnt_of_match[] = {
  	{ .compatible = "st,stm32-timer-counter", },
  	{},
-@@ -380,6 +441,7 @@ static struct platform_driver stm32_timer_cnt_driver = {
+@@ -390,6 +451,7 @@ static struct platform_driver stm32_timer_cnt_driver = {
  	.driver = {
  		.name = "stm32-timer-counter",
  		.of_match_table = stm32_timer_cnt_of_match,
@@ -1912,7 +1910,7 @@ index 644ba18a72ad5..6c51ff2cf5758 100644
  };
  module_platform_driver(stm32_timer_cnt_driver);
 diff --git a/include/dt-bindings/clock/stm32mp1-clks.h b/include/dt-bindings/clock/stm32mp1-clks.h
-index 4cdaf135829c6..ec7b1a93200fa 100644
+index 4cdaf1358..ec7b1a932 100644
 --- a/include/dt-bindings/clock/stm32mp1-clks.h
 +++ b/include/dt-bindings/clock/stm32mp1-clks.h
 @@ -179,6 +179,12 @@

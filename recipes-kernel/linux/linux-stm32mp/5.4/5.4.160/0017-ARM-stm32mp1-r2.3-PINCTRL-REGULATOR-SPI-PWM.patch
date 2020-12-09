@@ -1,25 +1,25 @@
-From a3294658232852248461b79c8c0a532956974568 Mon Sep 17 00:00:00 2001
+From 1792fd31f01994061fdffe5c68da68002008df8c Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Mon, 5 Oct 2020 13:19:51 +0200
-Subject: [PATCH 17/22] ARM-stm32mp1-r2-rc8-PINCTRL-REGULATOR-SPI-PWM
+Date: Thu, 25 Nov 2021 13:10:06 +0100
+Subject: [PATCH 17/22] ARM-stm32mp1-r2.3-PINCTRL-REGULATOR-SPI-PWM
 
 ---
  .../bindings/pinctrl/st,stm32-pinctrl.yaml    |   8 +
  .../devicetree/bindings/pwm/pwm-stm32.txt     |   8 +-
  drivers/pinctrl/pinctrl-stmfx.c               |  36 +-
- drivers/pinctrl/stm32/pinctrl-stm32.c         | 268 +++++++---
+ drivers/pinctrl/stm32/pinctrl-stm32.c         | 268 ++++++++++----
  drivers/pinctrl/stm32/pinctrl-stm32.h         |  17 +-
  drivers/pinctrl/stm32/pinctrl-stm32mp157.c    |   1 +
- drivers/pwm/pwm-stm32.c                       | 116 ++--
- drivers/regulator/stm32-pwr.c                 |  85 ++-
- drivers/regulator/stpmic1_regulator.c         | 203 ++++++-
- drivers/spi/spi-stm32-qspi.c                  | 155 ++++--
- drivers/spi/spi-stm32.c                       | 495 ++++++++++--------
+ drivers/pwm/pwm-stm32.c                       | 116 ++++--
+ drivers/regulator/stm32-pwr.c                 |  85 ++++-
+ drivers/regulator/stpmic1_regulator.c         | 203 ++++++++++-
+ drivers/spi/spi-stm32-qspi.c                  | 155 ++++++--
+ drivers/spi/spi-stm32.c                       | 330 ++++++++++--------
  include/dt-bindings/pinctrl/stm32-pinfunc.h   |   1 +
- 12 files changed, 1019 insertions(+), 374 deletions(-)
+ 12 files changed, 922 insertions(+), 306 deletions(-)
 
 diff --git a/Documentation/devicetree/bindings/pinctrl/st,stm32-pinctrl.yaml b/Documentation/devicetree/bindings/pinctrl/st,stm32-pinctrl.yaml
-index 400df2da018a3..4e24a8e863475 100644
+index 400df2da0..4e24a8e86 100644
 --- a/Documentation/devicetree/bindings/pinctrl/st,stm32-pinctrl.yaml
 +++ b/Documentation/devicetree/bindings/pinctrl/st,stm32-pinctrl.yaml
 @@ -144,9 +144,13 @@ patternProperties:
@@ -48,7 +48,7 @@ index 400df2da018a3..4e24a8e863475 100644
            bias-disable:
              type: boolean
 diff --git a/Documentation/devicetree/bindings/pwm/pwm-stm32.txt b/Documentation/devicetree/bindings/pwm/pwm-stm32.txt
-index a8690bfa5e1fa..f1620c1feebfc 100644
+index a8690bfa5..f1620c1fe 100644
 --- a/Documentation/devicetree/bindings/pwm/pwm-stm32.txt
 +++ b/Documentation/devicetree/bindings/pwm/pwm-stm32.txt
 @@ -5,8 +5,9 @@ See ../mfd/stm32-timers.txt for details about the parent node.
@@ -74,7 +74,7 @@ index a8690bfa5e1fa..f1620c1feebfc 100644
  		};
  	};
 diff --git a/drivers/pinctrl/pinctrl-stmfx.c b/drivers/pinctrl/pinctrl-stmfx.c
-index ccdf0bb214149..f7958eece5e0e 100644
+index 835c14bb3..896e6f1dd 100644
 --- a/drivers/pinctrl/pinctrl-stmfx.c
 +++ b/drivers/pinctrl/pinctrl-stmfx.c
 @@ -277,7 +277,7 @@ static int stmfx_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
@@ -132,7 +132,7 @@ index ccdf0bb214149..f7958eece5e0e 100644
  static void stmfx_pinctrl_irq_toggle_trigger(struct stmfx_pinctrl *pctl,
  					     unsigned int offset)
  {
-@@ -664,6 +688,8 @@ static int stmfx_pinctrl_probe(struct platform_device *pdev)
+@@ -666,6 +690,8 @@ static int stmfx_pinctrl_probe(struct platform_device *pdev)
  	pctl->irq_chip.irq_set_type = stmfx_pinctrl_irq_set_type;
  	pctl->irq_chip.irq_bus_lock = stmfx_pinctrl_irq_bus_lock;
  	pctl->irq_chip.irq_bus_sync_unlock = stmfx_pinctrl_irq_bus_sync_unlock;
@@ -142,7 +142,7 @@ index ccdf0bb214149..f7958eece5e0e 100644
  	ret = gpiochip_irqchip_add_nested(&pctl->gpio_chip, &pctl->irq_chip,
  					  0, handle_bad_irq, IRQ_TYPE_NONE);
 diff --git a/drivers/pinctrl/stm32/pinctrl-stm32.c b/drivers/pinctrl/stm32/pinctrl-stm32.c
-index 2d5e0435af0a4..ef3b081d27983 100644
+index 138cbc012..ae345dd9f 100644
 --- a/drivers/pinctrl/stm32/pinctrl-stm32.c
 +++ b/drivers/pinctrl/stm32/pinctrl-stm32.c
 @@ -64,7 +64,7 @@
@@ -586,7 +586,7 @@ index 2d5e0435af0a4..ef3b081d27983 100644
  	struct resource res;
 -	struct reset_control *rstc;
  	int npins = STM32_GPIO_PINS_PER_BANK;
- 	int bank_nr, err;
+ 	int bank_nr, err, i = 0;
  
 -	rstc = of_reset_control_get_exclusive(np, NULL);
 -	if (!IS_ERR(rstc))
@@ -609,7 +609,7 @@ index 2d5e0435af0a4..ef3b081d27983 100644
  	err = clk_prepare(bank->clk);
  	if (err) {
  		dev_err(dev, "failed to prepare clk (%d)\n", err);
-@@ -1335,7 +1445,8 @@ static int stm32_pctrl_create_pins_tab(struct stm32_pinctrl *pctl,
+@@ -1340,7 +1450,8 @@ static int stm32_pctrl_create_pins_tab(struct stm32_pinctrl *pctl,
  		if (pctl->pkg && !(pctl->pkg & p->pkg))
  			continue;
  		pins->pin = p->pin;
@@ -619,7 +619,7 @@ index 2d5e0435af0a4..ef3b081d27983 100644
  		pins++;
  		nb_pins_available++;
  	}
-@@ -1444,6 +1555,7 @@ int stm32_pctl_probe(struct platform_device *pdev)
+@@ -1449,6 +1560,7 @@ int stm32_pctl_probe(struct platform_device *pdev)
  	pctl->pctl_desc.pctlops = &stm32_pctrl_ops;
  	pctl->pctl_desc.pmxops = &stm32_pmx_ops;
  	pctl->dev = &pdev->dev;
@@ -627,7 +627,7 @@ index 2d5e0435af0a4..ef3b081d27983 100644
  
  	pctl->pctl_dev = devm_pinctrl_register(&pdev->dev, &pctl->pctl_desc,
  					       pctl);
-@@ -1466,6 +1578,28 @@ int stm32_pctl_probe(struct platform_device *pdev)
+@@ -1471,6 +1583,28 @@ int stm32_pctl_probe(struct platform_device *pdev)
  	if (!pctl->banks)
  		return -ENOMEM;
  
@@ -657,7 +657,7 @@ index 2d5e0435af0a4..ef3b081d27983 100644
  		if (of_property_read_bool(child, "gpio-controller")) {
  			ret = stm32_gpiolib_register_bank(pctl, child);
 diff --git a/drivers/pinctrl/stm32/pinctrl-stm32.h b/drivers/pinctrl/stm32/pinctrl-stm32.h
-index ec0d34c339031..b11a223f3504c 100644
+index ec0d34c33..b11a223f3 100644
 --- a/drivers/pinctrl/stm32/pinctrl-stm32.h
 +++ b/drivers/pinctrl/stm32/pinctrl-stm32.h
 @@ -17,6 +17,8 @@
@@ -720,7 +720,7 @@ index ec0d34c339031..b11a223f3504c 100644
  
  struct stm32_gpio_bank;
 diff --git a/drivers/pinctrl/stm32/pinctrl-stm32mp157.c b/drivers/pinctrl/stm32/pinctrl-stm32mp157.c
-index 2ccb99d64df83..86fe6d5ac54d6 100644
+index 2ccb99d64..86fe6d5ac 100644
 --- a/drivers/pinctrl/stm32/pinctrl-stm32mp157.c
 +++ b/drivers/pinctrl/stm32/pinctrl-stm32mp157.c
 @@ -2328,6 +2328,7 @@ static struct stm32_pinctrl_match_data stm32mp157_match_data = {
@@ -732,7 +732,7 @@ index 2ccb99d64df83..86fe6d5ac54d6 100644
  
  static const struct of_device_id stm32mp157_pctrl_match[] = {
 diff --git a/drivers/pwm/pwm-stm32.c b/drivers/pwm/pwm-stm32.c
-index 359b08596d9e3..d3be944f2ae96 100644
+index 359b08596..d3be944f2 100644
 --- a/drivers/pwm/pwm-stm32.c
 +++ b/drivers/pwm/pwm-stm32.c
 @@ -12,6 +12,7 @@
@@ -937,7 +937,7 @@ index 359b08596d9e3..d3be944f2ae96 100644
  };
  module_platform_driver(stm32_pwm_driver);
 diff --git a/drivers/regulator/stm32-pwr.c b/drivers/regulator/stm32-pwr.c
-index e0e627b0106e0..373d83797ea86 100644
+index e0e627b01..373d83797 100644
 --- a/drivers/regulator/stm32-pwr.c
 +++ b/drivers/regulator/stm32-pwr.c
 @@ -3,12 +3,15 @@
@@ -1097,7 +1097,7 @@ index e0e627b0106e0..373d83797ea86 100644
  		priv->ready_mask = ready_mask_table[i];
  		config.driver_data = priv;
 diff --git a/drivers/regulator/stpmic1_regulator.c b/drivers/regulator/stpmic1_regulator.c
-index f09061473613c..4537e3ab143ca 100644
+index f09061473..4537e3ab1 100644
 --- a/drivers/regulator/stpmic1_regulator.c
 +++ b/drivers/regulator/stpmic1_regulator.c
 @@ -2,7 +2,9 @@
@@ -1415,7 +1415,7 @@ index f09061473613c..4537e3ab143ca 100644
  
  	dev_dbg(&pdev->dev, "stpmic1_regulator driver probed\n");
 diff --git a/drivers/spi/spi-stm32-qspi.c b/drivers/spi/spi-stm32-qspi.c
-index 4e726929bb4f5..77c1da13a3f05 100644
+index ea77d9152..305c8b264 100644
 --- a/drivers/spi/spi-stm32-qspi.c
 +++ b/drivers/spi/spi-stm32-qspi.c
 @@ -16,6 +16,7 @@
@@ -1434,7 +1434,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  
  struct stm32_qspi_flash {
  	struct stm32_qspi *qspi;
-@@ -431,10 +433,17 @@ static int stm32_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
+@@ -434,10 +436,17 @@ static int stm32_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
  	struct stm32_qspi *qspi = spi_controller_get_devdata(mem->spi->master);
  	int ret;
  
@@ -1452,7 +1452,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  	return ret;
  }
  
-@@ -444,6 +453,7 @@ static int stm32_qspi_setup(struct spi_device *spi)
+@@ -447,6 +456,7 @@ static int stm32_qspi_setup(struct spi_device *spi)
  	struct stm32_qspi *qspi = spi_controller_get_devdata(ctrl);
  	struct stm32_qspi_flash *flash;
  	u32 presc;
@@ -1460,7 +1460,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  
  	if (ctrl->busy)
  		return -EBUSY;
-@@ -451,6 +461,10 @@ static int stm32_qspi_setup(struct spi_device *spi)
+@@ -454,6 +464,10 @@ static int stm32_qspi_setup(struct spi_device *spi)
  	if (!spi->max_speed_hz)
  		return -EINVAL;
  
@@ -1471,7 +1471,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  	presc = DIV_ROUND_UP(qspi->clk_rate, spi->max_speed_hz) - 1;
  
  	flash = &qspi->flash[spi->chip_select];
-@@ -467,13 +481,17 @@ static int stm32_qspi_setup(struct spi_device *spi)
+@@ -470,13 +484,17 @@ static int stm32_qspi_setup(struct spi_device *spi)
  	writel_relaxed(qspi->dcr_reg, qspi->io_base + QSPI_DCR);
  	mutex_unlock(&qspi->lock);
  
@@ -1490,7 +1490,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  
  	memset(&dma_cfg, 0, sizeof(dma_cfg));
  
-@@ -484,8 +502,13 @@ static void stm32_qspi_dma_setup(struct stm32_qspi *qspi)
+@@ -487,8 +505,13 @@ static void stm32_qspi_dma_setup(struct stm32_qspi *qspi)
  	dma_cfg.src_maxburst = 4;
  	dma_cfg.dst_maxburst = 4;
  
@@ -1506,7 +1506,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  		if (dmaengine_slave_config(qspi->dma_chrx, &dma_cfg)) {
  			dev_err(dev, "dma rx config failed\n");
  			dma_release_channel(qspi->dma_chrx);
-@@ -493,8 +516,11 @@ static void stm32_qspi_dma_setup(struct stm32_qspi *qspi)
+@@ -496,8 +519,11 @@ static void stm32_qspi_dma_setup(struct stm32_qspi *qspi)
  		}
  	}
  
@@ -1520,7 +1520,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  		if (dmaengine_slave_config(qspi->dma_chtx, &dma_cfg)) {
  			dev_err(dev, "dma tx config failed\n");
  			dma_release_channel(qspi->dma_chtx);
-@@ -502,7 +528,13 @@ static void stm32_qspi_dma_setup(struct stm32_qspi *qspi)
+@@ -505,7 +531,13 @@ static void stm32_qspi_dma_setup(struct stm32_qspi *qspi)
  		}
  	}
  
@@ -1534,7 +1534,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  }
  
  static void stm32_qspi_dma_free(struct stm32_qspi *qspi)
-@@ -521,15 +553,6 @@ static const struct spi_controller_mem_ops stm32_qspi_mem_ops = {
+@@ -524,15 +556,6 @@ static const struct spi_controller_mem_ops stm32_qspi_mem_ops = {
  	.exec_op = stm32_qspi_exec_op,
  };
  
@@ -1550,7 +1550,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  static int stm32_qspi_probe(struct platform_device *pdev)
  {
  	struct device *dev = &pdev->dev;
-@@ -550,7 +573,7 @@ static int stm32_qspi_probe(struct platform_device *pdev)
+@@ -553,7 +576,7 @@ static int stm32_qspi_probe(struct platform_device *pdev)
  	qspi->io_base = devm_ioremap_resource(dev, res);
  	if (IS_ERR(qspi->io_base)) {
  		ret = PTR_ERR(qspi->io_base);
@@ -1559,7 +1559,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  	}
  
  	qspi->phys_base = res->start;
-@@ -559,24 +582,26 @@ static int stm32_qspi_probe(struct platform_device *pdev)
+@@ -562,24 +585,26 @@ static int stm32_qspi_probe(struct platform_device *pdev)
  	qspi->mm_base = devm_ioremap_resource(dev, res);
  	if (IS_ERR(qspi->mm_base)) {
  		ret = PTR_ERR(qspi->mm_base);
@@ -1591,7 +1591,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  	}
  
  	init_completion(&qspi->data_completion);
-@@ -584,23 +609,27 @@ static int stm32_qspi_probe(struct platform_device *pdev)
+@@ -587,23 +612,27 @@ static int stm32_qspi_probe(struct platform_device *pdev)
  	qspi->clk = devm_clk_get(dev, NULL);
  	if (IS_ERR(qspi->clk)) {
  		ret = PTR_ERR(qspi->clk);
@@ -1623,7 +1623,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  		reset_control_assert(rstc);
  		udelay(2);
  		reset_control_deassert(rstc);
-@@ -608,7 +637,10 @@ static int stm32_qspi_probe(struct platform_device *pdev)
+@@ -611,7 +640,10 @@ static int stm32_qspi_probe(struct platform_device *pdev)
  
  	qspi->dev = dev;
  	platform_set_drvdata(pdev, qspi);
@@ -1635,7 +1635,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  	mutex_init(&qspi->lock);
  
  	ctrl->mode_bits = SPI_RX_DUAL | SPI_RX_QUAD
-@@ -619,12 +651,35 @@ static int stm32_qspi_probe(struct platform_device *pdev)
+@@ -622,12 +654,35 @@ static int stm32_qspi_probe(struct platform_device *pdev)
  	ctrl->num_chipselect = STM32_QSPI_MAX_NORCHIP;
  	ctrl->dev.of_node = dev->of_node;
  
@@ -1675,7 +1675,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  	spi_master_put(qspi->ctrl);
  
  	return ret;
-@@ -634,15 +689,38 @@ static int stm32_qspi_remove(struct platform_device *pdev)
+@@ -637,15 +692,38 @@ static int stm32_qspi_remove(struct platform_device *pdev)
  {
  	struct stm32_qspi *qspi = platform_get_drvdata(pdev);
  
@@ -1716,7 +1716,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  	pinctrl_pm_select_sleep_state(dev);
  
  	return 0;
-@@ -651,17 +729,28 @@ static int __maybe_unused stm32_qspi_suspend(struct device *dev)
+@@ -654,17 +732,28 @@ static int __maybe_unused stm32_qspi_suspend(struct device *dev)
  static int __maybe_unused stm32_qspi_resume(struct device *dev)
  {
  	struct stm32_qspi *qspi = dev_get_drvdata(dev);
@@ -1748,7 +1748,7 @@ index 4e726929bb4f5..77c1da13a3f05 100644
  static const struct of_device_id stm32_qspi_match[] = {
  	{.compatible = "st,stm32f469-qspi"},
 diff --git a/drivers/spi/spi-stm32.c b/drivers/spi/spi-stm32.c
-index b222ce8d083ef..feed9206323be 100644
+index 9ae160922..4f55fe6a6 100644
 --- a/drivers/spi/spi-stm32.c
 +++ b/drivers/spi/spi-stm32.c
 @@ -5,6 +5,7 @@
@@ -1765,9 +1765,9 @@ index b222ce8d083ef..feed9206323be 100644
  #include <linux/module.h>
 +#include <linux/of_gpio.h>
  #include <linux/of_platform.h>
+ #include <linux/pinctrl/consumer.h>
  #include <linux/pm_runtime.h>
- #include <linux/reset.h>
-@@ -31,8 +33,8 @@
+@@ -32,8 +34,8 @@
  #define STM32F4_SPI_CR1_CPHA		BIT(0)
  #define STM32F4_SPI_CR1_CPOL		BIT(1)
  #define STM32F4_SPI_CR1_MSTR		BIT(2)
@@ -1777,7 +1777,7 @@ index b222ce8d083ef..feed9206323be 100644
  #define STM32F4_SPI_CR1_SPE		BIT(6)
  #define STM32F4_SPI_CR1_LSBFRST		BIT(7)
  #define STM32F4_SPI_CR1_SSI		BIT(8)
-@@ -94,27 +96,22 @@
+@@ -95,27 +97,22 @@
  #define STM32H7_SPI_CR1_SSI		BIT(12)
  
  /* STM32H7_SPI_CR2 bit fields */
@@ -1807,7 +1807,7 @@ index b222ce8d083ef..feed9206323be 100644
  #define STM32H7_SPI_CFG2_SP		GENMASK(21, 19)
  #define STM32H7_SPI_CFG2_MASTER		BIT(22)
  #define STM32H7_SPI_CFG2_LSBFRST	BIT(23)
-@@ -137,10 +134,10 @@
+@@ -138,10 +135,10 @@
  #define STM32H7_SPI_SR_RXP		BIT(0)
  #define STM32H7_SPI_SR_TXP		BIT(1)
  #define STM32H7_SPI_SR_EOT		BIT(3)
@@ -1819,7 +1819,7 @@ index b222ce8d083ef..feed9206323be 100644
  #define STM32H7_SPI_SR_RXPLVL		GENMASK(14, 13)
  #define STM32H7_SPI_SR_RXWNE		BIT(15)
  
-@@ -167,8 +164,6 @@
+@@ -168,8 +165,6 @@
  #define SPI_3WIRE_TX		3
  #define SPI_3WIRE_RX		4
  
@@ -1828,7 +1828,7 @@ index b222ce8d083ef..feed9206323be 100644
  /*
   * use PIO for small transfers, avoiding DMA setup/teardown overhead for drivers
   * without fifo buffers.
-@@ -249,7 +244,7 @@ struct stm32_spi_cfg {
+@@ -250,7 +245,7 @@ struct stm32_spi_cfg {
  	int (*set_mode)(struct stm32_spi *spi, unsigned int comm_type);
  	void (*set_data_idleness)(struct stm32_spi *spi, u32 length);
  	int (*set_number_of_data)(struct stm32_spi *spi, u32 length);
@@ -1837,7 +1837,7 @@ index b222ce8d083ef..feed9206323be 100644
  	void (*dma_rx_cb)(void *data);
  	void (*dma_tx_cb)(void *data);
  	int (*transfer_one_irq)(struct stm32_spi *spi);
-@@ -268,7 +263,6 @@ struct stm32_spi_cfg {
+@@ -269,7 +264,6 @@ struct stm32_spi_cfg {
   * @base: virtual memory area
   * @clk: hw kernel clock feeding the SPI clock generator
   * @clk_rate: rate of the hw kernel clock feeding the SPI clock generator
@@ -1845,7 +1845,7 @@ index b222ce8d083ef..feed9206323be 100644
   * @lock: prevent I/O concurrent access
   * @irq: SPI controller interrupt line
   * @fifo_size: size of the embedded fifo in bytes
-@@ -294,7 +288,6 @@ struct stm32_spi {
+@@ -295,7 +289,6 @@ struct stm32_spi {
  	void __iomem *base;
  	struct clk *clk;
  	u32 clk_rate;
@@ -1853,7 +1853,7 @@ index b222ce8d083ef..feed9206323be 100644
  	spinlock_t lock; /* prevent I/O concurrent access */
  	int irq;
  	unsigned int fifo_size;
-@@ -313,7 +306,10 @@ struct stm32_spi {
+@@ -314,7 +307,10 @@ struct stm32_spi {
  	int rx_len;
  	struct dma_chan *dma_tx;
  	struct dma_chan *dma_rx;
@@ -1864,7 +1864,7 @@ index b222ce8d083ef..feed9206323be 100644
  };
  
  static const struct stm32_spi_regspec stm32f4_spi_regspec = {
-@@ -417,9 +413,7 @@ static int stm32h7_spi_get_bpw_mask(struct stm32_spi *spi)
+@@ -418,9 +414,7 @@ static int stm32h7_spi_get_bpw_mask(struct stm32_spi *spi)
  	stm32_spi_set_bits(spi, STM32H7_SPI_CFG1, STM32H7_SPI_CFG1_DSIZE);
  
  	cfg1 = readl_relaxed(spi->base + STM32H7_SPI_CFG1);
@@ -1875,55 +1875,7 @@ index b222ce8d083ef..feed9206323be 100644
  
  	spin_unlock_irqrestore(&spi->lock, flags);
  
-@@ -442,7 +436,8 @@ static int stm32_spi_prepare_mbr(struct stm32_spi *spi, u32 speed_hz,
- {
- 	u32 div, mbrdiv;
- 
--	div = DIV_ROUND_UP(spi->clk_rate, speed_hz);
-+	/* Ensure spi->clk_rate is even */
-+	div = DIV_ROUND_UP(spi->clk_rate & ~0x1, speed_hz);
- 
- 	/*
- 	 * SPI framework set xfer->speed_hz to master->max_speed_hz if
-@@ -469,19 +464,22 @@ static int stm32_spi_prepare_mbr(struct stm32_spi *spi, u32 speed_hz,
-  * stm32h7_spi_prepare_fthlv - Determine FIFO threshold level
-  * @spi: pointer to the spi controller data structure
-  */
--static u32 stm32h7_spi_prepare_fthlv(struct stm32_spi *spi)
-+static u32 stm32h7_spi_prepare_fthlv(struct stm32_spi *spi, u32 xfer_len)
- {
--	u32 fthlv, half_fifo;
-+	u32 fthlv, half_fifo, packet;
- 
- 	/* data packet should not exceed 1/2 of fifo space */
- 	half_fifo = (spi->fifo_size / 2);
- 
-+	/* data_packet should not exceed transfer length */
-+	packet = (half_fifo > xfer_len) ? xfer_len : half_fifo;
-+
- 	if (spi->cur_bpw <= 8)
--		fthlv = half_fifo;
-+		fthlv = packet;
- 	else if (spi->cur_bpw <= 16)
--		fthlv = half_fifo / 2;
-+		fthlv = packet / 2;
- 	else
--		fthlv = half_fifo / 4;
-+		fthlv = packet / 4;
- 
- 	/* align packet size with data registers access */
- 	if (spi->cur_bpw > 8)
-@@ -489,6 +487,9 @@ static u32 stm32h7_spi_prepare_fthlv(struct stm32_spi *spi)
- 	else
- 		fthlv -= (fthlv % 4); /* multiple of 4 */
- 
-+	if (!fthlv)
-+		fthlv = 1;
-+
- 	return fthlv;
- }
- 
-@@ -592,25 +593,26 @@ static void stm32f4_spi_read_rx(struct stm32_spi *spi)
+@@ -604,25 +598,26 @@ static void stm32f4_spi_read_rx(struct stm32_spi *spi)
   * Write in rx_buf depends on remaining bytes to avoid to write beyond
   * rx_buf end.
   */
@@ -1956,7 +1908,7 @@ index b222ce8d083ef..feed9206323be 100644
  			u16 *rx_buf16 = (u16 *)(spi->rx_buf + offs);
  
  			*rx_buf16 = readw_relaxed(spi->base + STM32H7_SPI_RXDR);
-@@ -623,12 +625,11 @@ static void stm32h7_spi_read_rxfifo(struct stm32_spi *spi, bool flush)
+@@ -635,12 +630,11 @@ static void stm32h7_spi_read_rxfifo(struct stm32_spi *spi, bool flush)
  		}
  
  		sr = readl_relaxed(spi->base + STM32H7_SPI_SR);
@@ -1972,7 +1924,7 @@ index b222ce8d083ef..feed9206323be 100644
  }
  
  /**
-@@ -696,12 +697,7 @@ static void stm32f4_spi_disable(struct stm32_spi *spi)
+@@ -708,12 +702,7 @@ static void stm32f4_spi_disable(struct stm32_spi *spi)
   * @spi: pointer to the spi controller data structure
   *
   * RX-Fifo is flushed when SPI controller is disabled. To prevent any data
@@ -1986,7 +1938,7 @@ index b222ce8d083ef..feed9206323be 100644
   */
  static void stm32h7_spi_disable(struct stm32_spi *spi)
  {
-@@ -736,7 +732,7 @@ static void stm32h7_spi_disable(struct stm32_spi *spi)
+@@ -748,7 +737,7 @@ static void stm32h7_spi_disable(struct stm32_spi *spi)
  	}
  
  	if (!spi->cur_usedma && spi->rx_buf && (spi->rx_len > 0))
@@ -1995,7 +1947,7 @@ index b222ce8d083ef..feed9206323be 100644
  
  	if (spi->cur_usedma && spi->dma_tx)
  		dmaengine_terminate_all(spi->dma_tx);
-@@ -891,7 +887,7 @@ static irqreturn_t stm32h7_spi_irq_thread(int irq, void *dev_id)
+@@ -903,7 +892,7 @@ static irqreturn_t stm32h7_spi_irq_thread(int irq, void *dev_id)
  {
  	struct spi_master *master = dev_id;
  	struct stm32_spi *spi = spi_master_get_devdata(master);
@@ -2004,45 +1956,34 @@ index b222ce8d083ef..feed9206323be 100644
  	unsigned long flags;
  	bool end = false;
  
-@@ -899,77 +895,77 @@ static irqreturn_t stm32h7_spi_irq_thread(int irq, void *dev_id)
+@@ -911,6 +900,7 @@ static irqreturn_t stm32h7_spi_irq_thread(int irq, void *dev_id)
  
  	sr = readl_relaxed(spi->base + STM32H7_SPI_SR);
  	ier = readl_relaxed(spi->base + STM32H7_SPI_IER);
 +	ifcr = 0;
  
  	mask = ier;
--	/* EOTIE is triggered on EOT, SUSP and TXC events. */
-+	/*
-+	 * EOTIE enables irq from EOT, SUSP and TXC events. We need to set
-+	 * SUSP to acknowledge it later. TXC is automatically cleared
-+	 */
- 	mask |= STM32H7_SPI_SR_SUSP;
  	/*
--	 * When TXTF is set, DXPIE and TXPIE are cleared. So in case of
--	 * Full-Duplex, need to poll RXP event to know if there are remaining
--	 * data, before disabling SPI.
-+	 * DXPIE is set in Full-Duplex, one IT will be raised if TXP and RXP
-+	 * are set. So in case of Full-Duplex, need to poll TXP and RXP event.
- 	 */
--	if (spi->rx_buf && !spi->cur_usedma)
--		mask |= STM32H7_SPI_SR_RXP;
-+	if ((spi->cur_comm == SPI_FULL_DUPLEX) && (!spi->cur_usedma))
-+		mask |= STM32H7_SPI_SR_TXP | STM32H7_SPI_SR_RXP;
+@@ -926,62 +916,62 @@ static irqreturn_t stm32h7_spi_irq_thread(int irq, void *dev_id)
+ 	if ((spi->cur_comm == SPI_FULL_DUPLEX) && !spi->cur_usedma)
+ 		mask |= STM32H7_SPI_SR_TXP | STM32H7_SPI_SR_RXP;
  
 -	if (!(sr & mask)) {
--		dev_dbg(spi->dev, "spurious IT (sr=0x%08x, ier=0x%08x)\n",
--			sr, ier);
 +	mask &= sr;
 +
 +	if (!mask) {
-+		dev_warn(spi->dev, "spurious IT (sr=0x%08x, ier=0x%08x)\n",
-+			 sr, ier);
+ 		dev_warn(spi->dev, "spurious IT (sr=0x%08x, ier=0x%08x)\n",
+ 			 sr, ier);
  		spin_unlock_irqrestore(&spi->lock, flags);
  		return IRQ_NONE;
  	}
  
 -	if (sr & STM32H7_SPI_SR_SUSP) {
--		dev_warn(spi->dev, "Communication suspended\n");
+-		static DEFINE_RATELIMIT_STATE(rs,
+-					      DEFAULT_RATELIMIT_INTERVAL * 10,
+-					      1);
+-		if (__ratelimit(&rs))
+-			dev_dbg_ratelimited(spi->dev, "Communication suspended\n");
 +	if (mask & STM32H7_SPI_SR_SUSP) {
 +		dev_warn_once(spi->dev,
 +			      "System too slow is limiting data throughput\n");
@@ -2055,35 +1996,27 @@ index b222ce8d083ef..feed9206323be 100644
 -		 */
 -		if (spi->cur_usedma)
 -			end = true;
+-	}
 +			stm32h7_spi_read_rxfifo(spi);
-+
-+		ifcr |= STM32H7_SPI_SR_SUSP;
- 	}
  
 -	if (sr & STM32H7_SPI_SR_MODF) {
 -		dev_warn(spi->dev, "Mode fault: transfer aborted\n");
+-		end = true;
++		ifcr |= STM32H7_SPI_SR_SUSP;
+ 	}
+ 
+-	if (sr & STM32H7_SPI_SR_OVR) {
 +	if (mask & STM32H7_SPI_SR_OVR) {
-+		dev_err(spi->dev, "Overrun: RX data lost\n");
+ 		dev_err(spi->dev, "Overrun: RX data lost\n");
 +		spi->xfer_status = -EIO;
  		end = true;
 +		ifcr |= STM32H7_SPI_SR_OVR;
  	}
  
--	if (sr & STM32H7_SPI_SR_OVR) {
--		dev_warn(spi->dev, "Overrun: received value discarded\n");
--		if (!spi->cur_usedma && (spi->rx_buf && (spi->rx_len > 0)))
--			stm32h7_spi_read_rxfifo(spi, false);
--		/*
--		 * If overrun is detected while using DMA, it means that
--		 * something went wrong, so stop the current transfer
--		 */
--		if (spi->cur_usedma)
--			end = true;
--	}
+-	if (sr & STM32H7_SPI_SR_EOT) {
 +	if (mask & STM32H7_SPI_SR_TXTF)
 +		ifcr |= STM32H7_SPI_SR_TXTF;
- 
--	if (sr & STM32H7_SPI_SR_EOT) {
++
 +	if (mask & STM32H7_SPI_SR_EOT) {
  		if (!spi->cur_usedma && (spi->rx_buf && (spi->rx_len > 0)))
 -			stm32h7_spi_read_rxfifo(spi, true);
@@ -2102,14 +2035,14 @@ index b222ce8d083ef..feed9206323be 100644
  		if (!spi->cur_usedma && (spi->rx_buf && (spi->rx_len > 0)))
 -			stm32h7_spi_read_rxfifo(spi, false);
 -
--	writel_relaxed(mask, spi->base + STM32H7_SPI_IFCR);
+-	writel_relaxed(sr & mask, spi->base + STM32H7_SPI_IFCR);
 -
 -	spin_unlock_irqrestore(&spi->lock, flags);
 +			stm32h7_spi_read_rxfifo(spi);
  
  	if (end) {
--		spi_finalize_current_transfer(master);
 -		stm32h7_spi_disable(spi);
+-		spi_finalize_current_transfer(master);
 +		/* Disable interrupts and clear status flags */
 +		writel_relaxed(0, spi->base + STM32H7_SPI_IER);
 +		writel_relaxed(STM32H7_SPI_IFCR_ALL,
@@ -2124,7 +2057,7 @@ index b222ce8d083ef..feed9206323be 100644
  	return IRQ_HANDLED;
  }
  
-@@ -980,11 +976,8 @@ static int stm32_spi_setup(struct spi_device *spi_dev)
+@@ -992,11 +982,8 @@ static int stm32_spi_setup(struct spi_device *spi_dev)
  {
  	int ret = 0;
  
@@ -2138,7 +2071,7 @@ index b222ce8d083ef..feed9206323be 100644
  
  	dev_dbg(&spi_dev->dev, "%s: set gpio%d output %s\n", __func__,
  		spi_dev->cs_gpio,
-@@ -1034,6 +1027,20 @@ static int stm32_spi_prepare_msg(struct spi_master *master,
+@@ -1046,6 +1033,20 @@ static int stm32_spi_prepare_msg(struct spi_master *master,
  		spi_dev->mode & SPI_LSB_FIRST,
  		spi_dev->mode & SPI_CS_HIGH);
  
@@ -2159,7 +2092,7 @@ index b222ce8d083ef..feed9206323be 100644
  	spin_lock_irqsave(&spi->lock, flags);
  
  	/* CPOL, CPHA and LSB FIRST bits have common register */
-@@ -1079,25 +1086,18 @@ static void stm32f4_spi_dma_rx_cb(void *data)
+@@ -1091,25 +1092,18 @@ static void stm32f4_spi_dma_rx_cb(void *data)
  /**
   * stm32h7_spi_dma_cb - dma callback
   *
@@ -2187,7 +2120,7 @@ index b222ce8d083ef..feed9206323be 100644
  }
  
  /**
-@@ -1190,9 +1190,6 @@ static int stm32f4_spi_transfer_one_irq(struct stm32_spi *spi)
+@@ -1202,9 +1196,6 @@ static int stm32f4_spi_transfer_one_irq(struct stm32_spi *spi)
  /**
   * stm32h7_spi_transfer_one_irq - transfer a single spi_transfer using
   *				  interrupts
@@ -2197,7 +2130,7 @@ index b222ce8d083ef..feed9206323be 100644
   */
  static int stm32h7_spi_transfer_one_irq(struct stm32_spi *spi)
  {
-@@ -1209,7 +1206,7 @@ static int stm32h7_spi_transfer_one_irq(struct stm32_spi *spi)
+@@ -1221,7 +1212,7 @@ static int stm32h7_spi_transfer_one_irq(struct stm32_spi *spi)
  
  	/* Enable the interrupts relative to the end of transfer */
  	ier |= STM32H7_SPI_IER_EOTIE | STM32H7_SPI_IER_TXTFIE |
@@ -2206,7 +2139,7 @@ index b222ce8d083ef..feed9206323be 100644
  
  	spin_lock_irqsave(&spi->lock, flags);
  
-@@ -1225,15 +1222,19 @@ static int stm32h7_spi_transfer_one_irq(struct stm32_spi *spi)
+@@ -1237,15 +1228,19 @@ static int stm32h7_spi_transfer_one_irq(struct stm32_spi *spi)
  
  	spin_unlock_irqrestore(&spi->lock, flags);
  
@@ -2228,7 +2161,7 @@ index b222ce8d083ef..feed9206323be 100644
  	/* In DMA mode end of transfer is handled by DMA TX or RX callback. */
  	if (spi->cur_comm == SPI_SIMPLEX_RX || spi->cur_comm == SPI_3WIRE_RX ||
  	    spi->cur_comm == SPI_FULL_DUPLEX) {
-@@ -1246,40 +1247,56 @@ static void stm32f4_spi_transfer_one_dma_start(struct stm32_spi *spi)
+@@ -1258,40 +1253,56 @@ static void stm32f4_spi_transfer_one_dma_start(struct stm32_spi *spi)
  	}
  
  	stm32_spi_enable(spi);
@@ -2291,7 +2224,7 @@ index b222ce8d083ef..feed9206323be 100644
  	rx_dma_desc = NULL;
  	if (spi->rx_buf && spi->dma_rx) {
  		stm32_spi_dma_config(spi, &rx_dma_conf, DMA_DEV_TO_MEM);
-@@ -1316,7 +1333,7 @@ static int stm32_spi_transfer_one_dma(struct stm32_spi *spi,
+@@ -1328,7 +1339,7 @@ static int stm32_spi_transfer_one_dma(struct stm32_spi *spi,
  		goto dma_desc_error;
  
  	if (rx_dma_desc) {
@@ -2300,7 +2233,7 @@ index b222ce8d083ef..feed9206323be 100644
  		rx_dma_desc->callback_param = spi;
  
  		if (dma_submit_error(dmaengine_submit(rx_dma_desc))) {
-@@ -1330,7 +1347,7 @@ static int stm32_spi_transfer_one_dma(struct stm32_spi *spi,
+@@ -1342,7 +1353,7 @@ static int stm32_spi_transfer_one_dma(struct stm32_spi *spi,
  	if (tx_dma_desc) {
  		if (spi->cur_comm == SPI_SIMPLEX_TX ||
  		    spi->cur_comm == SPI_3WIRE_TX) {
@@ -2309,7 +2242,7 @@ index b222ce8d083ef..feed9206323be 100644
  			tx_dma_desc->callback_param = spi;
  		}
  
-@@ -1345,12 +1362,9 @@ static int stm32_spi_transfer_one_dma(struct stm32_spi *spi,
+@@ -1357,12 +1368,9 @@ static int stm32_spi_transfer_one_dma(struct stm32_spi *spi,
  		stm32_spi_set_bits(spi, spi->cfg->regs->dma_tx_en.reg,
  				   spi->cfg->regs->dma_tx_en.mask);
  	}
@@ -2323,7 +2256,7 @@ index b222ce8d083ef..feed9206323be 100644
  
  dma_submit_error:
  	if (spi->dma_rx)
-@@ -1392,15 +1406,13 @@ static void stm32h7_spi_set_bpw(struct stm32_spi *spi)
+@@ -1404,15 +1412,13 @@ static void stm32h7_spi_set_bpw(struct stm32_spi *spi)
  	bpw = spi->cur_bpw - 1;
  
  	cfg1_clrb |= STM32H7_SPI_CFG1_DSIZE;
@@ -2331,8 +2264,7 @@ index b222ce8d083ef..feed9206323be 100644
 -		     STM32H7_SPI_CFG1_DSIZE;
 +	cfg1_setb |= FIELD_PREP(STM32H7_SPI_CFG1_DSIZE, bpw);
  
--	spi->cur_fthlv = stm32h7_spi_prepare_fthlv(spi);
-+	spi->cur_fthlv = stm32h7_spi_prepare_fthlv(spi, spi->cur_xferlen);
+ 	spi->cur_fthlv = stm32h7_spi_prepare_fthlv(spi, spi->cur_xferlen);
  	fthlv = spi->cur_fthlv - 1;
  
  	cfg1_clrb |= STM32H7_SPI_CFG1_FTHLV;
@@ -2342,7 +2274,7 @@ index b222ce8d083ef..feed9206323be 100644
  
  	writel_relaxed(
  		(readl_relaxed(spi->base + STM32H7_SPI_CFG1) &
-@@ -1418,8 +1430,7 @@ static void stm32_spi_set_mbr(struct stm32_spi *spi, u32 mbrdiv)
+@@ -1430,8 +1436,7 @@ static void stm32_spi_set_mbr(struct stm32_spi *spi, u32 mbrdiv)
  	u32 clrb = 0, setb = 0;
  
  	clrb |= spi->cfg->regs->br.mask;
@@ -2352,7 +2284,7 @@ index b222ce8d083ef..feed9206323be 100644
  
  	writel_relaxed((readl_relaxed(spi->base + spi->cfg->regs->br.reg) &
  			~clrb) | setb,
-@@ -1504,8 +1515,7 @@ static int stm32h7_spi_set_mode(struct stm32_spi *spi, unsigned int comm_type)
+@@ -1516,8 +1521,7 @@ static int stm32h7_spi_set_mode(struct stm32_spi *spi, unsigned int comm_type)
  	}
  
  	cfg2_clrb |= STM32H7_SPI_CFG2_COMM;
@@ -2362,7 +2294,7 @@ index b222ce8d083ef..feed9206323be 100644
  
  	writel_relaxed(
  		(readl_relaxed(spi->base + STM32H7_SPI_CFG2) &
-@@ -1527,15 +1537,15 @@ static void stm32h7_spi_data_idleness(struct stm32_spi *spi, u32 len)
+@@ -1539,15 +1543,15 @@ static void stm32h7_spi_data_idleness(struct stm32_spi *spi, u32 len)
  
  	cfg2_clrb |= STM32H7_SPI_CFG2_MIDI;
  	if ((len > 1) && (spi->cur_midi > 0)) {
@@ -2384,7 +2316,7 @@ index b222ce8d083ef..feed9206323be 100644
  	}
  
  	writel_relaxed((readl_relaxed(spi->base + STM32H7_SPI_CFG2) &
-@@ -1550,14 +1560,8 @@ static void stm32h7_spi_data_idleness(struct stm32_spi *spi, u32 len)
+@@ -1562,14 +1566,8 @@ static void stm32h7_spi_data_idleness(struct stm32_spi *spi, u32 len)
   */
  static int stm32h7_spi_number_of_data(struct stm32_spi *spi, u32 nb_words)
  {
@@ -2401,74 +2333,7 @@ index b222ce8d083ef..feed9206323be 100644
  			       spi->base + STM32H7_SPI_CR2);
  	} else {
  		return -EMSGSIZE;
-@@ -1578,39 +1582,33 @@ static int stm32_spi_transfer_one_setup(struct stm32_spi *spi,
- 	unsigned long flags;
- 	unsigned int comm_type;
- 	int nb_words, ret = 0;
-+	int mbr;
- 
- 	spin_lock_irqsave(&spi->lock, flags);
- 
--	if (spi->cur_bpw != transfer->bits_per_word) {
--		spi->cur_bpw = transfer->bits_per_word;
--		spi->cfg->set_bpw(spi);
--	}
-+	spi->cur_xferlen = transfer->len;
- 
--	if (spi->cur_speed != transfer->speed_hz) {
--		int mbr;
-+	spi->cur_bpw = transfer->bits_per_word;
-+	spi->cfg->set_bpw(spi);
- 
--		/* Update spi->cur_speed with real clock speed */
--		mbr = stm32_spi_prepare_mbr(spi, transfer->speed_hz,
--					    spi->cfg->baud_rate_div_min,
--					    spi->cfg->baud_rate_div_max);
--		if (mbr < 0) {
--			ret = mbr;
--			goto out;
--		}
--
--		transfer->speed_hz = spi->cur_speed;
--		stm32_spi_set_mbr(spi, mbr);
-+	/* Update spi->cur_speed with real clock speed */
-+	mbr = stm32_spi_prepare_mbr(spi, transfer->speed_hz,
-+				    spi->cfg->baud_rate_div_min,
-+				    spi->cfg->baud_rate_div_max);
-+	if (mbr < 0) {
-+		ret = mbr;
-+		goto out;
- 	}
- 
--	comm_type = stm32_spi_communication_type(spi_dev, transfer);
--	if (spi->cur_comm != comm_type) {
--		ret = spi->cfg->set_mode(spi, comm_type);
-+	transfer->speed_hz = spi->cur_speed;
-+	stm32_spi_set_mbr(spi, mbr);
- 
--		if (ret < 0)
--			goto out;
-+	comm_type = stm32_spi_communication_type(spi_dev, transfer);
-+	ret = spi->cfg->set_mode(spi, comm_type);
-+	if (ret < 0)
-+		goto out;
- 
--		spi->cur_comm = comm_type;
--	}
-+	spi->cur_comm = comm_type;
- 
- 	if (spi->cfg->set_data_idleness)
- 		spi->cfg->set_data_idleness(spi, transfer->len);
-@@ -1628,8 +1626,6 @@ static int stm32_spi_transfer_one_setup(struct stm32_spi *spi,
- 			goto out;
- 	}
- 
--	spi->cur_xferlen = transfer->len;
--
- 	dev_dbg(spi->dev, "transfer communication mode set to %d\n",
- 		spi->cur_comm);
- 	dev_dbg(spi->dev,
-@@ -1658,8 +1654,16 @@ static int stm32_spi_transfer_one(struct spi_master *master,
+@@ -1662,11 +1660,15 @@ static int stm32_spi_transfer_one(struct spi_master *master,
  				  struct spi_transfer *transfer)
  {
  	struct stm32_spi *spi = spi_master_get_devdata(master);
@@ -2476,16 +2341,17 @@ index b222ce8d083ef..feed9206323be 100644
 +	unsigned long timeout;
  	int ret;
  
-+	/* Don't do anything on 0 bytes transfers */
+ 	/* Don't do anything on 0 bytes transfers */
+-	if (transfer->len == 0)
+-		return 0;
 +	if (transfer->len == 0) {
 +		spi->xfer_status = 0;
 +		goto finalize;
 +	}
-+
+ 
  	spi->tx_buf = transfer->tx_buf;
  	spi->rx_buf = transfer->rx_buf;
- 	spi->tx_len = spi->tx_buf ? transfer->len : 0;
-@@ -1674,10 +1678,40 @@ static int stm32_spi_transfer_one(struct spi_master *master,
+@@ -1682,10 +1684,40 @@ static int stm32_spi_transfer_one(struct spi_master *master,
  		return ret;
  	}
  
@@ -2528,7 +2394,7 @@ index b222ce8d083ef..feed9206323be 100644
  }
  
  /**
-@@ -1810,7 +1844,8 @@ static int stm32_spi_probe(struct platform_device *pdev)
+@@ -1818,7 +1850,8 @@ static int stm32_spi_probe(struct platform_device *pdev)
  	struct spi_master *master;
  	struct stm32_spi *spi;
  	struct resource *res;
@@ -2538,7 +2404,7 @@ index b222ce8d083ef..feed9206323be 100644
  
  	master = spi_alloc_master(&pdev->dev, sizeof(struct stm32_spi));
  	if (!master) {
-@@ -1823,6 +1858,8 @@ static int stm32_spi_probe(struct platform_device *pdev)
+@@ -1831,6 +1864,8 @@ static int stm32_spi_probe(struct platform_device *pdev)
  	spi->dev = &pdev->dev;
  	spi->master = master;
  	spin_lock_init(&spi->lock);
@@ -2547,7 +2413,7 @@ index b222ce8d083ef..feed9206323be 100644
  
  	spi->cfg = (const struct stm32_spi_cfg *)
  		of_match_device(pdev->dev.driver->of_match_table,
-@@ -1873,11 +1910,20 @@ static int stm32_spi_probe(struct platform_device *pdev)
+@@ -1881,11 +1916,20 @@ static int stm32_spi_probe(struct platform_device *pdev)
  		goto err_clk_disable;
  	}
  
@@ -2572,64 +2438,10 @@ index b222ce8d083ef..feed9206323be 100644
  	}
  
  	if (spi->cfg->has_fifo)
-@@ -1903,17 +1949,29 @@ static int stm32_spi_probe(struct platform_device *pdev)
- 	master->transfer_one = stm32_spi_transfer_one;
- 	master->unprepare_message = stm32_spi_unprepare_msg;
+@@ -1955,23 +1999,31 @@ static int stm32_spi_probe(struct platform_device *pdev)
+ 		goto err_pm_disable;
+ 	}
  
--	spi->dma_tx = dma_request_slave_channel(spi->dev, "tx");
--	if (!spi->dma_tx)
--		dev_warn(&pdev->dev, "failed to request tx dma channel\n");
--	else
--		master->dma_tx = spi->dma_tx;
-+	spi->dma_tx = dma_request_chan(spi->dev, "tx");
-+	if (IS_ERR(spi->dma_tx)) {
-+		ret = PTR_ERR(spi->dma_tx);
-+		spi->dma_tx = NULL;
-+		if (ret == -EPROBE_DEFER)
-+			goto err_dma_release;
-+		else if (ret != -ENODEV)
-+			dev_warn(&pdev->dev, "failed to request tx dma: %d\n",
-+				 ret);
-+	}
-+	master->dma_tx = spi->dma_tx;
- 
--	spi->dma_rx = dma_request_slave_channel(spi->dev, "rx");
--	if (!spi->dma_rx)
--		dev_warn(&pdev->dev, "failed to request rx dma channel\n");
--	else
--		master->dma_rx = spi->dma_rx;
-+	spi->dma_rx = dma_request_chan(spi->dev, "rx");
-+	if (IS_ERR(spi->dma_rx)) {
-+		ret = PTR_ERR(spi->dma_rx);
-+		spi->dma_rx = NULL;
-+		if (ret == -EPROBE_DEFER)
-+			goto err_dma_release;
-+		else if (ret != -ENODEV)
-+			dev_warn(&pdev->dev, "failed to request rx dma: %d\n",
-+				 ret);
-+	}
-+	master->dma_rx = spi->dma_rx;
- 
- 	if (spi->dma_tx || spi->dma_rx)
- 		master->can_dma = stm32_spi_can_dma;
-@@ -1921,36 +1979,33 @@ static int stm32_spi_probe(struct platform_device *pdev)
- 	pm_runtime_set_active(&pdev->dev);
- 	pm_runtime_enable(&pdev->dev);
- 
--	ret = devm_spi_register_master(&pdev->dev, master);
--	if (ret) {
--		dev_err(&pdev->dev, "spi master registration failed: %d\n",
--			ret);
--		goto err_dma_release;
--	}
-+	num_cs = of_gpio_named_count(pdev->dev.of_node, "cs-gpios");
- 
--	if (!master->cs_gpios) {
--		dev_err(&pdev->dev, "no CS gpios available\n");
--		ret = -EINVAL;
--		goto err_dma_release;
--	}
--
 -	for (i = 0; i < master->num_chipselect; i++) {
 -		if (!gpio_is_valid(master->cs_gpios[i])) {
 -			dev_err(&pdev->dev, "%i is not a valid gpio\n",
@@ -2669,77 +2481,8 @@ index b222ce8d083ef..feed9206323be 100644
  	dev_info(&pdev->dev, "driver initialized\n");
  
  	return 0;
-@@ -1975,6 +2030,9 @@ static int stm32_spi_remove(struct platform_device *pdev)
- 	struct spi_master *master = platform_get_drvdata(pdev);
- 	struct stm32_spi *spi = spi_master_get_devdata(master);
- 
-+	pm_runtime_get_sync(&pdev->dev);
-+
-+	spi_unregister_master(master);
- 	spi->cfg->disable(spi);
- 
- 	if (master->dma_tx)
-@@ -1984,7 +2042,12 @@ static int stm32_spi_remove(struct platform_device *pdev)
- 
- 	clk_disable_unprepare(spi->clk);
- 
-+	pm_runtime_put_noidle(&pdev->dev);
- 	pm_runtime_disable(&pdev->dev);
-+	pm_runtime_set_suspended(&pdev->dev);
-+	pm_runtime_dont_use_autosuspend(&pdev->dev);
-+
-+	pinctrl_pm_select_sleep_state(&pdev->dev);
- 
- 	return 0;
- }
-@@ -1997,13 +2060,18 @@ static int stm32_spi_runtime_suspend(struct device *dev)
- 
- 	clk_disable_unprepare(spi->clk);
- 
--	return 0;
-+	return pinctrl_pm_select_sleep_state(dev);
- }
- 
- static int stm32_spi_runtime_resume(struct device *dev)
- {
- 	struct spi_master *master = dev_get_drvdata(dev);
- 	struct stm32_spi *spi = spi_master_get_devdata(master);
-+	int ret;
-+
-+	ret = pinctrl_pm_select_default_state(dev);
-+	if (ret)
-+		return ret;
- 
- 	return clk_prepare_enable(spi->clk);
- }
-@@ -2033,10 +2101,23 @@ static int stm32_spi_resume(struct device *dev)
- 		return ret;
- 
- 	ret = spi_master_resume(master);
--	if (ret)
-+	if (ret) {
- 		clk_disable_unprepare(spi->clk);
-+		return ret;
-+	}
- 
--	return ret;
-+	ret = pm_runtime_get_sync(dev);
-+	if (ret) {
-+		dev_err(dev, "Unable to power device:%d\n", ret);
-+		return ret;
-+	}
-+
-+	spi->cfg->config(spi);
-+
-+	pm_runtime_mark_last_busy(dev);
-+	pm_runtime_put_autosuspend(dev);
-+
-+	return 0;
- }
- #endif
- 
 diff --git a/include/dt-bindings/pinctrl/stm32-pinfunc.h b/include/dt-bindings/pinctrl/stm32-pinfunc.h
-index e6fb8ada3f4d3..370a25a9366cc 100644
+index e6fb8ada3..370a25a93 100644
 --- a/include/dt-bindings/pinctrl/stm32-pinfunc.h
 +++ b/include/dt-bindings/pinctrl/stm32-pinfunc.h
 @@ -26,6 +26,7 @@

@@ -1,7 +1,7 @@
-From 16dc56ebda804f047d718c7531cb65fbb5176f99 Mon Sep 17 00:00:00 2001
+From 6a369886405ad40f3362673dd668bd54088f7074 Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Mon, 5 Oct 2020 13:19:45 +0200
-Subject: [PATCH 10/22] ARM-stm32mp1-r2-rc8-MAILBOX-REMOTEPROC-RPMSG
+Date: Thu, 25 Nov 2021 13:10:02 +0100
+Subject: [PATCH 10/22] ARM-stm32mp1-r2.3-MAILBOX-REMOTEPROC-RPMSG
 
 ---
  .../bindings/mailbox/stm32-ipcc.txt           |   4 +-
@@ -24,13 +24,13 @@ Subject: [PATCH 10/22] ARM-stm32mp1-r2-rc8-MAILBOX-REMOTEPROC-RPMSG
  drivers/rpmsg/Makefile                        |   1 +
  drivers/rpmsg/rpmsg_core.c                    |  19 +
  drivers/rpmsg/rpmsg_internal.h                |   2 +
- drivers/rpmsg/rpmsg_tty.c                     | 339 ++++++++
+ drivers/rpmsg/rpmsg_tty.c                     | 341 ++++++++
  drivers/rpmsg/virtio_rpmsg_bus.c              |  11 +
  include/linux/mailbox/arm-smccc-mbox.h        |  20 +
  include/linux/remoteproc.h                    |   2 +
  include/linux/rpmsg.h                         |   9 +
  include/linux/tee_remoteproc.h                | 106 +++
- 26 files changed, 2878 insertions(+), 131 deletions(-)
+ 26 files changed, 2880 insertions(+), 131 deletions(-)
  create mode 100644 Documentation/devicetree/bindings/remoteproc/rproc-srm.txt
  create mode 100644 drivers/mailbox/arm-smc-mailbox.c
  create mode 100644 drivers/remoteproc/rproc_srm_core.c
@@ -42,7 +42,7 @@ Subject: [PATCH 10/22] ARM-stm32mp1-r2-rc8-MAILBOX-REMOTEPROC-RPMSG
  create mode 100644 include/linux/tee_remoteproc.h
 
 diff --git a/Documentation/devicetree/bindings/mailbox/stm32-ipcc.txt b/Documentation/devicetree/bindings/mailbox/stm32-ipcc.txt
-index 1d2b7fee7b853..139c06a94b006 100644
+index 1d2b7fee7..139c06a94 100644
 --- a/Documentation/devicetree/bindings/mailbox/stm32-ipcc.txt
 +++ b/Documentation/devicetree/bindings/mailbox/stm32-ipcc.txt
 @@ -14,9 +14,9 @@ Required properties:
@@ -59,7 +59,7 @@ index 1d2b7fee7b853..139c06a94b006 100644
                  property in the client node is the mailbox channel index.
 diff --git a/Documentation/devicetree/bindings/remoteproc/rproc-srm.txt b/Documentation/devicetree/bindings/remoteproc/rproc-srm.txt
 new file mode 100644
-index 0000000000000..baa6e8e135e11
+index 000000000..baa6e8e13
 --- /dev/null
 +++ b/Documentation/devicetree/bindings/remoteproc/rproc-srm.txt
 @@ -0,0 +1,58 @@
@@ -122,7 +122,7 @@ index 0000000000000..baa6e8e135e11
 +		};
 +	};
 diff --git a/Documentation/devicetree/bindings/remoteproc/stm32-rproc.txt b/Documentation/devicetree/bindings/remoteproc/stm32-rproc.txt
-index 5fa915a4b7360..4cea56fbded56 100644
+index 5fa915a4b..4cea56fbd 100644
 --- a/Documentation/devicetree/bindings/remoteproc/stm32-rproc.txt
 +++ b/Documentation/devicetree/bindings/remoteproc/stm32-rproc.txt
 @@ -4,23 +4,24 @@ This document defines the binding for the remoteproc component that loads and
@@ -191,7 +191,7 @@ index 5fa915a4b7360..4cea56fbded56 100644
 +		reset-names = "mcu_rst", "hold_boot";
  	};
 diff --git a/Documentation/remoteproc.txt b/Documentation/remoteproc.txt
-index 03c3d2e568b04..5b217887b99c6 100644
+index 03c3d2e56..5b217887b 100644
 --- a/Documentation/remoteproc.txt
 +++ b/Documentation/remoteproc.txt
 @@ -357,3 +357,25 @@ Of course, RSC_VDEV resource entries are only good enough for static
@@ -221,7 +221,7 @@ index 03c3d2e568b04..5b217887b99c6 100644
 +The resources handled by the SRM are defined in the DeviceTree: please read
 +Documentation/devicetree/bindings/remoteproc/rproc-srm.txt for details.
 diff --git a/drivers/mailbox/Kconfig b/drivers/mailbox/Kconfig
-index ab4eb750bbddc..7707ee26251a4 100644
+index ab4eb750b..7707ee262 100644
 --- a/drivers/mailbox/Kconfig
 +++ b/drivers/mailbox/Kconfig
 @@ -16,6 +16,13 @@ config ARM_MHU
@@ -239,7 +239,7 @@ index ab4eb750bbddc..7707ee26251a4 100644
  	tristate "i.MX Mailbox"
  	depends on ARCH_MXC || COMPILE_TEST
 diff --git a/drivers/mailbox/Makefile b/drivers/mailbox/Makefile
-index c22fad6f696b7..93918a84c91b6 100644
+index c22fad6f6..93918a84c 100644
 --- a/drivers/mailbox/Makefile
 +++ b/drivers/mailbox/Makefile
 @@ -7,6 +7,8 @@ obj-$(CONFIG_MAILBOX_TEST)	+= mailbox-test.o
@@ -253,7 +253,7 @@ index c22fad6f696b7..93918a84c91b6 100644
  obj-$(CONFIG_ARMADA_37XX_RWTM_MBOX)	+= armada-37xx-rwtm-mailbox.o
 diff --git a/drivers/mailbox/arm-smc-mailbox.c b/drivers/mailbox/arm-smc-mailbox.c
 new file mode 100644
-index 0000000000000..a6ec56f41f7f8
+index 000000000..a6ec56f41
 --- /dev/null
 +++ b/drivers/mailbox/arm-smc-mailbox.c
 @@ -0,0 +1,166 @@
@@ -424,7 +424,7 @@ index 0000000000000..a6ec56f41f7f8
 +MODULE_DESCRIPTION("Generic ARM smc mailbox driver");
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/mailbox/stm32-ipcc.c b/drivers/mailbox/stm32-ipcc.c
-index 5c2d1e1f988b8..ef966887aa151 100644
+index 5c2d1e1f9..ef966887a 100644
 --- a/drivers/mailbox/stm32-ipcc.c
 +++ b/drivers/mailbox/stm32-ipcc.c
 @@ -52,7 +52,6 @@ struct stm32_ipcc {
@@ -517,7 +517,7 @@ index 5c2d1e1f988b8..ef966887aa151 100644
  	writel_relaxed(ipcc->xcr, ipcc->reg_proc + IPCC_XCR);
  
 diff --git a/drivers/remoteproc/Kconfig b/drivers/remoteproc/Kconfig
-index 94afdde4bc9f1..626c1e4502f32 100644
+index 94afdde4b..626c1e450 100644
 --- a/drivers/remoteproc/Kconfig
 +++ b/drivers/remoteproc/Kconfig
 @@ -14,6 +14,25 @@ config REMOTEPROC
@@ -572,7 +572,7 @@ index 94afdde4bc9f1..626c1e4502f32 100644
  
  endmenu
 diff --git a/drivers/remoteproc/Makefile b/drivers/remoteproc/Makefile
-index 00f09e658cb34..692a9a85963b5 100644
+index 00f09e658..692a9a859 100644
 --- a/drivers/remoteproc/Makefile
 +++ b/drivers/remoteproc/Makefile
 @@ -9,11 +9,14 @@ remoteproc-y				+= remoteproc_debugfs.o
@@ -591,7 +591,7 @@ index 00f09e658cb34..692a9a85963b5 100644
  obj-$(CONFIG_QCOM_Q6V5_COMMON)		+= qcom_q6v5.o
  obj-$(CONFIG_QCOM_Q6V5_ADSP)		+= qcom_q6v5_adsp.o
 diff --git a/drivers/remoteproc/remoteproc_core.c b/drivers/remoteproc/remoteproc_core.c
-index ce92ae227aa10..e71a27dbe5cc2 100644
+index ce92ae227..e71a27dbe 100644
 --- a/drivers/remoteproc/remoteproc_core.c
 +++ b/drivers/remoteproc/remoteproc_core.c
 @@ -34,6 +34,7 @@
@@ -707,7 +707,7 @@ index ce92ae227aa10..e71a27dbe5cc2 100644
  	return 0;
 diff --git a/drivers/remoteproc/rproc_srm_core.c b/drivers/remoteproc/rproc_srm_core.c
 new file mode 100644
-index 0000000000000..fc61e8b35686b
+index 000000000..fc61e8b35
 --- /dev/null
 +++ b/drivers/remoteproc/rproc_srm_core.c
 @@ -0,0 +1,303 @@
@@ -1016,7 +1016,7 @@ index 0000000000000..fc61e8b35686b
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/remoteproc/rproc_srm_core.h b/drivers/remoteproc/rproc_srm_core.h
 new file mode 100644
-index 0000000000000..7dffdb38f4d46
+index 000000000..7dffdb38f
 --- /dev/null
 +++ b/drivers/remoteproc/rproc_srm_core.h
 @@ -0,0 +1,98 @@
@@ -1120,7 +1120,7 @@ index 0000000000000..7dffdb38f4d46
 +#endif
 diff --git a/drivers/remoteproc/rproc_srm_dev.c b/drivers/remoteproc/rproc_srm_dev.c
 new file mode 100644
-index 0000000000000..6b164dad53ca1
+index 000000000..6b164dad5
 --- /dev/null
 +++ b/drivers/remoteproc/rproc_srm_dev.c
 @@ -0,0 +1,744 @@
@@ -1869,7 +1869,7 @@ index 0000000000000..6b164dad53ca1
 +MODULE_DESCRIPTION("Remoteproc System Resource Manager driver - dev");
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/remoteproc/stm32_rproc.c b/drivers/remoteproc/stm32_rproc.c
-index 2cf4b2992bfcd..9ff1d416761b7 100644
+index 2cf4b2992..9ff1d4167 100644
 --- a/drivers/remoteproc/stm32_rproc.c
 +++ b/drivers/remoteproc/stm32_rproc.c
 @@ -15,15 +15,15 @@
@@ -2663,7 +2663,7 @@ index 2cf4b2992bfcd..9ff1d416761b7 100644
  };
 diff --git a/drivers/remoteproc/tee_remoteproc.c b/drivers/remoteproc/tee_remoteproc.c
 new file mode 100644
-index 0000000000000..e48887d3de7c0
+index 000000000..e48887d3d
 --- /dev/null
 +++ b/drivers/remoteproc/tee_remoteproc.c
 @@ -0,0 +1,379 @@
@@ -3047,7 +3047,7 @@ index 0000000000000..e48887d3de7c0
 +MODULE_AUTHOR("Arnaud Pouliquen <arnaud.pouliquen@st.com>");
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/rpmsg/Kconfig b/drivers/rpmsg/Kconfig
-index d0322b41eca54..88759a4c90e43 100644
+index d0322b41e..88759a4c9 100644
 --- a/drivers/rpmsg/Kconfig
 +++ b/drivers/rpmsg/Kconfig
 @@ -55,4 +55,13 @@ config RPMSG_VIRTIO
@@ -3065,7 +3065,7 @@ index d0322b41eca54..88759a4c90e43 100644
 +
  endmenu
 diff --git a/drivers/rpmsg/Makefile b/drivers/rpmsg/Makefile
-index 9aa859502d275..107145c6316b0 100644
+index 9aa859502..107145c63 100644
 --- a/drivers/rpmsg/Makefile
 +++ b/drivers/rpmsg/Makefile
 @@ -5,4 +5,5 @@ obj-$(CONFIG_RPMSG_QCOM_GLINK_RPM) += qcom_glink_rpm.o
@@ -3075,7 +3075,7 @@ index 9aa859502d275..107145c6316b0 100644
 +obj-$(CONFIG_RPMSG_TTY)	+= rpmsg_tty.o
  obj-$(CONFIG_RPMSG_VIRTIO)	+= virtio_rpmsg_bus.o
 diff --git a/drivers/rpmsg/rpmsg_core.c b/drivers/rpmsg/rpmsg_core.c
-index e330ec4dfc337..48f24503fb34e 100644
+index e330ec4df..48f24503f 100644
 --- a/drivers/rpmsg/rpmsg_core.c
 +++ b/drivers/rpmsg/rpmsg_core.c
 @@ -283,6 +283,25 @@ int rpmsg_trysend_offchannel(struct rpmsg_endpoint *ept, u32 src, u32 dst,
@@ -3105,7 +3105,7 @@ index e330ec4dfc337..48f24503fb34e 100644
   * match an rpmsg channel with a channel info struct.
   * this is used to make sure we're not creating rpmsg devices for channels
 diff --git a/drivers/rpmsg/rpmsg_internal.h b/drivers/rpmsg/rpmsg_internal.h
-index 3fc83cd50e98f..244292540e583 100644
+index 3fc83cd50..244292540 100644
 --- a/drivers/rpmsg/rpmsg_internal.h
 +++ b/drivers/rpmsg/rpmsg_internal.h
 @@ -47,6 +47,7 @@ struct rpmsg_device_ops {
@@ -3126,10 +3126,10 @@ index 3fc83cd50e98f..244292540e583 100644
  int rpmsg_register_device(struct rpmsg_device *rpdev);
 diff --git a/drivers/rpmsg/rpmsg_tty.c b/drivers/rpmsg/rpmsg_tty.c
 new file mode 100644
-index 0000000000000..d1cccdff8ed1e
+index 000000000..f2518ac34
 --- /dev/null
 +++ b/drivers/rpmsg/rpmsg_tty.c
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,341 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
@@ -3277,6 +3277,8 @@ index 0000000000000..d1cccdff8ed1e
 +			count = 0;
 +		}
 +	} while (count > 0);
++
++	tty_port_tty_wakeup(cport->port);
 +
 +	return total;
 +}
@@ -3470,7 +3472,7 @@ index 0000000000000..d1cccdff8ed1e
 +MODULE_DESCRIPTION("virtio remote processor messaging tty driver");
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/rpmsg/virtio_rpmsg_bus.c b/drivers/rpmsg/virtio_rpmsg_bus.c
-index 376ebbf880d66..31b6d053f8ff0 100644
+index 376ebbf88..31b6d053f 100644
 --- a/drivers/rpmsg/virtio_rpmsg_bus.c
 +++ b/drivers/rpmsg/virtio_rpmsg_bus.c
 @@ -175,6 +175,7 @@ static int virtio_rpmsg_trysendto(struct rpmsg_endpoint *ept, void *data,
@@ -3507,7 +3509,7 @@ index 376ebbf880d66..31b6d053f8ff0 100644
  {
 diff --git a/include/linux/mailbox/arm-smccc-mbox.h b/include/linux/mailbox/arm-smccc-mbox.h
 new file mode 100644
-index 0000000000000..d35fb89a77f52
+index 000000000..d35fb89a7
 --- /dev/null
 +++ b/include/linux/mailbox/arm-smccc-mbox.h
 @@ -0,0 +1,20 @@
@@ -3532,7 +3534,7 @@ index 0000000000000..d35fb89a77f52
 +
 +#endif /* _LINUX_ARM_SMCCC_MBOX_H_ */
 diff --git a/include/linux/remoteproc.h b/include/linux/remoteproc.h
-index 16ad66683ad0a..221f98b73b09c 100644
+index 16ad66683..221f98b73 100644
 --- a/include/linux/remoteproc.h
 +++ b/include/linux/remoteproc.h
 @@ -481,6 +481,7 @@ struct rproc_dump_segment {
@@ -3552,7 +3554,7 @@ index 16ad66683ad0a..221f98b73b09c 100644
  
  /**
 diff --git a/include/linux/rpmsg.h b/include/linux/rpmsg.h
-index 9fe156d1c018e..2af7674035aa7 100644
+index a68972b09..017decdf6 100644
 --- a/include/linux/rpmsg.h
 +++ b/include/linux/rpmsg.h
 @@ -135,6 +135,7 @@ int rpmsg_trysend_offchannel(struct rpmsg_endpoint *ept, u32 src, u32 dst,
@@ -3580,7 +3582,7 @@ index 9fe156d1c018e..2af7674035aa7 100644
  /* use a macro to avoid include chaining to get THIS_MODULE */
 diff --git a/include/linux/tee_remoteproc.h b/include/linux/tee_remoteproc.h
 new file mode 100644
-index 0000000000000..5d2d6ae492d0d
+index 000000000..5d2d6ae49
 --- /dev/null
 +++ b/include/linux/tee_remoteproc.h
 @@ -0,0 +1,106 @@

@@ -1,21 +1,21 @@
-From 60ca74ac3c89a476b38d4f41c3bea3745779587e Mon Sep 17 00:00:00 2001
+From 42e2fc19221812175eb5d812e8d246cd7de3e068 Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Mon, 5 Oct 2020 13:19:46 +0200
-Subject: [PATCH 11/22] ARM-stm32mp1-r2-rc8-RESET-RTC-WATCHDOG
+Date: Thu, 25 Nov 2021 13:10:02 +0100
+Subject: [PATCH 11/22] ARM-stm32mp1-r2.3-RESET-RTC-WATCHDOG
 
 ---
  .../devicetree/bindings/rtc/st,stm32-rtc.txt  |  10 +-
- drivers/reset/reset-stm32mp1.c                |  83 +++++---
+ drivers/reset/reset-stm32mp1.c                |  83 ++++---
  drivers/rtc/Kconfig                           |   1 +
- drivers/rtc/rtc-stm32.c                       | 180 +++++++++++++++---
+ drivers/rtc/rtc-stm32.c                       | 203 ++++++++++++++----
  drivers/watchdog/stm32_iwdg.c                 |   6 +-
  include/dt-bindings/reset/stm32mp1-resets.h   |  15 ++
  include/dt-bindings/rtc/rtc-stm32.h           |  13 ++
- 7 files changed, 246 insertions(+), 62 deletions(-)
+ 7 files changed, 263 insertions(+), 68 deletions(-)
  create mode 100644 include/dt-bindings/rtc/rtc-stm32.h
 
 diff --git a/Documentation/devicetree/bindings/rtc/st,stm32-rtc.txt b/Documentation/devicetree/bindings/rtc/st,stm32-rtc.txt
-index 130ca5b982538..bab0df81af2cc 100644
+index 130ca5b98..bab0df81a 100644
 --- a/Documentation/devicetree/bindings/rtc/st,stm32-rtc.txt
 +++ b/Documentation/devicetree/bindings/rtc/st,stm32-rtc.txt
 @@ -21,9 +21,14 @@ Required properties:
@@ -43,7 +43,7 @@ index 130ca5b982538..bab0df81af2cc 100644
 +		pinctrl-names = "default";
  	};
 diff --git a/drivers/reset/reset-stm32mp1.c b/drivers/reset/reset-stm32mp1.c
-index b221a28041fa0..daf0e26b27a8d 100644
+index b221a2804..daf0e26b2 100644
 --- a/drivers/reset/reset-stm32mp1.c
 +++ b/drivers/reset/reset-stm32mp1.c
 @@ -4,14 +4,21 @@
@@ -155,10 +155,10 @@ index b221a28041fa0..daf0e26b27a8d 100644
 +}
 +OF_DECLARE_1(clk, stm32mp1_rcc, "st,stm32mp1-rcc", stm32mp1_reset_of_init_drv);
 diff --git a/drivers/rtc/Kconfig b/drivers/rtc/Kconfig
-index c5b9804140860..d590b420525ce 100644
+index 0ad8d84ae..be314cedd 100644
 --- a/drivers/rtc/Kconfig
 +++ b/drivers/rtc/Kconfig
-@@ -1862,6 +1862,7 @@ config RTC_DRV_R7301
+@@ -1864,6 +1864,7 @@ config RTC_DRV_R7301
  config RTC_DRV_STM32
  	tristate "STM32 RTC"
  	select REGMAP_MMIO
@@ -167,7 +167,7 @@ index c5b9804140860..d590b420525ce 100644
  	help
  	   If you say yes here you get support for the STM32 On-Chip
 diff --git a/drivers/rtc/rtc-stm32.c b/drivers/rtc/rtc-stm32.c
-index 2999e33a7e376..3cf51497681a4 100644
+index d28e7597d..4e3824df4 100644
 --- a/drivers/rtc/rtc-stm32.c
 +++ b/drivers/rtc/rtc-stm32.c
 @@ -6,6 +6,8 @@
@@ -374,6 +374,15 @@ index 2999e33a7e376..3cf51497681a4 100644
  		.verr = 0x3F4,
  	},
  	.events = {
+@@ -633,7 +734,7 @@ static int stm32_rtc_init(struct platform_device *pdev,
+ 	const struct stm32_rtc_registers *regs = &rtc->data->regs;
+ 	unsigned int prer, pred_a, pred_s, pred_a_max, pred_s_max, cr;
+ 	unsigned int rate;
+-	int ret = 0;
++	int ret;
+ 
+ 	rate = clk_get_rate(rtc->rtc_ck);
+ 
 @@ -641,11 +742,20 @@ static int stm32_rtc_init(struct platform_device *pdev,
  	pred_a_max = STM32_RTC_PRER_PRED_A >> STM32_RTC_PRER_PRED_A_SHIFT;
  	pred_s_max = STM32_RTC_PRER_PRED_S >> STM32_RTC_PRER_PRED_S_SHIFT;
@@ -383,23 +392,60 @@ index 2999e33a7e376..3cf51497681a4 100644
 +	if (rtc->data->need_accuracy) {
 +		for (pred_a = 0; pred_a <= pred_a_max; pred_a++) {
 +			pred_s = (rate / (pred_a + 1)) - 1;
-+
-+			if (((pred_s + 1) * (pred_a + 1)) == rate)
-+				break;
-+		}
-+	} else {
-+		for (pred_a = pred_a_max; pred_a + 1 > 0; pred_a--) {
-+			pred_s = (rate / (pred_a + 1)) - 1;
  
 -		if (((pred_s + 1) * (pred_a + 1)) == rate)
 -			break;
 +			if (((pred_s + 1) * (pred_a + 1)) == rate)
 +				break;
 +		}
++	} else {
++		for (pred_a = pred_a_max; pred_a + 1 > 0; pred_a--) {
++			pred_s = (rate / (pred_a + 1)) - 1;
++
++			if (((pred_s + 1) * (pred_a + 1)) == rate)
++				break;
++		}
  	}
  
  	/*
-@@ -738,13 +848,15 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+@@ -661,6 +771,20 @@ static int stm32_rtc_init(struct platform_device *pdev,
+ 			 "fast" : "slow");
+ 	}
+ 
++	cr = readl_relaxed(rtc->base + regs->cr);
++
++	prer = readl_relaxed(rtc->base + regs->prer);
++	prer &= STM32_RTC_PRER_PRED_S | STM32_RTC_PRER_PRED_A;
++
++	pred_s = (pred_s << STM32_RTC_PRER_PRED_S_SHIFT) &
++		 STM32_RTC_PRER_PRED_S;
++	pred_a = (pred_a << STM32_RTC_PRER_PRED_A_SHIFT) &
++		 STM32_RTC_PRER_PRED_A;
++
++	/* quit if there is nothing to initialize */
++	if ((cr & STM32_RTC_CR_FMT) == 0 && prer == (pred_s | pred_a))
++		return 0;
++
+ 	stm32_rtc_wpr_unlock(rtc);
+ 
+ 	ret = stm32_rtc_enter_init_mode(rtc);
+@@ -670,13 +794,10 @@ static int stm32_rtc_init(struct platform_device *pdev,
+ 		goto end;
+ 	}
+ 
+-	prer = (pred_s << STM32_RTC_PRER_PRED_S_SHIFT) & STM32_RTC_PRER_PRED_S;
+-	writel_relaxed(prer, rtc->base + regs->prer);
+-	prer |= (pred_a << STM32_RTC_PRER_PRED_A_SHIFT) & STM32_RTC_PRER_PRED_A;
+-	writel_relaxed(prer, rtc->base + regs->prer);
++	writel_relaxed(pred_s, rtc->base + regs->prer);
++	writel_relaxed(pred_a | pred_s, rtc->base + regs->prer);
+ 
+ 	/* Force 24h time format */
+-	cr = readl_relaxed(rtc->base + regs->cr);
+ 	cr &= ~STM32_RTC_CR_FMT;
+ 	writel_relaxed(cr, rtc->base + regs->cr);
+ 
+@@ -738,13 +859,15 @@ static int stm32_rtc_probe(struct platform_device *pdev)
  	} else {
  		rtc->pclk = devm_clk_get(&pdev->dev, "pclk");
  		if (IS_ERR(rtc->pclk)) {
@@ -417,7 +463,7 @@ index 2999e33a7e376..3cf51497681a4 100644
  		return PTR_ERR(rtc->rtc_ck);
  	}
  
-@@ -781,19 +893,12 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+@@ -781,19 +904,12 @@ static int stm32_rtc_probe(struct platform_device *pdev)
  	}
  
  	ret = device_init_wakeup(&pdev->dev, true);
@@ -442,7 +488,7 @@ index 2999e33a7e376..3cf51497681a4 100644
  
  	platform_set_drvdata(pdev, rtc);
  
-@@ -816,6 +921,21 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+@@ -816,6 +932,21 @@ static int stm32_rtc_probe(struct platform_device *pdev)
  		goto err;
  	}
  
@@ -464,7 +510,7 @@ index 2999e33a7e376..3cf51497681a4 100644
  	/*
  	 * If INITS flag is reset (calendar year field set to 0x00), calendar
  	 * must be initialized
-@@ -852,6 +972,9 @@ static int stm32_rtc_remove(struct platform_device *pdev)
+@@ -854,6 +985,9 @@ static int stm32_rtc_remove(struct platform_device *pdev)
  	const struct stm32_rtc_registers *regs = &rtc->data->regs;
  	unsigned int cr;
  
@@ -474,7 +520,7 @@ index 2999e33a7e376..3cf51497681a4 100644
  	/* Disable interrupts */
  	stm32_rtc_wpr_unlock(rtc);
  	cr = readl_relaxed(rtc->base + regs->cr);
-@@ -881,9 +1004,6 @@ static int stm32_rtc_suspend(struct device *dev)
+@@ -883,9 +1017,6 @@ static int stm32_rtc_suspend(struct device *dev)
  	if (rtc->data->has_pclk)
  		clk_disable_unprepare(rtc->pclk);
  
@@ -484,7 +530,7 @@ index 2999e33a7e376..3cf51497681a4 100644
  	return 0;
  }
  
-@@ -902,15 +1022,13 @@ static int stm32_rtc_resume(struct device *dev)
+@@ -904,15 +1035,13 @@ static int stm32_rtc_resume(struct device *dev)
  	if (ret < 0)
  		return ret;
  
@@ -504,7 +550,7 @@ index 2999e33a7e376..3cf51497681a4 100644
  static struct platform_driver stm32_rtc_driver = {
  	.probe		= stm32_rtc_probe,
 diff --git a/drivers/watchdog/stm32_iwdg.c b/drivers/watchdog/stm32_iwdg.c
-index 25188d6bbe152..1b71c205cee0e 100644
+index 25188d6bb..1b71c205c 100644
 --- a/drivers/watchdog/stm32_iwdg.c
 +++ b/drivers/watchdog/stm32_iwdg.c
 @@ -163,7 +163,8 @@ static int stm32_iwdg_clk_init(struct platform_device *pdev,
@@ -528,7 +574,7 @@ index 25188d6bbe152..1b71c205cee0e 100644
  		}
  
 diff --git a/include/dt-bindings/reset/stm32mp1-resets.h b/include/dt-bindings/reset/stm32mp1-resets.h
-index f0c3aaef67a0a..f3a0ed3178356 100644
+index f0c3aaef6..f3a0ed317 100644
 --- a/include/dt-bindings/reset/stm32mp1-resets.h
 +++ b/include/dt-bindings/reset/stm32mp1-resets.h
 @@ -7,6 +7,7 @@
@@ -560,7 +606,7 @@ index f0c3aaef67a0a..f3a0ed3178356 100644
  #endif /* _DT_BINDINGS_STM32MP1_RESET_H_ */
 diff --git a/include/dt-bindings/rtc/rtc-stm32.h b/include/dt-bindings/rtc/rtc-stm32.h
 new file mode 100644
-index 0000000000000..4373c4dea5879
+index 000000000..4373c4dea
 --- /dev/null
 +++ b/include/dt-bindings/rtc/rtc-stm32.h
 @@ -0,0 +1,13 @@

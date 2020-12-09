@@ -1,25 +1,26 @@
-From 207470b1f44164f76939b25ebb0d50fb81375777 Mon Sep 17 00:00:00 2001
+From 2dcf665b314972d63f7856c46dc1c8693e5dc599 Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Mon, 5 Oct 2020 13:19:48 +0200
-Subject: [PATCH 14/22] ARM-stm32mp1-r2-rc8-MMC-NAND
+Date: Thu, 25 Nov 2021 13:10:04 +0100
+Subject: [PATCH 14/22] ARM-stm32mp1-r2.3-MMC-NAND
 
 ---
  .../devicetree/bindings/mmc/mmci.txt          |    2 +
  .../bindings/mtd/stm32-fmc2-nand.txt          |   61 -
  drivers/mmc/core/block.c                      |   11 +
  drivers/mmc/core/core.c                       |   31 +-
- drivers/mmc/host/mmci.c                       |  285 ++--
+ drivers/mmc/core/regulator.c                  |   19 +-
+ drivers/mmc/host/mmci.c                       |  309 +++--
  drivers/mmc/host/mmci.h                       |   17 +-
- drivers/mmc/host/mmci_stm32_sdmmc.c           |  256 +++-
+ drivers/mmc/host/mmci_stm32_sdmmc.c           |  257 +++-
  drivers/mtd/nand/raw/Kconfig                  |    1 +
  drivers/mtd/nand/raw/stm32_fmc2_nand.c        | 1185 ++++++++---------
  include/linux/mmc/core.h                      |    1 +
  include/linux/mmc/host.h                      |    6 +
- 11 files changed, 1089 insertions(+), 767 deletions(-)
+ 12 files changed, 1111 insertions(+), 789 deletions(-)
  delete mode 100644 Documentation/devicetree/bindings/mtd/stm32-fmc2-nand.txt
 
 diff --git a/Documentation/devicetree/bindings/mmc/mmci.txt b/Documentation/devicetree/bindings/mmc/mmci.txt
-index 6d3c626e017d2..4ec921e4bf344 100644
+index 6d3c626e0..4ec921e4b 100644
 --- a/Documentation/devicetree/bindings/mmc/mmci.txt
 +++ b/Documentation/devicetree/bindings/mmc/mmci.txt
 @@ -28,6 +28,8 @@ specific for ux500 variant:
@@ -33,7 +34,7 @@ index 6d3c626e017d2..4ec921e4bf344 100644
                             sd clock falling edge.
 diff --git a/Documentation/devicetree/bindings/mtd/stm32-fmc2-nand.txt b/Documentation/devicetree/bindings/mtd/stm32-fmc2-nand.txt
 deleted file mode 100644
-index e55895e8dae44..0000000000000
+index e55895e8d..000000000
 --- a/Documentation/devicetree/bindings/mtd/stm32-fmc2-nand.txt
 +++ /dev/null
 @@ -1,61 +0,0 @@
@@ -99,10 +100,10 @@ index e55895e8dae44..0000000000000
 -		};
 -	};
 diff --git a/drivers/mmc/core/block.c b/drivers/mmc/core/block.c
-index 7f480c6b19810..4ac7a07d87cc6 100644
+index e92f9373e..6f5381b5e 100644
 --- a/drivers/mmc/core/block.c
 +++ b/drivers/mmc/core/block.c
-@@ -1763,6 +1763,17 @@ static void mmc_blk_mq_rw_recovery(struct mmc_queue *mq, struct request *req)
+@@ -1782,6 +1782,17 @@ static void mmc_blk_mq_rw_recovery(struct mmc_queue *mq, struct request *req)
  	u32 blocks;
  	int err;
  
@@ -121,7 +122,7 @@ index 7f480c6b19810..4ac7a07d87cc6 100644
  	 * Some errors the host driver might not have seen. Set the number of
  	 * bytes transferred to zero in that case.
 diff --git a/drivers/mmc/core/core.c b/drivers/mmc/core/core.c
-index 26644b7ec13e3..6d00eed17738e 100644
+index 8f94c2539..4232e4eb2 100644
 --- a/drivers/mmc/core/core.c
 +++ b/drivers/mmc/core/core.c
 @@ -397,6 +397,7 @@ static int __mmc_start_req(struct mmc_host *host, struct mmc_request *mrq)
@@ -168,7 +169,7 @@ index 26644b7ec13e3..6d00eed17738e 100644
  		__mmc_start_request(host, mrq);
  	}
  
-@@ -2163,6 +2182,14 @@ int mmc_sw_reset(struct mmc_host *host)
+@@ -2166,6 +2185,14 @@ int mmc_sw_reset(struct mmc_host *host)
  }
  EXPORT_SYMBOL(mmc_sw_reset);
  
@@ -183,8 +184,58 @@ index 26644b7ec13e3..6d00eed17738e 100644
  static int mmc_rescan_try_freq(struct mmc_host *host, unsigned freq)
  {
  	host->f_init = freq;
+diff --git a/drivers/mmc/core/regulator.c b/drivers/mmc/core/regulator.c
+index b6febbcf8..609201a46 100644
+--- a/drivers/mmc/core/regulator.c
++++ b/drivers/mmc/core/regulator.c
+@@ -136,6 +136,8 @@ static int mmc_regulator_set_voltage_if_supported(struct regulator *regulator,
+ 						  int min_uV, int target_uV,
+ 						  int max_uV)
+ {
++	int current_uV;
++
+ 	/*
+ 	 * Check if supported first to avoid errors since we may try several
+ 	 * signal levels during power up and don't want to show errors.
+@@ -143,12 +145,22 @@ static int mmc_regulator_set_voltage_if_supported(struct regulator *regulator,
+ 	if (!regulator_is_supported_voltage(regulator, min_uV, max_uV))
+ 		return -EINVAL;
+ 
++	/*
++	 * The voltage is already set, no need to switch.
++	 * Return 1 to indicate that no switch happened.
++	 */
++	current_uV = regulator_get_voltage(regulator);
++	if (current_uV == target_uV)
++		return 1;
++
+ 	return regulator_set_voltage_triplet(regulator, min_uV, target_uV,
+ 					     max_uV);
+ }
+ 
+ /**
+  * mmc_regulator_set_vqmmc - Set VQMMC as per the ios
++ * @mmc: the host to regulate
++ * @ios: io bus settings
+  *
+  * For 3.3V signaling, we try to match VQMMC to VMMC as closely as possible.
+  * That will match the behavior of old boards where VQMMC and VMMC were supplied
+@@ -198,9 +210,10 @@ int mmc_regulator_set_vqmmc(struct mmc_host *mmc, struct mmc_ios *ios)
+ 		 * voltage in two steps and try to stay close to vmmc
+ 		 * with a 0.3V tolerance at first.
+ 		 */
+-		if (!mmc_regulator_set_voltage_if_supported(mmc->supply.vqmmc,
+-						min_uV, volt, max_uV))
+-			return 0;
++		ret = mmc_regulator_set_voltage_if_supported(mmc->supply.vqmmc,
++							min_uV, volt, max_uV);
++		if (ret >= 0)
++			return ret;
+ 
+ 		return mmc_regulator_set_voltage_if_supported(mmc->supply.vqmmc,
+ 						2700000, volt, 3600000);
 diff --git a/drivers/mmc/host/mmci.c b/drivers/mmc/host/mmci.c
-index 7e4bc9124efde..f2e74aa3d7274 100644
+index 7e4bc9124..319cbc2d0 100644
 --- a/drivers/mmc/host/mmci.c
 +++ b/drivers/mmc/host/mmci.c
 @@ -22,6 +22,7 @@
@@ -568,25 +619,42 @@ index 7e4bc9124efde..f2e74aa3d7274 100644
  	if (host->ops && host->ops->set_pwrreg)
  		host->ops->set_pwrreg(host, pwr);
  	else
-@@ -1740,6 +1832,7 @@ static int mmci_get_cd(struct mmc_host *mmc)
+@@ -1740,32 +1832,35 @@ static int mmci_get_cd(struct mmc_host *mmc)
  
  static int mmci_sig_volt_switch(struct mmc_host *mmc, struct mmc_ios *ios)
  {
+-	int ret = 0;
 +	struct mmci_host *host = mmc_priv(mmc);
- 	int ret = 0;
++	int ret;
  
- 	if (!IS_ERR(mmc->supply.vqmmc)) {
-@@ -1759,6 +1852,9 @@ static int mmci_sig_volt_switch(struct mmc_host *mmc, struct mmc_ios *ios)
- 			break;
- 		}
+-	if (!IS_ERR(mmc->supply.vqmmc)) {
++	ret = mmc_regulator_set_vqmmc(mmc, ios);
  
-+		if (!ret && host->ops && host->ops->volt_switch)
-+			ret = host->ops->volt_switch(host, ios);
-+
- 		if (ret)
- 			dev_warn(mmc_dev(mmc), "Voltage switch failed\n");
- 	}
-@@ -1766,6 +1862,19 @@ static int mmci_sig_volt_switch(struct mmc_host *mmc, struct mmc_ios *ios)
+-		switch (ios->signal_voltage) {
+-		case MMC_SIGNAL_VOLTAGE_330:
+-			ret = regulator_set_voltage(mmc->supply.vqmmc,
+-						2700000, 3600000);
+-			break;
+-		case MMC_SIGNAL_VOLTAGE_180:
+-			ret = regulator_set_voltage(mmc->supply.vqmmc,
+-						1700000, 1950000);
+-			break;
+-		case MMC_SIGNAL_VOLTAGE_120:
+-			ret = regulator_set_voltage(mmc->supply.vqmmc,
+-						1100000, 1300000);
+-			break;
+-		}
++	if (!ret && host->ops && host->ops->volt_switch)
++		ret = host->ops->volt_switch(host, ios);
++	else if (ret)
++		ret = 0;
+ 
+-		if (ret)
+-			dev_warn(mmc_dev(mmc), "Voltage switch failed\n");
+-	}
++	if (ret < 0)
++		dev_warn(mmc_dev(mmc), "Voltage switch failed\n");
+ 
  	return ret;
  }
  
@@ -606,7 +674,7 @@ index 7e4bc9124efde..f2e74aa3d7274 100644
  static struct mmc_host_ops mmci_ops = {
  	.request	= mmci_request,
  	.pre_req	= mmci_pre_request,
-@@ -1774,6 +1883,7 @@ static struct mmc_host_ops mmci_ops = {
+@@ -1774,6 +1869,7 @@ static struct mmc_host_ops mmci_ops = {
  	.get_ro		= mmc_gpio_get_ro,
  	.get_cd		= mmci_get_cd,
  	.start_signal_voltage_switch = mmci_sig_volt_switch,
@@ -614,7 +682,7 @@ index 7e4bc9124efde..f2e74aa3d7274 100644
  };
  
  static int mmci_of_parse(struct device_node *np, struct mmc_host *mmc)
-@@ -1843,6 +1953,7 @@ static int mmci_probe(struct amba_device *dev,
+@@ -1843,6 +1939,7 @@ static int mmci_probe(struct amba_device *dev,
  
  	host = mmc_priv(mmc);
  	host->mmc = mmc;
@@ -622,7 +690,7 @@ index 7e4bc9124efde..f2e74aa3d7274 100644
  
  	/*
  	 * Some variant (STM32) doesn't have opendrain bit, nevertheless
-@@ -1967,13 +2078,15 @@ static int mmci_probe(struct amba_device *dev,
+@@ -1967,13 +2064,15 @@ static int mmci_probe(struct amba_device *dev,
  	else if (plat->ocr_mask)
  		dev_warn(mmc_dev(mmc), "Platform OCR mask is ignored\n");
  
@@ -639,7 +707,7 @@ index 7e4bc9124efde..f2e74aa3d7274 100644
  		mmci_ops.card_busy = mmci_card_busy;
  		/*
  		 * Not all variants have a flag to enable busy detection
-@@ -1983,7 +2096,6 @@ static int mmci_probe(struct amba_device *dev,
+@@ -1983,7 +2082,6 @@ static int mmci_probe(struct amba_device *dev,
  			mmci_write_datactrlreg(host,
  					       host->variant->busy_dpsm_flag);
  		mmc->caps |= MMC_CAP_WAIT_WHILE_BUSY;
@@ -647,7 +715,7 @@ index 7e4bc9124efde..f2e74aa3d7274 100644
  	}
  
  	/* Prepare a CMD12 - needed to clear the DPSM on some variants. */
-@@ -2141,24 +2253,6 @@ static void mmci_save(struct mmci_host *host)
+@@ -2141,24 +2239,6 @@ static void mmci_save(struct mmci_host *host)
  	spin_unlock_irqrestore(&host->lock, flags);
  }
  
@@ -672,7 +740,7 @@ index 7e4bc9124efde..f2e74aa3d7274 100644
  static int mmci_runtime_suspend(struct device *dev)
  {
  	struct amba_device *adev = to_amba_device(dev);
-@@ -2253,6 +2347,11 @@ static const struct amba_id mmci_ids[] = {
+@@ -2253,6 +2333,11 @@ static const struct amba_id mmci_ids[] = {
  		.mask	= 0xf0ffffff,
  		.data	= &variant_stm32_sdmmc,
  	},
@@ -685,7 +753,7 @@ index 7e4bc9124efde..f2e74aa3d7274 100644
  	{
  		.id     = 0x00051180,
 diff --git a/drivers/mmc/host/mmci.h b/drivers/mmc/host/mmci.h
-index 89ab73343cf30..a94f384bb1ff5 100644
+index 89ab73343..a94f384bb 100644
 --- a/drivers/mmc/host/mmci.h
 +++ b/drivers/mmc/host/mmci.h
 @@ -133,6 +133,8 @@
@@ -757,7 +825,7 @@ index 89ab73343cf30..a94f384bb1ff5 100644
  	struct pinctrl_state	*pins_default;
  	struct pinctrl_state	*pins_opendrain;
 diff --git a/drivers/mmc/host/mmci_stm32_sdmmc.c b/drivers/mmc/host/mmci_stm32_sdmmc.c
-index 0953bd8a4f79d..7c6ba518bc08e 100644
+index 0953bd8a4..c955c2941 100644
 --- a/drivers/mmc/host/mmci_stm32_sdmmc.c
 +++ b/drivers/mmc/host/mmci_stm32_sdmmc.c
 @@ -3,10 +3,13 @@
@@ -915,7 +983,7 @@ index 0953bd8a4f79d..7c6ba518bc08e 100644
  		/*
  		 * After a power-cycle state, we must set the SDMMC in
  		 * Power-off. The SDMMC_D[7:0], SDMMC_CMD and SDMMC_CK are
-@@ -285,6 +326,178 @@ static u32 sdmmc_get_dctrl_cfg(struct mmci_host *host)
+@@ -285,6 +326,179 @@ static u32 sdmmc_get_dctrl_cfg(struct mmci_host *host)
  	return datactrl;
  }
  
@@ -1068,8 +1136,9 @@ index 0953bd8a4f79d..7c6ba518bc08e 100644
 +	u32 status;
 +	int ret = 0;
 +
-+	if (ios->signal_voltage == MMC_SIGNAL_VOLTAGE_180) {
-+		spin_lock_irqsave(&host->lock, flags);
++	spin_lock_irqsave(&host->lock, flags);
++	if (ios->signal_voltage == MMC_SIGNAL_VOLTAGE_180 &&
++	    host->pwr_reg & MCI_STM32_VSWITCHEN) {
 +		mmci_write_pwrreg(host, host->pwr_reg | MCI_STM32_VSWITCH);
 +		spin_unlock_irqrestore(&host->lock, flags);
 +
@@ -1085,8 +1154,8 @@ index 0953bd8a4f79d..7c6ba518bc08e 100644
 +		spin_lock_irqsave(&host->lock, flags);
 +		mmci_write_pwrreg(host, host->pwr_reg &
 +				  ~(MCI_STM32_VSWITCHEN | MCI_STM32_VSWITCH));
-+		spin_unlock_irqrestore(&host->lock, flags);
 +	}
++	spin_unlock_irqrestore(&host->lock, flags);
 +
 +	return ret;
 +}
@@ -1094,7 +1163,7 @@ index 0953bd8a4f79d..7c6ba518bc08e 100644
  static struct mmci_host_ops sdmmc_variant_ops = {
  	.validate_data = sdmmc_idma_validate_data,
  	.prep_data = sdmmc_idma_prep_data,
-@@ -295,9 +508,28 @@ static struct mmci_host_ops sdmmc_variant_ops = {
+@@ -295,9 +509,28 @@ static struct mmci_host_ops sdmmc_variant_ops = {
  	.dma_finalize = sdmmc_idma_finalize,
  	.set_clkreg = mmci_sdmmc_set_clkreg,
  	.set_pwrreg = mmci_sdmmc_set_pwrreg,
@@ -1124,7 +1193,7 @@ index 0953bd8a4f79d..7c6ba518bc08e 100644
 +	host->mmc_ops->execute_tuning = sdmmc_execute_tuning;
  }
 diff --git a/drivers/mtd/nand/raw/Kconfig b/drivers/mtd/nand/raw/Kconfig
-index e59de3f60cf6b..1b549d58787c2 100644
+index e59de3f60..1b549d587 100644
 --- a/drivers/mtd/nand/raw/Kconfig
 +++ b/drivers/mtd/nand/raw/Kconfig
 @@ -419,6 +419,7 @@ config MTD_NAND_TEGRA
@@ -1136,7 +1205,7 @@ index e59de3f60cf6b..1b549d58787c2 100644
  	  Enables support for NAND Flash chips on SoCs containing the FMC2
  	  NAND controller. This controller is found on STM32MP SoCs.
 diff --git a/drivers/mtd/nand/raw/stm32_fmc2_nand.c b/drivers/mtd/nand/raw/stm32_fmc2_nand.c
-index 5c06e0b4d4ef3..9553702d7a46d 100644
+index 5c06e0b4d..9553702d7 100644
 --- a/drivers/mtd/nand/raw/stm32_fmc2_nand.c
 +++ b/drivers/mtd/nand/raw/stm32_fmc2_nand.c
 @@ -4,16 +4,20 @@
@@ -3285,7 +3354,7 @@ index 5c06e0b4d4ef3..9553702d7a46d 100644
 +MODULE_DESCRIPTION("STMicroelectronics STM32 FMC2 NFC driver");
  MODULE_LICENSE("GPL v2");
 diff --git a/include/linux/mmc/core.h b/include/linux/mmc/core.h
-index b7ba8810a3b53..eb10b8194073e 100644
+index b7ba8810a..eb10b8194 100644
 --- a/include/linux/mmc/core.h
 +++ b/include/linux/mmc/core.h
 @@ -173,6 +173,7 @@ void mmc_wait_for_req(struct mmc_host *host, struct mmc_request *mrq);
@@ -3297,7 +3366,7 @@ index b7ba8810a3b53..eb10b8194073e 100644
  int mmc_sw_reset(struct mmc_host *host);
  void mmc_set_data_timeout(struct mmc_data *data, const struct mmc_card *card);
 diff --git a/include/linux/mmc/host.h b/include/linux/mmc/host.h
-index 4c5eb3aa8e723..feac3431be49a 100644
+index a0e1cf1be..1c88a4e2e 100644
 --- a/include/linux/mmc/host.h
 +++ b/include/linux/mmc/host.h
 @@ -163,6 +163,12 @@ struct mmc_host_ops {
