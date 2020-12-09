@@ -28,6 +28,9 @@ EXTRA_OECONF = " \
     HIDAPI_LIBS=-L${STAGING_LIBDIR}\ -lhidapi-libusb \
 "
 
+# Can't be built with ccache
+CCACHE_DISABLE = "1"
+
 do_configure() {
     ./bootstrap nosubmodule
     oe_runconf ${EXTRA_OECONF}
