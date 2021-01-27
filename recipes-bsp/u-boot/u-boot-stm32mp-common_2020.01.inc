@@ -28,6 +28,7 @@ SRC_URI += "\
     file://0010-ARM-v2020.01-stm32mp-r2-CONFIG.patch \
     \
     file://0099-Add-external-var-to-allow-build-of-new-devicetree-fi.patch \
+    file://remove-redundant-yyloc-global.patch \
 "
 
 U_BOOT_VERSION = "2020.01"
