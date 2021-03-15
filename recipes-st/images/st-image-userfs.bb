@@ -8,7 +8,7 @@ IMAGE_ROOTFS_MAXSIZE = ""
 
 # Add specific package for our image:
 PACKAGE_INSTALL += " \
-    m4projects-stm32mp1-userfs \
+    ${@bb.utils.contains('MACHINE_FEATURES', 'm4copro', 'm4projects-stm32mp1-userfs', '', d)} \
     linux-examples-stm32mp1-userfs \
     "
 
