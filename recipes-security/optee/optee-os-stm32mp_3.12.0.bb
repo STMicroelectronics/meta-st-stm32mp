@@ -2,16 +2,15 @@ SUMMARY = "OPTEE TA development kit for stm32mp"
 LICENSE = "BSD-2-Clause & BSD-3-Clause"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=c1f21c4f72f372ef38a5a4aee55ec173"
 
-SRC_URI = "git://github.com/OP-TEE/optee_os.git;protocol=https"
-SRCREV = "af141c61fe7a2430f3b4bb89661d8414117013b3"
+SRC_URI = "git://github.com/OP-TEE/optee_os.git;protocol=https;name=os"
+SRCREV = "3d47a131bca1d9ed511bfd516aa5e70269e12c1d"
 
 SRC_URI += " \
-    file://0001-3.9.0-stm32mp-r1.patch \
-    file://0002-3.9.0-stm32mp-r2.patch \
+    file://0001-3.12.0-stm32mp-r1.patch \
     "
 
-OPTEE_VERSION = "3.9.0"
-PV = "${OPTEE_VERSION}.r2"
+OPTEE_VERSION = "3.12.0"
+PV = "${OPTEE_VERSION}.r1"
 
 S = "${WORKDIR}/git"
 
@@ -40,7 +39,7 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'optee-os-stm3
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/optee_os.git;protocol=https;branch=${OPTEE_VERSION}-stm32mp"
-SRCREV_class-devupstream = "6a3dd87a133bee8a18409969380dbb1fc289f803"
+SRCREV_class-devupstream = "0bd33404e9581d00514034b7b05a2cbe8649c1fd"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

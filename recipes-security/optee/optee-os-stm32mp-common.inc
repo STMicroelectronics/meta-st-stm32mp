@@ -16,18 +16,17 @@ inherit deploy python3native
 OPTEEMACHINE ?= "${MACHINE}"
 OPTEEOUTPUTMACHINE ?= "${MACHINE}"
 
-EXTRA_OEMAKE = "PLATFORM=${OPTEEMACHINE} \
-                CROSS_COMPILE_core=${HOST_PREFIX} \
-                CROSS_COMPILE_ta_arm64=${HOST_PREFIX} \
-                ${@bb.utils.contains('TUNE_FEATURES', 'aarch64', 'CFG_ARM64_core=y ta-targets=ta_arm64', 'CFG_ARM32_core=y CROSS_COMPILE_ta_arm32=${HOST_PREFIX}', d)} \
-                NOWERROR=1 \
-                LDFLAGS= \
-                LIBGCC_LOCATE_CFLAGS=--sysroot=${STAGING_DIR_HOST} \
-        "
-
+EXTRA_OEMAKE = "PLATFORM=${OPTEEMACHINE}"
+EXTRA_OEMAKE += "CROSS_COMPILE_core=${HOST_PREFIX}"
+EXTRA_OEMAKE += "CROSS_COMPILE_ta_arm64=${HOST_PREFIX}"
+EXTRA_OEMAKE += "${@bb.utils.contains('TUNE_FEATURES', 'aarch64', 'CFG_ARM64_core=y ta-targets=ta_arm64', 'CFG_ARM32_core=y CROSS_COMPILE_ta_arm32=${HOST_PREFIX}', d)}"
+EXTRA_OEMAKE += "NOWERROR=1"
+EXTRA_OEMAKE += "LDFLAGS="
+EXTRA_OEMAKE += "LIBGCC_LOCATE_CFLAGS=--sysroot=${STAGING_DIR_TARGET}"
 EXTRA_OEMAKE += "CFG_TEE_CORE_LOG_LEVEL=2"
 EXTRA_OEMAKE += "CFG_TEE_CORE_DEBUG=n"
 EXTRA_OEMAKE += "comp-cflagscore='--sysroot=${STAGING_DIR_TARGET}'"
+EXTRA_OEMAKE += "${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', 'CFG_STM32MP15x_STM32IMAGE=y', d)}"
 
 OPTEE_ARCH_armv7a = "arm32"
 OPTEE_ARCH_armv7ve = "arm32"
@@ -62,11 +61,10 @@ do_install() {
 }
 
 # Configure optee binaries
-OPTEE_BOOTCHAIN = "optee"
 OPTEE_HEADER    = "tee-header_v2"
 OPTEE_PAGEABLE  = "tee-pageable_v2"
 OPTEE_PAGER     = "tee-pager_v2"
-OPTEE_SUFFIX    = "stm32"
+OPTEE_SUFFIX    = "${@bb.utils.contains('MACHINE_FEATURES','fip','bin','stm32',d)}"
 # Output the ELF generated
 ELF_DEBUG_ENABLE ?= ""
 OPTEE_ELF = "tee"
@@ -74,22 +72,22 @@ OPTEE_ELF_SUFFIX = "elf"
 
 do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/optee"
 do_deploy() {
-    install -d ${DEPLOYDIR}
+    install -d ${DEPLOYDIR}/debug
     if [ -n "${OPTEE_CONF}" ]; then
         for conf in ${OPTEE_CONF}; do
-            install -m 644 ${B}/${conf}/core/${OPTEE_HEADER}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_HEADER}-${conf}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX}
-            install -m 644 ${B}/${conf}/core/${OPTEE_PAGER}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_PAGER}-${conf}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX}
-            install -m 644 ${B}/${conf}/core/${OPTEE_PAGEABLE}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_PAGEABLE}-${conf}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX}
+            install -m 644 ${B}/${conf}/core/${OPTEE_HEADER}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_HEADER}-${conf}.${OPTEE_SUFFIX}
+            install -m 644 ${B}/${conf}/core/${OPTEE_PAGER}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_PAGER}-${conf}.${OPTEE_SUFFIX}
+            install -m 644 ${B}/${conf}/core/${OPTEE_PAGEABLE}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_PAGEABLE}-${conf}.${OPTEE_SUFFIX}
             if [ -n "${ELF_DEBUG_ENABLE}" ]; then
-                install -m 644 ${B}/${conf}/core/${OPTEE_ELF}.${OPTEE_ELF_SUFFIX} ${DEPLOYDIR}/${OPTEE_ELF}-${conf}-${OPTEE_BOOTCHAIN}.${OPTEE_ELF_SUFFIX}
+                install -m 644 ${B}/${conf}/core/${OPTEE_ELF}.${OPTEE_ELF_SUFFIX} ${DEPLOYDIR}/debug/${OPTEE_ELF}-${conf}.${OPTEE_ELF_SUFFIX}
             fi
         done
     else
-        install -m 644 ${B}/core/${OPTEE_HEADER}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_HEADER}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX}
-        install -m 644 ${B}/core/${OPTEE_PAGER}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_PAGER}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX}
-        install -m 644 ${B}/core/${OPTEE_PAGEABLE}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_PAGEABLE}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX}
+        install -m 644 ${B}/core/${OPTEE_HEADER}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_HEADER}.${OPTEE_SUFFIX}
+        install -m 644 ${B}/core/${OPTEE_PAGER}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_PAGER}.${OPTEE_SUFFIX}
+        install -m 644 ${B}/core/${OPTEE_PAGEABLE}.${OPTEE_SUFFIX} ${DEPLOYDIR}/${OPTEE_PAGEABLE}.${OPTEE_SUFFIX}
         if [ -n "${ELF_DEBUG_ENABLE}" ]; then
-            install -m 644 ${B}/core/${OPTEE_ELF}.${OPTEE_ELF_SUFFIX} ${DEPLOYDIR}/${OPTEE_ELF}-${OPTEE_BOOTCHAIN}.${OPTEE_ELF_SUFFIX}
+            install -m 644 ${B}/core/${OPTEE_ELF}.${OPTEE_ELF_SUFFIX} ${DEPLOYDIR}/debug/${OPTEE_ELF}.${OPTEE_ELF_SUFFIX}
         fi
     fi
 }

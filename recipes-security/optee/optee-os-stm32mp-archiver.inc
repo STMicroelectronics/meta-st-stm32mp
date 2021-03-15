@@ -12,44 +12,82 @@ inherit archiver_stm32mp_clean
 archiver_create_makefile_for_sdk() {
     mkdir -p ${ARCHIVER_OUTDIR}
 
-    #remove default variable
-    echo "LDFLAGS=" > ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "CFLAGS=" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "CPPFLAGS=" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+    cat << EOF > ${ARCHIVER_OUTDIR}/Makefile.sdk
+# Set default path
+SRC_PATH ?= \$(PWD)
+BLD_PATH ?= \$(SRC_PATH)/../build
+DEPLOYDIR ?= \$(SRC_PATH)/../deploy
 
-    echo "LOCAL_PATH=\$(PWD)" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+# Set default optee-os config
+CFG_EMBED_DTB_SOURCE_FILE ?= ${OPTEE_CONF}
 
-    #set default CONFIGURATION with configured OPTEE_CONF
-    if [ -n "${OPTEE_CONF}" ]; then
-        echo "PLATFORM ?= ${MACHINE}" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-        echo "CFG_EMBED_DTB_SOURCE_FILE ?= ${OPTEE_CONF}" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    fi
+# Configure default optee-os features
+ENABLE_FIP ?= ${@bb.utils.contains('MACHINE_FEATURES','fip','1','',d)}
 
-    echo -n "EXTRA_OEMAKE=" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "${EXTRA_OEMAKE}" | sed "s|LIBGCC_LOCATE_CFLAGS=[^ ]* |LIBGCC_LOCATE_CFLAGS=\$(OECORE_NATIVE_SYSROOTK) |;s|comp-cflagscore='[^']*'|comp-cflagscore='\$(KCFLAGS)'|" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+# Remove default variables
+LDFLAGS =
+CFLAGS =
+CPPFLAGS =
+# Define default make options
+EXTRA_OEMAKE = $(echo "${EXTRA_OEMAKE}" | sed "s|LIBGCC_LOCATE_CFLAGS=[^ ]* |LIBGCC_LOCATE_CFLAGS=\$(KCFLAGS) |;s|comp-cflagscore='[^']*'|comp-cflagscore='\$(KCFLAGS)'|")
+EXTRA_OEMAKE += \$(if \$(ENABLE_FIP),,CFG_STM32MP15x_STM32IMAGE=y)
 
-    echo "" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "all:" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "	if test -n \"\$(CFG_EMBED_DTB_SOURCE_FILE)\" ; then \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "		for dt in \$(CFG_EMBED_DTB_SOURCE_FILE) ; do \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "			\$(MAKE) \$(EXTRA_OEMAKE) -C \$(LOCAL_PATH) PREFIX=\$(SDKTARGETSYSROOT) O=\$(LOCAL_PATH)/../build/\$\$dt CFG_EMBED_DTB_SOURCE_FILE=\$\$dt.dts ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    # Copy binary files with explicit name
-    echo "			cp ../build/\$\$dt/core/${OPTEE_HEADER}.${OPTEE_SUFFIX} ../build/${OPTEE_HEADER}-\$\$dt-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX} ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "			cp ../build/\$\$dt/core/${OPTEE_PAGER}.${OPTEE_SUFFIX} ../build/${OPTEE_PAGER}-\$\$dt-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX} ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "			cp ../build/\$\$dt/core/${OPTEE_PAGEABLE}.${OPTEE_SUFFIX} ../build/${OPTEE_PAGEABLE}-\$\$dt-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX} ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "		done ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "	else \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "		\$(MAKE) \$(EXTRA_OEMAKE) -C \$(LOCAL_PATH) PREFIX=\$(SDKTARGETSYSROOT) O=\$(LOCAL_PATH)/../build/ ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    # Copy binary files with explicit name
-    echo "		cp ../build/core/${OPTEE_HEADER}.${OPTEE_SUFFIX} ../build/${OPTEE_HEADER}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX} ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "		cp ../build/core/${OPTEE_PAGER}.${OPTEE_SUFFIX} ../build/${OPTEE_PAGER}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX} ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "		cp ../build/core/${OPTEE_PAGEABLE}.${OPTEE_SUFFIX} ../build/${OPTEE_PAGEABLE}-${OPTEE_BOOTCHAIN}.${OPTEE_SUFFIX} ; \\" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "	fi" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+# Configure default optee-os features
+OPTEE_SUFFIX ?= \$(if \$(ENABLE_FIP),bin,stm32)
 
-    echo "" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "clean:" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-    echo "	rm -rf \$(LOCAL_PATH)/../build" >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+help:
+	@echo
+	@echo "OPTEE-OS configuration:"
+	@echo "  CFG_EMBED_DTB_SOURCE_FILE = \$(CFG_EMBED_DTB_SOURCE_FILE)"
+	@echo
+	@echo "OPTEE-OS folder configuration:"
+	@echo "  SRC_PATH  = \$(SRC_PATH)"
+	@echo "  BLD_PATH  = \$(BLD_PATH)"
+	@echo "  DEPLOYDIR = \$(DEPLOYDIR)"
+	@echo
+	@echo "FIP configuration:"
+	@echo "  ENABLE_FIP = \$(ENABLE_FIP) ('1' to generate fip binary)"
+ifeq (\$(ENABLE_FIP),1)
+	@echo "  Do not forget to set FIP deploydir folders (such as FIP_DEPLOYDIR_ROOT) to provide path to needed binaries"
+endif
+	@echo
+	@echo "Available targets:"
+	@echo "  all   : build OPTEE-OS binaries for defined config(s)"
+	@echo "  clean : clean build directories from generated files"
+	@echo
+
+all: optee \$(if \$(ENABLE_FIP),fip)
+
+optee:
+	@mkdir -p \$(DEPLOYDIR)
+	@mkdir -p \$(DEPLOYDIR)/debug
+	@if test -n "\$(CFG_EMBED_DTB_SOURCE_FILE)" ; then \\
+		for dt in \$(CFG_EMBED_DTB_SOURCE_FILE) ; do \\
+			\$(MAKE) \$(EXTRA_OEMAKE) -C \$(SRC_PATH) PREFIX=\$(SDKTARGETSYSROOT) O=\$(BLD_PATH)/\$\$dt CFG_EMBED_DTB_SOURCE_FILE=\$\$dt.dts ; \\
+			# Copy binary files with explicit name \\
+			cp \$(BLD_PATH)/\$\$dt/core/${OPTEE_HEADER}.\$(OPTEE_SUFFIX) \$(DEPLOYDIR)/${OPTEE_HEADER}-\$\$dt.\$(OPTEE_SUFFIX) ; \\
+			cp \$(BLD_PATH)/\$\$dt/core/${OPTEE_PAGER}.\$(OPTEE_SUFFIX) \$(DEPLOYDIR)/${OPTEE_PAGER}-\$\$dt.\$(OPTEE_SUFFIX) ; \\
+			cp \$(BLD_PATH)/\$\$dt/core/${OPTEE_PAGEABLE}.\$(OPTEE_SUFFIX) \$(DEPLOYDIR)/${OPTEE_PAGEABLE}-\$\$dt.\$(OPTEE_SUFFIX) ; \\
+			cp \$(BLD_PATH)/\$\$dt/core/${OPTEE_ELF}.${OPTEE_ELF_SUFFIX} \$(DEPLOYDIR)/debug/${OPTEE_ELF}-\$\$dt.${OPTEE_ELF_SUFFIX} ; \\
+		done ; \\
+	else \\
+		\$(MAKE) \$(EXTRA_OEMAKE) -C \$(SRC_PATH) PREFIX=\$(SDKTARGETSYSROOT) O=\$(BLD_PATH)/ ; \\
+		# Copy binary files with explicit name \\
+		cp \$(BLD_PATH)/core/${OPTEE_HEADER}.\$(OPTEE_SUFFIX) \$(DEPLOYDIR)/ ; \\
+		cp \$(BLD_PATH)/core/${OPTEE_PAGER}.\$(OPTEE_SUFFIX) \$(DEPLOYDIR)/ ; \\
+		cp \$(BLD_PATH)/core/${OPTEE_PAGEABLE}.\$(OPTEE_SUFFIX) \$(DEPLOYDIR)/ ; \\
+		cp \$(BLD_PATH)/core/${OPTEE_ELF}.${OPTEE_ELF_SUFFIX} \$(DEPLOYDIR)/debug/ ; \\
+	fi
+
+fip: optee
+	FIP_DEPLOYDIR_OPTEE=\$(DEPLOYDIR) FIP_DEVICETREE="\$(CFG_EMBED_DTB_SOURCE_FILE)" fiptool-stm32mp
+
+clean:
+	@echo "Removing \$(BLD_PATH) ..."
+	@rm -rf \$(BLD_PATH)
+	@echo "Removing \$(DEPLOYDIR) ..."
+	@rm -rf \$(DEPLOYDIR)
+	@echo
+EOF
 }
 do_ar_original[prefuncs] += "archiver_create_makefile_for_sdk"
