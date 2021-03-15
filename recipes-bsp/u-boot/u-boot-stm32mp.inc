@@ -14,13 +14,17 @@ SPL_BINARYNAME = "${@os.path.basename(d.getVar("SPL_BINARY_STM32"))}"
 SPL_BINARYROOT = "${@d.getVar('SPL_BINARY_STM32').split('.')[0]}"
 
 # Configure for debug elf
-ELF_DEBUG_ENABLE ?= ""
+ELF_DEBUG_ENABLE ?= "1"
 UBOOT_ELF = "${@'u-boot' if d.getVar('ELF_DEBUG_ENABLE') == '1' else ''}"
 SPL_ELF = "${@'${SPL_BINARYROOT}' if d.getVar('ELF_DEBUG_ENABLE') == '1' else ''}"
 SPL_ELF_NAME  = "${@os.path.basename(d.getVar("SPL_ELF"))}.elf"
 
 # Init UBOOT_DEVICETREE list if not configured
 UBOOT_DEVICETREE ?= ""
+
+# Init default MTDPART configurations
+UBOOT_MTDPART_CHECK_ENABLE ??= ""
+UBOOT_MTDPART_CHECK ??= ""
 
 # -----------------------------------------------
 # Enable use of work-shared folder
@@ -56,6 +60,84 @@ base_do_unpack_append () {
 }
 
 # -----------------------------------------------------------------------------
+# Prepend configure to handle specific configuration (here fip)
+#
+do_configure_prepend() {
+    if [ -n "${UBOOT_CONFIG}" ]; then
+        unset i j
+        for config in ${UBOOT_MACHINE}; do
+            if [ -f "${S}/configs/${config}" ]; then
+                # Create copy of original defconfig
+                cp -f "${S}/configs/${config}" "${WORKDIR}/"
+                i=$(expr $i + 1);
+                for binary in ${UBOOT_BINARIES}; do
+                    j=$(expr $j + 1);
+                    if [ $j -eq $i ]; then
+                        binarysuffix=$(echo ${binary} | cut -d'.' -f2)
+                        # Make sure to select STM32IMAGE if requested
+                        if [ "${binarysuffix}" = "stm32" ]; then
+                            if ! grep -q 'CONFIG_STM32MP15x_STM32IMAGE=y' "${S}/configs/${config}"; then
+                                echo "CONFIG_STM32MP15x_STM32IMAGE=y" >> "${S}/configs/${config}"
+                            fi
+                        fi
+                    fi
+                done
+                unset j
+            fi
+        done
+        unset i
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Append configure to handle specific MTDPART check if required
+#
+do_configure_append() {
+    if [ -n "${UBOOT_MTDPART_CHECK_ENABLE}" ]; then
+        if [ -n "${UBOOT_CONFIG}" ]; then
+            for config in ${UBOOT_MACHINE}; do
+                for mtdpart_check_config in ${UBOOT_MTDPART_CHECK_ENABLE}; do
+                    if [ "${mtdpart_check_config}" = "${config}" ]; then
+                        if [ -f "${B}/${config}/.config" ]; then
+                            for mtdpart_chk in $(echo "${UBOOT_MTDPART_CHECK}"); do
+                                mtdpart_conf=$(echo ${mtdpart_chk} | cut -d'=' -f1)
+                                mtdpart_set=$(echo ${mtdpart_chk} | cut -d'=' -f2)
+                                if grep -q "${mtdpart_conf}=" "${B}/${config}/.config"; then
+                                    bbnote "Found ${mtdpart_conf} definition in '.config' file from '${config}/' build folder"
+                                    # Get the current MTDPART configuration settings (and remove the double quotes)
+                                    mtdpart_cur=$(grep "${mtdpart_conf}=" "${B}/${config}/.config" | cut -d'=' -f2 | sed 's/"//g')
+                                    # Init for loop on configured partition list
+                                    i=0
+                                    mtdpart_count=$(echo "${mtdpart_cur}" | awk -F',' '{print NF-1}')
+                                    while [ ${i} -lt "${mtdpart_count}" ]; do
+                                        i=$(expr $i + 1)
+                                        mtdpart_cur_size=$(echo ${mtdpart_cur} | cut -d',' -f${i} | sed 's/\([0-9]*[mk]\).*/\1/')
+                                        mtdpart_set_size=$(echo ${mtdpart_set} | cut -d',' -f${i} | sed 's/\([0-9]*\).*/\1/')
+                                        # Make sure to use KiB format for partition size
+                                        if [ -z "$(echo ${mtdpart_cur_size} | grep m)" ]; then
+                                            cur_size_kb=$(echo ${mtdpart_cur_size} | sed 's/k//')
+                                        else
+                                            cur_size_kb=$(expr $(echo ${mtdpart_cur_size} | sed 's/m//') \* 1024)
+                                        fi
+                                        # Compare partition size
+                                        if [ "${mtdpart_set_size}" != "${cur_size_kb}" ]; then
+                                            bbfatal "The default settings for ${mtdpart_conf} (${mtdpart_cur}) is different from the one configured (${mtdpart_set}) : ${mtdpart_set_size}k versus ${mtdpart_cur_size}"
+                                        fi
+                                    done
+                                    bbnote "Found ${mtdpart_set} settings for ${mtdpart_conf} in '.config' file from '${config}/' build folder : configuration is ok"
+                                else
+                                    bbfatal "${mtdpart_conf} definition not found in '.config' file from '${config}/' build folder : may need update for CONFIG name..."
+                                fi
+                            done
+                        fi
+                    fi
+                done
+            done
+        fi
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # Append compile to handle specific device tree compilation
 #
 do_compile_append() {
@@ -75,6 +157,7 @@ do_compile_append() {
                             oe_runmake -C ${S} O=${B}/${config} DEVICE_TREE=${devicetree} DEVICE_TREE_EXT=${devicetree}.dtb
                             for binary in ${UBOOT_BINARIES}; do
                                 binarysuffix=$(echo ${binary} | cut -d'.' -f2)
+                                binaryprefix=$(echo ${binary} | cut -d'.' -f1)
                                 k=$(expr $k + 1);
                                 if [ $k -eq $i ]; then
                                     install -m 644 ${B}/${config}/${binary} ${B}/${config}/u-boot-${devicetree}-${type}.${binarysuffix}
@@ -107,15 +190,12 @@ do_compile_append() {
 # -----------------------------------------------------------------------------
 # Append deploy to handle specific device tree binary deployement
 #
-do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/bootloader"
+do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/u-boot"
 do_deploy_append() {
     if [ -n "${UBOOT_DEVICETREE}" ]; then
         # Clean deploydir from any available binary first
         # This allows to only install the devicetree binary ones
         rm -rf ${DEPLOYDIR}
-
-        # Install destination folder
-        install -d ${DEPLOYDIR}
 
         for devicetree in ${UBOOT_DEVICETREE}; do
             if [ -n "${UBOOT_CONFIG}" ]; then
@@ -129,17 +209,43 @@ do_deploy_append() {
                                 binarysuffix=$(echo ${binary} | cut -d'.' -f2)
                                 k=$(expr $k + 1);
                                 if [ $k -eq $i ]; then
-                                    install -m 644 ${B}/${config}/u-boot-${devicetree}-${type}.${binarysuffix} ${DEPLOYDIR}
+                                    # Manage subfolder in case of u-boot.img
+                                    if [ "${binarysuffix}" = "img" ]; then
+                                        SUBFOLDER=/${type}
+                                    else
+                                        SUBFOLDER=""
+                                    fi
+                                    # Install destination folder
+                                    install -d ${DEPLOYDIR}${SUBFOLDER}
+                                    if [ -n "${ELF_DEBUG_ENABLE}" ]; then
+                                        install -d ${DEPLOYDIR}${SUBFOLDER}/debug
+                                    fi
+                                    # Install u-boot binary
+                                    install -m 644 ${B}/${config}/u-boot-${devicetree}-${type}.${binarysuffix} ${DEPLOYDIR}${SUBFOLDER}
                                     if [ -n "${UBOOT_ELF}" ]; then
-                                        install -m 644 ${B}/${config}/u-boot-${devicetree}-${type}.${UBOOT_ELF_SUFFIX} ${DEPLOYDIR}
+                                        install -d ${DEPLOYDIR}${SUBFOLDER}/debug
+                                        install -m 644 ${B}/${config}/u-boot-${devicetree}-${type}.${UBOOT_ELF_SUFFIX} ${DEPLOYDIR}${SUBFOLDER}/debug/
+                                    fi
+                                    # Install 'u-boot-nodtb.bin' binary in case '*.dtb' binary installation configured
+                                    if [ "${binarysuffix}" = "dtb" ]; then
+                                        # Init soc suffix
+                                        soc_suffix=""
+                                        if [ -n "${STM32MP_SOC_NAME}" ]; then
+                                            for soc in ${STM32MP_SOC_NAME}; do
+                                                if [ "$(echo ${devicetree} | grep -c ${soc})" -eq 1 ]; then
+                                                    soc_suffix="-${soc}"
+                                                fi
+                                            done
+                                        fi
+                                        install -m 644 ${B}/${config}/u-boot-nodtb.bin ${DEPLOYDIR}${SUBFOLDER}/u-boot-nodtb${soc_suffix}.bin
                                     fi
                                     # As soon as SPL binary exists, install it
                                     # This allow to mix u-boot configuration, with and without SPL
                                     if [ -f ${B}/${config}/${SPL_BINARYNAME}-${devicetree}-${type} ]; then
-                                        install -m 644 ${B}/${config}/${SPL_BINARYNAME}-${devicetree}-${type} ${DEPLOYDIR}
+                                        install -m 644 ${B}/${config}/${SPL_BINARYNAME}-${devicetree}-${type} ${DEPLOYDIR}${SUBFOLDER}/
                                     fi
                                     if [ -n "${SPL_ELF}" ] && [ -f ${B}/${config}/${SPL_ELF_NAME}-${devicetree}-${type} ]; then
-                                        install -m 644 ${B}/${config}/${SPL_ELF_NAME}-${devicetree}-${type} ${DEPLOYDIR}
+                                        install -m 644 ${B}/${config}/${SPL_ELF_NAME}-${devicetree}-${type} ${DEPLOYDIR}${SUBFOLDER}/debug
                                     fi
                                 fi
                             done

@@ -98,7 +98,7 @@ To compile U-Boot source code, first move to U-Boot source:
     or
     $ cd u-boot
 
-5.1 Compilation for one target (one defconfig, one device tree)
+5.1 Compilation for one target (one defconfig, one device tree) - and no FIP
 
     see <U-Boot source>/board/st/stm32mp1/README for details
 
@@ -115,11 +115,14 @@ To compile U-Boot source code, first move to U-Boot source:
 	$ make stm32mp15_basic_defconfig
 	$ make DEVICE_TREE=stm32mp157c-dk2 all
 
-5.2 Compilation for several targets: use Makefile.sdk
-
+5.2 Compilation for several targets: use Makefile.sdk (with FIP)
 Calls the specific 'Makefile.sdk' provided to compile U-Boot:
   - Display 'Makefile.sdk' file default configuration and targets:
-    $> make -f $PWD/../Makefile.sdk help
+    $  make -f $PWD/../Makefile.sdk help
+As mentionned in help, OpenSTLinux has activated FIP by default, so the FIP_artifacts should be specified
+  - In case of using SOURCES-xxxx.tar.gz of Developer package the FIP_DEPLOYDIR_ROOT should be set as below:
+    $> export FIP_DEPLOYDIR_ROOT=$PWD/../../FIP_artifacts
+
   - Compile default U-Boot configuration:
     $> make -f $PWD/../Makefile.sdk all
 
@@ -133,15 +136,7 @@ variables 'DEVICE_TREE' and 'UBOOT_CONFIGS':
         <binary> is the u-boot binary to export (ex: 'u-boot.bin', 'u-boot.stm32', etc)
     ex: UBOOT_CONFIGS="<defconfig1>,basic,u-boot.bin <defconfig1>,trusted,u-boot.stm32"
 
-The generated binary files are available in ../build-${config}.
-
-by default we define 3 configs: basic, trusted, optee for the several boards
-The generated files are :
-  for trusted and optee configs:
-    #> ../build-{trusted,optee}/*.stm32
-  for basic config
-    #> ../build-basic/u-boot-spl.elf-*-basic
-    #> ../build-basic/u-boot-*-basic.img
+The generated FIP images are available in $FIP_DEPLOYDIR_ROOT/fip
 
 You can override the default U-Boot configuration if you specify these variables:
   - Compile default U-Boot configuration but applying specific devicetree(s):
@@ -153,101 +148,5 @@ You can override the default U-Boot configuration if you specify these variables
 
 6. Update software on board:
 ----------------------------
+Please use STM32CubeProgrammer and only tick the ssbl-boot and fip partition (more informations on the wiki website http://wiki.st.com/stm32mpu)
 
-see also <U-Boot source>/board/st/stm32mp1/README
-
-6.1. partitioning of binaries:
-------------------------------
-
-There are two possible boot chains available:
-- Basic boot chain (for basic configuration)
-- Trusted boot chain (for trusted and optee configuration)
-
-U-Boot build provides binaries for each configuration:
-- Basic boot chain: U-Boot SPL and U-Boot imgage (for FSBL and SSBL)
-- Trusted boot chain: U-Boot binary with ".stm32" extension (for SSBL, FSBL is provided by TF-A)
-
-6.1.1. Basic boot chain:
-On this configuration, we use U-Boot SPL as First Stage Boot Loader (FSBL) and
-U-Boot as Second Stage Boot Loader (SSBL).
-U-Boot SPL (u-boot-spl.stm32-*) MUST be copied on a dedicated partition named "fsbl1"
-U-Boot image (u-boot*.img) MUST be copied on a dedicated partition named "ssbl"
-
-6.1.2. Trusted boot chain:
-On this configuration, U-Boot is associated to Trusted Firmware (TF-A) and only
-U-Boot image is used as Second Stage Boot Loader (SSBL).
-TF-A binary (tf-a-*.stm32) MUST be copied on a dedicated partition named "fsbl1"
-U-boot binary (u-boot*.stm32) MUST be copied on a dedicated partition named "ssbl"
-
-6.2. Update via SDCARD:
------------------------
-
-6.2.1. Basic boot chain
-* u-boot-spl.stm32-*
-  Copy the binary on the dedicated partition, on SDCARD/USB disk the partition
-  "fsbl1" is the partition 1:
-  - SDCARD: /dev/mmcblkXp1 (where X is the instance number)
-  - SDCARD via USB reader: /dev/sdX1 (where X is the instance number)
-  $ dd if=<U-Boot SPL file> of=/dev/<device partition> bs=1M conv=fdatasync
-
-* u-boot*.img
-  Copy the binary on the dedicated partition, on SDCARD/USB disk the partition
-  "ssbl" is the partition 4:
-  - SDCARD: /dev/mmcblkXp3 (where X is the instance number)
-  - SDCARD via USB reader: /dev/sdX3 (where X is the instance number)
-  $ dd if=<U-Boot image file> of=/dev/<device partition> bs=1M conv=fdatasync
-
-6.2.2. Trusted boot chain
-* tf-a-*.stm32
-  Copy the binary on the dedicated partition, on SDCARD/USB disk the partition
-  "fsbl1" is the partition 1:
-  - SDCARD: /dev/mmcblkXp1 (where X is the instance number)
-  - SDCARD via USB reader: /dev/sdX1 (where X is the instance number)
-  $ dd if=<TF-A binary file> of=/dev/<device partition> bs=1M conv=fdatasync
-
-* u-boot*.stm32
-  Copy the binary on the dedicated partition, on SDCARD/USB disk the partition
-  "ssbl" is the partition 4:
-  - SDCARD: /dev/mmcblkXp3 (where X is the instance number)
-  - SDCARD via USB reader: /dev/sdX3 (where X is the instance number)
-  $ dd if=<U-Boot stm32 binary file> of=/dev/<device partition> bs=1M conv=fdatasync
-
-6.2.3. FAQ
-to found the partition associated to a specific label, just plug the
-SDCARD/USB disk on your PC and call the following command:
-  $ ls -l /dev/disk/by-partlabel/
-total 0
-lrwxrwxrwx 1 root root 10 Jan 17 17:38 bootfs -> ../../mmcblk0p4
-lrwxrwxrwx 1 root root 10 Jan 17 17:38 fsbl1 -> ../../mmcblk0p1     ➔ FSBL (TF-A)
-lrwxrwxrwx 1 root root 10 Jan 17 17:38 fsbl2 -> ../../mmcblk0p2     ➔ FSBL backup (TF-A backup – same content as FSBL)
-lrwxrwxrwx 1 root root 10 Jan 17 17:38 rootfs -> ../../mmcblk0p5
-lrwxrwxrwx 1 root root 10 Jan 17 17:38 ssbl -> ../../mmcblk0p3      ➔ SSBL (U-Boot)
-lrwxrwxrwx 1 root root 10 Jan 17 17:38 userfs -> ../../mmcblk0p6
-
-6.3. Update via USB mass storage on U-Boot:
--------------------------------------------
-
-We are using the U-Boot command ums
-
-STM32MP> help ums
- ums - Use the UMS [USB Mass Storage]
- 
- Usage:
- ums <USB_controller> [<devtype>] <dev[:part]>  e.g. ums 0 mmc 0
-     devtype defaults to mmc
- ums <USB controller> <dev type: mmc|usb> <dev[:part]>
-
-By default on STMicroelectronics board, "mmc 0" is SD card on SDMMC1.
-
-* Plug the SDCARD on Board.
-* Start the board and stop on U-Boot shell:
- Hit any key to stop autoboot: 0
- STM32MP>
-* plug an USB cable between the PC and the board via USB OTG port.
-* On U-Boot shell, call the usb mass storage functionality:
- STM32MP> ums 0 mmc 0
-* After a delay (of up to 15 seconds), the host sees the exported block device.
-* Follow section 6.2 to put U-Boot SPL binary and U-Boot binary
-  (*.img or *.stm32) on SDCARD/USB disk.
-
-PS: A Ctrl-C is needed to stop the command.

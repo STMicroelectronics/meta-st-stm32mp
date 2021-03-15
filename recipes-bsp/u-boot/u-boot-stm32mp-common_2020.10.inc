@@ -4,7 +4,7 @@ HOMEPAGE = "http://www.denx.de/wiki/U-Boot/WebHome"
 SECTION = "bootloaders"
 
 LICENSE = "GPLv2+"
-LIC_FILES_CHKSUM = "file://Licenses/README;md5=30503fd321432fc713238f582193b78e"
+LIC_FILES_CHKSUM = "file://Licenses/README;md5=5a7450c57ffe5ae63fd732446b988025"
 
 DEPENDS += "dtc-native bc-native"
 DEPENDS += "flex-native bison-native"
@@ -12,27 +12,20 @@ DEPENDS += "flex-native bison-native"
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 
 SRC_URI = "git://github.com/u-boot/u-boot.git;protocol=https"
-SRCREV  = "0b0c6af38738f2c132cfd41a240889acaa031c8f"
+SRCREV  = "050acee119b3757fee3bd128f55d720fdd9bb890"
 
 SRC_URI += "\
-    file://0001-ARM-v2020.01-stm32mp-r1-MACHINE.patch \
-    file://0002-ARM-v2020.01-stm32mp-r1-BOARD.patch \
-    file://0003-ARM-v2020.01-stm32mp-r1-MISC-DRIVERS.patch \
-    file://0004-ARM-v2020.01-stm32mp-r1-DEVICETREE.patch \
-    file://0005-ARM-v2020.01-stm32mp-r1-CONFIG.patch \
-    \
-    file://0006-ARM-v2020.01-stm32mp-r2-DEVICETREE.patch \
-    file://0007-ARM-v2020.01-stm32mp-r2-MACHINE.patch \
-    file://0008-ARM-v2020.01-stm32mp-r2-BOARD.patch \
-    file://0009-ARM-v2020.01-stm32mp-r2-MISC-DRIVERS.patch \
-    file://0010-ARM-v2020.01-stm32mp-r2-CONFIG.patch \
+    file://0001-ARM-v2020.10-stm32mp-r1-MACHINE.patch \
+    file://0002-ARM-v2020.10-stm32mp-r1-BOARD.patch \
+    file://0003-ARM-v2020.10-stm32mp-r1-MISC-DRIVERS.patch \
+    file://0004-ARM-v2020.10-stm32mp-r1-DEVICETREE.patch \
+    file://0005-ARM-v2020.10-stm32mp-r1-CONFIG.patch \
     \
     file://0099-Add-external-var-to-allow-build-of-new-devicetree-fi.patch \
-    file://remove-redundant-yyloc-global.patch \
 "
 
-U_BOOT_VERSION = "2020.01"
-PV = "${U_BOOT_VERSION}.r2"
+U_BOOT_VERSION = "2020.10"
+PV = "${U_BOOT_VERSION}.r1"
 
 S = "${WORKDIR}/git"
 
