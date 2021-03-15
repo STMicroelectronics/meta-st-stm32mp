@@ -131,6 +131,22 @@ FLASHLAYOUT_PARTITION_BIN2LOAD ??= ""
 FLASHLAYOUT_PARTITION_SIZE ??= ""
 FLASHLAYOUT_PARTITION_REPLACE_PATTERNS ??= ""
 
+# The STM32CubeProgrammer supported ID range is:
+#   0x00 to 0xFF
+# Some IDs are reserved for internal usage on STM32CubeProgrammer and special
+# management is implemented for binary with STM32 header. This means that for
+# flashlayout files, available ID range is only:
+#   0x01 to 0x0F for Boot partitions with STM32 header
+#   0x10 to 0xF0 for User partitions programmed without header
+# Note also that for FSBL and SSBL binaries loaded in RAM to program the devices
+# there are two reserved IDs
+#   0x01 for FSBL
+#   0x03 for SSBL
+FLASHLAYOUT_PARTITION_ID_START_BINARY ??= "0x04"
+FLASHLAYOUT_PARTITION_ID_LIMIT_BINARY ??= "0x0F"
+FLASHLAYOUT_PARTITION_ID_START_OTHERS ??= "0x10"
+FLASHLAYOUT_PARTITION_ID_LIMIT_OTHERS ??= "0xF0"
+
 python __anonymous () {
     # -----------------------------------------------------------------------------
     # Make sure to add the flashlayout file creation after ROOTFS build
@@ -178,6 +194,7 @@ python __anonymous () {
                     # We add the flashlayout file creation task just after the do_image_complete for ROOTFS build
                     bb.build.addtask('do_create_flashlayout_config', 'do_build', 'do_image_complete', d)
                     # We add also the function that feeds the FLASHLAYOUT_PARTITION_* vars from PARTITIONS_CONFIG
+                    d.appendVarFlag('do_create_flashlayout_config', 'prefuncs', ' flashlayout_partition_config')
                     d.appendVarFlag('do_create_flashlayout_config', 'prefuncs', ' flashlayout_partition_image_config')
 }
 
@@ -230,13 +247,13 @@ def get_device(bootscheme, config, partition, d):
     """
     # Set device configuration
     device_configs = expand_var('FLASHLAYOUT_PARTITION_DEVICE', bootscheme, config, partition, d)
-    bb.note('>>> Selected FLASHLAYOUT_PARTITION_DEVICE: %s' % device_configs)
+    bb.debug(1, '>>> Selected FLASHLAYOUT_PARTITION_DEVICE: %s' % device_configs)
 
     if len(device_configs.split(',')) == 1:
-        bb.note('>>> Only one device configuration set for %s partition for %s label for %s bootscheme' % (partition, config, bootscheme))
+        bb.debug(1, '>>> Only one device configuration set for %s partition for %s label for %s bootscheme' % (partition, config, bootscheme))
         device = device_configs.split(':')[0]
     else:
-        bb.note('>>> Multiple device configurations set for %s partition for %s label for %s bootscheme' % (partition, config, bootscheme))
+        bb.debug(1, '>>> Multiple device configurations set for %s partition for %s label for %s bootscheme' % (partition, config, bootscheme))
         # Init default_device and device to empty string
         default_device = ''
         device = ''
@@ -251,7 +268,7 @@ def get_device(bootscheme, config, partition, d):
                 if default_device != '':
                     bb.fatal('Found two "default" device configuration for %s partition for %s label for %s bootscheme in FLASHLAYOUT_PARTITION_DEVICE var' % (partition, config, bootscheme))
                 default_device = cfg_devc
-                bb.note('>>> Set default device configuration to %s' % default_device)
+                bb.debug(1, '>>> Set default device configuration to %s' % default_device)
             else:
                 # Find out if any device is configured for current partition
                 for p in cfg_part.split():
@@ -263,13 +280,44 @@ def get_device(bootscheme, config, partition, d):
             if default_device == '':
                 bb.fatal('Not able to get device configuration for %s partition for %s label for %s bootscheme' % (partition, config, bootscheme))
             else:
-                bb.note('>>> Configure device to default device setting')
+                bb.debug(1, '>>> Configure device to default device setting')
                 device = default_device
-    bb.note('>>> New device configured: %s' % device)
+    bb.debug(1, '>>> New device configured: %s' % device)
     # Return the value computed
     return device
 
-def get_offset(new_offset, current_device, bootscheme, config, partition, d):
+def align_size(d, device, size, copy=1):
+    """
+    This function returns the size in KiB for the selected device making sure to
+    align on erase block and taking into account the copy expected to fit for the
+    original size set
+    """
+    # Make sure to use device name and not device type
+    device_types = (d.getVar('DEVICE_STORAGE_TYPES') or "").split()
+    if device in device_types:
+        device = d.getVar('DEVICE_%s' % device) or ""
+    # Get device alignment size
+    alignment_size = d.getVar('DEVICE_ALIGNMENT_SIZE_%s' % device) or "none"
+    if alignment_size == 'none':
+        bb.fatal('Missing DEVICE_ALIGNMENT_SIZE_%s value' % device)
+    # Check for default size alignment on erase block
+    if ( int(size) * 1024 ) % int(alignment_size, 16) == 0:
+        bb.debug(1, '>>> The partition size properly follows %s erase size' % alignment_size)
+    else:
+        bb.debug(1, '>>> The %s alignment size is: %s' % (device, alignment_size))
+        floor_coef = ( int(size) * 1024 ) // int(alignment_size, 16)
+        compute_size = ( floor_coef + 1 ) * int(alignment_size, 16) * int(copy)
+        # Set size in KiB
+        size = compute_size // 1024
+    # Compute size with requested copy
+    size = int(size) * int(copy)
+    # Convert to string
+    size = str(size)
+    bb.debug(1, '>>> New partition size configured to follow %s alignment size: %s' % (alignment_size, size))
+    # Return the computed size
+    return size
+
+def get_offset(new_offset, copy, current_device, bootscheme, config, partition, d):
     """
     This function returns a couple of strings: offset, next_offset
     The offset is the one to use in flashlayout file for the requested partition,
@@ -284,106 +332,91 @@ def get_offset(new_offset, current_device, bootscheme, config, partition, d):
     The next_offset is computed by first getting the FLASHLAYOUT_PARTITION_SIZE for
     the current partition, and we make sure to align properly the next_offset
     according to the DEVICE_ALIGNMENT_SIZE_<device> where <device> is feed from
-    'current_device' input.
+    'current_device' input and the number of copy expected to fit in partition.
     """
     import re
-
     # Get current_device alias
     device_alias = d.getVar('DEVICE_%s' % current_device) or ""
-
     # Set offset
     offset = expand_var('FLASHLAYOUT_PARTITION_OFFSET', bootscheme, config, partition, d)
-    bb.note('>>> Selected FLASHLAYOUT_PARTITION_OFFSET: %s' % offset)
+    # Set max offset
+    max_offset = d.getVar('DEVICE_MAX_OFFSET_%s' % device_alias) or "none"
+    bb.debug(1, '>>> Selected FLASHLAYOUT_PARTITION_OFFSET: %s' % offset)
     if offset == 'none':
         if new_offset == 'none':
-            bb.note('>>> No %s partition offset configured (%s device) for %s label for %s bootscheme, so default to default origin device one.' % (partition, current_device, config, bootscheme))
+            bb.debug(1, '>>> No %s partition offset configured (%s device) for %s label for %s bootscheme, so default to default origin device one.' % (partition, current_device, config, bootscheme))
             start_offset = d.getVar('DEVICE_START_OFFSET_%s' % device_alias) or "none"
             if start_offset == 'none':
                 bb.fatal('Missing DEVICE_START_OFFSET_%s value' % device_alias)
             offset = start_offset
         else:
             offset = new_offset
-        bb.note('>>> New offset configured: %s' % offset)
-
+        bb.debug(1, '>>> New offset configured: %s' % offset)
     # Set next offset
     partition_size = expand_var('FLASHLAYOUT_PARTITION_SIZE', bootscheme, config, partition, d)
-    bb.note('>>> Selected FLASHLAYOUT_PARTITION_SIZE: %s' % partition_size)
+    bb.debug(1, '>>> Selected FLASHLAYOUT_PARTITION_SIZE: %s' % partition_size)
     if not partition_size.isdigit():
-        bb.note('No partition size provided for %s partition, %s label and %s bootscheme!' % (partition, config, bootscheme))
+        bb.debug(1, 'No partition size provided for %s partition, %s label and %s bootscheme!' % (partition, config, bootscheme))
         next_offset = "none"
+        max_offset = "none"
     else:
         if re.match('^0x.*$', offset):
-            bb.note('>>> Current device is %s (%s alias)' % (current_device, device_alias))
-            alignment_size = d.getVar('DEVICE_ALIGNMENT_SIZE_%s' % device_alias) or "none"
-            if alignment_size == 'none':
-                bb.fatal('Missing DEVICE_ALIGNMENT_SIZE_%s value' % device_alias)
-            if ( int(partition_size) * 1024 ) % int(alignment_size, 16) == 0:
-                bb.note('>>> The partition size properly follows %s erase size' % alignment_size)
-            else:
-                bb.note('>>> The %s alignment size is: %s' % (current_device, alignment_size))
-                floor_coef = ( int(partition_size) * 1024 ) // int(alignment_size, 16)
-                compute_size = ( floor_coef + 1 ) * int(alignment_size, 16)
-                partition_size = str(compute_size // 1024)
-                bb.note('>>> New partition size configured to follow %s alignment size: %s' % (alignment_size, partition_size))
+            bb.debug(1, '>>> Current device is %s (%s alias), and %s copy is set' % (current_device, device_alias, copy))
+            partition_size = align_size(d, device_alias, partition_size, copy)
             # Compute new offset value
             overall_size = int(offset, 16) + int(partition_size) * 1024
             next_offset = '0x{0:0{1}X}'.format(overall_size, 8)
+
+            # Check if the next offset will exceed the size of the storage
+            if max_offset != "none":
+                if int(next_offset, 0) <= int(max_offset, 0):
+                    # still some place, do not return max offset
+                    max_offset = "none"
         else:
             next_offset = "none"
-    bb.note('>>> New next_offset configured: %s' % next_offset)
+            max_offset = "none"
+    bb.debug(1, '>>> New next_offset configured: %s' % next_offset)
 
-    # Return both offset and next offset
-    return str(offset), str(next_offset)
+    # Return offset, next offset and max offset
+    return str(offset), str(next_offset), str(max_offset)
 
-def get_binaryname(labeltype, bootscheme, config, partition, d):
+def get_binaryname(labeltype, device, bootscheme, config, partition, d):
     """
     Return proper binary name to use in flashlayout file by applying any specific
     computation (replacement, etc)
     Make sure also that binary is available on deploy folder
     """
     import re
-
     # Init binary_name for current configuration
     binary_name = expand_var('FLASHLAYOUT_PARTITION_BIN2LOAD', bootscheme, config, partition, d)
-    bb.note('>>> Selected FLASHLAYOUT_PARTITION_BIN2LOAD: %s' % binary_name)
+    bb.debug(1, '>>> Selected FLASHLAYOUT_PARTITION_BIN2LOAD: %s' % binary_name)
+    # Set 'device' to alias name in lower case
+    if device != 'none':
+        device = d.getVar('DEVICE_%s' % device).lower()
+    # Init pattern to look for with current config value
+    update_patterns = '<BOOTSCHEME>;' + bootscheme
+    update_patterns += ' ' + '<CONFIG>;' + config.replace("-","_")
+    update_patterns += ' ' + '<DEVICE>;' + device
+    update_patterns += ' ' + '<TYPE>;' + labeltype
+    bb.debug(1, '>>> Default substitution patterns: %s' % update_patterns)
 
-    # Get binary_name basename to then check for any rename case
-    binary_name_base = os.path.basename(binary_name)
-    bb.note('>>> Basename selected for %s: %s' % (binary_name, binary_name_base))
-
-    # Treat TF-A, TEE, U-BOOT and U-BOOT-SPL binary rename case
-    if re.match('^tf-a.*$', binary_name_base) or re.match('^u-boot.*$', binary_name_base) or re.match('^tee-.*$', binary_name_base) or re.match('^zImage-.*$', binary_name_base):
-        file_name, file_ext = os.path.splitext(binary_name)
-        # Init binary_type to use from labeltype
-        binary_type = labeltype + '-' + bootscheme
-        bb.note('>>> Binary type used: %s' % binary_type)
-        # Check for any replace pattern
-        replace_patterns = expand_var('FLASHLAYOUT_PARTITION_REPLACE_PATTERNS', bootscheme, config, partition, d)
-        bb.note('>>> Substitution patterns: %s' % replace_patterns)
-        # Apply replacement patterns on binary_type
-        if replace_patterns != 'none':
-            for replace_pattern in replace_patterns.split():
-                pattern2replace = replace_pattern.split(';')[0]
-                pattern2use = replace_pattern.split(';')[1]
-                # Replace with pattern middle of string
-                binary_type = re.sub(r'-%s-' % pattern2replace, '-' + pattern2use + '-', binary_type)
-                # Replace with pattern end of string
-                binary_type = re.sub(r'-%s$' % pattern2replace, '-' + pattern2use, binary_type)
-            bb.note('>>> New "binary_type" to use for binary name": %s' % binary_type)
-        # Append binary_type to binary name
-        if re.match('^u-boot-spl.*$', binary_name_base):
-            binary_name = file_name + file_ext + '-' + binary_type
-        elif re.match('^zImage.*$', binary_name_base):
-            binary_name = file_name + '-' + labeltype + file_ext
-        else:
-            binary_name = file_name + '-' + binary_type + file_ext
-
-    # Make sure binary is available in DEPLOY_DIR_IMAGE folder
-    if binary_name != 'none':
-        if not os.path.isfile(os.path.join(d.getVar('DEPLOY_DIR_IMAGE'), binary_name)):
-            # Specific exception for rootfs binary (not yet deployed)
-            if not os.path.isfile(os.path.join(d.getVar('IMGDEPLOYDIR'), binary_name)):
-                bb.fatal('Missing %s binary file in deploy folder' % binary_name)
+    replace_patterns = expand_var('FLASHLAYOUT_PARTITION_REPLACE_PATTERNS', bootscheme, config, partition, d)
+    if replace_patterns != 'none':
+        bb.debug(1, '>>> Substitution pattern addons: %s' % replace_patterns)
+        # Append substitution patterns to update pattern list
+        update_patterns += ' ' + replace_patterns
+    # Apply pattern substitution to binary name
+    for pattern in update_patterns.split():
+        pattern2replace = pattern.split(';')[0]
+        pattern2use = pattern.split(';')[1]
+        if re.search(r'[-_]%s([-_.]|$)' % pattern2replace, binary_name):
+            if pattern2use == "":
+                # Remove pattern
+                binary_name = re.sub(r'[-_]%s([-_.]|$)' % pattern2replace, r'\1', binary_name)
+            else:
+                # Replace pattern
+                binary_name = re.sub(r'([-_])%s([-_.]|$)' % pattern2replace, r'\1%s\2' % pattern2use, binary_name)
+    bb.debug(1, '>>> New binary name: %s' % binary_name)
     # Return binary_name value
     return binary_name
 
@@ -402,7 +435,7 @@ python do_create_flashlayout_config() {
 
     # We check first if it is requested to generate any flashlayout files
     if d.getVar("ENABLE_FLASHLAYOUT_CONFIG") != "1":
-        bb.note('ENABLE_FLASHLAYOUT_CONFIG not enabled')
+        bb.debug(1, 'ENABLE_FLASHLAYOUT_CONFIG not enabled')
         return
 
     # Create destination folder for flashlayout files
@@ -411,7 +444,7 @@ python do_create_flashlayout_config() {
 
     # We check if user as define a static flashlayout file to use instead of dynamic generation
     if d.getVar("ENABLE_FLASHLAYOUT_DEFAULT") == "1":
-        bb.note('ENABLE_FLASHLAYOUT_DEFAULT enabled')
+        bb.debug(1, 'ENABLE_FLASHLAYOUT_DEFAULT enabled')
         flashlayout_src = d.getVar("FLASHLAYOUT_DEFAULT_SRC")
         if not flashlayout_src:
             bb.fatal("FLASHLAYOUT_DEFAULT_SRC not defined, please set a proper value")
@@ -423,7 +456,7 @@ python do_create_flashlayout_config() {
                 flashlayout_staticname=os.path.basename(f)
                 flashlayout_file = os.path.join(d.getVar('FLASHLAYOUT_DESTDIR'), flashlayout_staticname)
                 shutil.copy2(f, flashlayout_file)
-                bb.note('Copy %s to output file %s' % (f, flashlayout_file))
+                bb.debug(1, 'Copy %s to output file %s' % (f, flashlayout_file))
             else:
                 bb.fatal("Configure static file: %s not found" % fl_src)
         return
@@ -438,35 +471,35 @@ python do_create_flashlayout_config() {
     for bootscheme in bootschemes.split():
         if re.match('.*_.*', bootscheme):
             bb.fatal("Please remove all '_' for bootschemes defined in FLASHLAYOUT_BOOTSCHEME_LABELS")
-    bb.note('FLASHLAYOUT_BOOTSCHEME_LABELS: %s' % bootschemes)
+    bb.debug(1, 'FLASHLAYOUT_BOOTSCHEME_LABELS: %s' % bootschemes)
 
     for bootscheme in bootschemes.split():
-        bb.note('*** Loop for bootscheme label: %s' % bootscheme)
+        bb.debug(1, '*** Loop for bootscheme label: %s' % bootscheme)
         # Get the different flashlayout config label
         configs = expand_var('FLASHLAYOUT_CONFIG_LABELS', bootscheme, '', '', d)
         # Make sure there is no '_' in FLASHLAYOUT_CONFIG_LABELS
         for config in configs.split():
             if re.match('.*_.*', config):
                 bb.fatal("Please remove all '_' for configs defined in FLASHLAYOUT_CONFIG_LABELS")
-        bb.note('FLASHLAYOUT_CONFIG_LABELS: %s' % configs)
+        bb.debug(1, 'FLASHLAYOUT_CONFIG_LABELS: %s' % configs)
 
         if configs.strip() == 'none':
-            bb.note("FLASHLAYOUT_CONFIG_LABELS is none, so no flashlayout file to generate.")
+            bb.debug(1, "FLASHLAYOUT_CONFIG_LABELS is none, so no flashlayout file to generate.")
             continue
         # Create bootscheme subfolder for flashlayout files
         flashlayout_subfolder_path = os.path.join(d.getVar('FLASHLAYOUT_DESTDIR'), bootscheme)
         bb.utils.mkdirhier(flashlayout_subfolder_path)
 
         for config in configs.split():
-            bb.note('*** Loop for config label: %s' % config)
+            bb.debug(1, '*** Loop for config label: %s' % config)
             # Set labeltypes list
             labeltypes = expand_var('FLASHLAYOUT_TYPE_LABELS', bootscheme, config, '', d)
-            bb.note('FLASHLAYOUT_TYPE_LABELS: %s' % labeltypes)
+            bb.debug(1, 'FLASHLAYOUT_TYPE_LABELS: %s' % labeltypes)
             if labeltypes.strip() == 'none':
-                bb.note("FLASHLAYOUT_TYPE_LABELS is none, so no flashlayout file to generate.")
+                bb.debug(1, "FLASHLAYOUT_TYPE_LABELS is none, so no flashlayout file to generate.")
                 continue
             for labeltype in labeltypes.split():
-                bb.note('*** Loop for label type: %s' % labeltype)
+                bb.debug(1, '*** Loop for label type: %s' % labeltype)
                 # Init current label
                 current_label = labeltype
                 # Init flashlayout file name
@@ -481,26 +514,51 @@ python do_create_flashlayout_config() {
                 flashlayout_file = os.path.join(flashlayout_subfolder_path, d.expand("${FLASHLAYOUT_BASENAME}%s%s.${FLASHLAYOUT_SUFFIX}" % (config_append, labeltype_append)))
                 # Get the partition list to write in flashlayout file
                 partitions = expand_var('FLASHLAYOUT_PARTITION_LABELS', bootscheme, config, '', d)
-                bb.note('FLASHLAYOUT_PARTITION_LABELS: %s' % partitions)
+                bb.debug(1, 'FLASHLAYOUT_PARTITION_LABELS: %s' % partitions)
                 if partitions == 'none':
-                    bb.note("FLASHLAYOUT_PARTITION_LABELS is none, so no flashlayout file to generate.")
+                    bb.debug(1, "FLASHLAYOUT_PARTITION_LABELS is none, so no flashlayout file to generate.")
                     continue
                 # Generate flashlayout file for labeltype
                 try:
                     with open(flashlayout_file, 'w') as fl_file:
                         # Write to flashlayout file the first line header
                         fl_file.write('#Opt\tId\tName\tType\tIP\tOffset\tBinary\n')
+                        # Init partition id for binary and other
+                        partition_id_bin = int(d.getVar("FLASHLAYOUT_PARTITION_ID_START_BINARY"), 16)
+                        partition_id_binmax = int(d.getVar("FLASHLAYOUT_PARTITION_ID_LIMIT_BINARY"), 16)
+                        partition_id_oth = int(d.getVar("FLASHLAYOUT_PARTITION_ID_START_OTHERS"), 16)
+                        partition_id_othmax = int(d.getVar("FLASHLAYOUT_PARTITION_ID_LIMIT_OTHERS"), 16)
                         # Init partition next offset to 'none'
                         partition_nextoffset = "none"
                         # Init partition previous device to 'none'
                         partition_prevdevice = "none"
                         for partition in partitions.split():
-                            bb.note('*** Loop for partition: %s' % partition)
+                            bb.debug(1, '*** Loop for partition: %s' % partition)
                             # Init partition settings
                             partition_enable = expand_var('FLASHLAYOUT_PARTITION_ENABLE', bootscheme, config, partition, d)
-                            partition_id = expand_var('FLASHLAYOUT_PARTITION_ID', bootscheme, config, partition, d)
                             partition_name = partition
                             partition_type = expand_var('FLASHLAYOUT_PARTITION_TYPE', bootscheme, config, partition, d)
+                            partition_id = expand_var('FLASHLAYOUT_PARTITION_ID', bootscheme, config, partition, d)
+                            if partition_id == "none":
+                                # Compute partition_id
+                                if partition_type == 'Binary':
+                                    # Make sure we're not getting wrong partition_id
+                                    if partition_id_bin > partition_id_binmax:
+                                        bb.fatal('Partition ID exceed %s limit for %s type: FLASHLAYOUT_PARTITION_ID = %s (bootscheme: %s, config: %s, partition: %s)' % (d.getVar("FLASHLAYOUT_PARTITION_ID_LIMIT_BINARY"), partition_type, partition_id, bootscheme, config, partition))
+                                    partition_id = '0x{0:0{1}X}'.format(partition_id_bin, 2)
+                                    partition_id_bin = partition_id_bin + 1
+                                else:
+                                    # Make sure we're not getting wrong partition_id
+                                    if partition_id_oth > partition_id_othmax:
+                                        bb.fatal('Partition ID exceed %s limit for %s type: FLASHLAYOUT_PARTITION_ID = %s (bootscheme: %s, config: %s, partition: %s)' % (d.getVar("FLASHLAYOUT_PARTITION_ID_LIMIT_OTHERS"), partition_type, partition_id, bootscheme, config, partition))
+                                    partition_id = '0x{0:0{1}X}'.format(partition_id_oth, 2)
+                                    partition_id_oth = partition_id_oth + 1
+                            partition_copy = expand_var('FLASHLAYOUT_PARTITION_COPY', bootscheme, config, partition, d)
+                            if not partition_copy.isdigit():
+                                bb.fatal('Wrong configuration for FLASHLAYOUT_PARTITION_COPY: %s (bootscheme: %s, config: %s, partition: %s)' % (partition_copy, bootscheme, config, partition))
+                            # Update partition type if needed
+                            if partition_copy != "1":
+                                partition_type += '(' + partition_copy + ')'
                             partition_device = get_device(bootscheme, config, partition, d)
                             # Reset partition_nextoffset to 'none' in case partition device has changed
                             if partition_device != partition_prevdevice:
@@ -508,26 +566,43 @@ python do_create_flashlayout_config() {
                             # Save partition current device to previous one for next loop
                             partition_prevdevice = partition_device
                             # Get partition offset
-                            partition_offset, partition_nextoffset = get_offset(partition_nextoffset, partition_device, bootscheme, config, partition, d)
+                            partition_offset, partition_nextoffset, partition_maxoffset = get_offset(partition_nextoffset, partition_copy, partition_device, bootscheme, config, partition, d)
+
+                            # Check if the size will exceed the mass storage
+                            if partition_maxoffset != "none" :
+                                bb.warn('>>> Cannot generate tsv for %s %s %s %s. The partition end offset %s is higher than max offset %s.' % (partition_device, bootscheme, config, partition, partition_nextoffset, partition_maxoffset))
+                                # No need to create/keep the tsv because flashlayout indicates the
+                                # computed size exceeds the size of the device. So delete the tsv
+                                fl_file.close()
+                                if os.path.exists(flashlayout_file):
+                                    os.remove(flashlayout_file)
+                                break
+
                             # Get binary name
-                            partition_bin2load = get_binaryname(labeltype, bootscheme, config, partition, d)
+                            partition_bin2load = get_binaryname(labeltype, partition_device, bootscheme, config, partition, d)
                             # Be verbose in log file
-                            bb.note('>>> Layout inputs: %s' % fl_file.name)
-                            bb.note('>>> FLASHLAYOUT_PARTITION_ENABLE:      %s' % partition_enable)
-                            bb.note('>>> FLASHLAYOUT_PARTITION_ID:          %s' % partition_id)
-                            bb.note('>>> FLASHLAYOUT_PARTITION_LABEL:       %s' % partition_name)
-                            bb.note('>>> FLASHLAYOUT_PARTITION_TYPE:        %s' % partition_type)
-                            bb.note('>>> FLASHLAYOUT_PARTITION_DEVICE:      %s' % partition_device)
-                            bb.note('>>> FLASHLAYOUT_PARTITION_OFFSET:      %s' % partition_offset)
-                            bb.note('>>> FLASHLAYOUT_PARTITION_BIN2LOAD:    %s' % partition_bin2load)
-                            bb.note('>>> done')
+                            bb.debug(1, '>>> Layout inputs: %s' % fl_file.name)
+                            bb.debug(1, '>>> FLASHLAYOUT_PARTITION_ENABLE:      %s' % partition_enable)
+                            bb.debug(1, '>>> FLASHLAYOUT_PARTITION_ID:          %s' % partition_id)
+                            bb.debug(1, '>>> FLASHLAYOUT_PARTITION_LABEL:       %s' % partition_name)
+                            bb.debug(1, '>>> FLASHLAYOUT_PARTITION_TYPE:        %s' % partition_type)
+                            bb.debug(1, '>>> FLASHLAYOUT_PARTITION_DEVICE:      %s' % partition_device)
+                            bb.debug(1, '>>> FLASHLAYOUT_PARTITION_OFFSET:      %s' % partition_offset)
+                            bb.debug(1, '>>> FLASHLAYOUT_PARTITION_BIN2LOAD:    %s' % partition_bin2load)
+                            bb.debug(1, '>>> done')
+                            # Make sure binary is available in DEPLOY_DIR_IMAGE folder
+                            if partition_bin2load != 'none':
+                                if not os.path.isfile(os.path.join(d.getVar('DEPLOY_DIR_IMAGE'), partition_bin2load)):
+                                    # Specific exception for rootfs binary (not yet deployed)
+                                    if not os.path.isfile(os.path.join(d.getVar('IMGDEPLOYDIR'), partition_bin2load)):
+                                        bb.fatal('Missing %s binary file in deploy folder' % partition_bin2load)
                             # Get the supported labels for current storage device
                             partition_device_alias = d.getVar('DEVICE_%s' % partition_device) or ""
                             partition_type_supported_labels = d.getVar('DEVICE_BOARD_ENABLE_%s' % partition_device_alias) or "none"
                             # Check if partition type is supported for the current label
                             if partition_device != 'none' and current_label not in partition_type_supported_labels.split():
-                                bb.note('>>> FLASHLAYOUT_PARTITION_DEVICE (%s, alias %s) is not supported for current label (%s): partition %s not appended in flashlayout file' % (partition_device, partition_device_alias, current_label, partition_name))
-                                bb.note('>>> DEVICE_BOARD_ENABLE_%s: %s' % (partition_device_alias, partition_type_supported_labels))
+                                bb.debug(1, '>>> FLASHLAYOUT_PARTITION_DEVICE (%s, alias %s) is not supported for current label (%s): partition %s not appended in flashlayout file' % (partition_device, partition_device_alias, current_label, partition_name))
+                                bb.debug(1, '>>> DEVICE_BOARD_ENABLE_%s: %s' % (partition_device_alias, partition_type_supported_labels))
                                 continue
                             # Write to flashlayout file the partition configuration
                             fl_file.write('%s\t%s\t%s\t%s\t%s\t%s\t%s\n' %
@@ -535,8 +610,12 @@ python do_create_flashlayout_config() {
                 except OSError:
                     bb.fatal('Unable to open %s' % (fl_file))
 
+                if not os.path.exists(flashlayout_file):
+                    # The tsv does not exist, so cannot generate the tsv for wrapper4dbg
+                    break
+
                 if d.getVar("ENABLE_FLASHLAYOUT_CONFIG_WRAPPER4DBG") == "1":
-                    bb.note('*** Loop for flashlayout for the wrapper for debug %s' % labeltype)
+                    bb.debug(1, '*** Loop for flashlayout for the wrapper for debug %s' % labeltype)
 
                     tmp_flashlayout_file = os.path.join(flashlayout_subfolder_path, "flashlayout.tmp")
                     debug_flashlayout = False
@@ -563,7 +642,7 @@ python do_create_flashlayout_config() {
                         bb.utils.mkdirhier(flashlayout_wrapper4dbg_subfolder_path)
                         # Wrapper4dbg output filename
                         debug_flashlayout_file = os.path.join(flashlayout_wrapper4dbg_subfolder_path,d.expand("debug-${FLASHLAYOUT_BASENAME}%s%s.${FLASHLAYOUT_SUFFIX}" % (config_append, labeltype_append)))
-                        bb.note(">>> Update tf-a in %s" %  (debug_flashlayout_file))
+                        bb.debug(1, ">>> Update tf-a in %s" %  (debug_flashlayout_file))
                         os.rename(tmp_flashlayout_file, debug_flashlayout_file)
                     else:
                         os.remove(tmp_flashlayout_file)
@@ -583,16 +662,95 @@ python do_create_flashlayout_config_setscene () {
 }
 addtask do_create_flashlayout_config_setscene
 
+python flashlayout_partition_config() {
+    """
+    Set the different flashlayout partition vars for the configure partition
+    images.
+    Based on both PARTITIONS_BOOTLOADER_CONFIG and PARTITIONS_OPTEE_CONFIG feed:
+        FLASHLAYOUT_PARTITION_ENABLE_<config>_
+        FLASHLAYOUT_PARTITION_SIZE_<config>_
+        FLASHLAYOUT_PARTITION_COPY_<config>_
+        FLASHLAYOUT_PARTITION_TYPE_<config>_
+    """
+    # Init partition and flashlayout configuration vars
+    partitionconfig_list = 'PARTITIONS_BOOTLOADER_CONFIG PARTITIONS_OPTEE_CONFIG'
+
+    for partconfvar in partitionconfig_list.split():
+        partitionsconfigflags = d.getVarFlags(partconfvar)
+        # The "doc" varflag is special, we don't want to see it here
+        partitionsconfigflags.pop('doc', None)
+        partitionsconfig = (d.getVar(partconfvar) or "").split()
+
+        if len(partitionsconfig) > 0:
+            for config in partitionsconfig:
+                for f, v in partitionsconfigflags.items():
+                    if config == f:
+                        # Make sure to get var flag properly expanded
+                        v = d.getVarFlag(partconfvar, config)
+                        if not v.strip():
+                            bb.fatal('[%s] Missing configuration for %s config' % (partconfvar, config))
+                        for subconfigs in v.split():
+                            bb.debug(1, '[%s] *** Loop for %s config with setting: %s' % (partconfvar, config, subconfigs))
+                            items = subconfigs.split(',')
+                            # Check for proper content
+                            if items[0] and len(items) > 5:
+                                bb.fatal('[%s] Only partdata,partlabel,size,type,copy can be specified!' % partconfvar)
+                            # Init flashlayout label
+                            if items[1] and items[1] != '':
+                                fl_label = d.expand(items[1])
+                                bb.debug(1, "Init for flashlayout label to: %s" % fl_label)
+                            else:
+                                bb.fatal('[%s] Missing partlabel setting' % partconfvar)
+                            # Feed FLASHLAYOUT_PARTITION_* vars
+                            if d.getVar('FLASHLAYOUT_PARTITION_ENABLE_%s_%s' % (config, fl_label)):
+                                bb.debug(1, "FLASHLAYOUT_PARTITION_ENABLE_%s_%s is already set to: %s." % (config, fl_label, d.getVar('FLASHLAYOUT_PARTITION_ENABLE_%s_%s' % (config, fl_label))))
+                            else:
+                                bb.debug(1, "Set FLASHLAYOUT_PARTITION_ENABLE_%s_%s to 'P'." % (config, fl_label))
+                                d.setVar('FLASHLAYOUT_PARTITION_ENABLE_%s_%s' % (config, fl_label), 'P')
+                            if items[0] != '':
+                                if d.getVar('FLASHLAYOUT_PARTITION_BIN2LOAD_%s_%s' % (config, fl_label)):
+                                    bb.debug(1, "FLASHLAYOUT_PARTITION_BIN2LOAD_%s_%s is already set to: %s." % (config, fl_label, d.getVar('FLASHLAYOUT_PARTITION_BIN2LOAD_%s_%s' % (config, fl_label))))
+                                else:
+                                    bb.debug(1, "Set FLASHLAYOUT_PARTITION_BIN2LOAD_%s_%s to %s." % (config, fl_label, items[0]))
+                                    d.setVar('FLASHLAYOUT_PARTITION_BIN2LOAD_%s_%s' % (config, fl_label), items[0])
+                            else:
+                                bb.debug(1, "No partdata setting for %s label : default setting would applied..." % fl_label)
+                            if items[2] and items[2] != '':
+                                if d.getVar('FLASHLAYOUT_PARTITION_SIZE_%s_%s' % (config, fl_label)):
+                                    bb.debug(1, "FLASHLAYOUT_PARTITION_SIZE_%s_%s is already set to: %s." % (config, fl_label, d.getVar('FLASHLAYOUT_PARTITION_SIZE_%s_%s' % (config, fl_label))))
+                                else:
+                                    bb.debug(1, "Set FLASHLAYOUT_PARTITION_SIZE_%s_%s to %s." % (config, fl_label, items[2]))
+                                    d.setVar('FLASHLAYOUT_PARTITION_SIZE_%s_%s' % (config, fl_label), items[2])
+                            else:
+                                bb.fatal('[%s] Missing size setting for % label' % (partconfvar, fl_label))
+                            if items[3] and items[3] != '':
+                                if d.getVar('FLASHLAYOUT_PARTITION_TYPE_%s_%s' % (config, fl_label)):
+                                    bb.debug(1, "FLASHLAYOUT_PARTITION_TYPE_%s_%s is already set to: %s." % (config, fl_label, d.getVar('FLASHLAYOUT_PARTITION_TYPE_%s_%s' % (config, fl_label))))
+                                else:
+                                    bb.debug(1, "Set FLASHLAYOUT_PARTITION_TYPE_%s_%s to %s." % (config, fl_label, items[3]))
+                                    d.setVar('FLASHLAYOUT_PARTITION_TYPE_%s_%s' % (config, fl_label), items[3])
+                            else:
+                                bb.debug(1, "No PARTITION_TYPE setting for %s label: default setting would applied..." % fl_label)
+                            if items[4] and items[4] != '':
+                                if d.getVar('FLASHLAYOUT_PARTITION_COPY_%s_%s' % (config, fl_label)):
+                                    bb.debug(1, "FLASHLAYOUT_PARTITION_COPY_%s_%s is already set to: %s." % (config, fl_label, d.getVar('FLASHLAYOUT_PARTITION_COPY_%s_%s' % (config, fl_label))))
+                                else:
+                                    bb.debug(1, "Set FLASHLAYOUT_PARTITION_COPY_%s_%s to %s." % (config, fl_label, items[4]))
+                                    d.setVar('FLASHLAYOUT_PARTITION_COPY_%s_%s' % (config, fl_label), items[4])
+                            else:
+                                bb.debug(1, "No PARTITION_COPY setting for % label : default setting would applied..." % fl_label)
+                        break
+}
 python flashlayout_partition_image_config() {
     """
     Set the different flashlayout partition vars for the configure partition
     images.
     Based on PARTITIONS_CONFIG, feed:
         FLASHLAYOUT_PARTITION_IMAGES
-        FLASHLAYOUT_PARTITION_ID_
-        FLASHLAYOUT_PARTITION_TYPE_
+        FLASHLAYOUT_PARTITION_ENABLE_
         FLASHLAYOUT_PARTITION_SIZE_
         FLASHLAYOUT_PARTITION_BIN2LOAD_
+        FLASHLAYOUT_PARTITION_TYPE_
     """
 
     partitionsconfigflags = d.getVarFlags('PARTITIONS_CONFIG')
@@ -601,9 +759,6 @@ python flashlayout_partition_image_config() {
     partitionsconfig = (d.getVar('PARTITIONS_CONFIG') or "").split()
 
     if len(partitionsconfig) > 0:
-        # Init default partition id for binary type and other
-        id_bin = 4
-        id_oth = 33
         for config in partitionsconfig:
             for f, v in partitionsconfigflags.items():
                 if config == f:
@@ -611,6 +766,9 @@ python flashlayout_partition_image_config() {
                     # Make sure about PARTITIONS_CONFIG contents
                     if items[0] and len(items) > 5:
                         bb.fatal('[PARTITIONS_CONFIG] Only image,label,mountpoint,size,type can be specified!')
+                    # Check for proper configuration
+                    if items[0] == '':
+                        bb.fatal('[PARTITIONS_CONFIG] Missing image setting')
                     if items[1]:
                         bb.debug(1, "Appending %s to FLASHLAYOUT_PARTITION_IMAGES." % items[1])
                         d.appendVar('FLASHLAYOUT_PARTITION_IMAGES', ' ' + items[1])
@@ -618,6 +776,8 @@ python flashlayout_partition_image_config() {
                         bb.fatal('[PARTITIONS_CONFIG] Missing image label setting')
                     # Init flashlayout label
                     fl_label = d.expand(items[1])
+                    bb.debug(1, "Set FLASHLAYOUT_PARTITION_ENABLE_%s to 'P'." % fl_label)
+                    d.setVar('FLASHLAYOUT_PARTITION_ENABLE_%s' % fl_label, 'P')
                     if items[2] == '':
                         # There is no mountpoint specified, so we apply rootfs image format
                         bb.debug(1, "Set FLASHLAYOUT_PARTITION_BIN2LOAD_%s to %s." % (fl_label, items[0] + "-${MACHINE}.ext4"))
@@ -629,19 +789,10 @@ python flashlayout_partition_image_config() {
                         bb.debug(1, "Set FLASHLAYOUT_PARTITION_SIZE_%s to %s." % (fl_label, items[3]))
                         d.setVar('FLASHLAYOUT_PARTITION_SIZE_%s' % fl_label, items[3])
                     else:
-                        bb.fatal('[PARTITIONS_CONFIG] Missing PARTITION_SIZE setting for % label' % fl_label)
+                        bb.fatal('[PARTITIONS_CONFIG] Missing PARTITION_SIZE setting for %s label' % fl_label)
                     if items[4]:
                         bb.debug(1, "Set FLASHLAYOUT_PARTITION_TYPE_%s to %s." % (fl_label, items[4]))
                         d.setVar('FLASHLAYOUT_PARTITION_TYPE_%s' % fl_label, items[4])
-                        # Compute partition id according to type set
-                        if items[4] == 'Binary':
-                            part_id = '0x{0:0{1}X}'.format(id_bin, 2)
-                            id_bin = id_bin + 1
-                        else:
-                            part_id = '0x{0:0{1}X}'.format(id_oth, 2)
-                            id_oth = id_oth + 1
-                        bb.debug(1, "Set FLASHLAYOUT_PARTITION_ID_%s to %s." % (fl_label, part_id))
-                        d.setVar('FLASHLAYOUT_PARTITION_ID_%s' % fl_label, "%s" % part_id)
                     else:
                         bb.fatal('[PARTITIONS_CONFIG] Missing PARTITION_TYPE setting for % label' % fl_label)
                     break
@@ -653,14 +804,15 @@ python flashlayout_partition_image_config() {
 # need to make sure to add each variables to the vardeps list.
 
 FLASHLAYOUT_LABELS_VARS = "CONFIG_LABELS PARTITION_LABELS TYPE_LABELS"
-FLASHLAYOUT_LABELS_OVERRIDES = "${@' '.join('%s %s %s_%s' % (b, c, b, c) for b in d.getVar('FLASHLAYOUT_BOOTSCHEME_LABELS').split() for c in d.getVar('FLASHLAYOUT_CONFIG_LABELS').split())}"
+FLASHLAYOUT_LABELS_OVERRIDES = "${FLASHLAYOUT_BOOTSCHEME_LABELS} ${FLASHLAYOUT_CONFIG_LABELS}"
+FLASHLAYOUT_LABELS_OVERRIDES += "${@' '.join('%s_%s' % (b, c) for b in d.getVar('FLASHLAYOUT_BOOTSCHEME_LABELS').split() for c in d.getVar('FLASHLAYOUT_CONFIG_LABELS').split())}"
 do_create_flashlayout_config[vardeps] += "${@' '.join(['FLASHLAYOUT_%s_%s' % (v, o) for v in d.getVar('FLASHLAYOUT_LABELS_VARS').split() for o in d.getVar('FLASHLAYOUT_LABELS_OVERRIDES').split()])}"
 
 FLASHLAYOUT_PARTITION_VARS = "ENABLE ID TYPE DEVICE OFFSET BIN2LOAD SIZE REPLACE_PATTERNS"
-FLASHLAYOUT_PARTITION_CONFIGURED = "${@" ".join(map(lambda o: "%s" % d.getVar("FLASHLAYOUT_PARTITION_LABELS_%s" % o), d.getVar('FLASHLAYOUT_LABELS_OVERRIDES').split()))}"
-FLASHLAYOUT_PARTITION_OVERRIDES = "${@' '.join('%s %s %s_%s' % (o, p, o, p) for o in d.getVar('FLASHLAYOUT_LABELS_OVERRIDES').split() for p in d.getVar('FLASHLAYOUT_PARTITION_CONFIGURED').split())}"
+FLASHLAYOUT_PARTITION_CONFIGURED = "${@' '.join(dict.fromkeys(' '.join('%s' % d.getVar('FLASHLAYOUT_PARTITION_LABELS_%s' % o) for o in d.getVar('FLASHLAYOUT_LABELS_OVERRIDES').split()).split()))}"
+FLASHLAYOUT_PARTITION_OVERRIDES = "${FLASHLAYOUT_LABELS_OVERRIDES} ${FLASHLAYOUT_PARTITION_CONFIGURED}"
+FLASHLAYOUT_PARTITION_OVERRIDES += "${@' '.join('%s_%s' % (o, p) for o in d.getVar('FLASHLAYOUT_LABELS_OVERRIDES').split() for p in d.getVar('FLASHLAYOUT_PARTITION_CONFIGURED').split())}"
 do_create_flashlayout_config[vardeps] += "${@' '.join(['FLASHLAYOUT_PARTITION_%s_%s' % (v, o) for v in d.getVar('FLASHLAYOUT_PARTITION_VARS').split() for o in d.getVar('FLASHLAYOUT_PARTITION_OVERRIDES').split()])}"
 
-FLASHLAYOUT_DEVICE_VARS = "ALIGNMENT_SIZE BOARD_ENABLE START_OFFSET"
-FLASHLAYOUT_PARTITION_DEVICE_CONFIGURED = "${@" ".join(map(lambda p: "%s" % d.getVar("DEVICE_%s" % p), d.getVar('DEVICE_STORAGE_NAMES').split()))}"
-do_create_flashlayout_config[vardeps] += "${@' '.join(['DEVICE_%s_%s' % (v, o) for v in d.getVar('FLASHLAYOUT_DEVICE_VARS').split() for o in d.getVar('FLASHLAYOUT_PARTITION_DEVICE_CONFIGURED').split()])}"
+FLASHLAYOUT_DEVICE_VARS = "ALIGNMENT_SIZE BOARD_ENABLE START_OFFSET MAX_OFFSET"
+do_create_flashlayout_config[vardeps] += "${@' '.join(['DEVICE_%s_%s' % (v, o) for v in d.getVar('FLASHLAYOUT_DEVICE_VARS').split() for o in d.getVar('DEVICE_STORAGE_NAMES').split()])}"
