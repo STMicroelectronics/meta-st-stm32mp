@@ -1,139 +1,163 @@
-From 60ca74ac3c89a476b38d4f41c3bea3745779587e Mon Sep 17 00:00:00 2001
-From: Lionel VITTE <lionel.vitte@st.com>
-Date: Mon, 5 Oct 2020 13:19:46 +0200
-Subject: [PATCH 11/22] ARM-stm32mp1-r2-rc8-RESET-RTC-WATCHDOG
+From c40d4d83b3de542be7d64b88f0c842ebecc9a6b2 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Tue, 16 Mar 2021 09:09:52 +0100
+Subject: [PATCH 17/22] ARM 5.10.10-stm32mp1-r1 RESET-RTC-WATCHDOG
 
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
 ---
- .../devicetree/bindings/rtc/st,stm32-rtc.txt  |  10 +-
- drivers/reset/reset-stm32mp1.c                |  83 +++++---
- drivers/rtc/Kconfig                           |   1 +
- drivers/rtc/rtc-stm32.c                       | 180 +++++++++++++++---
- drivers/watchdog/stm32_iwdg.c                 |   6 +-
- include/dt-bindings/reset/stm32mp1-resets.h   |  15 ++
- include/dt-bindings/rtc/rtc-stm32.h           |  13 ++
- 7 files changed, 246 insertions(+), 62 deletions(-)
+ drivers/reset/Kconfig                       |   6 -
+ drivers/reset/Makefile                      |   1 -
+ drivers/reset/reset-stm32mp1.c              | 115 -------------
+ drivers/rtc/Kconfig                         |   1 +
+ drivers/rtc/rtc-stm32.c                     | 180 ++++++++++++++++----
+ drivers/watchdog/stm32_iwdg.c               |  13 +-
+ include/dt-bindings/reset/stm32mp1-resets.h |  15 ++
+ include/dt-bindings/rtc/rtc-stm32.h         |  13 ++
+ 8 files changed, 183 insertions(+), 161 deletions(-)
+ delete mode 100644 drivers/reset/reset-stm32mp1.c
  create mode 100644 include/dt-bindings/rtc/rtc-stm32.h
 
-diff --git a/Documentation/devicetree/bindings/rtc/st,stm32-rtc.txt b/Documentation/devicetree/bindings/rtc/st,stm32-rtc.txt
-index 130ca5b982538..bab0df81af2cc 100644
---- a/Documentation/devicetree/bindings/rtc/st,stm32-rtc.txt
-+++ b/Documentation/devicetree/bindings/rtc/st,stm32-rtc.txt
-@@ -21,9 +21,14 @@ Required properties:
-   domain (RTC registers) write protection.
-     It is required on stm32(f4/f7/h7).
+diff --git a/drivers/reset/Kconfig b/drivers/reset/Kconfig
+index 07d162b179fc..c3186d80c33e 100644
+--- a/drivers/reset/Kconfig
++++ b/drivers/reset/Kconfig
+@@ -180,12 +180,6 @@ config RESET_SIMPLE
+ 	   - Allwinner SoCs
+ 	   - ZTE's zx2967 family
  
--Optional properties (to override default rtc_ck parent clock on stm32(f4/f7/h7):
-+Optional properties:
-+* to override default rtc_ck parent clock on stm32(f4/f7/h7):
- - assigned-clocks: reference to the rtc_ck clock entry.
- - assigned-clock-parents: phandle of the new parent clock of rtc_ck.
-+* to select and enable RTC Low Speed Clock Output on stm32mp1:
-+- st,lsco: defines the RTC output on which RTC Low-Speed Clock is Output. The
-+  valid output values are defined in <dt-bindings/rtc/rtc-stm32.h>.
-+- pinctrl state named "default" may be defined to reserve pin for RTC output.
- 
- Example:
- 
-@@ -58,4 +63,7 @@ Example:
- 		clock-names = "pclk", "rtc_ck";
- 		interrupts-extended = <&intc GIC_SPI 3 IRQ_TYPE_NONE>,
- 				      <&exti 19 1>;
-+		st,lsco = <RTC_OUT2_RMP>;
-+		pinctrl-0 = <&rtc_out2_rmp_pins_a>;
-+		pinctrl-names = "default";
- 	};
+-config RESET_STM32MP157
+-	bool "STM32MP157 Reset Driver" if COMPILE_TEST
+-	default MACH_STM32MP157
+-	help
+-	  This enables the RCC reset controller driver for STM32 MPUs.
+-
+ config RESET_SOCFPGA
+ 	bool "SoCFPGA Reset Driver" if COMPILE_TEST && !ARCH_SOCFPGA
+ 	default ARCH_SOCFPGA
+diff --git a/drivers/reset/Makefile b/drivers/reset/Makefile
+index 16947610cc3b..b2c9eff41d3b 100644
+--- a/drivers/reset/Makefile
++++ b/drivers/reset/Makefile
+@@ -24,7 +24,6 @@ obj-$(CONFIG_RESET_QCOM_PDC) += reset-qcom-pdc.o
+ obj-$(CONFIG_RESET_RASPBERRYPI) += reset-raspberrypi.o
+ obj-$(CONFIG_RESET_SCMI) += reset-scmi.o
+ obj-$(CONFIG_RESET_SIMPLE) += reset-simple.o
+-obj-$(CONFIG_RESET_STM32MP157) += reset-stm32mp1.o
+ obj-$(CONFIG_RESET_SOCFPGA) += reset-socfpga.o
+ obj-$(CONFIG_RESET_SUNXI) += reset-sunxi.o
+ obj-$(CONFIG_RESET_TI_SCI) += reset-ti-sci.o
 diff --git a/drivers/reset/reset-stm32mp1.c b/drivers/reset/reset-stm32mp1.c
-index b221a28041fa0..daf0e26b27a8d 100644
+deleted file mode 100644
+index b221a28041fa..000000000000
 --- a/drivers/reset/reset-stm32mp1.c
-+++ b/drivers/reset/reset-stm32mp1.c
-@@ -4,14 +4,21 @@
-  * Author: Gabriel Fernandez <gabriel.fernandez@st.com> for STMicroelectronics.
-  */
- 
-+#include <dt-bindings/reset/stm32mp1-resets.h>
-+#include <linux/arm-smccc.h>
- #include <linux/device.h>
- #include <linux/err.h>
- #include <linux/io.h>
-+#include <linux/module.h>
- #include <linux/of.h>
-+#include <linux/of_address.h>
- #include <linux/platform_device.h>
- #include <linux/reset-controller.h>
-+#include <linux/slab.h>
- 
++++ /dev/null
+@@ -1,115 +0,0 @@
+-// SPDX-License-Identifier: GPL-2.0
+-/*
+- * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
+- * Author: Gabriel Fernandez <gabriel.fernandez@st.com> for STMicroelectronics.
+- */
+-
+-#include <linux/device.h>
+-#include <linux/err.h>
+-#include <linux/io.h>
+-#include <linux/of.h>
+-#include <linux/platform_device.h>
+-#include <linux/reset-controller.h>
+-
 -#define CLR_OFFSET 0x4
-+#define STM32MP1_RESET_ID_MASK	GENMASK(15, 0)
-+
-+#define CLR_OFFSET		0x4
- 
- struct stm32_reset_data {
- 	struct reset_controller_dev	rcdev;
-@@ -79,37 +86,57 @@ static const struct of_device_id stm32_reset_dt_ids[] = {
- 	{ /* sentinel */ },
- };
- 
+-
+-struct stm32_reset_data {
+-	struct reset_controller_dev	rcdev;
+-	void __iomem			*membase;
+-};
+-
+-static inline struct stm32_reset_data *
+-to_stm32_reset_data(struct reset_controller_dev *rcdev)
+-{
+-	return container_of(rcdev, struct stm32_reset_data, rcdev);
+-}
+-
+-static int stm32_reset_update(struct reset_controller_dev *rcdev,
+-			      unsigned long id, bool assert)
+-{
+-	struct stm32_reset_data *data = to_stm32_reset_data(rcdev);
+-	int reg_width = sizeof(u32);
+-	int bank = id / (reg_width * BITS_PER_BYTE);
+-	int offset = id % (reg_width * BITS_PER_BYTE);
+-	void __iomem *addr;
+-
+-	addr = data->membase + (bank * reg_width);
+-	if (!assert)
+-		addr += CLR_OFFSET;
+-
+-	writel(BIT(offset), addr);
+-
+-	return 0;
+-}
+-
+-static int stm32_reset_assert(struct reset_controller_dev *rcdev,
+-			      unsigned long id)
+-{
+-	return stm32_reset_update(rcdev, id, true);
+-}
+-
+-static int stm32_reset_deassert(struct reset_controller_dev *rcdev,
+-				unsigned long id)
+-{
+-	return stm32_reset_update(rcdev, id, false);
+-}
+-
+-static int stm32_reset_status(struct reset_controller_dev *rcdev,
+-			      unsigned long id)
+-{
+-	struct stm32_reset_data *data = to_stm32_reset_data(rcdev);
+-	int reg_width = sizeof(u32);
+-	int bank = id / (reg_width * BITS_PER_BYTE);
+-	int offset = id % (reg_width * BITS_PER_BYTE);
+-	u32 reg;
+-
+-	reg = readl(data->membase + (bank * reg_width));
+-
+-	return !!(reg & BIT(offset));
+-}
+-
+-static const struct reset_control_ops stm32_reset_ops = {
+-	.assert		= stm32_reset_assert,
+-	.deassert	= stm32_reset_deassert,
+-	.status		= stm32_reset_status,
+-};
+-
+-static const struct of_device_id stm32_reset_dt_ids[] = {
+-	{ .compatible = "st,stm32mp1-rcc"},
+-	{ /* sentinel */ },
+-};
+-
 -static int stm32_reset_probe(struct platform_device *pdev)
-+static void __init stm32mp1_reset_init(struct device_node *np)
- {
+-{
 -	struct device *dev = &pdev->dev;
 -	struct stm32_reset_data *data;
 -	void __iomem *membase;
 -	struct resource *res;
 -
 -	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
-+	void __iomem *base;
-+	const struct of_device_id *match;
-+	struct stm32_reset_data *data = NULL;
-+	int ret;
-+
-+	base = of_iomap(np, 0);
-+	if (!base) {
-+		pr_err("%pOFn: unable to map resource", np);
-+		of_node_put(np);
-+		return;
-+	}
-+
-+	match = of_match_node(stm32_reset_dt_ids, np);
-+	if (!match) {
-+		pr_err("%s: match data not found\n", __func__);
-+		goto err;
-+	}
-+
-+	data = kzalloc(sizeof(*data), GFP_KERNEL);
- 	if (!data)
+-	if (!data)
 -		return -ENOMEM;
 -
 -	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 -	membase = devm_ioremap_resource(dev, res);
 -	if (IS_ERR(membase))
 -		return PTR_ERR(membase);
-+		goto err;
- 
+-
 -	data->membase = membase;
-+	data->membase = base;
- 	data->rcdev.owner = THIS_MODULE;
+-	data->rcdev.owner = THIS_MODULE;
 -	data->rcdev.nr_resets = resource_size(res) * BITS_PER_BYTE;
- 	data->rcdev.ops = &stm32_reset_ops;
+-	data->rcdev.ops = &stm32_reset_ops;
 -	data->rcdev.of_node = dev->of_node;
 -
 -	return devm_reset_controller_register(dev, &data->rcdev);
-+	data->rcdev.of_node = np;
-+	data->rcdev.nr_resets = STM32MP1_RESET_ID_MASK;
-+
-+	ret = reset_controller_register(&data->rcdev);
-+	if (!ret)
-+		return;
-+
-+err:
-+	pr_err("stm32mp1 reset failed to initialize\n");
-+	if (data)
-+		kfree(data);
-+	if (base)
-+		iounmap(base);
-+	of_node_put(np);
- }
- 
+-}
+-
 -static struct platform_driver stm32_reset_driver = {
 -	.probe	= stm32_reset_probe,
 -	.driver = {
@@ -143,22 +167,11 @@ index b221a28041fa0..daf0e26b27a8d 100644
 -};
 -
 -builtin_platform_driver(stm32_reset_driver);
-+/*
-+ * RCC reset and clock drivers bind to the same RCC node.
-+ * Register RCC reset driver at init through clock of table,
-+ * clock driver for RCC will register at probe time.
-+ */
-+static void __init stm32mp1_reset_of_init_drv(struct device_node *np)
-+{
-+	of_node_clear_flag(np, OF_POPULATED);
-+	stm32mp1_reset_init(np);
-+}
-+OF_DECLARE_1(clk, stm32mp1_rcc, "st,stm32mp1-rcc", stm32mp1_reset_of_init_drv);
 diff --git a/drivers/rtc/Kconfig b/drivers/rtc/Kconfig
-index c5b9804140860..d590b420525ce 100644
+index 65ad9d0b47ab..f2a4d7c633c8 100644
 --- a/drivers/rtc/Kconfig
 +++ b/drivers/rtc/Kconfig
-@@ -1862,6 +1862,7 @@ config RTC_DRV_R7301
+@@ -1884,6 +1884,7 @@ config RTC_DRV_R7301
  config RTC_DRV_STM32
  	tristate "STM32 RTC"
  	select REGMAP_MMIO
@@ -167,7 +180,7 @@ index c5b9804140860..d590b420525ce 100644
  	help
  	   If you say yes here you get support for the STM32 On-Chip
 diff --git a/drivers/rtc/rtc-stm32.c b/drivers/rtc/rtc-stm32.c
-index 2999e33a7e376..3cf51497681a4 100644
+index d774aa18f57a..7fd6347691bb 100644
 --- a/drivers/rtc/rtc-stm32.c
 +++ b/drivers/rtc/rtc-stm32.c
 @@ -6,6 +6,8 @@
@@ -399,7 +412,7 @@ index 2999e33a7e376..3cf51497681a4 100644
  	}
  
  	/*
-@@ -738,13 +848,15 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+@@ -736,13 +846,15 @@ static int stm32_rtc_probe(struct platform_device *pdev)
  	} else {
  		rtc->pclk = devm_clk_get(&pdev->dev, "pclk");
  		if (IS_ERR(rtc->pclk)) {
@@ -417,7 +430,7 @@ index 2999e33a7e376..3cf51497681a4 100644
  		return PTR_ERR(rtc->rtc_ck);
  	}
  
-@@ -781,19 +893,12 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+@@ -779,19 +891,12 @@ static int stm32_rtc_probe(struct platform_device *pdev)
  	}
  
  	ret = device_init_wakeup(&pdev->dev, true);
@@ -442,7 +455,7 @@ index 2999e33a7e376..3cf51497681a4 100644
  
  	platform_set_drvdata(pdev, rtc);
  
-@@ -816,6 +921,21 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+@@ -814,6 +919,21 @@ static int stm32_rtc_probe(struct platform_device *pdev)
  		goto err;
  	}
  
@@ -464,7 +477,7 @@ index 2999e33a7e376..3cf51497681a4 100644
  	/*
  	 * If INITS flag is reset (calendar year field set to 0x00), calendar
  	 * must be initialized
-@@ -852,6 +972,9 @@ static int stm32_rtc_remove(struct platform_device *pdev)
+@@ -850,6 +970,9 @@ static int stm32_rtc_remove(struct platform_device *pdev)
  	const struct stm32_rtc_registers *regs = &rtc->data->regs;
  	unsigned int cr;
  
@@ -474,7 +487,7 @@ index 2999e33a7e376..3cf51497681a4 100644
  	/* Disable interrupts */
  	stm32_rtc_wpr_unlock(rtc);
  	cr = readl_relaxed(rtc->base + regs->cr);
-@@ -881,9 +1004,6 @@ static int stm32_rtc_suspend(struct device *dev)
+@@ -879,9 +1002,6 @@ static int stm32_rtc_suspend(struct device *dev)
  	if (rtc->data->has_pclk)
  		clk_disable_unprepare(rtc->pclk);
  
@@ -484,9 +497,9 @@ index 2999e33a7e376..3cf51497681a4 100644
  	return 0;
  }
  
-@@ -902,15 +1022,13 @@ static int stm32_rtc_resume(struct device *dev)
- 	if (ret < 0)
+@@ -903,15 +1023,13 @@ static int stm32_rtc_resume(struct device *dev)
  		return ret;
+ 	}
  
 -	if (device_may_wakeup(dev))
 -		return disable_irq_wake(rtc->irq_alarm);
@@ -504,31 +517,35 @@ index 2999e33a7e376..3cf51497681a4 100644
  static struct platform_driver stm32_rtc_driver = {
  	.probe		= stm32_rtc_probe,
 diff --git a/drivers/watchdog/stm32_iwdg.c b/drivers/watchdog/stm32_iwdg.c
-index 25188d6bbe152..1b71c205cee0e 100644
+index 25188d6bbe15..a3436c296c97 100644
 --- a/drivers/watchdog/stm32_iwdg.c
 +++ b/drivers/watchdog/stm32_iwdg.c
-@@ -163,7 +163,8 @@ static int stm32_iwdg_clk_init(struct platform_device *pdev,
+@@ -162,18 +162,15 @@ static int stm32_iwdg_clk_init(struct platform_device *pdev,
+ 	u32 ret;
  
  	wdt->clk_lsi = devm_clk_get(dev, "lsi");
- 	if (IS_ERR(wdt->clk_lsi)) {
+-	if (IS_ERR(wdt->clk_lsi)) {
 -		dev_err(dev, "Unable to get lsi clock\n");
-+		if (PTR_ERR(wdt->clk_lsi) != -EPROBE_DEFER)
-+			dev_err(dev, "Unable to get lsi clock\n");
- 		return PTR_ERR(wdt->clk_lsi);
- 	}
+-		return PTR_ERR(wdt->clk_lsi);
+-	}
++	if (IS_ERR(wdt->clk_lsi))
++		return dev_err_probe(dev, PTR_ERR(wdt->clk_lsi), "Unable to get lsi clock\n");
  
-@@ -171,7 +172,8 @@ static int stm32_iwdg_clk_init(struct platform_device *pdev,
+ 	/* optional peripheral clock */
  	if (wdt->data->has_pclk) {
  		wdt->clk_pclk = devm_clk_get(dev, "pclk");
- 		if (IS_ERR(wdt->clk_pclk)) {
+-		if (IS_ERR(wdt->clk_pclk)) {
 -			dev_err(dev, "Unable to get pclk clock\n");
-+			if (PTR_ERR(wdt->clk_pclk) != -EPROBE_DEFER)
-+				dev_err(dev, "Unable to get pclk clock\n");
- 			return PTR_ERR(wdt->clk_pclk);
- 		}
+-			return PTR_ERR(wdt->clk_pclk);
+-		}
++		if (IS_ERR(wdt->clk_pclk))
++			return dev_err_probe(dev, PTR_ERR(wdt->clk_pclk),
++					     "Unable to get pclk clock\n");
  
+ 		ret = clk_prepare_enable(wdt->clk_pclk);
+ 		if (ret) {
 diff --git a/include/dt-bindings/reset/stm32mp1-resets.h b/include/dt-bindings/reset/stm32mp1-resets.h
-index f0c3aaef67a0a..f3a0ed3178356 100644
+index f0c3aaef67a0..f3a0ed317835 100644
 --- a/include/dt-bindings/reset/stm32mp1-resets.h
 +++ b/include/dt-bindings/reset/stm32mp1-resets.h
 @@ -7,6 +7,7 @@
@@ -560,7 +577,7 @@ index f0c3aaef67a0a..f3a0ed3178356 100644
  #endif /* _DT_BINDINGS_STM32MP1_RESET_H_ */
 diff --git a/include/dt-bindings/rtc/rtc-stm32.h b/include/dt-bindings/rtc/rtc-stm32.h
 new file mode 100644
-index 0000000000000..4373c4dea5879
+index 000000000000..4373c4dea587
 --- /dev/null
 +++ b/include/dt-bindings/rtc/rtc-stm32.h
 @@ -0,0 +1,13 @@

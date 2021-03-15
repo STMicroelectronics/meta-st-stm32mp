@@ -1,0 +1,1317 @@
+From 1d88ececeebbbd2d3aa0ed971961074d1e2b71f4 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Tue, 16 Mar 2021 09:05:39 +0100
+Subject: [PATCH 08/22] ARM 5.10.10-stm32mp1-r1 I2C-IIO-IRQCHIP
+
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
+---
+ drivers/i2c/busses/i2c-stm32f7.c   | 240 ++++++++++++++++++-----------
+ drivers/iio/adc/sd_adc_modulator.c |  89 +++++++++--
+ drivers/iio/adc/stm32-adc-core.c   |  21 ++-
+ drivers/iio/adc/stm32-adc.c        |  29 +---
+ drivers/iio/adc/stm32-dfsdm-adc.c  | 105 ++++++++++++-
+ drivers/iio/adc/stm32-dfsdm-core.c |  91 +++++++++--
+ drivers/iio/adc/stm32-dfsdm.h      |  69 ++++++---
+ drivers/irqchip/irq-stm32-exti.c   |  83 ++++++++--
+ 8 files changed, 555 insertions(+), 172 deletions(-)
+
+diff --git a/drivers/i2c/busses/i2c-stm32f7.c b/drivers/i2c/busses/i2c-stm32f7.c
+index f41f51a176a1..b98ac0f4dee3 100644
+--- a/drivers/i2c/busses/i2c-stm32f7.c
++++ b/drivers/i2c/busses/i2c-stm32f7.c
+@@ -51,12 +51,15 @@
+ 
+ /* STM32F7 I2C control 1 */
+ #define STM32F7_I2C_CR1_PECEN			BIT(23)
++#define STM32F7_I2C_CR1_ALERTEN			BIT(22)
+ #define STM32F7_I2C_CR1_SMBHEN			BIT(20)
+ #define STM32F7_I2C_CR1_WUPEN			BIT(18)
+ #define STM32F7_I2C_CR1_SBC			BIT(16)
+ #define STM32F7_I2C_CR1_RXDMAEN			BIT(15)
+ #define STM32F7_I2C_CR1_TXDMAEN			BIT(14)
+ #define STM32F7_I2C_CR1_ANFOFF			BIT(12)
++#define STM32F7_I2C_CR1_DNF_MASK		GENMASK(11, 8)
++#define STM32F7_I2C_CR1_DNF(n)			(((n) & 0xf) << 8)
+ #define STM32F7_I2C_CR1_ERRIE			BIT(7)
+ #define STM32F7_I2C_CR1_TCIE			BIT(6)
+ #define STM32F7_I2C_CR1_STOPIE			BIT(5)
+@@ -123,6 +126,7 @@
+ 				(((n) & STM32F7_I2C_ISR_ADDCODE_MASK) >> 17)
+ #define STM32F7_I2C_ISR_DIR			BIT(16)
+ #define STM32F7_I2C_ISR_BUSY			BIT(15)
++#define STM32F7_I2C_ISR_ALERT			BIT(13)
+ #define STM32F7_I2C_ISR_PECERR			BIT(11)
+ #define STM32F7_I2C_ISR_ARLO			BIT(9)
+ #define STM32F7_I2C_ISR_BERR			BIT(8)
+@@ -136,6 +140,7 @@
+ #define STM32F7_I2C_ISR_TXE			BIT(0)
+ 
+ /* STM32F7 I2C Interrupt Clear */
++#define STM32F7_I2C_ICR_ALERTCF			BIT(13)
+ #define STM32F7_I2C_ICR_PECCF			BIT(11)
+ #define STM32F7_I2C_ICR_ARLOCF			BIT(9)
+ #define STM32F7_I2C_ICR_BERRCF			BIT(8)
+@@ -159,10 +164,8 @@ enum {
+ 	STM32F7_I2C_MAX_SLAVE
+ };
+ 
+-#define STM32F7_I2C_DNF_DEFAULT			0
+-#define STM32F7_I2C_DNF_MAX			16
++#define STM32F7_I2C_DNF_MAX			15
+ 
+-#define STM32F7_I2C_ANALOG_FILTER_ENABLE	1
+ #define STM32F7_I2C_ANALOG_FILTER_DELAY_MIN	50	/* ns */
+ #define STM32F7_I2C_ANALOG_FILTER_DELAY_MAX	260	/* ns */
+ 
+@@ -221,8 +224,6 @@ struct stm32f7_i2c_spec {
+  * @clock_src: I2C clock source frequency (Hz)
+  * @rise_time: Rise time (ns)
+  * @fall_time: Fall time (ns)
+- * @dnf: Digital filter coefficient (0-16)
+- * @analog_filter: Analog filter delay (On/Off)
+  * @fmp_clr_offset: Fast Mode Plus clear register offset from set register
+  */
+ struct stm32f7_i2c_setup {
+@@ -230,8 +231,6 @@ struct stm32f7_i2c_setup {
+ 	u32 clock_src;
+ 	u32 rise_time;
+ 	u32 fall_time;
+-	u8 dnf;
+-	bool analog_filter;
+ 	u32 fmp_clr_offset;
+ };
+ 
+@@ -281,6 +280,17 @@ struct stm32f7_i2c_msg {
+ 	u8 smbus_buf[I2C_SMBUS_BLOCK_MAX + 3] __aligned(4);
+ };
+ 
++/**
++ * struct stm32f7_i2c_alert - SMBus alert specific data
++ * @setup: platform data for the smbus_alert i2c client
++ * @ara: I2C slave device used to respond to the SMBus Alert with Alert
++ * Response Address
++ */
++struct stm32f7_i2c_alert {
++	struct i2c_smbus_alert_setup setup;
++	struct i2c_client *ara;
++};
++
+ /**
+  * struct stm32f7_i2c_dev - private data of the controller
+  * @adap: I2C adapter for this controller
+@@ -310,6 +320,10 @@ struct stm32f7_i2c_msg {
+  * @wakeup_src: boolean to know if the device is a wakeup source
+  * @smbus_mode: states that the controller is configured in SMBus mode
+  * @host_notify_client: SMBus host-notify client
++ * @alert: SMBus alert specific data
++ * @analog_filter: boolean to indicate enabling of the analog filter
++ * @dnf_dt: value of digital filter requested via dt
++ * @dnf: value of digital filter to apply
+  */
+ struct stm32f7_i2c_dev {
+ 	struct i2c_adapter adap;
+@@ -338,6 +352,10 @@ struct stm32f7_i2c_dev {
+ 	bool wakeup_src;
+ 	bool smbus_mode;
+ 	struct i2c_client *host_notify_client;
++	struct stm32f7_i2c_alert *alert;
++	bool analog_filter;
++	u32 dnf_dt;
++	u32 dnf;
+ };
+ 
+ /*
+@@ -383,15 +401,11 @@ static struct stm32f7_i2c_spec stm32f7_i2c_specs[] = {
+ static const struct stm32f7_i2c_setup stm32f7_setup = {
+ 	.rise_time = STM32F7_I2C_RISE_TIME_DEFAULT,
+ 	.fall_time = STM32F7_I2C_FALL_TIME_DEFAULT,
+-	.dnf = STM32F7_I2C_DNF_DEFAULT,
+-	.analog_filter = STM32F7_I2C_ANALOG_FILTER_ENABLE,
+ };
+ 
+ static const struct stm32f7_i2c_setup stm32mp15_setup = {
+ 	.rise_time = STM32F7_I2C_RISE_TIME_DEFAULT,
+ 	.fall_time = STM32F7_I2C_FALL_TIME_DEFAULT,
+-	.dnf = STM32F7_I2C_DNF_DEFAULT,
+-	.analog_filter = STM32F7_I2C_ANALOG_FILTER_ENABLE,
+ 	.fmp_clr_offset = 0x40,
+ };
+ 
+@@ -460,27 +474,28 @@ static int stm32f7_i2c_compute_timing(struct stm32f7_i2c_dev *i2c_dev,
+ 		return -EINVAL;
+ 	}
+ 
+-	if (setup->dnf > STM32F7_I2C_DNF_MAX) {
++	i2c_dev->dnf = DIV_ROUND_CLOSEST(i2c_dev->dnf_dt, i2cclk);
++	if (i2c_dev->dnf > STM32F7_I2C_DNF_MAX) {
+ 		dev_err(i2c_dev->dev,
+ 			"DNF out of bound %d/%d\n",
+-			setup->dnf, STM32F7_I2C_DNF_MAX);
++			i2c_dev->dnf * i2cclk, STM32F7_I2C_DNF_MAX * i2cclk);
+ 		return -EINVAL;
+ 	}
+ 
+ 	/*  Analog and Digital Filters */
+ 	af_delay_min =
+-		(setup->analog_filter ?
++		(i2c_dev->analog_filter ?
+ 		 STM32F7_I2C_ANALOG_FILTER_DELAY_MIN : 0);
+ 	af_delay_max =
+-		(setup->analog_filter ?
++		(i2c_dev->analog_filter ?
+ 		 STM32F7_I2C_ANALOG_FILTER_DELAY_MAX : 0);
+-	dnf_delay = setup->dnf * i2cclk;
++	dnf_delay = i2c_dev->dnf * i2cclk;
+ 
+ 	sdadel_min = specs->hddat_min + setup->fall_time -
+-		af_delay_min - (setup->dnf + 3) * i2cclk;
++		af_delay_min - (i2c_dev->dnf + 3) * i2cclk;
+ 
+ 	sdadel_max = specs->vddat_max - setup->rise_time -
+-		af_delay_max - (setup->dnf + 4) * i2cclk;
++		af_delay_max - (i2c_dev->dnf + 4) * i2cclk;
+ 
+ 	scldel_min = setup->rise_time + specs->sudat_min;
+ 
+@@ -646,6 +661,7 @@ static int stm32f7_i2c_setup_timing(struct stm32f7_i2c_dev *i2c_dev,
+ 	setup->speed_freq = t->bus_freq_hz;
+ 	i2c_dev->setup.rise_time = t->scl_rise_ns;
+ 	i2c_dev->setup.fall_time = t->scl_fall_ns;
++	i2c_dev->dnf_dt = t->digital_filter_width_ns;
+ 	setup->clock_src = clk_get_rate(i2c_dev->clk);
+ 
+ 	if (!setup->clock_src) {
+@@ -653,6 +669,9 @@ static int stm32f7_i2c_setup_timing(struct stm32f7_i2c_dev *i2c_dev,
+ 		return -EINVAL;
+ 	}
+ 
++	if (!of_property_read_bool(i2c_dev->dev->of_node, "i2c-digital-filter"))
++		i2c_dev->dnf_dt = 0;
++
+ 	do {
+ 		ret = stm32f7_i2c_compute_timing(i2c_dev, setup,
+ 						 &i2c_dev->timing);
+@@ -674,12 +693,15 @@ static int stm32f7_i2c_setup_timing(struct stm32f7_i2c_dev *i2c_dev,
+ 		return ret;
+ 	}
+ 
++	i2c_dev->analog_filter = of_property_read_bool(i2c_dev->dev->of_node,
++						       "i2c-analog-filter");
++
+ 	dev_dbg(i2c_dev->dev, "I2C Speed(%i), Clk Source(%i)\n",
+ 		setup->speed_freq, setup->clock_src);
+ 	dev_dbg(i2c_dev->dev, "I2C Rise(%i) and Fall(%i) Time\n",
+ 		setup->rise_time, setup->fall_time);
+ 	dev_dbg(i2c_dev->dev, "I2C Analog Filter(%s), DNF(%i)\n",
+-		(setup->analog_filter ? "On" : "Off"), setup->dnf);
++		(i2c_dev->analog_filter ? "On" : "Off"), i2c_dev->dnf);
+ 
+ 	i2c_dev->bus_rate = setup->speed_freq;
+ 
+@@ -718,13 +740,20 @@ static void stm32f7_i2c_hw_config(struct stm32f7_i2c_dev *i2c_dev)
+ 	timing |= STM32F7_I2C_TIMINGR_SCLL(t->scll);
+ 	writel_relaxed(timing, i2c_dev->base + STM32F7_I2C_TIMINGR);
+ 
+-	/* Enable I2C */
+-	if (i2c_dev->setup.analog_filter)
++	/* Configure the Analog Filter */
++	if (i2c_dev->analog_filter)
+ 		stm32f7_i2c_clr_bits(i2c_dev->base + STM32F7_I2C_CR1,
+ 				     STM32F7_I2C_CR1_ANFOFF);
+ 	else
+ 		stm32f7_i2c_set_bits(i2c_dev->base + STM32F7_I2C_CR1,
+ 				     STM32F7_I2C_CR1_ANFOFF);
++
++	/* Program the Digital Filter */
++	stm32f7_i2c_clr_bits(i2c_dev->base + STM32F7_I2C_CR1,
++			     STM32F7_I2C_CR1_DNF_MASK);
++	stm32f7_i2c_set_bits(i2c_dev->base + STM32F7_I2C_CR1,
++			     STM32F7_I2C_CR1_DNF(i2c_dev->dnf));
++
+ 	stm32f7_i2c_set_bits(i2c_dev->base + STM32F7_I2C_CR1,
+ 			     STM32F7_I2C_CR1_PE);
+ }
+@@ -1588,7 +1617,8 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
+ 
+ 	/* Bus error */
+ 	if (status & STM32F7_I2C_ISR_BERR) {
+-		dev_err(dev, "<%s>: Bus error\n", __func__);
++		dev_err(dev, "<%s>: Bus error accessing addr 0x%x\n",
++			__func__, f7_msg->addr);
+ 		writel_relaxed(STM32F7_I2C_ICR_BERRCF, base + STM32F7_I2C_ICR);
+ 		stm32f7_i2c_release_bus(&i2c_dev->adap);
+ 		f7_msg->result = -EIO;
+@@ -1596,17 +1626,26 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
+ 
+ 	/* Arbitration loss */
+ 	if (status & STM32F7_I2C_ISR_ARLO) {
+-		dev_dbg(dev, "<%s>: Arbitration loss\n", __func__);
++		dev_dbg(dev, "<%s>: Arbitration loss accessing addr 0x%x\n",
++			__func__, f7_msg->addr);
+ 		writel_relaxed(STM32F7_I2C_ICR_ARLOCF, base + STM32F7_I2C_ICR);
+ 		f7_msg->result = -EAGAIN;
+ 	}
+ 
+ 	if (status & STM32F7_I2C_ISR_PECERR) {
+-		dev_err(dev, "<%s>: PEC error in reception\n", __func__);
++		dev_err(dev, "<%s>: PEC error in reception accessing addr 0x%x\n",
++			__func__, f7_msg->addr);
+ 		writel_relaxed(STM32F7_I2C_ICR_PECCF, base + STM32F7_I2C_ICR);
+ 		f7_msg->result = -EINVAL;
+ 	}
+ 
++	if (status & STM32F7_I2C_ISR_ALERT) {
++		dev_dbg(dev, "<%s>: SMBus alert received\n", __func__);
++		writel_relaxed(STM32F7_I2C_ICR_ALERTCF, base + STM32F7_I2C_ICR);
++		i2c_handle_smbus_alert(i2c_dev->alert->ara);
++		return IRQ_HANDLED;
++	}
++
+ 	if (!i2c_dev->slave_running) {
+ 		u32 mask;
+ 		/* Disable interrupts */
+@@ -1973,6 +2012,42 @@ static void stm32f7_i2c_disable_smbus_host(struct stm32f7_i2c_dev *i2c_dev)
+ 	}
+ }
+ 
++static int stm32f7_i2c_enable_smbus_alert(struct stm32f7_i2c_dev *i2c_dev)
++{
++	struct stm32f7_i2c_alert *alert;
++	struct i2c_adapter *adap = &i2c_dev->adap;
++	struct device *dev = i2c_dev->dev;
++	void __iomem *base = i2c_dev->base;
++
++	alert = devm_kzalloc(dev, sizeof(*alert), GFP_KERNEL);
++	if (!alert)
++		return -ENOMEM;
++
++	alert->ara = i2c_new_smbus_alert_device(adap, &alert->setup);
++	if (IS_ERR(alert->ara))
++		return PTR_ERR(alert->ara);
++
++	i2c_dev->alert = alert;
++
++	/* Enable SMBus Alert */
++	stm32f7_i2c_set_bits(base + STM32F7_I2C_CR1, STM32F7_I2C_CR1_ALERTEN);
++
++	return 0;
++}
++
++static void stm32f7_i2c_disable_smbus_alert(struct stm32f7_i2c_dev *i2c_dev)
++{
++	struct stm32f7_i2c_alert *alert = i2c_dev->alert;
++	void __iomem *base = i2c_dev->base;
++
++	if (alert) {
++		/* Disable SMBus Alert */
++		stm32f7_i2c_clr_bits(base + STM32F7_I2C_CR1,
++				     STM32F7_I2C_CR1_ALERTEN);
++		i2c_unregister_device(alert->ara);
++	}
++}
++
+ static u32 stm32f7_i2c_func(struct i2c_adapter *adap)
+ {
+ 	struct stm32f7_i2c_dev *i2c_dev = i2c_get_adapdata(adap);
+@@ -2164,6 +2239,16 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
+ 		}
+ 	}
+ 
++	if (of_property_read_bool(pdev->dev.of_node, "st,smbus-alert")) {
++		ret = stm32f7_i2c_enable_smbus_alert(i2c_dev);
++		if (ret) {
++			dev_err(i2c_dev->dev,
++				"failed to enable SMBus alert protocol (%d)\n",
++				ret);
++			goto i2c_disable_smbus_host;
++		}
++	}
++
+ 	dev_info(i2c_dev->dev, "STM32F7 I2C-%d bus adapter\n", adap->nr);
+ 
+ 	pm_runtime_mark_last_busy(i2c_dev->dev);
+@@ -2171,6 +2256,9 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
+ 
+ 	return 0;
+ 
++i2c_disable_smbus_host:
++	stm32f7_i2c_disable_smbus_host(i2c_dev);
++
+ i2c_adapter_remove:
+ 	i2c_del_adapter(adap);
+ 
+@@ -2205,6 +2293,7 @@ static int stm32f7_i2c_remove(struct platform_device *pdev)
+ {
+ 	struct stm32f7_i2c_dev *i2c_dev = platform_get_drvdata(pdev);
+ 
++	stm32f7_i2c_disable_smbus_alert(i2c_dev);
+ 	stm32f7_i2c_disable_smbus_host(i2c_dev);
+ 
+ 	i2c_del_adapter(&i2c_dev->adap);
+@@ -2236,64 +2325,25 @@ static int stm32f7_i2c_remove(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
+-static int __maybe_unused stm32f7_i2c_runtime_suspend(struct device *dev)
+-{
+-	struct stm32f7_i2c_dev *i2c_dev = dev_get_drvdata(dev);
+-
+-	if (!stm32f7_i2c_is_slave_registered(i2c_dev))
+-		clk_disable_unprepare(i2c_dev->clk);
+-
+-	return 0;
+-}
+-
+-static int __maybe_unused stm32f7_i2c_runtime_resume(struct device *dev)
+-{
+-	struct stm32f7_i2c_dev *i2c_dev = dev_get_drvdata(dev);
+-	int ret;
+-
+-	if (!stm32f7_i2c_is_slave_registered(i2c_dev)) {
+-		ret = clk_prepare_enable(i2c_dev->clk);
+-		if (ret) {
+-			dev_err(dev, "failed to prepare_enable clock\n");
+-			return ret;
+-		}
+-	}
+-
+-	return 0;
+-}
+-
+-#ifdef CONFIG_PM_SLEEP
+-static int stm32f7_i2c_regs_backup(struct stm32f7_i2c_dev *i2c_dev)
++static void __maybe_unused
++stm32f7_i2c_regs_backup(struct stm32f7_i2c_dev *i2c_dev)
+ {
+-	int ret;
+ 	struct stm32f7_i2c_regs *backup_regs = &i2c_dev->backup_regs;
+ 
+-	ret = pm_runtime_get_sync(i2c_dev->dev);
+-	if (ret < 0)
+-		return ret;
+-
+ 	backup_regs->cr1 = readl_relaxed(i2c_dev->base + STM32F7_I2C_CR1);
+ 	backup_regs->cr2 = readl_relaxed(i2c_dev->base + STM32F7_I2C_CR2);
+ 	backup_regs->oar1 = readl_relaxed(i2c_dev->base + STM32F7_I2C_OAR1);
+ 	backup_regs->oar2 = readl_relaxed(i2c_dev->base + STM32F7_I2C_OAR2);
+ 	backup_regs->tmgr = readl_relaxed(i2c_dev->base + STM32F7_I2C_TIMINGR);
+ 	stm32f7_i2c_write_fm_plus_bits(i2c_dev, false);
+-
+-	pm_runtime_put_sync(i2c_dev->dev);
+-
+-	return ret;
+ }
+ 
+-static int stm32f7_i2c_regs_restore(struct stm32f7_i2c_dev *i2c_dev)
++static void __maybe_unused
++stm32f7_i2c_regs_restore(struct stm32f7_i2c_dev *i2c_dev)
+ {
+ 	u32 cr1;
+-	int ret;
+ 	struct stm32f7_i2c_regs *backup_regs = &i2c_dev->backup_regs;
+ 
+-	ret = pm_runtime_get_sync(i2c_dev->dev);
+-	if (ret < 0)
+-		return ret;
+-
+ 	cr1 = readl_relaxed(i2c_dev->base + STM32F7_I2C_CR1);
+ 	if (cr1 & STM32F7_I2C_CR1_PE)
+ 		stm32f7_i2c_clr_bits(i2c_dev->base + STM32F7_I2C_CR1,
+@@ -2309,29 +2359,49 @@ static int stm32f7_i2c_regs_restore(struct stm32f7_i2c_dev *i2c_dev)
+ 	writel_relaxed(backup_regs->oar1, i2c_dev->base + STM32F7_I2C_OAR1);
+ 	writel_relaxed(backup_regs->oar2, i2c_dev->base + STM32F7_I2C_OAR2);
+ 	stm32f7_i2c_write_fm_plus_bits(i2c_dev, true);
++}
+ 
+-	pm_runtime_put_sync(i2c_dev->dev);
++static int __maybe_unused stm32f7_i2c_runtime_suspend(struct device *dev)
++{
++	struct stm32f7_i2c_dev *i2c_dev = dev_get_drvdata(dev);
+ 
+-	return ret;
++	stm32f7_i2c_regs_backup(i2c_dev);
++
++	if (!stm32f7_i2c_is_slave_registered(i2c_dev))
++		clk_disable_unprepare(i2c_dev->clk);
++
++	return 0;
+ }
+ 
+-static int stm32f7_i2c_suspend(struct device *dev)
++static int __maybe_unused stm32f7_i2c_runtime_resume(struct device *dev)
+ {
+ 	struct stm32f7_i2c_dev *i2c_dev = dev_get_drvdata(dev);
+ 	int ret;
+ 
+-	i2c_mark_adapter_suspended(&i2c_dev->adap);
+-
+-	if (!device_may_wakeup(dev) && !dev->power.wakeup_path) {
+-		ret = stm32f7_i2c_regs_backup(i2c_dev);
+-		if (ret < 0) {
+-			i2c_mark_adapter_resumed(&i2c_dev->adap);
++	if (!stm32f7_i2c_is_slave_registered(i2c_dev)) {
++		ret = clk_prepare_enable(i2c_dev->clk);
++		if (ret) {
++			dev_err(dev, "failed to prepare_enable clock\n");
+ 			return ret;
+ 		}
++	}
++
++	stm32f7_i2c_regs_restore(i2c_dev);
+ 
++	return 0;
++}
++
++#ifdef CONFIG_PM_SLEEP
++static int stm32f7_i2c_suspend(struct device *dev)
++{
++	struct stm32f7_i2c_dev *i2c_dev = dev_get_drvdata(dev);
++
++	i2c_mark_adapter_suspended(&i2c_dev->adap);
++
++	if (!device_may_wakeup(dev) && !device_wakeup_path(dev))
+ 		pinctrl_pm_select_sleep_state(dev);
+-		pm_runtime_force_suspend(dev);
+-	}
++
++	pm_runtime_force_suspend(dev);
+ 
+ 	return 0;
+ }
+@@ -2341,16 +2411,12 @@ static int stm32f7_i2c_resume(struct device *dev)
+ 	struct stm32f7_i2c_dev *i2c_dev = dev_get_drvdata(dev);
+ 	int ret;
+ 
+-	if (!device_may_wakeup(dev) && !dev->power.wakeup_path) {
+-		ret = pm_runtime_force_resume(dev);
+-		if (ret < 0)
+-			return ret;
+-		pinctrl_pm_select_default_state(dev);
++	ret = pm_runtime_force_resume(dev);
++	if (ret < 0)
++		return ret;
+ 
+-		ret = stm32f7_i2c_regs_restore(i2c_dev);
+-		if (ret < 0)
+-			return ret;
+-	}
++	if (!device_may_wakeup(dev) && !device_wakeup_path(dev))
++		pinctrl_pm_select_default_state(dev);
+ 
+ 	i2c_mark_adapter_resumed(&i2c_dev->adap);
+ 
+diff --git a/drivers/iio/adc/sd_adc_modulator.c b/drivers/iio/adc/sd_adc_modulator.c
+index 327cc2097f6c..ceb15029673c 100644
+--- a/drivers/iio/adc/sd_adc_modulator.c
++++ b/drivers/iio/adc/sd_adc_modulator.c
+@@ -9,10 +9,8 @@
+ #include <linux/iio/iio.h>
+ #include <linux/iio/triggered_buffer.h>
+ #include <linux/module.h>
+-#include <linux/mod_devicetable.h>
+-#include <linux/platform_device.h>
+-
+-static const struct iio_info iio_sd_mod_iio_info;
++#include <linux/of_device.h>
++#include <linux/regulator/consumer.h>
+ 
+ static const struct iio_chan_spec iio_sd_mod_ch = {
+ 	.type = IIO_VOLTAGE,
+@@ -22,34 +20,99 @@ static const struct iio_chan_spec iio_sd_mod_ch = {
+ 		.realbits = 1,
+ 		.shift = 0,
+ 	},
++	.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
++};
++
++static const struct iio_chan_spec iio_sd_mod_ch_ads = {
++	.type = IIO_VOLTAGE,
++	.indexed = 1,
++	.scan_type = {
++		.sign = 'u',
++		.realbits = 1,
++		.shift = 0,
++	},
++	.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
++	.differential = 1,
++};
++
++struct iio_sd_mod_priv {
++	int vref_mv;
++};
++
++static const struct of_device_id sd_adc_of_match[] = {
++	{ .compatible = "sd-modulator", .data = &iio_sd_mod_ch },
++	{ .compatible = "ads1201", .data = &iio_sd_mod_ch_ads },
++	{ }
++};
++
++static int iio_sd_mod_read_raw(struct iio_dev *indio_dev,
++			       struct iio_chan_spec const *chan, int *val,
++			       int *val2, long mask)
++{
++	struct iio_sd_mod_priv *priv = iio_priv(indio_dev);
++
++	switch (mask) {
++	case IIO_CHAN_INFO_SCALE:
++		*val = priv->vref_mv;
++		*val2 = chan->scan_type.realbits;
++		return IIO_VAL_INT;
++	}
++
++	return -EINVAL;
++}
++
++static const struct iio_info iio_sd_mod_iio_info = {
++	.read_raw = iio_sd_mod_read_raw,
+ };
+ 
+ static int iio_sd_mod_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
++	struct iio_sd_mod_priv *priv;
++	struct regulator *vref;
+ 	struct iio_dev *iio;
++	int ret;
+ 
+-	iio = devm_iio_device_alloc(dev, 0);
++	iio = devm_iio_device_alloc(dev, sizeof(*priv));
+ 	if (!iio)
+ 		return -ENOMEM;
+ 
++	iio->channels = (const struct iio_chan_spec *)
++			of_match_device(sd_adc_of_match, &pdev->dev)->data;
++
++	priv = iio_priv(iio);
++
++	iio->dev.parent = dev;
++	iio->dev.of_node = dev->of_node;
+ 	iio->name = dev_name(dev);
+ 	iio->info = &iio_sd_mod_iio_info;
+ 	iio->modes = INDIO_BUFFER_HARDWARE;
+-
+ 	iio->num_channels = 1;
+-	iio->channels = &iio_sd_mod_ch;
+ 
+-	platform_set_drvdata(pdev, iio);
++	vref = devm_regulator_get_optional(dev, "vref");
++	if (IS_ERR(vref)) {
++		ret = PTR_ERR(vref);
++		if (ret != -ENODEV) {
++			if (ret != -EPROBE_DEFER)
++				dev_err(dev, "vref get failed, %d\n", ret);
++			return ret;
++		}
++	}
++
++	if (!IS_ERR(vref)) {
++		ret = regulator_get_voltage(vref);
++		if (ret < 0) {
++			dev_err(dev, "vref get failed, %d\n", ret);
++			return ret;
++		}
++
++		priv->vref_mv = ret / 1000;
++		dev_dbg(dev, "vref+=%dmV\n", priv->vref_mv);
++	}
+ 
+ 	return devm_iio_device_register(&pdev->dev, iio);
+ }
+ 
+-static const struct of_device_id sd_adc_of_match[] = {
+-	{ .compatible = "sd-modulator" },
+-	{ .compatible = "ads1201" },
+-	{ }
+-};
+ MODULE_DEVICE_TABLE(of, sd_adc_of_match);
+ 
+ static struct platform_driver iio_sd_mod_adc = {
+diff --git a/drivers/iio/adc/stm32-adc-core.c b/drivers/iio/adc/stm32-adc-core.c
+index a83199b212a4..9d1ad6e38e85 100644
+--- a/drivers/iio/adc/stm32-adc-core.c
++++ b/drivers/iio/adc/stm32-adc-core.c
+@@ -200,7 +200,7 @@ static int stm32h7_adc_clk_sel(struct platform_device *pdev,
+ {
+ 	u32 ckmode, presc, val;
+ 	unsigned long rate;
+-	int i, div;
++	int i, div, duty;
+ 
+ 	/* stm32h7 bus clock is common for all ADC instances (mandatory) */
+ 	if (!priv->bclk) {
+@@ -224,6 +224,11 @@ static int stm32h7_adc_clk_sel(struct platform_device *pdev,
+ 			return -EINVAL;
+ 		}
+ 
++		/* If duty is an error, kindly use at least /2 divider */
++		duty = clk_get_scaled_duty_cycle(priv->aclk, 100);
++		if (duty < 0)
++			dev_warn(&pdev->dev, "adc clock duty: %d\n", duty);
++
+ 		for (i = 0; i < ARRAY_SIZE(stm32h7_adc_ckmodes_spec); i++) {
+ 			ckmode = stm32h7_adc_ckmodes_spec[i].ckmode;
+ 			presc = stm32h7_adc_ckmodes_spec[i].presc;
+@@ -232,6 +237,13 @@ static int stm32h7_adc_clk_sel(struct platform_device *pdev,
+ 			if (ckmode)
+ 				continue;
+ 
++			/*
++			 * For proper operation, clock duty cycle range is 49%
++			 * to 51%. Apply at least /2 prescaler otherwise.
++			 */
++			if (div == 1 && (duty < 49 || duty > 51))
++				continue;
++
+ 			if ((rate / div) <= priv->max_clk_rate)
+ 				goto out;
+ 		}
+@@ -244,6 +256,10 @@ static int stm32h7_adc_clk_sel(struct platform_device *pdev,
+ 		return -EINVAL;
+ 	}
+ 
++	duty = clk_get_scaled_duty_cycle(priv->bclk, 100);
++	if (duty < 0)
++		dev_warn(&pdev->dev, "bus clock duty: %d\n", duty);
++
+ 	for (i = 0; i < ARRAY_SIZE(stm32h7_adc_ckmodes_spec); i++) {
+ 		ckmode = stm32h7_adc_ckmodes_spec[i].ckmode;
+ 		presc = stm32h7_adc_ckmodes_spec[i].presc;
+@@ -252,6 +268,9 @@ static int stm32h7_adc_clk_sel(struct platform_device *pdev,
+ 		if (!ckmode)
+ 			continue;
+ 
++		if (div == 1 && (duty < 49 || duty > 51))
++			continue;
++
+ 		if ((rate / div) <= priv->max_clk_rate)
+ 			goto out;
+ 	}
+diff --git a/drivers/iio/adc/stm32-adc.c b/drivers/iio/adc/stm32-adc.c
+index 16c02c30dec7..c067c994dae2 100644
+--- a/drivers/iio/adc/stm32-adc.c
++++ b/drivers/iio/adc/stm32-adc.c
+@@ -1353,7 +1353,7 @@ static int stm32_adc_set_watermark(struct iio_dev *indio_dev, unsigned int val)
+ 	 * dma cyclic transfers are used, buffer is split into two periods.
+ 	 * There should be :
+ 	 * - always one buffer (period) dma is working on
+-	 * - one buffer (period) driver can push with iio_trigger_poll().
++	 * - one buffer (period) driver can push data.
+ 	 */
+ 	watermark = min(watermark, val * (unsigned)(sizeof(u16)));
+ 	adc->rx_buf_sz = min(rx_buf_sz, watermark * 2 * adc->num_conv);
+@@ -1616,31 +1616,14 @@ static irqreturn_t stm32_adc_trigger_handler(int irq, void *p)
+ 
+ 	dev_dbg(&indio_dev->dev, "%s bufi=%d\n", __func__, adc->bufi);
+ 
+-	if (!adc->dma_chan) {
+-		/* reset buffer index */
+-		adc->bufi = 0;
+-		iio_push_to_buffers_with_timestamp(indio_dev, adc->buffer,
+-						   pf->timestamp);
+-	} else {
+-		int residue = stm32_adc_dma_residue(adc);
+-
+-		while (residue >= indio_dev->scan_bytes) {
+-			u16 *buffer = (u16 *)&adc->rx_buf[adc->bufi];
+-
+-			iio_push_to_buffers_with_timestamp(indio_dev, buffer,
+-							   pf->timestamp);
+-			residue -= indio_dev->scan_bytes;
+-			adc->bufi += indio_dev->scan_bytes;
+-			if (adc->bufi >= adc->rx_buf_sz)
+-				adc->bufi = 0;
+-		}
+-	}
+-
++	/* reset buffer index */
++	adc->bufi = 0;
++	iio_push_to_buffers_with_timestamp(indio_dev, adc->buffer,
++					   pf->timestamp);
+ 	iio_trigger_notify_done(indio_dev->trig);
+ 
+ 	/* re-enable eoc irq */
+-	if (!adc->dma_chan)
+-		stm32_adc_conv_irq_enable(adc);
++	stm32_adc_conv_irq_enable(adc);
+ 
+ 	return IRQ_HANDLED;
+ }
+diff --git a/drivers/iio/adc/stm32-dfsdm-adc.c b/drivers/iio/adc/stm32-dfsdm-adc.c
+index 9234f14167b7..9d689ed9723a 100644
+--- a/drivers/iio/adc/stm32-dfsdm-adc.c
++++ b/drivers/iio/adc/stm32-dfsdm-adc.c
+@@ -10,6 +10,7 @@
+ #include <linux/dma-mapping.h>
+ #include <linux/iio/adc/stm32-dfsdm-adc.h>
+ #include <linux/iio/buffer.h>
++#include <linux/iio/consumer.h>
+ #include <linux/iio/hw-consumer.h>
+ #include <linux/iio/sysfs.h>
+ #include <linux/iio/timer/stm32-lptim-trigger.h>
+@@ -67,6 +68,13 @@ struct stm32_dfsdm_dev_data {
+ 	const struct regmap_config *regmap_cfg;
+ };
+ 
++struct stm32_dfsdm_sd_chan_info {
++	int scale_val;
++	int scale_val2;
++	int offset;
++	unsigned int differential;
++};
++
+ struct stm32_dfsdm_adc {
+ 	struct stm32_dfsdm *dfsdm;
+ 	const struct stm32_dfsdm_dev_data *dev_data;
+@@ -79,6 +87,7 @@ struct stm32_dfsdm_adc {
+ 	struct iio_hw_consumer *hwc;
+ 	struct completion completion;
+ 	u32 *buffer;
++	struct stm32_dfsdm_sd_chan_info *sd_chan;
+ 
+ 	/* Audio specific */
+ 	unsigned int spi_freq;  /* SPI bus clock frequency */
+@@ -1224,7 +1233,10 @@ static int stm32_dfsdm_read_raw(struct iio_dev *indio_dev,
+ 				int *val2, long mask)
+ {
+ 	struct stm32_dfsdm_adc *adc = iio_priv(indio_dev);
+-	int ret;
++	struct stm32_dfsdm_filter *fl = &adc->dfsdm->fl_list[adc->fl_id];
++	struct stm32_dfsdm_filter_osr *flo = &fl->flo[fl->fast];
++	u32 max = flo->max << (flo->lshift - chan->scan_type.shift);
++	int ret, idx = chan->scan_index;
+ 
+ 	switch (mask) {
+ 	case IIO_CHAN_INFO_RAW:
+@@ -1260,6 +1272,39 @@ static int stm32_dfsdm_read_raw(struct iio_dev *indio_dev,
+ 		*val = adc->sample_freq;
+ 
+ 		return IIO_VAL_INT;
++
++	case IIO_CHAN_INFO_SCALE:
++		/*
++		 * Scale is expressed in mV.
++		 * When fast mode is disabled, actual resolution may be lower
++		 * than 2^n, where n=realbits-1.
++		 * This leads to underestimating input voltage. To
++		 * compensate this deviation, the voltage reference can be
++		 * corrected with a factor = realbits resolution / actual max
++		 */
++		*val = div_u64((u64)adc->sd_chan[idx].scale_val *
++			       (u64)BIT(DFSDM_DATA_RES - 1), max);
++		*val2 = chan->scan_type.realbits;
++		if (adc->sd_chan[idx].differential)
++			*val *= 2;
++		return IIO_VAL_FRACTIONAL_LOG2;
++
++	case IIO_CHAN_INFO_OFFSET:
++		/*
++		 * DFSDM output data are in the range [-2^n,2^n-1],
++		 * with n=realbits-1.
++		 * - Differential modulator:
++		 * Offset correspond to SD modulator offset.
++		 * - Single ended modulator:
++		 * Input is in [0V,Vref] range, where 0V corresponds to -2^n.
++		 * Add 2^n to offset. (i.e. middle of input range)
++		 * offset = offset(sd) * vref / res(sd) * max / vref.
++		 */
++		*val = div_u64((u64)max * adc->sd_chan[idx].offset,
++			       BIT(adc->sd_chan[idx].scale_val2 - 1));
++		if (!adc->sd_chan[idx].differential)
++			*val += max;
++		return IIO_VAL_INT;
+ 	}
+ 
+ 	return -EINVAL;
+@@ -1384,7 +1429,9 @@ static int stm32_dfsdm_adc_chan_init_one(struct iio_dev *indio_dev,
+ 	 * IIO_CHAN_INFO_RAW: used to compute regular conversion
+ 	 * IIO_CHAN_INFO_OVERSAMPLING_RATIO: used to set oversampling
+ 	 */
+-	ch->info_mask_separate = BIT(IIO_CHAN_INFO_RAW);
++	ch->info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
++				 BIT(IIO_CHAN_INFO_SCALE) |
++				 BIT(IIO_CHAN_INFO_OFFSET);
+ 	ch->info_mask_shared_by_all = BIT(IIO_CHAN_INFO_OVERSAMPLING_RATIO) |
+ 					BIT(IIO_CHAN_INFO_SAMP_FREQ);
+ 
+@@ -1394,7 +1441,7 @@ static int stm32_dfsdm_adc_chan_init_one(struct iio_dev *indio_dev,
+ 		ch->scan_type.shift = 8;
+ 	}
+ 	ch->scan_type.sign = 's';
+-	ch->scan_type.realbits = 24;
++	ch->scan_type.realbits = DFSDM_DATA_RES;
+ 	ch->scan_type.storagebits = 32;
+ 
+ 	return stm32_dfsdm_chan_configure(adc->dfsdm,
+@@ -1435,8 +1482,10 @@ static int stm32_dfsdm_adc_init(struct device *dev, struct iio_dev *indio_dev)
+ {
+ 	struct iio_chan_spec *ch;
+ 	struct stm32_dfsdm_adc *adc = iio_priv(indio_dev);
++	struct iio_channel *channels, *chan;
++	struct stm32_dfsdm_sd_chan_info *sd_chan;
+ 	int num_ch;
+-	int ret, chan_idx;
++	int ret, chan_idx, val2;
+ 
+ 	adc->oversamp = DFSDM_DEFAULT_OVERSAMPLING;
+ 	ret = stm32_dfsdm_compute_all_osrs(indio_dev, adc->oversamp);
+@@ -1460,6 +1509,21 @@ static int stm32_dfsdm_adc_init(struct device *dev, struct iio_dev *indio_dev)
+ 	if (!ch)
+ 		return -ENOMEM;
+ 
++	/* Get SD modulator channels */
++	channels = iio_channel_get_all(&indio_dev->dev);
++	if (IS_ERR(channels)) {
++		dev_err(&indio_dev->dev, "Failed to get channel %ld\n",
++			PTR_ERR(channels));
++		return PTR_ERR(channels);
++	}
++	chan = &channels[0];
++
++	adc->sd_chan = devm_kzalloc(&indio_dev->dev,
++				    sizeof(*adc->sd_chan) * num_ch, GFP_KERNEL);
++	if (!adc->sd_chan)
++		return -ENOMEM;
++	sd_chan = adc->sd_chan;
++
+ 	for (chan_idx = 0; chan_idx < num_ch; chan_idx++) {
+ 		ch[chan_idx].scan_index = chan_idx;
+ 		ret = stm32_dfsdm_adc_chan_init_one(indio_dev, &ch[chan_idx]);
+@@ -1467,6 +1531,38 @@ static int stm32_dfsdm_adc_init(struct device *dev, struct iio_dev *indio_dev)
+ 			dev_err(&indio_dev->dev, "Channels init failed\n");
+ 			return ret;
+ 		}
++
++		if (!chan->indio_dev)
++			return -EINVAL;
++
++		ret = iio_read_channel_scale(chan, &sd_chan->scale_val,
++					     &sd_chan->scale_val2);
++		if (ret < 0) {
++			dev_err(&indio_dev->dev,
++				"Failed to get channel %d scale\n", chan_idx);
++			return ret;
++		}
++
++		if (iio_channel_has_info(chan->channel, IIO_CHAN_INFO_OFFSET)) {
++			ret = iio_read_channel_offset(chan, &sd_chan->offset,
++						      &val2);
++			if (ret < 0) {
++				dev_err(&indio_dev->dev,
++					"Failed to get channel %d offset\n",
++					chan_idx);
++				return ret;
++			}
++		}
++
++		sd_chan->differential = chan->channel->differential;
++
++		dev_dbg(&indio_dev->dev, "Channel %d %s scale ref=%d offset=%d",
++			chan_idx, chan->channel->differential ?
++			"differential" : "single-ended",
++			sd_chan->scale_val, sd_chan->offset);
++
++		chan++;
++		sd_chan++;
+ 	}
+ 
+ 	indio_dev->num_channels = num_ch;
+@@ -1521,6 +1617,7 @@ static const struct of_device_id stm32_dfsdm_adc_match[] = {
+ 	},
+ 	{}
+ };
++MODULE_DEVICE_TABLE(of, stm32_dfsdm_adc_match);
+ 
+ static int stm32_dfsdm_adc_probe(struct platform_device *pdev)
+ {
+diff --git a/drivers/iio/adc/stm32-dfsdm-core.c b/drivers/iio/adc/stm32-dfsdm-core.c
+index 42a7377704a4..627557d8efb0 100644
+--- a/drivers/iio/adc/stm32-dfsdm-core.c
++++ b/drivers/iio/adc/stm32-dfsdm-core.c
+@@ -6,6 +6,7 @@
+  * Author(s): Arnaud Pouliquen <arnaud.pouliquen@st.com> for STMicroelectronics.
+  */
+ 
++#include <linux/bitfield.h>
+ #include <linux/clk.h>
+ #include <linux/iio/iio.h>
+ #include <linux/iio/sysfs.h>
+@@ -20,6 +21,7 @@
+ #include "stm32-dfsdm.h"
+ 
+ struct stm32_dfsdm_dev_data {
++	u32 ipid;
+ 	unsigned int num_filters;
+ 	unsigned int num_channels;
+ 	const struct regmap_config *regmap_cfg;
+@@ -27,8 +29,6 @@ struct stm32_dfsdm_dev_data {
+ 
+ #define STM32H7_DFSDM_NUM_FILTERS	4
+ #define STM32H7_DFSDM_NUM_CHANNELS	8
+-#define STM32MP1_DFSDM_NUM_FILTERS	6
+-#define STM32MP1_DFSDM_NUM_CHANNELS	8
+ 
+ static bool stm32_dfsdm_volatile_reg(struct device *dev, unsigned int reg)
+ {
+@@ -75,8 +75,7 @@ static const struct regmap_config stm32mp1_dfsdm_regmap_cfg = {
+ };
+ 
+ static const struct stm32_dfsdm_dev_data stm32mp1_dfsdm_data = {
+-	.num_filters = STM32MP1_DFSDM_NUM_FILTERS,
+-	.num_channels = STM32MP1_DFSDM_NUM_CHANNELS,
++	.ipid = STM32MP15_IPIDR_NUMBER,
+ 	.regmap_cfg = &stm32mp1_dfsdm_regmap_cfg,
+ };
+ 
+@@ -298,6 +297,64 @@ static const struct of_device_id stm32_dfsdm_of_match[] = {
+ };
+ MODULE_DEVICE_TABLE(of, stm32_dfsdm_of_match);
+ 
++static int stm32_dfsdm_config_check(struct platform_device *pdev,
++				    struct dfsdm_priv *priv,
++				    const struct stm32_dfsdm_dev_data *dev_data)
++{
++	struct device_node *np = pdev->dev.of_node;
++	struct device_node *child;
++	struct stm32_dfsdm *dfsdm = &priv->dfsdm;
++	const char *compat;
++	int ret, count = 0;
++	u32 id, val;
++
++	if (!dev_data->ipid) {
++		dfsdm->num_fls = dev_data->num_filters;
++		dfsdm->num_chs = dev_data->num_channels;
++		return 0;
++	}
++
++	ret = regmap_read(dfsdm->regmap, DFSDM_IPIDR, &val);
++	if (ret)
++		return ret;
++
++	id = FIELD_GET(DFSDM_IPIDR_MASK, val);
++	if (id != dev_data->ipid) {
++		dev_err(&pdev->dev, "Unexpected IP version: 0x%x", id);
++		return -EINVAL;
++	}
++
++	for_each_child_of_node(np, child) {
++		ret = of_property_read_string(child, "compatible", &compat);
++		if (ret)
++			continue;
++		count++;
++	}
++
++	ret = regmap_read(dfsdm->regmap, DFSDM_HWCFGR, &val);
++	if (ret)
++		return ret;
++
++	dfsdm->num_fls = FIELD_GET(DFSDM_HWCFGR_NBF_MASK, val);
++	dfsdm->num_chs = FIELD_GET(DFSDM_HWCFGR_NBT_MASK, val);
++
++	if (count > dfsdm->num_fls) {
++		dev_err(&pdev->dev, "Unexpected child number: %d", count);
++		return -EINVAL;
++	}
++
++	ret = regmap_read(dfsdm->regmap, DFSDM_VERR, &val);
++	if (ret)
++		return ret;
++
++	dev_dbg(&pdev->dev, "DFSDM version: %lu.%lu. %d channels/%d filters\n",
++		FIELD_GET(DFSDM_VERR_MAJREV_MASK, val),
++		FIELD_GET(DFSDM_VERR_MINREV_MASK, val),
++		dfsdm->num_chs, dfsdm->num_fls);
++
++	return 0;
++}
++
+ static int stm32_dfsdm_probe(struct platform_device *pdev)
+ {
+ 	struct dfsdm_priv *priv;
+@@ -314,18 +371,6 @@ static int stm32_dfsdm_probe(struct platform_device *pdev)
+ 	dev_data = of_device_get_match_data(&pdev->dev);
+ 
+ 	dfsdm = &priv->dfsdm;
+-	dfsdm->fl_list = devm_kcalloc(&pdev->dev, dev_data->num_filters,
+-				      sizeof(*dfsdm->fl_list), GFP_KERNEL);
+-	if (!dfsdm->fl_list)
+-		return -ENOMEM;
+-
+-	dfsdm->num_fls = dev_data->num_filters;
+-	dfsdm->ch_list = devm_kcalloc(&pdev->dev, dev_data->num_channels,
+-				      sizeof(*dfsdm->ch_list),
+-				      GFP_KERNEL);
+-	if (!dfsdm->ch_list)
+-		return -ENOMEM;
+-	dfsdm->num_chs = dev_data->num_channels;
+ 
+ 	ret = stm32_dfsdm_parse_of(pdev, priv);
+ 	if (ret < 0)
+@@ -341,6 +386,20 @@ static int stm32_dfsdm_probe(struct platform_device *pdev)
+ 		return ret;
+ 	}
+ 
++	ret = stm32_dfsdm_config_check(pdev, priv, dev_data);
++	if (ret < 0)
++		return ret;
++
++	dfsdm->fl_list = devm_kcalloc(&pdev->dev, dfsdm->num_fls,
++				      sizeof(*dfsdm->fl_list), GFP_KERNEL);
++	if (!dfsdm->fl_list)
++		return -ENOMEM;
++
++	dfsdm->ch_list = devm_kcalloc(&pdev->dev, dfsdm->num_chs,
++				      sizeof(*dfsdm->ch_list), GFP_KERNEL);
++	if (!dfsdm->ch_list)
++		return -ENOMEM;
++
+ 	platform_set_drvdata(pdev, dfsdm);
+ 
+ 	ret = stm32_dfsdm_clk_prepare_enable(dfsdm);
+diff --git a/drivers/iio/adc/stm32-dfsdm.h b/drivers/iio/adc/stm32-dfsdm.h
+index 4afc1f528b78..4f230e2a7692 100644
+--- a/drivers/iio/adc/stm32-dfsdm.h
++++ b/drivers/iio/adc/stm32-dfsdm.h
+@@ -13,25 +13,28 @@
+ 
+ /*
+  * STM32 DFSDM - global register map
+- * ________________________________________________________
+- * | Offset |                 Registers block             |
+- * --------------------------------------------------------
+- * | 0x000  |      CHANNEL 0 + COMMON CHANNEL FIELDS      |
+- * --------------------------------------------------------
+- * | 0x020  |                CHANNEL 1                    |
+- * --------------------------------------------------------
+- * | ...    |                .....                        |
+- * --------------------------------------------------------
+- * | 0x0E0  |                CHANNEL 7                    |
+- * --------------------------------------------------------
+- * | 0x100  |      FILTER  0 + COMMON  FILTER FIELDs      |
+- * --------------------------------------------------------
+- * | 0x200  |                FILTER  1                    |
+- * --------------------------------------------------------
+- * | 0x300  |                FILTER  2                    |
+- * --------------------------------------------------------
+- * | 0x400  |                FILTER  3                    |
+- * --------------------------------------------------------
++ * __________________________________________________________
++ * | Offset   |                 Registers block             |
++ * ----------------------------------------------------------
++ * | 0x000    |      CHANNEL 0 + COMMON CHANNEL FIELDS      |
++ * ----------------------------------------------------------
++ * | 0x020    |                CHANNEL 1                    |
++ * ----------------------------------------------------------
++ * | ...      |                .....                        |
++ * ----------------------------------------------------------
++ * | 0x20 x n |                CHANNEL n                    |
++ * ----------------------------------------------------------
++ * | 0x100    |      FILTER  0 + COMMON FILTER FIELDs       |
++ * ----------------------------------------------------------
++ * | 0x200    |                FILTER  1                    |
++ * ----------------------------------------------------------
++ * |          |                .....                        |
++ * ----------------------------------------------------------
++ * | 0x100 x m|                FILTER  m                    |
++ * ----------------------------------------------------------
++ * ----------------------------------------------------------
++ * | 0x7F0-7FC|         Identification registers            |
++ * ----------------------------------------------------------
+  */
+ 
+ /*
+@@ -231,6 +234,34 @@
+ #define DFSDM_AWCFR_AWHTF_MASK	GENMASK(15, 8)
+ #define DFSDM_AWCFR_AWHTF(v)	FIELD_PREP(DFSDM_AWCFR_AWHTF_MASK, v)
+ 
++/*
++ * Identification register definitions
++ */
++#define DFSDM_HWCFGR		0x7F0
++#define DFSDM_VERR		0x7F4
++#define DFSDM_IPIDR		0x7F8
++#define DFSDM_SIDR		0x7FC
++
++/* HWCFGR: Hardware configuration register */
++#define DFSDM_HWCFGR_NBT_SHIFT	0
++#define DFSDM_HWCFGR_NBT_MASK	GENMASK(7, 0)
++#define DFSDM_HWCFGR_NBF_SHIFT	8
++#define DFSDM_HWCFGR_NBF_MASK	GENMASK(15, 8)
++
++/* VERR: Version register */
++#define DFSDM_VERR_MINREV_SHIFT	0
++#define DFSDM_VERR_MINREV_MASK	GENMASK(3, 0)
++#define DFSDM_VERR_MAJREV_SHIFT	4
++#define DFSDM_VERR_MAJREV_MASK	GENMASK(7, 4)
++
++/* IPDR: Identification register */
++#define DFSDM_IPIDR_MASK	GENMASK(31, 0)
++
++/* SIDR: Size identification register */
++#define DFSDM_SIDR_MASK		GENMASK(31, 0)
++
++#define STM32MP15_IPIDR_NUMBER	0x00110031
++
+ /* DFSDM filter order  */
+ enum stm32_dfsdm_sinc_order {
+ 	DFSDM_FASTSINC_ORDER, /* FastSinc filter type */
+diff --git a/drivers/irqchip/irq-stm32-exti.c b/drivers/irqchip/irq-stm32-exti.c
+index 8662d7b7b262..e1c975c27a2e 100644
+--- a/drivers/irqchip/irq-stm32-exti.c
++++ b/drivers/irqchip/irq-stm32-exti.c
+@@ -193,7 +193,16 @@ static const struct stm32_desc_irq stm32mp1_desc_irq[] = {
+ 	{ .exti = 23, .irq_parent = 72, .chip = &stm32_exti_h_chip_direct },
+ 	{ .exti = 24, .irq_parent = 95, .chip = &stm32_exti_h_chip_direct },
+ 	{ .exti = 25, .irq_parent = 107, .chip = &stm32_exti_h_chip_direct },
++	{ .exti = 26, .irq_parent = 37, .chip = &stm32_exti_h_chip_direct },
++	{ .exti = 27, .irq_parent = 38, .chip = &stm32_exti_h_chip_direct },
++	{ .exti = 28, .irq_parent = 39, .chip = &stm32_exti_h_chip_direct },
++	{ .exti = 29, .irq_parent = 71, .chip = &stm32_exti_h_chip_direct },
+ 	{ .exti = 30, .irq_parent = 52, .chip = &stm32_exti_h_chip_direct },
++	{ .exti = 31, .irq_parent = 53, .chip = &stm32_exti_h_chip_direct },
++	{ .exti = 32, .irq_parent = 82, .chip = &stm32_exti_h_chip_direct },
++	{ .exti = 33, .irq_parent = 83, .chip = &stm32_exti_h_chip_direct },
++	{ .exti = 43, .irq_parent = 75, .chip = &stm32_exti_h_chip_direct },	
++	{ .exti = 44, .irq_parent = 98, .chip = &stm32_exti_h_chip_direct },
+ 	{ .exti = 47, .irq_parent = 93, .chip = &stm32_exti_h_chip_direct },
+ 	{ .exti = 48, .irq_parent = 138, .chip = &stm32_exti_h_chip_direct },
+ 	{ .exti = 50, .irq_parent = 139, .chip = &stm32_exti_h_chip_direct },
+@@ -534,6 +543,9 @@ static int stm32_exti_h_set_type(struct irq_data *d, unsigned int type)
+ unlock:
+ 	raw_spin_unlock(&chip_data->rlock);
+ 
++	if (d->parent_data->chip)
++		irq_chip_set_type_parent(d, type);
++
+ 	return err;
+ }
+ 
+@@ -551,6 +563,9 @@ static int stm32_exti_h_set_wake(struct irq_data *d, unsigned int on)
+ 
+ 	raw_spin_unlock(&chip_data->rlock);
+ 
++	if (d->parent_data->chip)
++		irq_chip_set_wake_parent(d, on);
++
+ 	return 0;
+ }
+ 
+@@ -560,7 +575,13 @@ static int stm32_exti_h_set_affinity(struct irq_data *d,
+ 	if (d->parent_data->chip)
+ 		return irq_chip_set_affinity_parent(d, dest, force);
+ 
+-	return -EINVAL;
++	return IRQ_SET_MASK_OK_DONE;
++}
++
++static void stm32_exti_h_ack(struct irq_data *d)
++{
++	if (d->parent_data->chip)
++		irq_chip_ack_parent(d);
+ }
+ 
+ static int __maybe_unused stm32_exti_h_suspend(void)
+@@ -624,6 +645,7 @@ static int stm32_exti_h_retrigger(struct irq_data *d)
+ static struct irq_chip stm32_exti_h_chip = {
+ 	.name			= "stm32-exti-h",
+ 	.irq_eoi		= stm32_exti_h_eoi,
++	.irq_ack		= stm32_exti_h_ack,
+ 	.irq_mask		= stm32_exti_h_mask,
+ 	.irq_unmask		= stm32_exti_h_unmask,
+ 	.irq_retrigger		= stm32_exti_h_retrigger,
+@@ -637,8 +659,8 @@ static struct irq_chip stm32_exti_h_chip_direct = {
+ 	.name			= "stm32-exti-h-direct",
+ 	.irq_eoi		= irq_chip_eoi_parent,
+ 	.irq_ack		= irq_chip_ack_parent,
+-	.irq_mask		= irq_chip_mask_parent,
+-	.irq_unmask		= irq_chip_unmask_parent,
++	.irq_mask		= stm32_exti_h_mask,
++	.irq_unmask		= stm32_exti_h_unmask,
+ 	.irq_retrigger		= irq_chip_retrigger_hierarchy,
+ 	.irq_set_type		= irq_chip_set_type_parent,
+ 	.irq_set_wake		= stm32_exti_h_set_wake,
+@@ -669,14 +691,28 @@ static int stm32_exti_h_domain_alloc(struct irq_domain *dm,
+ 
+ 	irq_domain_set_hwirq_and_chip(dm, virq, hwirq, desc->chip,
+ 				      chip_data);
+-	if (desc->irq_parent) {
++	/*
++	 * EXTI 55 to 60 are mapped to PWR interrupt controller.
++	 * The hwirq translation is done diferently than for GIC.
++	 */
++	if (hwirq >= 55 && hwirq <= 60) {
+ 		p_fwspec.fwnode = dm->parent->fwnode;
+-		p_fwspec.param_count = 3;
+-		p_fwspec.param[0] = GIC_SPI;
+-		p_fwspec.param[1] = desc->irq_parent;
+-		p_fwspec.param[2] = IRQ_TYPE_LEVEL_HIGH;
++		p_fwspec.param_count = 2;
++		p_fwspec.param[0] = hwirq - 55;
++		p_fwspec.param[1] = fwspec->param[1];
+ 
+ 		return irq_domain_alloc_irqs_parent(dm, virq, 1, &p_fwspec);
++	} else {
++		if (desc->irq_parent) {
++			p_fwspec.fwnode = dm->parent->fwnode;
++			p_fwspec.param_count = 3;
++			p_fwspec.param[0] = GIC_SPI;
++			p_fwspec.param[1] = desc->irq_parent;
++			p_fwspec.param[2] = IRQ_TYPE_LEVEL_HIGH;
++
++			return irq_domain_alloc_irqs_parent(dm, virq, 1,
++							    &p_fwspec);
++		}
+ 	}
+ 
+ 	return 0;
+@@ -841,11 +877,12 @@ static int stm32_exti_probe(struct platform_device *pdev)
+ {
+ 	int ret, i;
+ 	struct device *dev = &pdev->dev;
+-	struct device_node *np = dev->of_node;
++	struct device_node *child, *np = dev->of_node;
+ 	struct irq_domain *parent_domain, *domain;
+ 	struct stm32_exti_host_data *host_data;
+ 	const struct stm32_exti_drv_data *drv_data;
+ 	struct resource *res;
++	u32 nirqs;
+ 
+ 	host_data = devm_kzalloc(dev, sizeof(*host_data), GFP_KERNEL);
+ 	if (!host_data)
+@@ -913,6 +950,34 @@ static int stm32_exti_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return ret;
+ 
++	for_each_child_of_node(np, child) {
++		parent_domain = irq_find_host(of_irq_find_parent(child));
++		if (!parent_domain) {
++			dev_err(dev, "child interrupt-parent not found\n");
++			return -EINVAL;
++		}
++
++		ret = of_property_read_u32(child, "st,irq-number", &nirqs);
++		if (ret || !nirqs) {
++			dev_err(dev, "Missing or bad irq-number property\n");
++			return -EINVAL;
++		}
++
++		domain = irq_domain_add_hierarchy(parent_domain, 0, nirqs,
++						  child,
++						  &stm32_exti_h_domain_ops,
++						  host_data);
++		if (!domain) {
++			dev_err(dev, "Could not register exti domain\n");
++			return -ENOMEM;
++		}
++
++		ret = devm_add_action_or_reset(dev, stm32_exti_remove_irq,
++					       domain);
++		if (ret)
++			return ret;
++	}
++
+ 	stm32_exti_h_syscore_init(host_data);
+ 
+ 	return 0;
+-- 
+2.17.1
+
