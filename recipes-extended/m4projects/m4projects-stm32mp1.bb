@@ -6,10 +6,10 @@ LICENSE = " \
     "
 LIC_FILES_CHKSUM = "file://License.md;md5=5272d12bc1c2e29908b787134d73dae9"
 
-SRC_URI = "git://github.com/STMicroelectronics/STM32CubeMP1.git;protocol=https;branch=master"
-SRCREV  = "39fe4ecb2871a844720f6e039f7fa91be9294bdf"
+SRC_URI = "git://gitolite@codex.cro.st.com/stm32cube/stm32cube/stm32cube_fw_mp1.git;protocol=ssh;branch=master"
+SRCREV  = "f45764e8ffdc684c4045183b744533e5f58d232f"
 
-PV = "1.3.0"
+PV = "1.4.0"
 
 S = "${WORKDIR}/git"
 
@@ -42,6 +42,7 @@ PROJECTS_LIST_EV1 = " \
 	STM32MP157C-EV1/Applications/CoproSync/CoproSync_ShutDown \
 	STM32MP157C-EV1/Demonstrations/AI_Character_Recognition \
 "
+
 PROJECTS_LIST_DK2 = " \
 	STM32MP157C-DK2/Examples/ADC/ADC_SingleConversion_TriggerTimer_DMA \
 	STM32MP157C-DK2/Examples/Cortex/CORTEXM_MPU \
@@ -64,9 +65,9 @@ PROJECTS_LIST_DK2 = " \
 	STM32MP157C-DK2/Examples/WWDG/WWDG_Example \
 	STM32MP157C-DK2/Applications/OpenAMP/OpenAMP_raw \
 	STM32MP157C-DK2/Applications/OpenAMP/OpenAMP_TTY_echo \
-	STM32MP157C-DK2/Applications/OpenAMP/OpenAMP_TTY_echo_wakeup \
 	STM32MP157C-DK2/Applications/FreeRTOS/FreeRTOS_ThreadCreation \
 	STM32MP157C-DK2/Applications/CoproSync/CoproSync_ShutDown \
+	STM32MP157C-DK2/Applications/OpenAMP/OpenAMP_TTY_echo_wakeup \
 	STM32MP157C-DK2/Demonstrations/AI_Character_Recognition \
 "
 

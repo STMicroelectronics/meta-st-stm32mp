@@ -58,7 +58,7 @@ do_compile() {
 
                 BIN_NAME=$(basename ${project})
                 PROJECT_DIR=${B}/${project}
-                PROJECT_APP="${S}/Projects/${project}/SW4STM32/${BIN_NAME}"
+                PROJECT_APP="${S}/Projects/${project}/STM32CubeIDE/CM4"
 
                 bbnote "BIN_NAME     : ${BIN_NAME}"
                 bbnote "PROJECT_DIR  : ${PROJECT_DIR}"
