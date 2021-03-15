@@ -3,7 +3,7 @@
 # -----------------------------------------------------------------------------
 # Define device storage name and type mapping
 # -----------------------------------------------------------------------------
-DEVICE_STORAGE ?= "EMMC:mmc1, NAND:nand0, NOR:nor0, SDCARD:mmc0"
+DEVICE_STORAGE ?= "EMMC:mmc1, NAND:nand0, NOR:nor0, SDCARD:mmc0, SPINAND:spi-nand0"
 
 # -----------------------------------------------------------------------------
 # Define device storage name alias
@@ -12,6 +12,7 @@ DEVICE_STORAGE_NAMES += "EMMC"
 DEVICE_STORAGE_NAMES += "NAND"
 DEVICE_STORAGE_NAMES += "NOR"
 DEVICE_STORAGE_NAMES += "SDCARD"
+DEVICE_STORAGE_NAMES += "SPINAND"
 
 # -----------------------------------------------------------------------------
 # Define device storage type
@@ -21,6 +22,7 @@ DEVICE_STORAGE_TYPES += "mmc1"
 DEVICE_STORAGE_TYPES += "mmc2"
 DEVICE_STORAGE_TYPES += "nand0"
 DEVICE_STORAGE_TYPES += "nor0"
+DEVICE_STORAGE_TYPES += "spi-nand0"
 
 python () {
     """
@@ -60,9 +62,11 @@ python () {
 # -----------------------------------------------------------------------------
 # EMMC
 # Extra space is required to store 'Protective MBR' and 'Primary GPT Header'
-# Currently the required size is 17kBytes (i.e. 0x4400)
+# Currently the required size is 17 KiB (i.e. 0x4400)
 # We need to align this size to get the first offset to use
 DEVICE_START_OFFSET_EMMC    ?= "0x00080000"
+# 32 Gbit
+DEVICE_MAX_OFFSET_EMMC      ?= "0x100000000"
 DEVICE_ALIGNMENT_SIZE_EMMC  ?= "0x00080000"
 
 # Specific to EMMC, there are two boot partitions using specific offset to access
@@ -79,35 +83,51 @@ DEVICE_BOARD_ENABLE_EMMC += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', '
 # -----------------------------------------------------------------------------
 # NAND
 DEVICE_START_OFFSET_NAND   ?= "0x00000000"
+# 8 Gbit
+DEVICE_MAX_OFFSET_NAND     ?= "0x40000000"
 DEVICE_ALIGNMENT_SIZE_NAND ?= "0x00040000"
 
-# Configure the list of boards that enable EMMC
+# Configure the list of boards that enable NAND
 DEVICE_BOARD_ENABLE_NAND   += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', '${STM32MP_DT_FILES_ED}', '', d)}"
 DEVICE_BOARD_ENABLE_NAND   += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', '${STM32MP_DT_FILES_EV}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # NOR
 DEVICE_START_OFFSET_NOR    ?= "0x00000000"
+# 512 Mbit, only 1 NOR is used
+DEVICE_MAX_OFFSET_NOR      ?= "0x04000000"
 DEVICE_ALIGNMENT_SIZE_NOR  ?= "0x00010000"
 
-# Configure the list of boards that enable EMMC
+# Configure the list of boards that enable NOR
 DEVICE_BOARD_ENABLE_NOR    += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard' , '${STM32MP_DT_FILES_EV}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # SDCARD
 # Extra space is required to store 'Protective MBR' and 'Primary GPT Header'
-# Currently the required size is 17kBytes (i.e. 0x4400)
+# Currently the required size is 17 KiB (i.e. 0x4400)
 # We need to align this size to get the first offset to use
 DEVICE_START_OFFSET_SDCARD    ?= "0x00004400"
+# No limit for SDCARD
+DEVICE_MAX_OFFSET_SDCARD      ?= "none"
 DEVICE_ALIGNMENT_SIZE_SDCARD  ?= "0x00000200"
 
 # Configure the rootfs partition uid used in gpt partition table for SDCARD
 DEVICE_PARTUUID_ROOTFS_SDCARD ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS_${DEVICE_SDCARD}')) or ''}"
 
 # Configure the list of boards that enable SDCARD
-DEVICE_BOARD_ENABLE_SDCARD    += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', '${STM32MP_DT_FILES_DK}', '', d)}"
-DEVICE_BOARD_ENABLE_SDCARD    += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard' ], '${STM32MP_DT_FILES_ED}', '', d)}"
-DEVICE_BOARD_ENABLE_SDCARD    += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard' ], '${STM32MP_DT_FILES_EV}', '', d)}"
+DEVICE_BOARD_ENABLE_SDCARD += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', '${STM32MP_DT_FILES_DK}', '', d)}"
+DEVICE_BOARD_ENABLE_SDCARD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard' ], '${STM32MP_DT_FILES_ED}', '', d)}"
+DEVICE_BOARD_ENABLE_SDCARD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard' ], '${STM32MP_DT_FILES_EV}', '', d)}"
+
+# -----------------------------------------------------------------------------
+# SPI NAND
+DEVICE_START_OFFSET_SPINAND   ?= "0x00000000"
+# 2 Gbit
+DEVICE_MAX_OFFSET_SPINAND     ?= "0x10000000"
+DEVICE_ALIGNMENT_SIZE_SPINAND ?= "0x00020000"
+
+# Configure the list of boards that enable SPINAND
+DEVICE_BOARD_ENABLE_SPINAND += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', '', '', d)}"
 
 # -----------------------------------------------------------------------------
 # Fixed configuration from U-Boot source code

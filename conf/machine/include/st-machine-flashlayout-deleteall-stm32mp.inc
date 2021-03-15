@@ -20,36 +20,29 @@ FLASHLAYOUT_TYPE_LABELS_deleteall_eval  = "${STM32MP_DT_FILES_ED} ${STM32MP_DT_F
 # NB: We re-use as much as possible partitions already defined in file
 #     'st-machine-flashlayout-stm32mp.inc'
 # -----------------------------------------------------------------------------
-FLASHLAYOUT_PARTITION_LABELS_deleteall = "fsbl1-boot ssbl-boot fsbl1 fsbl2 emmcall nandall norall sdcardall"
+FLASHLAYOUT_PARTITION_LABELS_deleteall = "${FLASHLAYOUT_PROGRAMMER_SECTIONS} emmcboot0 emmcboot1 emmcall nandall norall sdcardall spinandall"
 
 # -----------------------------------------------------------------------------
 # Partition configuration for each partition label
-FLASHLAYOUT_PARTITION_ENABLE_deleteall            = "PED"
-FLASHLAYOUT_PARTITION_ENABLE_deleteall_fsbl1-boot = "-"
-FLASHLAYOUT_PARTITION_ENABLE_deleteall_ssbl-boot  = "-"
-
-FLASHLAYOUT_PARTITION_ID_emmcall        = "0x30"
-FLASHLAYOUT_PARTITION_ID_nandall        = "0x40"
-FLASHLAYOUT_PARTITION_ID_norall         = "0x50"
-FLASHLAYOUT_PARTITION_ID_sdcardall      = "0x60"
+FLASHLAYOUT_PARTITION_ENABLE_deleteall = "PED"
+FLASHLAYOUT_PARTITION_ENABLE_deleteall_${STM32MP_FSBL1_NAME}-boot = "-"
+FLASHLAYOUT_PARTITION_ENABLE_deleteall_${STM32MP_SSBL1_NAME}-boot = "-"
 
 FLASHLAYOUT_PARTITION_TYPE_emmcall      = "RawImage"
 FLASHLAYOUT_PARTITION_TYPE_nandall      = "RawImage"
 FLASHLAYOUT_PARTITION_TYPE_norall       = "RawImage"
 FLASHLAYOUT_PARTITION_TYPE_sdcardall    = "RawImage"
+FLASHLAYOUT_PARTITION_TYPE_spinandall   = "RawImage"
 
-FLASHLAYOUT_PARTITION_DEVICE_deleteall  = "none:fsbl1-boot ssbl-boot,${DEVICE_EMMC}:fsbl1 fsbl2 emmcall,${DEVICE_NAND}:nandall,${DEVICE_NOR}:norall,${DEVICE_SDCARD}:sdcardall"
+FLASHLAYOUT_PARTITION_DEVICE_deleteall  = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE_EMMC}:emmcboot0 emmcboot1 emmcall,${DEVICE_NAND}:nandall,${DEVICE_NOR}:norall,${DEVICE_SDCARD}:sdcardall,${DEVICE_SPINAND}:spinandall"
 
 FLASHLAYOUT_PARTITION_OFFSET_deleteall  = "0x0"
-FLASHLAYOUT_PARTITION_OFFSET_deleteall_fsbl1 = "${DEVICE_START_OFFSET_BOOT0_EMMC}"
-FLASHLAYOUT_PARTITION_OFFSET_deleteall_fsbl2 = "${DEVICE_START_OFFSET_BOOT1_EMMC}"
-
-FLASHLAYOUT_PARTITION_BIN2LOAD_deleteall_fsbl1 = "none"
-FLASHLAYOUT_PARTITION_BIN2LOAD_deleteall_fsbl2 = "none"
+FLASHLAYOUT_PARTITION_OFFSET_deleteall_emmcboot0 = "${DEVICE_START_OFFSET_BOOT0_EMMC}"
+FLASHLAYOUT_PARTITION_OFFSET_deleteall_emmcboot1 = "${DEVICE_START_OFFSET_BOOT1_EMMC}"
 
 # -----------------------------------------------------------------------------
 # The 'deleteall' bootscheme is a trick to generate flashlayout files to clean
-# all memory devices on board. There are no specific 'deleteall' bootloader
-# binaries so use the proper one ('serialboot', 'optee' or 'trusted').
-FLASHLAYOUT_PARTITION_REPLACE_PATTERNS_fsbl1-boot_append = " deleteall;serialboot"
-FLASHLAYOUT_PARTITION_REPLACE_PATTERNS_ssbl-boot_append = " deleteall;trusted"
+# all memory devices on board. There are no specific 'deleteall' bootloaders
+# so we need to manage specific override for FLASHLAYOUT_PROGRAMMER_SECTIONS binaries
+BOOTSCHEME_REPLACE = "${@'optee' if bb.utils.contains('BOOTSCHEME_LABELS', 'optee', True, False, d) and not bb.utils.contains('BOOTSCHEME_LABELS', 'trusted', True, False, d) else 'trusted'}"
+FLASHLAYOUT_PARTITION_REPLACE_PATTERNS_${STM32MP_SSBL1_NAME}-boot_append = " deleteall;${BOOTSCHEME_REPLACE}"
