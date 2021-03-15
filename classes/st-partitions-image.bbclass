@@ -70,7 +70,7 @@ python __anonymous () {
                         else:
                             bb.fatal('[PARTITIONS_CONFIG] Missing size setting for %s image' % items[0])
 
-                        # Manage IMAGE_SUMMARY_LIST configuration according to PARTITION_CONFIG set
+                        # Manage IMAGE_SUMMARY_LIST configuration according to PARTITIONS_CONFIG set
                         if d.getVar('ENABLE_IMAGE_LICENSE_SUMMARY') == "1":
                             if not items[2]:
                                 # Set '/' as default mountpoint for rootfs in IMAGE_SUMMARY_LIST
@@ -114,8 +114,9 @@ python __anonymous () {
                 # Without this check we would create circular dependency
                 if current_image_name not in image_partitions and current_image_name != initramfs and current_image_name != initrd:
                     for partition in image_partitions:
-                        bb.debug(1, "Appending %s image build to 'do_image_complete' depends tasks." % partition)
-                        d.appendVarFlag('do_image_complete', 'depends', ' %s:do_image_complete' % partition)
+                        bb.debug(1, "Appending %s image build to 'do_image' depends tasks." % partition)
+                        # We need to make sure the manifest file is deployed as we need it for 'image_rootfs_image_clean_task'
+                        d.appendVarFlag('do_image', 'depends', ' %s:do_populate_lic_deploy' % partition)
                     bb.debug(1, "Appending 'image_rootfs_image_clean_task' to IMAGE_PREPROCESS_COMMAND.")
                     d.appendVar('IMAGE_PREPROCESS_COMMAND', 'image_rootfs_image_clean_task;')
                     bb.debug(1, "Set DEPLOY_BUILDINFO_FILE to '1' to allow to deploy build info file for rootfs build.")
@@ -126,30 +127,114 @@ python __anonymous () {
                         d.appendVar('IMAGE_POSTPROCESS_COMMAND', 'st_multivolume_ubifs;')
 }
 
-image_rootfs_image_clean_task() {
-    bbnote "PARTITIONS_IMAGE"
-    bbnote ">>> ${PARTITIONS_IMAGE}"
-    bbnote "PARTITIONS_MOUNTPOINT"
-    bbnote ">>> ${PARTITIONS_MOUNTPOINT}"
-    unset i j
-    for img in ${PARTITIONS_IMAGE}; do
-        i=$(expr $i + 1);
-        for part in ${PARTITIONS_MOUNTPOINT}; do
-            j=$(expr $j + 1);
-            if [ $j -eq $i ]; then
-                bbnote "Expecting to clean folder:"
-                bbnote ">>> ${IMAGE_ROOTFS}/$part"
-                if [ -d ${IMAGE_ROOTFS}/$part ]; then
-                    rm -rf ${IMAGE_ROOTFS}/$part/*
-                    bbnote ">>> DONE"
-                else
-                    bbnote ">>> NOT DONE : $part folder doesn't exist in image rootfs"
-                fi
-            fi
-        done
-        unset j
-    done
-    unset i
+python image_rootfs_image_clean_task(){
+    import re;
+    import subprocess
+    import shutil
+
+    deploy_image_dir = d.expand("${DEPLOY_DIR}")
+    machine = d.expand("${MACHINE}")
+    distro = d.expand("${DISTRO}")
+    img_rootfs = d.getVar('IMAGE_ROOTFS')
+    partitionsconfigflags = d.getVarFlags('PARTITIONS_CONFIG')
+    partitionsconfig = (d.getVar('PARTITIONS_CONFIG') or "").split()
+
+    if len(partitionsconfig) == 0:
+        bb.note('No partition image: nothing more to do...')
+        return
+
+    for config in partitionsconfig:
+        for f, v in partitionsconfigflags.items():
+            if config != f:
+                continue
+
+            items = v.split(',')
+            _img_partition=d.expand(items[0])
+            _img_mountpoint=d.expand(items[2])
+
+            # Do not search for the rootfs
+            if not items[2]:
+                bb.note('Do not search for rootfs image')
+                continue
+
+            bb.note('Manage package check for %s mount point from %s partition image...' % (_img_partition, _img_mountpoint))
+
+            part_dir=os.path.join(img_rootfs, re.sub(r"^/", "", _img_mountpoint))
+            if not os.path.exists(part_dir):
+                bb.note('The %s mountpoint is not populated on rootfs. Nothing to do.' % part_dir)
+                continue
+
+            # Discover all files in folder and sub-folder
+            list_file = []
+            for root, subfolder, files in os.walk(part_dir):
+                for f in files:
+                    list_file.append(re.sub(r"%s" % img_rootfs, "", os.path.join(root, f)))
+
+            if not list_file:
+                bb.note('No file found in current mount point %s: nothing to do' % part_dir)
+                continue
+
+            # Manifest file of the partition to check packages are in that partition
+            manif_file = os.path.join(deploy_image_dir, "images", machine,
+                         _img_partition + "-" + distro + "-" + machine + ".manifest")
+            try:
+                manifest_content = open(manif_file, "r")
+                contents = manifest_content.read().splitlines()
+                manifest_content.close()
+                if not contents:
+                    bb.fatal('Manifest associated to partition %s is empty.' \
+                             ' No package verification can be on on that partition' % _img_partition)
+            except Exception as e:
+                bb.fatal("Unable to read %s file content: %s" % (manif_file, e))
+            except IOError:
+                bb.fatal("File %s does not exist" % (manif_file))
+
+            # To speed up the process, save the list of processed files to avoid to check them again
+            package_file_list = []
+
+            for f in list_file:
+                if f in package_file_list:
+                    continue
+
+                # Use oe-pkgdata-util to find the package providing a file
+                cmd = ["oe-pkgdata-util",
+                    "-p", d.getVar('PKGDATA_DIR'), "find-path", f ]
+                try:
+                    package = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode("utf-8").rstrip('\n')
+                    package = re.sub(r":.*", "", package)
+                except subprocess.CalledProcessError as e:
+                    bb.fatal("Cannot check package for file %s" % (os.path.join(root, f)))
+
+                if package:
+                    # Use oe-pkgdata-util to list all files provided by a package
+                    cmd = ["oe-pkgdata-util",
+                        "-p", d.getVar('PKGDATA_DIR'), "list-pkg-files", package]
+                    try:
+                        package_filelist = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode("utf-8")
+                        package_filelist = package_filelist.split()
+                    except subprocess.CalledProcessError as e:
+                        bb.fatal("Cannot read files inside package %s" % package)
+
+                    # Save processed files
+                    package_file_list = package_file_list + package_filelist
+
+                    # Check the package is in the manifest of the partition
+                    match = False
+                    for line in contents:
+                        if re.match('^%s ' % package, line):
+                            match = True
+                            break
+                    if not match:
+                        bb.warn("Package %s should belong to %s partition image. Did you add it into the right image?" % (package, _img_partition))
+
+                else:
+                    bb.warn("File %s is not in a package" % (os.path.join(root, f)))
+
+            bb.note('Expecting to clean folder: %s' % part_dir)
+            shutil.rmtree(part_dir)
+            # directory is also removed. Re-create mount point
+            os.mkdir(part_dir)
+            bb.note('>>> Done')
 }
 
 # -----------------------------------------------------------------------------
