@@ -65,6 +65,10 @@ NB: you can use directly the source from the community:
 
 5. Build tf-a source code:
 --------------------------------
+Since OpenSTLinux has activated FIP by default, so the FIP_artifacts should be specified before launching compilation
+  - In case of using SOURCES-xxxx.tar.gz of Developer package the FIP_DEPLOYDIR_ROOT should be set as below:
+    $> export FIP_DEPLOYDIR_ROOT=$PWD/../../FIP_artifacts
+
 To compile tf-a source code
     $> make -f $PWD/../Makefile.sdk all
 or for a specific config :
@@ -72,47 +76,9 @@ or for a specific config :
 
 NB: TFA_DEVICETREE flag must be set to switch to correct board configuration.
 
-Files generated should be as follow:
- #> ../build/*/tf-a-*.stm32
+The generated FIP images are available in $FIP_DEPLOYDIR_ROOT/fip
 
 6. Update software on board:
 ----------------------------
-6.1. partitioning of binaries:
------------------------------
-TF-A build provide a binary named "tf-a-*.stm32" which MUST be copied on a
-dedicated partition named "fsbl1"
+Please use STM32CubeProgrammer then only tick the boot partitions means patitions 0x1 to 0x6 (more informations on the wiki website http://wiki.st.com/stm32mpu)
 
-6.2. Update via SDCARD:
------------------------
-Copy the binary (tf-a-*.stm32) on the dedicated partition, on SDCARD/USB disk
-the partition "fsbl1" are the partition 1:
- - SDCARD: /dev/mmcblkXp1 (where X is the instance number)
- - SDCARD via USB reader: /dev/sdX1 (where X is the instance number)
-    $ dd if=<tf-a binary> of=/dev/<device partition> bs=1M conv=fdatasync
-
-FAQ: to found the partition associated to a specific label, just plug the
-SDCARD/USB disk on your PC and call the following command:
-    $ ls -l /dev/disk/by-partlabel/
-total 0
-lrwxrwxrwx 1 root root 10 Jan 17 17:38 bootfs -> ../../mmcblk0p4
-lrwxrwxrwx 1 root root 10 Jan 17 17:38 fsbl1 -> ../../mmcblk0p1     ➔ FSBL (TF-A)
-lrwxrwxrwx 1 root root 10 Jan 17 17:38 fsbl2 -> ../../mmcblk0p2     ➔ FSBL backup (TF-A backup – same content as FSBL)
-lrwxrwxrwx 1 root root 10 Jan 17 17:38 rootfs -> ../../mmcblk0p5
-lrwxrwxrwx 1 root root 10 Jan 17 17:38 ssbl -> ../../mmcblk0p3      ➔ SSBL (U-Boot)
-lrwxrwxrwx 1 root root 10 Jan 17 17:38 userfs -> ../../mmcblk0p6
-
-6.3. Update via USB mass storage on U-boot:
--------------------------------------------
-* Plug the SDCARD on Board.
-* Start the board and stop on U-boot shell:
- Hit any key to stop autoboot: 0
- STM32MP>
-* plug an USB cable between the PC and the board via USB OTG port.
-* On U-Boot shell, call the usb mass storage functionnality:
- STM32MP> ums 0 mmc 0
- ums <USB controller> <dev type: mmc|usb> <dev[:part]>
-  ex.:
-For SDCARD:      ums 0 mmc 0
-For USB disk:    ums 0 usb 0
-
-* Follow section 6.2 to put tf-a-*.stm32 on SDCARD/USB disk

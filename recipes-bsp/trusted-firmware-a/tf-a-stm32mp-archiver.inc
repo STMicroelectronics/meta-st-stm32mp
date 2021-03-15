@@ -10,115 +10,179 @@ COPYLEFT_LICENSE_INCLUDE_append = " BSD-3* "
 inherit archiver_stm32mp_clean
 
 archiver_create_makefile_for_sdk() {
-    . ${T}/tfaconfig_env
-
-    # Init internal var for tfa_config_oemake: should be 'config,extraoemake'
-    for config in ${TF_A_CONFIG}; do
-        tf_a_config_oemake="${tf_a_config_oemake} ${config},\"$(eval echo \$TF_A_CONFIG_${config})\""
-    done
-
     mkdir -p ${ARCHIVER_OUTDIR}
     cat << EOF > ${ARCHIVER_OUTDIR}/Makefile.sdk
-#remove default variable
-LDFLAGS=
-CFLAGS=
-CPPFLAGS=
-CC=
-CPP=
-AS=
-AR=
-LD=
-NM=
+# Set default path
+SRC_PATH ?= \$(PWD)
+BLD_PATH ?= \$(SRC_PATH)/../build
+DEPLOYDIR ?= \$(SRC_PATH)/../deploy
 
-LOCAL_PATH=\$(PWD)
+BL32_DEPLOYDIR     ?= \$(DEPLOYDIR)/bl32
+FWCONFIG_DEPLOYDIR ?= \$(DEPLOYDIR)/fwconfig
 
-EXTRA_OEMAKE=${EXTRA_OEMAKE}
-EXTRA_OEMAKE_SERIAL=\$(filter-out STM32MP_SDMMC=1 STM32MP_EMMC=1 STM32MP_SPI_NOR=1 STM32MP_RAW_NAND=1 STM32MP_SPI_NAND=1,\$(EXTRA_OEMAKE)) STM32MP_UART_PROGRAMMER=1 STM32MP_USB_PROGRAMMER=1
-
-# Set default config
-ELF_DEBUG_ENABLE ?= ${ELF_DEBUG_ENABLE}
-TF_A_CONFIG ?= ${TF_A_CONFIG} serialboot
-
-# Set specific OEMAKE config
-TF_A_CONFIG_OEMAKE = ${tf_a_config_oemake} serialboot,"AARCH32_SP=sp_min"
-# Set default TFA_DEVICETREE
-TFA_DEVICETREE ?= ${TF_A_DEVICETREE}
-
-#Set default TF_A_ENABLE_DEBUG_WRAPPER
+# Configure default TF-A features
 TF_A_ENABLE_DEBUG_WRAPPER ?= ${TF_A_ENABLE_DEBUG_WRAPPER}
+
+# Configure FIP
+ENABLE_FIP ?= ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '1', '', d)}
+
+# Set default TF-A config
+TF_A_CONFIG ?= ${TF_A_CONFIG}
+
+# Default TF-A overall settings to null
+TF_A_BINARY ?=
+TF_A_DEVICETREE ?=
+TF_A_MAKE_TARGET ?=
+TF_A_EXTRA_OPTFLAGS ?=
+
+EOF
+    unset i
+    for config in ${TF_A_CONFIG}; do
+        i=$(expr $i + 1)
+        cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+# Init default config settings
+TF_A_DEVICETREE_$config ?= $(echo ${TF_A_DEVICETREE} | cut -d',' -f${i})
+TF_A_EXTRA_OPTFLAGS_$config ?= $(echo ${TF_A_EXTRA_OPTFLAGS} | cut -d',' -f${i})
+TF_A_BINARY_$config ?= $(echo ${TF_A_BINARIES} | cut -d',' -f${i})
+TF_A_MAKE_TARGET_$config ?= $(echo ${TF_A_MAKE_TARGET} | cut -d',' -f${i})
+
+EOF
+    done
+    cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+# Reset default variables
+LDFLAGS =
+CFLAGS =
+CPPFLAGS =
+CC =
+CPP =
+AS =
+AR =
+LD =
+NM =
+# Define default make options
+EXTRA_OEMAKE ?= ${EXTRA_OEMAKE}
+
+# Configure overall devicetree list for FIP
+TF_A_DEVICETREE_ALL = $(echo "${TF_A_DEVICETREE}" | sed 's/,/ /g' | xargs -n1 | sort -u | xargs)
+
+# Display TF-A config details
+define tf-configs
+	echo "  \$(1)" ; \\
+	echo "    with device tree : \$(if \$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE_\$(1)))" ; \\
+	echo "    extra optionflags: \$(if \$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS_\$(1)))" ; \\
+	echo "    binary basename  : \$(if \$(TF_A_BINARY),\$(TF_A_BINARY),\$(TF_A_BINARY_\$(1)) (TF_A_BINARY_\$(1)))" ; \\
+	echo "    tf-a build target: \$(if \$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET_\$(1)))" ;
+endef
+
+# Configure TF-A make rules
+define tf-rules
+tf-\$(1): \$2
+	@mkdir -p \$(BLD_PATH)/\$(1)
+	@\$(foreach dt, \$(if \$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE_\$(1))), \\
+		\$(MAKE) \$(EXTRA_OEMAKE) -C \$(SRC_PATH) \\
+			BUILD_PLAT=\$(BLD_PATH)/\$(1) \\
+			DTB_FILE_NAME=\$(dt).dtb \\
+			\$(if \$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS_\$(1))) \\
+			\$(if \$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET_\$(1))) ; \\
+	)
+endef
+
+# Configure TF-A deploy rules
+define deploy-rules
+deploy-\$(1): tf-\$(1)
+	@mkdir -p \$(DEPLOYDIR)
+	@mkdir -p \$(DEPLOYDIR)/debug
+	@\$(foreach dt, \$(if \$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE_\$(1))), \\
+		if [ -f \$(BLD_PATH)/\$(1)/\$(2)-\$(dt).${TF_A_SUFFIX} ]; then \\
+			cp -f \$(BLD_PATH)/\$(1)/\$(2)-\$(dt).${TF_A_SUFFIX} \$(DEPLOYDIR)/\$(2)-\$(dt)-\$(1).${TF_A_SUFFIX} ; \\
+			if [ "\$(TF_A_ENABLE_DEBUG_WRAPPER)" = "1" ] ; then \\
+				stm32wrapper4dbg -s \$(BLD_PATH)/\$(1)/\$(2)-\$(dt).${TF_A_SUFFIX} -d \$(DEPLOYDIR)/debug/debug-\$(2)-\$(dt)-\$(1).${TF_A_SUFFIX} ; \\
+			fi ; \\
+		fi ; \\
+		if [ -f \$(BLD_PATH)/\$(1)/${BL32_BASENAME}.${BL32_SUFFIX} ] ; then \\
+			mkdir -p \$(BL32_DEPLOYDIR) ; \\
+			cp -f \$(BLD_PATH)/\$(1)/${BL32_BASENAME}.${BL32_SUFFIX} \$(BL32_DEPLOYDIR)/\$(2)-${BL32_BASENAME}\$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(shell echo \$(dt) | grep -c \$(soc)),-\$(soc),)).${BL32_SUFFIX} ; \\
+			if [ -f \$(BLD_PATH)/\$(1)/fdts/\$(dt)-${BL32_BASENAME}.${DT_SUFFIX} ]; then \\
+				cp -f \$(BLD_PATH)/\$(1)/fdts/\$(dt)-${BL32_BASENAME}.${DT_SUFFIX} \$(BL32_DEPLOYDIR)/ ; \\
+			fi ; \\
+			if [ -f \$(BLD_PATH)/\$(1)/${BL32_ELF} ]; then \\
+				mkdir -p \$(BL32_DEPLOYDIR)/debug ; \\
+				mv -f \$(BLD_PATH)/\$(1)/${BL32_ELF} \$(BL32_DEPLOYDIR)/debug/\$(2)-${BL32_BASENAME}\$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(shell echo \$(dt) | grep -c \$(soc)),-\$(soc),)).${TF_A_ELF_SUFFIX} ; \\
+			fi ; \\
+		fi ; \\
+		if [ -f \$(BLD_PATH)/\$(1)/fdts/\$(dt)-${FWCONFIG_NAME}.${DT_SUFFIX} ]; then \\
+			mkdir -p \$(FWCONFIG_DEPLOYDIR) ; \\
+			cp -f \$(BLD_PATH)/\$(1)/fdts/\$(dt)-${FWCONFIG_NAME}.${DT_SUFFIX} \$(FWCONFIG_DEPLOYDIR)/\$(dt)-${FWCONFIG_NAME}-\$(1).${DT_SUFFIX} ; \\
+		fi ; \\
+		if [ -f \$(BLD_PATH)/\$(1)/${BL2_ELF} ] ; then \\
+			cp -f \$(BLD_PATH)/\$(1)/${BL2_ELF} \$(DEPLOYDIR)/debug/\$(2)-${BL2_BASENAME}-\$(1).${TF_A_ELF_SUFFIX} ; \\
+		fi ; \\
+		if [ -f \$(BLD_PATH)/\$(1)/${BL32_ELF} ] ; then \\
+			cp -f \$(BLD_PATH)/\$(1)/${BL32_ELF} \$(DEPLOYDIR)/debug/\$(2)-${BL32_BASENAME}-\$(1).${TF_A_ELF_SUFFIX} ; \\
+		fi ; \\
+	)
+endef
 
 help:
 	@echo
-	@echo "Available targets:"
-	@echo "  all   : build TF-A binaries for defined config(s)"
-	@echo "  clean : clean build directories from generated files"
-	@echo
 	@echo "TF-A configuration:"
 	@echo "  TF_A_CONFIG = \$(TF_A_CONFIG)"
-	@echo "  TFA_DEVICETREE = \$(TFA_DEVICETREE)"
-	@echo "  ELF_DEBUG_ENABLE = '\$(ELF_DEBUG_ENABLE)' ('1' to export elf files)"
-	@echo "  TF_A_ENABLE_DEBUG_WRAPPER = '\$(TF_A_ENABLE_DEBUG_WRAPPER)' ('1' to generate tf-a for debugging)"
+	@echo "Config details:"
+	@\$(foreach config, \$(TF_A_CONFIG), \$(call tf-configs,\$(config)))
+	@echo
+	@echo "Note that each TF-A configuration settings can be updated through overall or specific config var:"
+	@echo "  TF_A_DEVICETREE"
+	@echo "  TF_A_EXTRA_OPTFLAGS"
+	@echo "  TF_A_BINARY"
+	@echo "  TF_A_MAKE_TARGET"
+	@echo
+	@echo "TF-A features configuration:"
+	@echo "  TF_A_ENABLE_DEBUG_WRAPPER = \$(TF_A_ENABLE_DEBUG_WRAPPER) ('1' to generate tf-a for debugging)"
+	@echo
+	@echo "TF-A folder configuration:"
+	@echo "  SRC_PATH  = \$(SRC_PATH)"
+	@echo "  BLD_PATH  = \$(BLD_PATH)"
+	@echo "  DEPLOYDIR = \$(DEPLOYDIR)"
+	@echo "  BL32_DEPLOYDIR     = \$(DEPLOYDIR)/bl32"
+	@echo "  FWCONFIG_DEPLOYDIR = \$(DEPLOYDIR)/fwconfig"
+	@echo
+	@echo "FIP configuration:"
+	@echo "  ENABLE_FIP = \$(ENABLE_FIP) ('1' to generate fip binary)"
+ifeq (\$(ENABLE_FIP),1)
+	@echo "  Do not forget to set FIP deploydir folders (such as FIP_DEPLOYDIR_ROOT) to provide path to needed binaries"
+endif
+	@echo
+	@echo "Available targets:"
+	@echo "  all   : build TF-A binaries for defined config(s)"
+	@echo "  fip   : build FIP binaries"
+	@echo "  stm32 : build TF-A stm32 binaries"
+	@echo "  clean : clean build directories from generated files"
 	@echo
 
-all: tf
+all: \$(addprefix deploy-,\$(TF_A_CONFIG)) \$(if \$(ENABLE_FIP),fip)
 
 host_tools:
-	@\$(MAKE) --no-print-directory -C \$(LOCAL_PATH)/tools/stm32image
+	@\$(MAKE) --no-print-directory -C \$(SRC_PATH)/tools/stm32image
 
-tf: host_tools
-	for config in \$(TF_A_CONFIG) ; do \\
-		# Init any extraoemake \\
-		add_extraoemake= ; \\
-		for fullconfig in \$(TF_A_CONFIG_OEMAKE) ; do \\
-			extraconfig=\$\$(echo \$\$fullconfig | cut -d',' -f1) ; \\
-			if [ "\$\$extraconfig" = "\$\$config" ]; then \\
-				add_extraoemake=\$\$(echo \$\$fullconfig | cut -d',' -f2) ; \\
-			fi ; \\
-		done ; \\
-		mkdir -p \$(LOCAL_PATH)/../build/\$\$config ; \\
-		if test -n "\$(TFA_DEVICETREE)" ; then \\
-			for dt in \$(TFA_DEVICETREE) ; do \\
-				if [ "\$\$config" != "serialboot" ]; then \\
-					\$(MAKE) \$(EXTRA_OEMAKE) -C \$(LOCAL_PATH) DTB_FILE_NAME=\$\$dt.dtb BUILD_PLAT=\$(LOCAL_PATH)/../build/\$\$config \$\$add_extraoemake ; \\
-				else \\
-					\$(MAKE) \$(EXTRA_OEMAKE_SERIAL) -C \$(LOCAL_PATH) DTB_FILE_NAME=\$\$dt.dtb BUILD_PLAT=\$(LOCAL_PATH)/../build/\$\$config \$\$add_extraoemake ; \\
-				fi ; \\
-				# Copy binary file with explicit name \\
-				cp -f \$(LOCAL_PATH)/../build/\$\$config/${TF_A_BASENAME}-\$\$dt.${TF_A_SUFFIX} \$(LOCAL_PATH)/../build/\$\$config/${TF_A_BASENAME}-\$\$dt-\$\$config.${TF_A_SUFFIX} ; \\
-				if [ "\$(TF_A_ENABLE_DEBUG_WRAPPER)" = "1" ]; then \\
-					# Generate wrapper for debugging \\
-					stm32wrapper4dbg -s \$(LOCAL_PATH)/../build/\$\$config/${TF_A_BASENAME}-\$\$dt.${TF_A_SUFFIX} -d \$(LOCAL_PATH)/../build/\$\$config/debug-${TF_A_BASENAME}-\$\$dt-\$\$config.${TF_A_SUFFIX} ; \\
-				fi ; \\
-			done ; \\
-		else \\
-			if [ "\$\$config" != "serialboot" ]; then \\
-				\$(MAKE) \$(EXTRA_OEMAKE) -C \$(LOCAL_PATH) BUILD_PLAT=\$(LOCAL_PATH)/../build/\$\$config \$\$add_extraoemake; \\
-			else \\
-				\$(MAKE) \$(EXTRA_OEMAKE_SERIAL) -C \$(LOCAL_PATH) BUILD_PLAT=\$(LOCAL_PATH)/../build/\$\$config \$\$add_extraoemake; \\
-			fi ; \\
-			tf_version=\$\$(find \$(LOCAL_PATH)/../build/\$\$config -name ${TF_A_BASENAME}*.${TF_A_SUFFIX} -exec basename {} \; | sed "s/\.${TF_A_SUFFIX}//") ; \\
-			# Copy binary file with explicit name \\
-			cp -f \$(LOCAL_PATH)/../build/\$\$config/\$\$tf_version.${TF_A_SUFFIX} \$(LOCAL_PATH)/../build/\$\$config/\$\$tf_version-\$\$config.${TF_A_SUFFIX} ; \\
-			if [ "\$(TF_A_ENABLE_DEBUG_WRAPPER)" = "1" ]; then \\
-				# Generate wrapper for debugging \\
-				stm32wrapper4dbg -s \$(LOCAL_PATH)/../build/\$\$config/\$\$tf_version.${TF_A_SUFFIX} \$(LOCAL_PATH)/../build/\$\$config/debug-\$\$tf_version-\$\$config.${TF_A_SUFFIX} ; \\
-			fi ; \\
-		fi ; \\
-		# Copy elf files with explicit name \\
-		if [ "\$(ELF_DEBUG_ENABLE)" = "1" ] ; then \\
-			if [ -f \$(LOCAL_PATH)/../build/\$\$config/${BL2_ELF} ] ; then \\
-				cp -f \$(LOCAL_PATH)/../build/\$\$config/${BL2_ELF} \$(LOCAL_PATH)/../build/\$\$config/${TF_A_BASENAME}-${BL2_BASENAME}-\$\$config.${TF_A_ELF_SUFFIX} ; \\
-			fi ; \\
-			if [ -f \$(LOCAL_PATH)/../build/\$\$config/${BL32_ELF} ] ; then \\
-				cp -f \$(LOCAL_PATH)/../build/\$\$config/${BL32_ELF} \$(LOCAL_PATH)/../build/\$\$config/${TF_A_BASENAME}-${BL32_BASENAME}-\$\$config.${TF_A_ELF_SUFFIX} ; \\
-			fi ; \\
-		fi ; \\
-	done
+# Set TF-A make rules
+\$(foreach config, \$(TF_A_CONFIG), \$(eval \$(call tf-rules,\$(config),host_tools)))
+
+# Set TF-A deploy rules
+\$(foreach config, \$(TF_A_CONFIG), \$(eval \$(call deploy-rules,\$(config),\$(if \$(TF_A_BINARY),\$(TF_A_BINARY),\$(TF_A_BINARY_\$(config))))))
+
+fip: \$(addprefix deploy-,\$(TF_A_CONFIG))
+	FIP_DEPLOYDIR_TFA=\$(BL32_DEPLOYDIR) FIP_DEPLOYDIR_FWCONF=\$(FWCONFIG_DEPLOYDIR) FIP_DEVICETREE="\$(if \$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE_ALL))" fiptool-stm32mp
+
+stm32: \$(addprefix deploy-,\$(TF_A_CONFIG))
 
 clean:
 	@for config in \$(TF_A_CONFIG) ; do \\
-		rm -rf \$(LOCAL_PATH)/../build/\$\$config ; \\
+		echo "Removing \$(BLD_PATH)/\$\$config ..." ; \\
+		rm -rf \$(BLD_PATH)/\$\$config ; \\
 	done
+	@echo "Removing \$(DEPLOYDIR) ..."
+	@rm -rf \$(DEPLOYDIR)
+	@echo
 EOF
 }
-do_ar_original[prefuncs] += "tfaconfig_env archiver_create_makefile_for_sdk"
+do_ar_original[prefuncs] += "archiver_create_makefile_for_sdk"
