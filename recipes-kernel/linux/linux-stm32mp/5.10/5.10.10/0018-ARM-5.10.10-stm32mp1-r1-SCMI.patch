@@ -1,0 +1,131 @@
+From 51f0826032cee1b8cb0a1597c0a8d60b0042109d Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Tue, 16 Mar 2021 09:17:18 +0100
+Subject: [PATCH 18/22] ARM 5.10.10-stm32mp1-r1 SCMI
+
+---
+ drivers/firmware/arm_scmi/base.c    |  2 +-
+ drivers/firmware/arm_scmi/bus.c     |  9 ---------
+ drivers/firmware/arm_scmi/clock.c   |  2 +-
+ drivers/firmware/arm_scmi/common.h  |  2 ++
+ drivers/firmware/arm_scmi/driver.c  | 10 ++++++++++
+ drivers/firmware/arm_scmi/perf.c    |  2 +-
+ drivers/firmware/arm_scmi/sensors.c |  2 +-
+ 7 files changed, 16 insertions(+), 13 deletions(-)
+
+diff --git a/drivers/firmware/arm_scmi/base.c b/drivers/firmware/arm_scmi/base.c
+index 017e5d8bd869..a70b10ebaf45 100644
+--- a/drivers/firmware/arm_scmi/base.c
++++ b/drivers/firmware/arm_scmi/base.c
+@@ -183,7 +183,7 @@ static int scmi_base_implementation_list_get(const struct scmi_handle *handle,
+ 		/* Set the number of protocols to be skipped/already read */
+ 		*num_skip = cpu_to_le32(tot_num_ret);
+ 
+-		ret = scmi_do_xfer(handle, t);
++		ret = scmi_do_xfer_again(handle, t);
+ 		if (ret)
+ 			break;
+ 
+diff --git a/drivers/firmware/arm_scmi/bus.c b/drivers/firmware/arm_scmi/bus.c
+index 1377ec76a45d..8ea04b069129 100644
+--- a/drivers/firmware/arm_scmi/bus.c
++++ b/drivers/firmware/arm_scmi/bus.c
+@@ -60,11 +60,6 @@ static int scmi_protocol_init(int protocol_id, struct scmi_handle *handle)
+ 	return fn(handle);
+ }
+ 
+-static int scmi_protocol_dummy_init(struct scmi_handle *handle)
+-{
+-	return 0;
+-}
+-
+ static int scmi_dev_probe(struct device *dev)
+ {
+ 	struct scmi_driver *scmi_drv = to_scmi_driver(dev->driver);
+@@ -83,10 +78,6 @@ static int scmi_dev_probe(struct device *dev)
+ 	if (ret)
+ 		return ret;
+ 
+-	/* Skip protocol initialisation for additional devices */
+-	idr_replace(&scmi_protocols, &scmi_protocol_dummy_init,
+-		    scmi_dev->protocol_id);
+-
+ 	return scmi_drv->probe(scmi_dev);
+ }
+ 
+diff --git a/drivers/firmware/arm_scmi/clock.c b/drivers/firmware/arm_scmi/clock.c
+index 4645677d86f1..c348a6f2eb29 100644
+--- a/drivers/firmware/arm_scmi/clock.c
++++ b/drivers/firmware/arm_scmi/clock.c
+@@ -161,7 +161,7 @@ scmi_clock_describe_rates_get(const struct scmi_handle *handle, u32 clk_id,
+ 		/* Set the number of rates to be skipped/already read */
+ 		clk_desc->rate_index = cpu_to_le32(tot_rate_cnt);
+ 
+-		ret = scmi_do_xfer(handle, t);
++		ret = scmi_do_xfer_again(handle, t);
+ 		if (ret)
+ 			goto err;
+ 
+diff --git a/drivers/firmware/arm_scmi/common.h b/drivers/firmware/arm_scmi/common.h
+index 65063fa948d4..98e642b591c5 100644
+--- a/drivers/firmware/arm_scmi/common.h
++++ b/drivers/firmware/arm_scmi/common.h
+@@ -143,6 +143,8 @@ struct scmi_xfer {
+ 
+ void scmi_xfer_put(const struct scmi_handle *h, struct scmi_xfer *xfer);
+ int scmi_do_xfer(const struct scmi_handle *h, struct scmi_xfer *xfer);
++int scmi_do_xfer_again(const struct scmi_handle *handle,
++		       struct scmi_xfer *xfer);
+ int scmi_do_xfer_with_response(const struct scmi_handle *h,
+ 			       struct scmi_xfer *xfer);
+ int scmi_xfer_get_init(const struct scmi_handle *h, u8 msg_id, u8 prot_id,
+diff --git a/drivers/firmware/arm_scmi/driver.c b/drivers/firmware/arm_scmi/driver.c
+index 3dfd8b6a0ebf..479f67d2377b 100644
+--- a/drivers/firmware/arm_scmi/driver.c
++++ b/drivers/firmware/arm_scmi/driver.c
+@@ -410,6 +410,16 @@ void scmi_reset_rx_to_maxsz(const struct scmi_handle *handle,
+ 	xfer->rx.len = info->desc->max_msg_size;
+ }
+ 
++int scmi_do_xfer_again(const struct scmi_handle *handle, struct scmi_xfer *xfer)
++{
++	struct scmi_info *info = handle_to_scmi_info(handle);
++
++	xfer->rx.len = info->desc->max_msg_size;
++	xfer->hdr.poll_completion = false;
++
++	return scmi_do_xfer(handle, xfer);
++}
++
+ #define SCMI_MAX_RESPONSE_TIMEOUT	(2 * MSEC_PER_SEC)
+ 
+ /**
+diff --git a/drivers/firmware/arm_scmi/perf.c b/drivers/firmware/arm_scmi/perf.c
+index 82fb3babff72..7bea0f6464ff 100644
+--- a/drivers/firmware/arm_scmi/perf.c
++++ b/drivers/firmware/arm_scmi/perf.c
+@@ -281,7 +281,7 @@ scmi_perf_describe_levels_get(const struct scmi_handle *handle, u32 domain,
+ 		/* Set the number of OPPs to be skipped/already read */
+ 		dom_info->level_index = cpu_to_le32(tot_opp_cnt);
+ 
+-		ret = scmi_do_xfer(handle, t);
++		ret = scmi_do_xfer_again(handle, t);
+ 		if (ret)
+ 			break;
+ 
+diff --git a/drivers/firmware/arm_scmi/sensors.c b/drivers/firmware/arm_scmi/sensors.c
+index b4232d611033..6dae881be774 100644
+--- a/drivers/firmware/arm_scmi/sensors.c
++++ b/drivers/firmware/arm_scmi/sensors.c
+@@ -134,7 +134,7 @@ static int scmi_sensor_description_get(const struct scmi_handle *handle,
+ 		/* Set the number of sensors to be skipped/already read */
+ 		put_unaligned_le32(desc_index, t->tx.buf);
+ 
+-		ret = scmi_do_xfer(handle, t);
++		ret = scmi_do_xfer_again(handle, t);
+ 		if (ret)
+ 			break;
+ 
+-- 
+2.17.1
+

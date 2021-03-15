@@ -1,19 +1,20 @@
-From 10e0333454dbd6ccecb67ad303eae3aef707ce0b Mon Sep 17 00:00:00 2001
-From: Lionel VITTE <lionel.vitte@st.com>
-Date: Mon, 5 Oct 2020 13:19:43 +0200
-Subject: [PATCH 08/22] ARM-stm32mp1-r2-rc8-HWSPINLOCK
+From 5c27ce1dc05fd740cc8f0f1d8072361ccab51a9f Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Tue, 16 Mar 2021 09:02:36 +0100
+Subject: [PATCH 07/22] ARM 5.10.10-stm32mp1-r1 HWSPINLOCK
 
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
 ---
- Documentation/hwspinlock.txt             | 10 ++-
- drivers/hwspinlock/hwspinlock_core.c     | 82 ++++++++++++++++++------
+ Documentation/locking/hwspinlock.rst     | 10 ++-
+ drivers/hwspinlock/hwspinlock_core.c     | 80 +++++++++++++++++++-----
  drivers/hwspinlock/hwspinlock_internal.h |  2 +
- drivers/hwspinlock/stm32_hwspinlock.c    | 62 +++++++++++-------
- 4 files changed, 112 insertions(+), 44 deletions(-)
+ drivers/hwspinlock/stm32_hwspinlock.c    | 60 +++++++++++-------
+ 4 files changed, 110 insertions(+), 42 deletions(-)
 
-diff --git a/Documentation/hwspinlock.txt b/Documentation/hwspinlock.txt
-index 6f03713b70039..605bd2dc8a03e 100644
---- a/Documentation/hwspinlock.txt
-+++ b/Documentation/hwspinlock.txt
+diff --git a/Documentation/locking/hwspinlock.rst b/Documentation/locking/hwspinlock.rst
+index 6f03713b7003..605bd2dc8a03 100644
+--- a/Documentation/locking/hwspinlock.rst
++++ b/Documentation/locking/hwspinlock.rst
 @@ -54,9 +54,11 @@ Should be called from a process context (might sleep).
    struct hwspinlock *hwspin_lock_request_specific(unsigned int id);
  
@@ -44,7 +45,7 @@ index 6f03713b70039..605bd2dc8a03e 100644
  	};
  
 diff --git a/drivers/hwspinlock/hwspinlock_core.c b/drivers/hwspinlock/hwspinlock_core.c
-index 8862445aa8580..ac76631c7059b 100644
+index fd5f5c5a5244..a2197af8973d 100644
 --- a/drivers/hwspinlock/hwspinlock_core.c
 +++ b/drivers/hwspinlock/hwspinlock_core.c
 @@ -29,6 +29,8 @@
@@ -144,9 +145,9 @@ index 8862445aa8580..ac76631c7059b 100644
  
  	/* prevent underlying implementation from being removed */
  	if (!try_module_get(dev->driver->owner)) {
-@@ -664,13 +700,18 @@ static int __hwspin_lock_request(struct hwspinlock *hwlock)
- 		return ret;
- 	}
+@@ -666,13 +702,18 @@ static int __hwspin_lock_request(struct hwspinlock *hwlock)
+ 
+ 	ret = 0;
  
 +	/* update shareable refcount */
 +	id = hwlock_to_id(hwlock);
@@ -166,7 +167,7 @@ index 8862445aa8580..ac76631c7059b 100644
  	return ret;
  }
  
-@@ -764,9 +805,9 @@ struct hwspinlock *hwspin_lock_request_specific(unsigned int id)
+@@ -766,9 +807,9 @@ struct hwspinlock *hwspin_lock_request_specific(unsigned int id)
  	/* sanity check (this shouldn't happen) */
  	WARN_ON(hwlock_to_id(hwlock) != id);
  
@@ -179,7 +180,7 @@ index 8862445aa8580..ac76631c7059b 100644
  		pr_warn("hwspinlock %u is already in use\n", id);
  		hwlock = NULL;
  		goto out;
-@@ -799,7 +840,7 @@ int hwspin_lock_free(struct hwspinlock *hwlock)
+@@ -801,7 +842,7 @@ int hwspin_lock_free(struct hwspinlock *hwlock)
  {
  	struct device *dev;
  	struct hwspinlock *tmp;
@@ -188,7 +189,7 @@ index 8862445aa8580..ac76631c7059b 100644
  
  	if (!hwlock) {
  		pr_err("invalid hwlock\n");
-@@ -810,30 +851,35 @@ int hwspin_lock_free(struct hwspinlock *hwlock)
+@@ -812,28 +853,33 @@ int hwspin_lock_free(struct hwspinlock *hwlock)
  	mutex_lock(&hwspinlock_tree_lock);
  
  	/* make sure the hwspinlock is used */
@@ -205,16 +206,13 @@ index 8862445aa8580..ac76631c7059b 100644
  	}
  
  	/* notify the underlying device that power is not needed */
- 	ret = pm_runtime_put(dev);
- 	if (ret < 0)
--		goto out;
-+		goto unlock;
-+
+ 	pm_runtime_put(dev);
+ 
 +	/* update shareable refcount */
 +	if (radix_tree_tag_get(&hwspinlock_tree, id, HWSPINLOCK_SHARED) &&
 +	    --hwlock->refcount)
 +		goto put;
- 
++
  	/* mark this hwspinlock as available */
 -	tmp = radix_tree_tag_set(&hwspinlock_tree, hwlock_to_id(hwlock),
 -							HWSPINLOCK_UNUSED);
@@ -232,7 +230,7 @@ index 8862445aa8580..ac76631c7059b 100644
  	return ret;
  }
 diff --git a/drivers/hwspinlock/hwspinlock_internal.h b/drivers/hwspinlock/hwspinlock_internal.h
-index 9eb6bd020dc70..c808e116ce3fe 100644
+index 29892767bb7a..e1f9c9600635 100644
 --- a/drivers/hwspinlock/hwspinlock_internal.h
 +++ b/drivers/hwspinlock/hwspinlock_internal.h
 @@ -35,11 +35,13 @@ struct hwspinlock_ops {
@@ -250,7 +248,7 @@ index 9eb6bd020dc70..c808e116ce3fe 100644
  };
  
 diff --git a/drivers/hwspinlock/stm32_hwspinlock.c b/drivers/hwspinlock/stm32_hwspinlock.c
-index c8eacf4f9692b..c7c8c4cc2c5fa 100644
+index 3ad0ce0da4d9..6c3be33f3faf 100644
 --- a/drivers/hwspinlock/stm32_hwspinlock.c
 +++ b/drivers/hwspinlock/stm32_hwspinlock.c
 @@ -54,8 +54,23 @@ static const struct hwspinlock_ops stm32_hwspinlock_ops = {
@@ -276,14 +274,8 @@ index c8eacf4f9692b..c7c8c4cc2c5fa 100644
 +	struct device *dev = &pdev->dev;
  	struct stm32_hwspinlock *hw;
  	void __iomem *io_base;
- 	struct resource *res;
-@@ -63,46 +78,48 @@ static int stm32_hwspinlock_probe(struct platform_device *pdev)
- 	int i, ret;
- 
- 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
--	io_base = devm_ioremap_resource(&pdev->dev, res);
-+	io_base = devm_ioremap_resource(dev, res);
- 	if (IS_ERR(io_base))
+ 	size_t array_size;
+@@ -66,41 +81,43 @@ static int stm32_hwspinlock_probe(struct platform_device *pdev)
  		return PTR_ERR(io_base);
  
  	array_size = STM32_MUTEX_NUM_LOCKS * sizeof(struct hwspinlock);
@@ -348,7 +340,7 @@ index c8eacf4f9692b..c7c8c4cc2c5fa 100644
  }
  
  static int __maybe_unused stm32_hwspinlock_runtime_suspend(struct device *dev)
-@@ -137,7 +154,6 @@ MODULE_DEVICE_TABLE(of, stm32_hwpinlock_ids);
+@@ -135,7 +152,6 @@ MODULE_DEVICE_TABLE(of, stm32_hwpinlock_ids);
  
  static struct platform_driver stm32_hwspinlock_driver = {
  	.probe		= stm32_hwspinlock_probe,

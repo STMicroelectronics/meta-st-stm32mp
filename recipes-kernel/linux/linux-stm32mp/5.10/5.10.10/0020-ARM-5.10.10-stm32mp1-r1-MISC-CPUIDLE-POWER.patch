@@ -1,0 +1,437 @@
+From 996898e1ae8bd13f5bb6986c52bd9777b68e80fa Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Tue, 16 Mar 2021 09:18:38 +0100
+Subject: [PATCH 20/22] ARM 5.10.10-stm32mp1-r1 MISC-CPUIDLE-POWER
+
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
+---
+ drivers/base/power/domain.c     |   4 +-
+ drivers/base/power/main.c       |   4 +-
+ drivers/cpuidle/Kconfig.arm     |   8 +
+ drivers/cpuidle/Makefile        |   1 +
+ drivers/cpuidle/cpuidle-stm32.c | 276 ++++++++++++++++++++++++++++++++
+ drivers/opp/core.c              |   6 +-
+ include/linux/pm_wakeup.h       |  10 ++
+ kernel/power/suspend.c          |   1 -
+ 8 files changed, 304 insertions(+), 6 deletions(-)
+ create mode 100644 drivers/cpuidle/cpuidle-stm32.c
+
+diff --git a/drivers/base/power/domain.c b/drivers/base/power/domain.c
+index 743268996336..e0894ef8457c 100644
+--- a/drivers/base/power/domain.c
++++ b/drivers/base/power/domain.c
+@@ -1142,7 +1142,7 @@ static int genpd_finish_suspend(struct device *dev, bool poweroff)
+ 	if (ret)
+ 		return ret;
+ 
+-	if (dev->power.wakeup_path && genpd_is_active_wakeup(genpd))
++	if (device_wakeup_path(dev) && genpd_is_active_wakeup(genpd))
+ 		return 0;
+ 
+ 	if (genpd->dev_ops.stop && genpd->dev_ops.start &&
+@@ -1196,7 +1196,7 @@ static int genpd_resume_noirq(struct device *dev)
+ 	if (IS_ERR(genpd))
+ 		return -EINVAL;
+ 
+-	if (dev->power.wakeup_path && genpd_is_active_wakeup(genpd))
++	if (device_wakeup_path(dev) && genpd_is_active_wakeup(genpd))
+ 		return pm_generic_resume_noirq(dev);
+ 
+ 	genpd_lock(genpd);
+diff --git a/drivers/base/power/main.c b/drivers/base/power/main.c
+index c7ac49042cee..921c5b2ec30a 100644
+--- a/drivers/base/power/main.c
++++ b/drivers/base/power/main.c
+@@ -1359,7 +1359,7 @@ static void dpm_propagate_wakeup_to_parent(struct device *dev)
+ 
+ 	spin_lock_irq(&parent->power.lock);
+ 
+-	if (dev->power.wakeup_path && !parent->power.ignore_children)
++	if (device_wakeup_path(dev) && !parent->power.ignore_children)
+ 		parent->power.wakeup_path = true;
+ 
+ 	spin_unlock_irq(&parent->power.lock);
+@@ -1627,7 +1627,7 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
+ 		goto Complete;
+ 
+ 	/* Avoid direct_complete to let wakeup_path propagate. */
+-	if (device_may_wakeup(dev) || dev->power.wakeup_path)
++	if (device_may_wakeup(dev) || device_wakeup_path(dev))
+ 		dev->power.direct_complete = false;
+ 
+ 	if (dev->power.direct_complete) {
+diff --git a/drivers/cpuidle/Kconfig.arm b/drivers/cpuidle/Kconfig.arm
+index 0844fadc4be8..2b8a0756e4ff 100644
+--- a/drivers/cpuidle/Kconfig.arm
++++ b/drivers/cpuidle/Kconfig.arm
+@@ -91,6 +91,14 @@ config ARM_EXYNOS_CPUIDLE
+ 	help
+ 	  Select this to enable cpuidle for Exynos processors.
+ 
++config ARM_STM32_CPUIDLE
++	bool "Cpu Idle Driver for the STM32 processors"
++	depends on MACH_STM32MP157
++	select DT_IDLE_STATES
++	select ARCH_NEEDS_CPU_IDLE_COUPLED if SMP
++	help
++	  Select this to enable cpuidle for STM32 processors.
++
+ config ARM_MVEBU_V7_CPUIDLE
+ 	bool "CPU Idle Driver for mvebu v7 family processors"
+ 	depends on (ARCH_MVEBU || COMPILE_TEST) && !ARM64
+diff --git a/drivers/cpuidle/Makefile b/drivers/cpuidle/Makefile
+index 26bbc5e74123..cc1eccc73d65 100644
+--- a/drivers/cpuidle/Makefile
++++ b/drivers/cpuidle/Makefile
+@@ -25,6 +25,7 @@ obj-$(CONFIG_ARM_PSCI_CPUIDLE)		+= cpuidle-psci.o
+ obj-$(CONFIG_ARM_PSCI_CPUIDLE_DOMAIN)	+= cpuidle-psci-domain.o
+ obj-$(CONFIG_ARM_TEGRA_CPUIDLE)		+= cpuidle-tegra.o
+ obj-$(CONFIG_ARM_QCOM_SPM_CPUIDLE)	+= cpuidle-qcom-spm.o
++obj-$(CONFIG_ARM_STM32_CPUIDLE)		+= cpuidle-stm32.o
+ 
+ ###############################################################################
+ # MIPS drivers
+diff --git a/drivers/cpuidle/cpuidle-stm32.c b/drivers/cpuidle/cpuidle-stm32.c
+new file mode 100644
+index 000000000000..d3413386cc7f
+--- /dev/null
++++ b/drivers/cpuidle/cpuidle-stm32.c
+@@ -0,0 +1,276 @@
++// SPDX-License-Identifier: GPL-2.0
++// Copyright (C) STMicroelectronics 2019
++// Author:
++
++#include <linux/arm-smccc.h>
++#include <linux/cpu_pm.h>
++#include <linux/cpuidle.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/pm_domain.h>
++#include <linux/pm_runtime.h>
++#include <linux/of.h>
++#include <linux/slab.h>
++#include <linux/tick.h>
++
++#include <asm/cpuidle.h>
++
++#include "dt_idle_states.h"
++
++#define SMC_AUTOSTOP()				\
++{								\
++	struct arm_smccc_res res;				\
++	arm_smccc_smc(0x8200100a, 0, 0, 0,			\
++		      0, 0, 0, 0, &res);			\
++}
++
++struct stm32_pm_domain {
++	struct device *dev;
++	struct generic_pm_domain genpd;
++	int id;
++};
++
++static atomic_t stm_idle_barrier;
++
++static int stm32_enter_idle(struct cpuidle_device *dev,
++			    struct cpuidle_driver *drv, int index)
++{
++	/*
++	 * Call idle CPU PM enter notifier chain so that
++	 * VFP and per CPU interrupt context is saved.
++	 */
++	cpu_pm_enter();
++
++	/*
++	 * be sure that both cpu enter at the same time
++	 * normally not needed is the state is declared as coupled
++	 */
++	cpuidle_coupled_parallel_barrier(dev, &stm_idle_barrier);
++
++	/* Enter broadcast mode for periodic timers */
++	tick_broadcast_enable();
++
++	/* Enter broadcast mode for one-shot timers */
++	tick_broadcast_enter();
++
++	if (dev->cpu == 0)
++		cpu_cluster_pm_enter();
++
++	SMC_AUTOSTOP();
++
++	if (dev->cpu == 0)
++		cpu_cluster_pm_exit();
++
++	tick_broadcast_exit();
++
++	cpuidle_coupled_parallel_barrier(dev, &stm_idle_barrier);
++
++	/*
++	 * Call idle CPU PM exit notifier chain to restore
++	 * VFP and per CPU IRQ context.
++	 */
++	cpu_pm_exit();
++
++	return index;
++}
++
++static const struct of_device_id stm32_idle_state_match[] __initconst = {
++	{ .compatible = "arm,idle-state",
++	  .data = stm32_enter_idle },
++	{ },
++};
++
++static struct cpuidle_driver stm32_idle_driver = {
++	.name = "stm32_idle",
++	.states = {
++		ARM_CPUIDLE_WFI_STATE,
++		{
++			.enter		  = stm32_enter_idle,
++			.exit_latency	  = 620,
++			.target_residency = 700,
++			.flags		  = /*CPUIDLE_FLAG_TIMER_STOP | */
++						CPUIDLE_FLAG_COUPLED,
++			.name		  = "CStop",
++			.desc		  = "Clocks off",
++		},
++	},
++	.safe_state_index = 0,
++	.state_count = 2,
++};
++
++static int stm32_pd_cpuidle_off(struct generic_pm_domain *domain)
++{
++	struct stm32_pm_domain *priv = container_of(domain,
++						    struct stm32_pm_domain,
++						    genpd);
++	int cpu;
++
++	for_each_possible_cpu(cpu) {
++		struct cpuidle_device *cpuidle_dev = per_cpu(cpuidle_devices,
++							     cpu);
++
++		cpuidle_dev->states_usage[1].disable = false;
++	}
++
++	dev_dbg(priv->dev, "%s OFF\n", domain->name);
++
++	return 0;
++}
++
++static int stm32_pd_cpuidle_on(struct generic_pm_domain *domain)
++{
++	struct stm32_pm_domain *priv = container_of(domain,
++						    struct stm32_pm_domain,
++						    genpd);
++	int cpu;
++
++	for_each_possible_cpu(cpu) {
++		struct cpuidle_device *cpuidle_dev = per_cpu(cpuidle_devices,
++							     cpu);
++
++		cpuidle_dev->states_usage[1].disable = true;
++	}
++
++	dev_dbg(priv->dev, "%s ON\n", domain->name);
++
++	return 0;
++}
++
++static void stm32_cpuidle_domain_remove(struct stm32_pm_domain *domain)
++{
++	int ret;
++
++	ret = pm_genpd_remove(&domain->genpd);
++	if (ret)
++		dev_err(domain->dev, "failed to remove PM domain %s: %d\n",
++			domain->genpd.name, ret);
++}
++
++static int stm32_cpuidle_domain_add(struct stm32_pm_domain *domain,
++				    struct device *dev,
++				    struct device_node *np)
++{
++	int ret;
++
++	domain->dev = dev;
++	domain->genpd.name = np->name;
++	domain->genpd.power_off = stm32_pd_cpuidle_off;
++	domain->genpd.power_on = stm32_pd_cpuidle_on;
++
++	ret = pm_genpd_init(&domain->genpd, NULL, 0);
++	if (ret < 0) {
++		dev_err(domain->dev, "failed to initialise PM domain %s: %d\n",
++			np->name, ret);
++		return ret;
++	}
++
++	ret = of_genpd_add_provider_simple(np, &domain->genpd);
++	if (ret < 0) {
++		dev_err(domain->dev, "failed to register PM domain %s: %d\n",
++			np->name, ret);
++		stm32_cpuidle_domain_remove(domain);
++		return ret;
++	}
++
++	dev_info(domain->dev, "domain %s registered\n", np->name);
++
++	return 0;
++}
++
++static int stm32_cpuidle_probe(struct platform_device *pdev)
++{
++	struct cpuidle_driver *drv;
++	struct stm32_pm_domain *domain;
++	struct device *dev = &pdev->dev;
++	struct device_node *np = dev->of_node;
++	struct of_phandle_args child, parent;
++	struct device_node *np_child;
++	int cpu, ret;
++
++	drv = devm_kmemdup(dev, &stm32_idle_driver, sizeof(*drv), GFP_KERNEL);
++	if (!drv)
++		return -ENOMEM;
++
++	/* Start at index 1, index 0 standard WFI */
++	ret = dt_init_idle_driver(drv, stm32_idle_state_match, 1);
++	if (ret < 0)
++		return ret;
++
++	/* all the cpus of the system are coupled */
++	ret = cpuidle_register(drv, cpu_possible_mask);
++	if (ret)
++		return ret;
++
++	/* Declare cpuidle domain */
++	domain = devm_kzalloc(dev, sizeof(*domain), GFP_KERNEL);
++	if (!domain)
++		return -ENOMEM;
++
++	ret = stm32_cpuidle_domain_add(domain, dev, np);
++	if (ret) {
++		devm_kfree(dev, domain);
++		return ret;
++	}
++
++	/* disable cpu idle */
++	for_each_possible_cpu(cpu) {
++		struct cpuidle_device *cpuidle_dev = per_cpu(cpuidle_devices,
++							     cpu);
++
++		cpuidle_dev->states_usage[1].disable = true;
++	}
++
++	/*  link main cpuidle domain to consumer domain */
++	for_each_child_of_node(np, np_child) {
++		if (!of_parse_phandle_with_args(np_child, "power-domains",
++						"#power-domain-cells",
++						0, &child)) {
++			struct device_node *np_test = child.np;
++
++			parent.np = np;
++			parent.args_count = 0;
++
++			ret = of_genpd_add_subdomain(&parent, &child);
++			if (ret < 0)
++				dev_err(dev, "failed to add Sub PM domain %d\n",
++					ret);
++
++			dev_dbg(dev, "%s, add sub cpuidle of %s, with child %s\n",
++				__func__, np->name, np_test->name);
++
++			pm_runtime_put(dev);
++		}
++	}
++
++	dev_info(dev, "cpuidle domain probed\n");
++
++	return 0;
++}
++
++int stm32_cpuidle_remove(struct platform_device *pdev)
++{
++	cpuidle_unregister(&stm32_idle_driver);
++	return 0;
++}
++
++static const struct of_device_id stm32_cpuidle_of_match[] = {
++	{
++		.compatible = "stm32,cpuidle",
++	},
++};
++
++static struct platform_driver stm32_cpuidle_driver = {
++	.probe = stm32_cpuidle_probe,
++	.remove = stm32_cpuidle_remove,
++	.driver = {
++		   .name = "stm32_cpuidle",
++		   .owner = THIS_MODULE,
++		   .of_match_table = stm32_cpuidle_of_match,
++		   },
++};
++
++module_platform_driver(stm32_cpuidle_driver);
++
++MODULE_AUTHOR("<>");
++MODULE_DESCRIPTION("STM32 cpu idle driver");
++MODULE_LICENSE("GPL v2");
+diff --git a/drivers/opp/core.c b/drivers/opp/core.c
+index 903b465c8568..dbcce5de9346 100644
+--- a/drivers/opp/core.c
++++ b/drivers/opp/core.c
+@@ -1608,9 +1608,13 @@ struct opp_table *dev_pm_opp_set_supported_hw(struct device *dev,
+ 	struct opp_table *opp_table;
+ 
+ 	opp_table = dev_pm_opp_get_opp_table(dev);
+-	if (IS_ERR(opp_table))
++
++	if (PTR_ERR(opp_table) == -EPROBE_DEFER)
+ 		return opp_table;
+ 
++	if (!opp_table)
++		return ERR_PTR(-ENOMEM);
++
+ 	/* Make sure there are no concurrent readers while updating opp_table */
+ 	WARN_ON(!list_empty(&opp_table->opp_list));
+ 
+diff --git a/include/linux/pm_wakeup.h b/include/linux/pm_wakeup.h
+index aa3da6611533..196a157456aa 100644
+--- a/include/linux/pm_wakeup.h
++++ b/include/linux/pm_wakeup.h
+@@ -84,6 +84,11 @@ static inline bool device_may_wakeup(struct device *dev)
+ 	return dev->power.can_wakeup && !!dev->power.wakeup;
+ }
+ 
++static inline bool device_wakeup_path(struct device *dev)
++{
++	return dev->power.wakeup_path;
++}
++
+ static inline void device_set_wakeup_path(struct device *dev)
+ {
+ 	dev->power.wakeup_path = true;
+@@ -174,6 +179,11 @@ static inline bool device_may_wakeup(struct device *dev)
+ 	return dev->power.can_wakeup && dev->power.should_wakeup;
+ }
+ 
++static inline bool device_wakeup_path(struct device *dev)
++{
++	return false;
++}
++
+ static inline void device_set_wakeup_path(struct device *dev) {}
+ 
+ static inline void __pm_stay_awake(struct wakeup_source *ws) {}
+diff --git a/kernel/power/suspend.c b/kernel/power/suspend.c
+index 32391acc806b..dc800d4f5b9f 100644
+--- a/kernel/power/suspend.c
++++ b/kernel/power/suspend.c
+@@ -34,7 +34,6 @@
+ #include "power.h"
+ 
+ const char * const pm_labels[] = {
+-	[PM_SUSPEND_TO_IDLE] = "freeze",
+ 	[PM_SUSPEND_STANDBY] = "standby",
+ 	[PM_SUSPEND_MEM] = "mem",
+ };
+-- 
+2.17.1
+

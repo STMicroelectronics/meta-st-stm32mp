@@ -12,9 +12,6 @@ EXTERNALSRC_BUILD_pn-${PN} = "${WORKDIR}/build"
 # To share config fragments between layers
 FILESEXTRAPATHS_prepend := "${THISDIR}:"
 
-# -------------------------------------------------------------
-# Do not deploy kernel module with specfic tarball
-MODULE_TARBALL_DEPLOY = "0"
 do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/kernel"
 
 #---------------------------------------------------------------
@@ -22,13 +19,16 @@ do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/kernel"
 KERNEL_SIGN_ENABLE ?= "0"
 EXTRA_OEMAKE += "${@oe.utils.ifelse(d.getVar('KERNEL_SIGN_ENABLE') == '1', 'INSTALL_MOD_STRIP=1','')}"
 
+# YoctoProject bugzilla : 140044
+#   There's a race between do_symlink_kernsrc and do_populate_lic, since the latter is ordered "after do_patch";
 #
-# Force task order for link creation
-#
+# Below a STMicroelectonics' hacks waiting for official Yocto patch:
+#       commit already exists in gathesgarth :
+#a2b50b74d609ce079ab36b82d4c7c3539fb56485 kernel.bbclass: ensure symlink_kernsrc task gets run even with externalsrc
 python () {
-    d.appendVarFlag("do_unpack", "postfuncs", " do_symlink_kernsrc")
+    bb.build.deltask('do_symlink_kernsrc', d)
+    bb.build.addtask('do_symlink_kernsrc', 'do_patch do_configure', 'do_unpack', d)
 }
-do_symlink_kernsrc[noexec] = "1"
 
 
 # ---------------------------------------------------------------------
@@ -78,6 +78,15 @@ do_configure_prepend() {
 }
 
 # ---------------------------------------------------------------------
+do_compile_kernelmodules_append() {
+    if (grep -q -i -e '^CONFIG_MODULES=y$' ${B}/.config); then
+        # 5.10+ kernels have module.lds that we need to copy for external module builds
+        if [ -e "${B}/scripts/module.lds" ]; then
+            install -Dm 0644 ${B}/scripts/module.lds ${STAGING_KERNEL_BUILDDIR}/scripts/module.lds
+        fi
+    fi
+}
+# ---------------------------------------------------------------------
 do_install_append() {
     # Install KERNEL_IMAGETYPE for kernel-imagebootfs package
     install -m 0644 ${KERNEL_OUTPUT_DIR}/${KERNEL_IMAGETYPE} ${D}/${KERNEL_IMAGEDEST}
@@ -86,8 +95,19 @@ do_install_append() {
         # when ACCEPT_EULA are filled
         echo "blacklist etnaviv" > ${D}/${sysconfdir}/modprobe.d/blacklist.conf
     fi
+    #snd dependencies
+    install -d ${D}/${sysconfdir}/modprobe.d/
+    echo "softdep snd-soc-cs42l51 pre: snd-soc-cs42l51-i2c" > ${D}/${sysconfdir}/modprobe.d/stm32mp1-snd.conf
 }
-
+# ---------------------------------------------------------------------
+do_deploy_append() {
+    if [ ${MODULE_TARBALL_DEPLOY} = "1" ] && (grep -q -i -e '^CONFIG_MODULES=y$' .config); then
+        mkdir -p ${D}${root_prefix}/lib
+        tar -cvzf $deployDir/modules-stripped-${MODULE_TARBALL_NAME}.tgz -C ${WORKDIR}/package/${root_prefix} lib
+        ln -sf modules-stripped-${MODULE_TARBALL_NAME}.tgz $deployDir/modules-stripped-${MODULE_TARBALL_LINK_NAME}.tgz
+    fi
+}
+do_deploy[depends] += " virtual/kernel:do_package "
 # ---------------------------------------------------------------------
 # Support checking the kernel load address parameter: expecting proper value for ST kernel.
 #
