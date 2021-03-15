@@ -8,7 +8,7 @@ SRC_URI += "file://LICENSE"
 
 S = "${WORKDIR}"
 
-UBOOT_SPLASH_SRC = "ST_logo_2020_blue_V_rgb_352x480_8bit.bmp"
+UBOOT_SPLASH_SRC = "ST_logo_2020_blue_H_rgb_rle8_480x183.bmp"
 UBOOT_SPLASH_IMAGE ?= "splash"
 
 inherit deploy
