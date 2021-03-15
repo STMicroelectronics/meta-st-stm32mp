@@ -5,14 +5,14 @@ RDEPENDS_${PN} += "libusb1 hidapi-stm32mp"
 inherit pkgconfig autotools-brokensep gettext
 
 SRC_URI = " \
-    git://repo.or.cz/git2cl.git;;destsuffix=git/tools/git2cl;name=git2cl                         \
-    git://repo.or.cz/jimtcl.git;destsuffix=git/jimtcl;name=jimtcl                               \
+    git://repo.or.cz/git2cl.git;destsuffix=git/tools/git2cl;name=git2cl                         \
+    git://github.com/msteveb/jimtcl;protocol=https;destsuffix=git/jimtcl;name=jimtcl            \
     git://repo.or.cz/libjaylink.git;destsuffix=git/src/jtag/drivers/libjaylink;name=libjaylink  \
     "
 
 SRCREV_git2cl = "8373c9f74993e218a08819cbcdbab3f3564bbeba"
 SRCREV_jimtcl = "0aa0fb4e3a38d38a49de9eb585d93d63a370dcf6"
-SRCREV_libjaylink = "f73ad5e667ae8b26a52b847c603fdadaabf302a6"
+SRCREV_libjaylink = "9aa7a5957c07bb6e862fc1a6d3153d109c7407e4"
 
 S = "${WORKDIR}/git"
 
@@ -29,6 +29,7 @@ EXTRA_OECONF = " \
     --disable-werror \
     --enable-stlink \
     --enable-cmsis-dap \
+    --without-capstone \
     MAKEINFO=true \
     HIDAPI_CFLAGS=-I${STAGING_INCDIR}/hidapi \
     HIDAPI_LIBS=-L${STAGING_LIBDIR}\ -lhidapi-libusb \

@@ -8,11 +8,10 @@ require openocd-stm32mp.inc
 SRC_URI_prepend = "git://repo.or.cz/openocd.git;name=openocd "
 
 SRCREV_FORMAT = "openocd"
-SRCREV_openocd = "b5d2b1224fed3909aa3314339611ac5ac7ab0f82"
+SRCREV_openocd = "a5e526d8575cf63fe11babec85c0798ac3f4ad74"
 
-PV = "0.10.0-release.${SRCPV}"
+PV = "0.11.0-rc2.${SRCPV}"
 
 SRC_URI += " \
-    file://0001-M4-visible-rebase-on-b5d2b1224fed-fixes.patch \
-    file://0002-fixes-for-gcc-10-build-macos-build-CM4-halt-stlink-J.patch \
+    file://0001-rebase-on-v0.11.0-rc2.patch \
 "
