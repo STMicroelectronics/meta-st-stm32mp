@@ -193,32 +193,35 @@ do_compile() {
         tfa_basename=$(echo ${TF_A_BINARIES} | cut -d',' -f${i})
         tf_a_make_target=$(echo ${TF_A_MAKE_TARGET} | cut -d',' -f${i})
         for dt in ${dt_config}; do
-            oe_runmake -C ${S} BUILD_PLAT=${B}/${config} DTB_FILE_NAME=${dt}.dtb ${extra_opt} ${tf_a_make_target}
+            # Init specific soc settings
+            soc_extra_opt=""
+            soc_suffix=""
+            if [ -n "${STM32MP_SOC_NAME}" ]; then
+                for soc in ${STM32MP_SOC_NAME}; do
+                    if [ "$(echo ${dt} | grep -c ${soc})" -eq 1 ]; then
+                        soc_extra_opt="$(echo ${soc} | awk '{print toupper($0)}')=1"
+                        soc_suffix="-${soc}"
+                    fi
+                done
+            fi
+            oe_runmake -C ${S} BUILD_PLAT=${B}/${config}${soc_suffix} DTB_FILE_NAME=${dt}.dtb ${extra_opt} ${soc_extra_opt} ${tf_a_make_target}
             # Copy TF-A binary with explicit devicetree filename
-            if [ -f ${B}/${config}/${tfa_basename}-${dt}.${TF_A_SUFFIX} ]; then
-                cp ${B}/${config}/${tfa_basename}-${dt}.${TF_A_SUFFIX} ${B}/${config}/${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}
+            if [ -f ${B}/${config}${soc_suffix}/${tfa_basename}-${dt}.${TF_A_SUFFIX} ]; then
+                cp ${B}/${config}${soc_suffix}/${tfa_basename}-${dt}.${TF_A_SUFFIX} ${B}/${config}${soc_suffix}/${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}
                 if [ "${TF_A_ENABLE_DEBUG_WRAPPER}" = "1" ]; then
-                    stm32wrapper4dbg -s ${B}/${config}/${tfa_basename}-${dt}.${TF_A_SUFFIX} -d ${B}/${config}/debug-${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}
+                    stm32wrapper4dbg -s ${B}/${config}${soc_suffix}/${tfa_basename}-${dt}.${TF_A_SUFFIX} -d ${B}/${config}${soc_suffix}/debug-${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}
                 fi
             fi
             # Specific for bl32 target
             if [ "$(echo ${tf_a_make_target} | grep -cw 'bl32')" = "1" ]; then
                 # Move 'bl32.elf' file to explicit file name with 'soc_suffix' info (same file for all devicetree build)
                 # This avoid unexpected deployment for other config (cf. do_deploy task)
-                if [ -f ${B}/${config}/${BL32_ELF} ]; then
-                    # Init soc suffix
-                    soc_suffix=""
-                    if [ -n "${STM32MP_SOC_NAME}" ]; then
-                        for soc in ${STM32MP_SOC_NAME}; do
-                            [ "$(echo ${dt} | grep -c ${soc})" -eq 1 ] && soc_suffix="-${soc}"
-                        done
-                    fi
-                    mv -f ${B}/${config}/${BL32_ELF} ${B}/${config}/${TF_A_BASENAME}-${BL32_BASENAME}${soc_suffix}.${TF_A_ELF_SUFFIX}
+                if [ -f ${B}/${config}${soc_suffix}/${BL32_ELF} ]; then
+                    mv -f ${B}/${config}${soc_suffix}/${BL32_ELF} ${B}/${config}${soc_suffix}/${TF_A_BASENAME}-${BL32_BASENAME}${soc_suffix}.${TF_A_ELF_SUFFIX}
                 fi
             fi
         done
     done
-    unset i
 }
 
 do_deploy() {
@@ -232,14 +235,6 @@ do_deploy() {
         dt_config=$(echo ${TF_A_DEVICETREE} | cut -d',' -f${i})
         tfa_basename=$(echo ${TF_A_BINARIES} | cut -d',' -f${i})
         for dt in ${dt_config}; do
-            # Install TF-A binary
-            if [ -f ${B}/${config}/${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX} ]; then
-                install -m 644 ${B}/${config}/${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/
-                if [ "${TF_A_ENABLE_DEBUG_WRAPPER}" = "1" ]; then
-                    install -d ${DEPLOYDIR}/arm-trusted-firmware/debug
-                    install -m 644 ${B}/${config}/debug-${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/debug/
-                fi
-            fi
             # Init soc suffix
             soc_suffix=""
             if [ -n "${STM32MP_SOC_NAME}" ]; then
@@ -247,53 +242,60 @@ do_deploy() {
                     [ "$(echo ${dt} | grep -c ${soc})" -eq 1 ] && soc_suffix="-${soc}"
                 done
             fi
+            # Install TF-A binary
+            if [ -f ${B}/${config}${soc_suffix}/${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX} ]; then
+                install -m 644 ${B}/${config}${soc_suffix}/${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/
+                if [ "${TF_A_ENABLE_DEBUG_WRAPPER}" = "1" ]; then
+                    install -d ${DEPLOYDIR}/arm-trusted-firmware/debug
+                    install -m 644 ${B}/${config}${soc_suffix}/debug-${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/debug/
+                fi
+            fi
             # Install BL31 files
-            if [ -f ${B}/${config}/${BL31_BASENAME}.${BL31_SUFFIX} ]; then
+            if [ -f ${B}/${config}/${dt}/${BL31_BASENAME}.${BL31_SUFFIX} ]; then
                 install -d ${DEPLOYDIR}/arm-trusted-firmware/bl31
                 # Install BL31 binary
-                install -m 644 ${B}/${config}/${BL31_BASENAME}.${BL31_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/bl31/${tfa_basename}-${BL31_BASENAME_DEPLOY}${soc_suffix}.${BL31_SUFFIX}
+                install -m 644 ${B}/${config}${soc_suffix}/${BL31_BASENAME}.${BL31_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/bl31/${tfa_basename}-${BL31_BASENAME_DEPLOY}${soc_suffix}.${BL31_SUFFIX}
                 if [ -n "${ELF_DEBUG_ENABLE}" ]; then
-                    if [ -f ${B}/${config}/${tfa_basename}-${BL31_BASENAME}${soc_suffix}.${TF_A_ELF_SUFFIX} ]; then
+                    if [ -f ${B}/${config}${soc_suffix}/${tfa_basename}-${BL31_BASENAME}${soc_suffix}.${TF_A_ELF_SUFFIX} ]; then
                         install -d ${DEPLOYDIR}/arm-trusted-firmware/bl32/debug
-                        install -m 644 ${B}/${config}/${tfa_basename}-${BL31_BASENAME}${soc_suffix}.${TF_A_ELF_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/bl31/debug/${tfa_basename}-${BL31_BASENAME_DEPLOY}${soc_suffix}.${TF_A_ELF_SUFFIX}
+                        install -m 644 ${B}/${config}${soc_suffix}/${tfa_basename}-${BL31_BASENAME}${soc_suffix}.${TF_A_ELF_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/bl31/debug/${tfa_basename}-${BL31_BASENAME_DEPLOY}${soc_suffix}.${TF_A_ELF_SUFFIX}
                     fi
                 fi
             fi
             # Install BL32 files
-            if [ -f ${B}/${config}/${BL32_BASENAME}.${BL32_SUFFIX} ]; then
+            if [ -f ${B}/${config}${soc_suffix}/${BL32_BASENAME}.${BL32_SUFFIX} ]; then
                 install -d ${DEPLOYDIR}/arm-trusted-firmware/bl32
                 # Install BL32 binary
-                install -m 644 ${B}/${config}/${BL32_BASENAME}.${BL32_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/bl32/${tfa_basename}-${BL32_BASENAME_DEPLOY}${soc_suffix}.${BL32_SUFFIX}
+                install -m 644 ${B}/${config}${soc_suffix}/${BL32_BASENAME}.${BL32_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/bl32/${tfa_basename}-${BL32_BASENAME_DEPLOY}${soc_suffix}.${BL32_SUFFIX}
                 # Install BL32 devicetree
-                if [ -f ${B}/${config}/fdts/${dt}-${BL32_BASENAME}.${DT_SUFFIX} ]; then
-                    install -m 644 ${B}/${config}/fdts/${dt}-${BL32_BASENAME}.${DT_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/bl32/${dt}-${BL32_BASENAME}.${DT_SUFFIX}
+                if [ -f ${B}/${config}${soc_suffix}/fdts/${dt}-${BL32_BASENAME}.${DT_SUFFIX} ]; then
+                    install -m 644 ${B}/${config}${soc_suffix}/fdts/${dt}-${BL32_BASENAME}.${DT_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/bl32/${dt}-${BL32_BASENAME}.${DT_SUFFIX}
                 fi
                 if [ -n "${ELF_DEBUG_ENABLE}" ]; then
-                    if [ -f ${B}/${config}/${tfa_basename}-${BL32_BASENAME}${soc_suffix}.${TF_A_ELF_SUFFIX} ]; then
+                    if [ -f ${B}/${config}${soc_suffix}/${tfa_basename}-${BL32_BASENAME}${soc_suffix}.${TF_A_ELF_SUFFIX} ]; then
                         install -d ${DEPLOYDIR}/arm-trusted-firmware/bl32/debug
-                        install -m 644 ${B}/${config}/${tfa_basename}-${BL32_BASENAME}${soc_suffix}.${TF_A_ELF_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/bl32/debug/${tfa_basename}-${BL32_BASENAME_DEPLOY}${soc_suffix}.${TF_A_ELF_SUFFIX}
+                        install -m 644 ${B}/${config}${soc_suffix}/${tfa_basename}-${BL32_BASENAME}${soc_suffix}.${TF_A_ELF_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/bl32/debug/${tfa_basename}-${BL32_BASENAME_DEPLOY}${soc_suffix}.${TF_A_ELF_SUFFIX}
                     fi
                 fi
             fi
             # Install fwconfig
-            if [ -f ${B}/${config}/fdts/${dt}-${FWCONFIG_NAME}.${DT_SUFFIX} ]; then
+            if [ -f ${B}/${config}${soc_suffix}/fdts/${dt}-${FWCONFIG_NAME}.${DT_SUFFIX} ]; then
                 install -d ${DEPLOYDIR}/arm-trusted-firmware/fwconfig
-                install -m 644 ${B}/${config}/fdts/${dt}-${FWCONFIG_NAME}.${DT_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/fwconfig/${dt}-${FWCONFIG_NAME}-${config}.${DT_SUFFIX}
+                install -m 644 ${B}/${config}${soc_suffix}/fdts/${dt}-${FWCONFIG_NAME}.${DT_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/fwconfig/${dt}-${FWCONFIG_NAME}-${config}.${DT_SUFFIX}
             fi
         done
         if [ -n "${ELF_DEBUG_ENABLE}" ]; then
             install -d ${DEPLOYDIR}/arm-trusted-firmware/debug
-            if [ -f ${B}/${config}/${BL1_ELF} ]; then
-                install -m 644 ${B}/${config}/${BL1_ELF} ${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL1_BASENAME_DEPLOY}-${config}.${TF_A_ELF_SUFFIX}
+            if [ -f ${B}/${config}${soc_suffix}/${BL1_ELF} ]; then
+                install -m 644 ${B}/${config}${soc_suffix}/${BL1_ELF} ${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL1_BASENAME_DEPLOY}-${config}.${TF_A_ELF_SUFFIX}
             fi
-            if [ -f ${B}/${config}/${BL2_ELF} ]; then
-                install -m 644 ${B}/${config}/${BL2_ELF} ${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL2_BASENAME_DEPLOY}-${config}.${TF_A_ELF_SUFFIX}
+            if [ -f ${B}/${config}/${dt}/${BL2_ELF} ]; then
+                install -m 644 ${B}/${config}${soc_suffix}/${BL2_ELF} ${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL2_BASENAME_DEPLOY}-${config}.${TF_A_ELF_SUFFIX}
             fi
-            if [ -f ${B}/${config}/${BL32_ELF} ]; then
-                install -m 644 ${B}/${config}/${BL32_ELF} ${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL32_BASENAME_DEPLOY}-${config}.${TF_A_ELF_SUFFIX}
+            if [ -f ${B}/${config}/${dt}/${BL32_ELF} ]; then
+                install -m 644 ${B}/${config}${soc_suffix}/${BL32_ELF} ${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL32_BASENAME_DEPLOY}-${config}.${TF_A_ELF_SUFFIX}
             fi
         fi
     done
-    unset i
 }
 addtask deploy before do_build after do_compile
