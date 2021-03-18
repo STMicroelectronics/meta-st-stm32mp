@@ -9,7 +9,20 @@ ARCHIVER_MODE[src] = "original"
 inherit archiver_stm32mp_clean
 
 archiver_create_makefile_for_sdk() {
-    # Init internal var for uboot_configs: should be 'defconfig,type,binary'
+    mkdir -p ${ARCHIVER_OUTDIR}
+    cat << EOF > ${ARCHIVER_OUTDIR}/Makefile.sdk
+# Set default path
+SRC_PATH ?= \$(PWD)
+BLD_PATH ?= \$(SRC_PATH)/../build
+DEPLOYDIR ?= \$(SRC_PATH)/../deploy
+
+# Default U-Boot overall settings to null
+UBOOT_CONFIG ?=
+UBOOT_DEFCONFIG ?=
+UBOOT_BINARY ?=
+UBOOT_DEVICETREE ?=
+
+EOF
     if [ -n "${UBOOT_CONFIG}" ]; then
         unset i j k
         for config in ${UBOOT_MACHINE}; do
@@ -20,7 +33,24 @@ archiver_create_makefile_for_sdk() {
                     for binary in ${UBOOT_BINARIES}; do
                         k=$(expr $k + 1);
                         if [ $k -eq $i ]; then
-                            uboot_configs="${uboot_configs} ${config},${type},${binary}"
+                            type_suffix=$(echo ${type} | cut -d'_' -f1)
+                            type_filter=$(echo ${type} | cut -d'_' -f2)
+                            [ "${type_suffix}" = "${type_filter}" ] && type_filter=""
+                            if [ -z "${type_filter}" ]; then
+                                devicetree="${UBOOT_DEVICETREE}"
+                            else
+                                devicetree=""
+                                for dt in ${UBOOT_DEVICETREE}; do
+                                    [ -z "$(echo ${dt} | grep ${type_filter})" ] || devicetree="${devicetree} ${dt}"
+                                done
+                            fi
+                            cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+# Init default config settings
+UBOOT_CONFIGS += ${type_suffix}
+UBOOT_DEFCONFIG_$type_suffix += ${config}
+UBOOT_BINARY_$config ?= ${binary}
+UBOOT_DEVICETREE_$config ?= ${devicetree}
+EOF
                         fi
                     done
                     unset k
@@ -29,17 +59,8 @@ archiver_create_makefile_for_sdk() {
             unset j
         done
         unset i
-    else
-        uboot_configs="${UBOOT_MACHINE},,${UBOOT_BINARY}"
     fi
-
-    mkdir -p ${ARCHIVER_OUTDIR}
-
-    cat << EOF > ${ARCHIVER_OUTDIR}/Makefile.sdk
-# Set default path
-SRC_PATH ?= \$(PWD)
-BLD_PATH ?= \$(SRC_PATH)/../build
-DEPLOYDIR ?= \$(SRC_PATH)/../deploy
+    cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk
 
 # Remove default variables
 LDFLAGS =
@@ -48,25 +69,81 @@ CPPFLAGS =
 
 UBOOT_LOCALVERSION = ${UBOOT_LOCALVERSION}
 
-# Configure default U-Boot configs
-UBOOT_CONFIGS ?= ${uboot_configs}
-DEVICE_TREE ?= ${UBOOT_DEVICETREE}
-
 # Configure default fip feature
 ENABLE_FIP ?= "${@bb.utils.contains('MACHINE_FEATURES','fip','1','',d)}"
 
+# Display U-Boot config details
+define uboot-configs
+	echo "  \$(1)" ; \\
+	\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(1))), \\
+		echo "    defconfig      : \$(defconfig)" ; \
+		echo "    for binary     : \$(if \$(UBOOT_BINARY),\$(UBOOT_BINARY),\$(UBOOT_BINARY_\$(defconfig)))" ; \
+		echo "    with devicetree: \$(if \$(DEVICETREE),\$(DEVICETREE),\$(UBOOT_DEVICETREE_\$(defconfig)))" ; \
+	)
+endef
+
+# Configure U-Boot configure rules (configure-DEFCONFIG-CONFIG)
+define configure-rules
+configure-\$(1)-\$(2): version
+ifeq (\$(ENABLE_FIP),)
+	@if ! grep -q 'CONFIG_STM32MP15x_STM32IMAGE=y' \$(SRC_PATH)/configs/\$(1); then \\
+		echo "CONFIG_STM32MP15x_STM32IMAGE=y" >> \$(SRC_PATH)/configs/\$(1) ; \\
+	fi
+endif
+	@mkdir -p \$(BLD_PATH)/\$(1)
+	@echo \$(UBOOT_LOCALVERSION) > \$(BLD_PATH)/\$(1)/.scmversion
+	\$(MAKE) -C \$(SRC_PATH) O=\$(BLD_PATH)/\$(1) \$(1)
+endef
+
+# Configure U-Boot make rules (uboot-DEFCONFIG-CONFIG)
+define uboot-rules
+uboot-\$(1)-\$(2): configure-\$(1)-\$(2)
+	@\$(foreach dt, \$(if \$(DEVICETREE),\$(DEVICETREE),\$(UBOOT_DEVICETREE_\$(1))), \\
+		\$(MAKE) -C \$(SRC_PATH) ${UBOOT_MAKE_TARGET} \\
+			O=\$(BLD_PATH)/\$(1) \\
+			DEVICE_TREE=\$(dt) \\
+			DEVICE_TREE_EXT=\$(dt).dtb ; \\
+	)
+endef
+
+# Configure U-Boot deploy rules (deploy-DEFCONFIG-CONFIG)
+define deploy-rules
+deploy-\$(1)-\$(2): uboot-\$(1)-\$(2)
+	@mkdir -p \$(DEPLOYDIR)
+	@mkdir -p \$(DEPLOYDIR)/debug
+	@\$(foreach dt, \$(if \$(DEVICETREE),\$(DEVICETREE),\$(UBOOT_DEVICETREE_\$(1))), \\
+		cp -f \$(BLD_PATH)/\$(1)/\$(3) \$(DEPLOYDIR)/u-boot-\$(dt)-\$(2).\$(shell echo \$(3) | cut -d'.' -f2) ; \\
+		if [ -f \$(BLD_PATH)/\$(1)/${SPL_BINARY_STM32} ]; then \\
+			cp -f \$(BLD_PATH)/\$(1)/${SPL_BINARY_STM32} \$(DEPLOYDIR)/${SPL_BINARYNAME}-\$(dt)-\$(2) ; \\
+		fi ; \\
+		if [ "\$(shell echo \$(3) | cut -d'.' -f2)" = "dtb" ]; then \\
+			cp -f \$(BLD_PATH)/\$(1)/u-boot-nodtb.bin \$(DEPLOYDIR)/u-boot-nodtb\$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(shell echo \$(dt) | grep -c \$(soc)),-\$(soc),)).bin ; \\
+		fi ; \\
+		if [ -f \$(BLD_PATH)/\$(1)/${UBOOT_ELF} ]; then \\
+			cp -f \$(BLD_PATH)/\$(1)/${UBOOT_ELF} \$(DEPLOYDIR)/debug/u-boot\$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(shell echo \$(dt) | grep -c \$(soc)),-\$(soc),))-\$(2).${UBOOT_ELF_SUFFIX} ; \\
+		fi ; \\
+		if [ -f \$(BLD_PATH)/\$(1)/${SPL_ELF} ]; then \\
+			cp -f \$(BLD_PATH)/\$(1)/${SPL_ELF} \$(DEPLOYDIR)/debug/${SPL_ELF_NAME}\$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(shell echo \$(dt) | grep -c \$(soc)),-\$(soc),))-\$(2) ; \\
+		fi ; \\
+	)
+endef
+
+# Configure overall deploy rules list
+deploy-targets := \$(foreach config, \$(if \$(UBOOT_CONFIG),\$(UBOOT_CONFIG),\$(UBOOT_CONFIGS)), \\
+					\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(config))), deploy-\$(defconfig)-\$(config)) \\
+					)
+
 help:
 	@echo
-	@echo "Configured U-Boot config(s):"
-	@for config in \$(UBOOT_CONFIGS); do \\
-		defconfig=\$\$(echo \$\$config | cut -d',' -f1) ; \\
-		type=\$\$(echo \$\$config | cut -d',' -f2) ; \\
-		binary=\$\$(echo \$\$config | cut -d',' -f3) ; \\
-		echo "  \$\$defconfig config (\$\$type type) for \$\$binary binary" ; \\
-		for devicetree in \$(DEVICE_TREE); do \\
-			echo "    with device tree: \$\$devicetree" ; \\
-		done ; \\
-	done
+	@echo "U-Boot configuration:"
+	@echo "  UBOOT_CONFIG = \$(if \$(UBOOT_CONFIG),\$(UBOOT_CONFIG),\$(UBOOT_CONFIGS))"
+	@echo "Config details:"
+	@\$(foreach config, \$(if \$(UBOOT_CONFIG),\$(UBOOT_CONFIG),\$(UBOOT_CONFIGS)), \$(call uboot-configs,\$(config)))
+	@echo
+	@echo "Note that each U-Boot configuration settings can be updated through overall or specific config var:"
+	@echo "  UBOOT_DEFCONFIG"
+	@echo "  UBOOT_BINARY"
+	@echo "  DEVICETREE"
 	@echo
 	@echo "U-Boot folder configuration:"
 	@echo "  SRC_PATH  = \$(SRC_PATH)"
@@ -81,97 +158,10 @@ endif
 	@echo
 	@echo "Available targets:"
 	@echo "  all   : build U-Boot binaries for defined config(s)"
+	@echo "  fip   : build FIP binaries"
 	@echo "  clean : clean build directories from generated files"
 
-version:
-	@if test ! -e .scmversion ; then echo \$(UBOOT_LOCALVERSION) > \$(SRC_PATH)/.scmversion; fi
-
-all: uboot \$(if \$(ENABLE_FIP),fip)
-
-uboot: version
-	@for config in \$(UBOOT_CONFIGS); do \\
-		uboot_config=\$\$(echo \$\$config | cut -d',' -f1) ; \\
-		uboot_type=\$\$(echo \$\$config | cut -d',' -f2) ; \\
-		uboot_binary=\$\$(echo \$\$config | cut -d',' -f3) ; \\
-		uboot_suffix=\$\$(echo \$\$uboot_binary | cut -d'.' -f2) ; \\
-		# Configure destination folder \\
-		if [ "\$\$uboot_suffix" = "img" ]; then \\
-			subfolder=/\$\$uboot_type ; \\
-		else \\
-			subfolder= ; \\
-		fi ; \\
-		mkdir -p \$(DEPLOYDIR)\$\$subfolder ; \\
-		mkdir -p \$(DEPLOYDIR)\$\$subfolder/debug ; \\
-		# Make sure about configuration set \\
-		if test -z "\$\$uboot_config" -o -z "\$\$uboot_type" -o -z "\$\$uboot_binary"; then \\
-			echo ; \\
-			echo "[ERROR] UBOOT_CONFIGS wrongly configured. It should be space separated list of element <defconfig>,<type>,<binary>" ; \\
-			echo ; \\
-			exit 1 ; \\
-		fi ; \\
-		# Dynamic update for defconfig file \\
-		if [ "\$\$uboot_suffix" = "stm32" ]; then \\
-			if ! grep -q 'CONFIG_STM32MP15x_STM32IMAGE=y' "\$(SRC_PATH)/configs/\$\$uboot_config"; then \\
-				echo "CONFIG_STM32MP15x_STM32IMAGE=y" >> "\$(SRC_PATH)/configs/\$\$uboot_config" ; \\
-			fi ; \\
-		fi ; \\
-		# Init folder and defconfig selected \\
-		if [ ! -d \$(BLD_PATH)/\$\$uboot_type ]; then \\
-			mkdir -p \$(BLD_PATH)/\$\$uboot_type ; \\
-			echo \$(UBOOT_LOCALVERSION) > \$(BLD_PATH)/\$\$uboot_type/.scmversion ; \\
-			\$(MAKE) -C \$(SRC_PATH) O=\$(BLD_PATH)/\$\$uboot_type \$\$uboot_config ; \\
-		fi ; \\
-		# Build binaries \\
-		if [ -z "\$(DEVICE_TREE)" ]; then \\
-			\$(MAKE) -C \$(SRC_PATH) O=\$(BLD_PATH)/\$\$uboot_type ${UBOOT_MAKE_TARGET} ; \\
-			# Copy binary files with explicit name \\
-			cp -f \$(BLD_PATH)/\$\$uboot_type/\$\$uboot_binary \$(DEPLOYDIR)\$\$subfolder/u-boot-\$\$uboot_type.\$\$uboot_suffix ; \\
-			if [ -f \$(BLD_PATH)/\$\$uboot_type/${SPL_BINARY_STM32} ]; then \\
-				cp -f \$(BLD_PATH)/\$\$uboot_type/${SPL_BINARY_STM32} \$(DEPLOYDIR)\$\$subfolder/${SPL_BINARYNAME}-\$\$uboot_type ; \\
-			fi ; \\
-			if [ -f \$(BLD_PATH)/\$\$uboot_type/${UBOOT_ELF} ]; then \\
-				cp -f \$(BLD_PATH)/\$\$uboot_type/${UBOOT_ELF} \$(DEPLOYDIR)\$\$subfolder/debug/u-boot-\$\$uboot_type.${UBOOT_ELF_SUFFIX} ; \\
-			fi ; \\
-			if [ -f \$(BLD_PATH)/\$\$uboot_type/${SPL_ELF} ]; then \\
-				cp -f \$(BLD_PATH)/\$\$uboot_type/${SPL_ELF} \$(DEPLOYDIR)\$\$subfolder/debug/${SPL_ELF_NAME}-\$\$uboot_type ; \\
-			fi ; \\
-			# Install 'u-boot-nodtb.bin' binary in case '*.dtb' binary installation configured \\
-			if [ "\$\$uboot_suffix" = "dtb" ]; then \\
-				cp -f \$(BLD_PATH)/\$\$uboot_type/u-boot-nodtb.bin \$(DEPLOYDIR)\$\$subfolder/u-boot-nodtb.bin ; \\
-			fi ; \\
-		else \\
-			for devicetree in \$(DEVICE_TREE); do \\
-				\$(MAKE) -C \$(SRC_PATH) O=\$(BLD_PATH)/\$\$uboot_type ${UBOOT_MAKE_TARGET} DEVICE_TREE=\$\$devicetree DEVICE_TREE_EXT=\$\$devicetree.dtb; \\
-				# Copy binary files with explicit name \\
-				cp -f \$(BLD_PATH)/\$\$uboot_type/\$\$uboot_binary \$(DEPLOYDIR)\$\$subfolder/u-boot-\$\$devicetree-\$\$uboot_type.\$\$uboot_suffix ; \\
-				if [ -f \$(BLD_PATH)/\$\$uboot_type/${SPL_BINARY_STM32} ]; then \\
-					cp -f \$(BLD_PATH)/\$\$uboot_type/${SPL_BINARY_STM32} \$(DEPLOYDIR)\$\$subfolder/${SPL_BINARYNAME}-\$\$devicetree-\$\$uboot_type ; \\
-				fi ; \\
-				if [ -f \$(BLD_PATH)/\$\$uboot_type/${UBOOT_ELF} ]; then \\
-					cp -f \$(BLD_PATH)/\$\$uboot_type/${UBOOT_ELF} \$(DEPLOYDIR)\$\$subfolder/debug/u-boot-\$\$devicetree-\$\$uboot_type.${UBOOT_ELF_SUFFIX} ; \\
-				fi ; \\
-				if [ -f \$(BLD_PATH)/\$\$uboot_type/${SPL_ELF} ]; then \\
-					cp -f \$(BLD_PATH)/\$\$uboot_type/${SPL_ELF} \$(DEPLOYDIR)\$\$subfolder/debug/${SPL_ELF_NAME}-\$\$devicetree-\$\$uboot_type ; \\
-				fi ; \\
-				# Install ''u-boot-nodtb.bin' binary in case '*.dtb' binary installation configured \\
-				if [ "\$\$uboot_suffix" = "dtb" ]; then \\
-					# Init soc suffix \\
-					soc_suffix="" ; \\
-					if [ -n "${STM32MP_SOC_NAME}" ]; then \\
-						for soc in ${STM32MP_SOC_NAME}; do \\
-							if [ "\$\$(echo \$\$devicetree | grep -c \$\$soc)" -eq 1 ]; then \\
-								soc_suffix="-\$\$soc" ; \\
-							fi ; \\
-						done ; \\
-					fi ; \\
-					cp -f \$(BLD_PATH)/\$\$uboot_type/u-boot-nodtb.bin \$(DEPLOYDIR)\$\$subfolder/u-boot-nodtb\$\$soc_suffix.bin ; \\
-				fi ; \\
-			done ; \\
-		fi ; \\
-	done
-
-fip: uboot
-	FIP_DEPLOYDIR_UBOOT=\$(DEPLOYDIR) FIP_DEVICETREE="\$(DEVICE_TREE)" fiptool-stm32mp
+all: \$(deploy-targets) \$(if \$(ENABLE_FIP),fip)
 
 clean:
 	@for config in \$(UBOOT_CONFIGS); do \\
@@ -182,6 +172,24 @@ clean:
 	@echo "Removing \$(DEPLOYDIR) ..."
 	@rm -rf \$(DEPLOYDIR)
 	@echo
+
+fip: \$(deploy-targets)
+	FIP_DEPLOYDIR_UBOOT=\$(DEPLOYDIR) FIP_DEVICETREE="\$(DEVICE_TREE)" fiptool-stm32mp
+
+version:
+	@if test ! -e \$(SRC_PATH)/.scmversion ; then echo \$(UBOOT_LOCALVERSION) > \$(SRC_PATH)/.scmversion; fi
+
+# Set U-Boot configure rules
+\$(foreach config, \$(if \$(UBOOT_CONFIG),\$(UBOOT_CONFIG),\$(UBOOT_CONFIGS)), \\
+	\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(config))), \$(eval \$(call configure-rules,\$(defconfig),\$(config)))))
+# Set U-Boot make rules
+\$(foreach config, \$(if \$(UBOOT_CONFIG),\$(UBOOT_CONFIG),\$(UBOOT_CONFIGS)), \\
+	\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(config))), \$(eval \$(call uboot-rules,\$(defconfig),\$(config)))))
+# Set U-Boot deploy rules
+\$(foreach config, \$(if \$(UBOOT_CONFIG),\$(UBOOT_CONFIG),\$(UBOOT_CONFIGS)), \\
+	\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(config))), \\
+		\$(eval \$(call deploy-rules,\$(defconfig),\$(config),\$(if \$(UBOOT_BINARY),\$(UBOOT_BINARY),\$(UBOOT_BINARY_\$(defconfig)))))))
+
 EOF
 }
 do_ar_original[prefuncs] += "archiver_create_makefile_for_sdk"
