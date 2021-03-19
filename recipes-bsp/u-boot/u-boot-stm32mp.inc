@@ -196,6 +196,7 @@ do_deploy_append() {
         # Clean deploydir from any available binary first
         # This allows to only install the devicetree binary ones
         rm -rf ${DEPLOYDIR}
+        install -d ${DEPLOYDIR}
 
         for devicetree in ${UBOOT_DEVICETREE}; do
             if [ -n "${UBOOT_CONFIG}" ]; then
