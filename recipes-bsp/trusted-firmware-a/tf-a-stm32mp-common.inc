@@ -251,7 +251,7 @@ do_deploy() {
                 fi
             fi
             # Install BL31 files
-            if [ -f ${B}/${config}/${dt}/${BL31_BASENAME}.${BL31_SUFFIX} ]; then
+            if [ -f ${B}/${config}${soc_suffix}/${BL31_BASENAME}.${BL31_SUFFIX} ]; then
                 install -d ${DEPLOYDIR}/arm-trusted-firmware/bl31
                 # Install BL31 binary
                 install -m 644 ${B}/${config}${soc_suffix}/${BL31_BASENAME}.${BL31_SUFFIX} ${DEPLOYDIR}/arm-trusted-firmware/bl31/${tfa_basename}-${BL31_BASENAME_DEPLOY}${soc_suffix}.${BL31_SUFFIX}
@@ -289,10 +289,10 @@ do_deploy() {
             if [ -f ${B}/${config}${soc_suffix}/${BL1_ELF} ]; then
                 install -m 644 ${B}/${config}${soc_suffix}/${BL1_ELF} ${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL1_BASENAME_DEPLOY}-${config}.${TF_A_ELF_SUFFIX}
             fi
-            if [ -f ${B}/${config}/${dt}/${BL2_ELF} ]; then
+            if [ -f ${B}/${config}${soc_suffix}/${BL2_ELF} ]; then
                 install -m 644 ${B}/${config}${soc_suffix}/${BL2_ELF} ${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL2_BASENAME_DEPLOY}-${config}.${TF_A_ELF_SUFFIX}
             fi
-            if [ -f ${B}/${config}/${dt}/${BL32_ELF} ]; then
+            if [ -f ${B}/${config}${soc_suffix}/${BL32_ELF} ]; then
                 install -m 644 ${B}/${config}${soc_suffix}/${BL32_ELF} ${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL32_BASENAME_DEPLOY}-${config}.${TF_A_ELF_SUFFIX}
             fi
         fi
