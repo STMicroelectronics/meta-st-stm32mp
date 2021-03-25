@@ -39,7 +39,7 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'optee-os-stm3
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/optee_os.git;protocol=https;branch=${OPTEE_VERSION}-stm32mp"
-SRCREV_class-devupstream = "6a3dd87a133bee8a18409969380dbb1fc289f803"
+SRCREV_class-devupstream = "0bd33404e9581d00514034b7b05a2cbe8649c1fd"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github
