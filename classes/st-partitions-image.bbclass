@@ -221,7 +221,7 @@ python image_rootfs_image_clean_task(){
                     # Check the package is in the manifest of the partition
                     match = False
                     for line in contents:
-                        if re.match('^%s ' % package, line):
+                        if package == line.split()[0]:
                             match = True
                             break
                     if not match:
