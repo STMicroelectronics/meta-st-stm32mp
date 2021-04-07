@@ -20,20 +20,24 @@ UBOOT_EXTLINUX_KERNEL_ARGS_append += " ${@bb.utils.contains('ST_DEBUG_TRACE', '1
 # -----------------------------------------------------------------------------
 # Define additional targets to use
 UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard' ], 'target-sdcard', '', d)}"
+UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'target-nor', '', d)}"
 UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'target-emmc', '', d)}"
 UBOOT_EXTLINUX_TARGETS += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'nand-4-256', 'nor-nand-4-256' ], 'target-nand', '', d)}"
 # Define labels for each target
 # (mandatory to allow specific var override if needed)
 UBOOT_EXTLINUX_LABELS_target-sdcard += "rootfs"
+UBOOT_EXTLINUX_LABELS_target-nor += "rootfs"
 UBOOT_EXTLINUX_LABELS_target-emmc += "rootfs"
 UBOOT_EXTLINUX_LABELS_target-nand += "rootfs"
 # Define specific bootprefix for each target
 UBOOT_EXTLINUX_BOOTPREFIXES_target-sdcard = "${DEVICE_SDCARD}_"
+UBOOT_EXTLINUX_BOOTPREFIXES_target-nor = "${DEVICE_NOR}_"
 UBOOT_EXTLINUX_BOOTPREFIXES_target-emmc = "${DEVICE_EMMC}_"
 UBOOT_EXTLINUX_BOOTPREFIXES_target-nand = "${DEVICE_NAND}_"
 # Define ROOT overrides for each target
 UBOOT_EXTLINUX_ROOT_target-nand = "ubi.mtd=UBI rootfstype=ubifs root=ubi0:rootfs"
 UBOOT_EXTLINUX_ROOT_target-sdcard = "root=PARTUUID=${DEVICE_PARTUUID_ROOTFS_SDCARD}"
+UBOOT_EXTLINUX_ROOT_target-nor = "root=/dev/mtdblock6"
 UBOOT_EXTLINUX_ROOT_target-emmc = "root=PARTUUID=${DEVICE_PARTUUID_ROOTFS_EMMC}"
 # Define INITRD overrides for nand target
 UBOOT_EXTLINUX_INITRD_target-nand = ""
@@ -64,6 +68,8 @@ UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG_target-emmc += "${STM32MP_DT_FILES_ED}"
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG_target-emmc += "${STM32MP_DT_FILES_EV}"
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG_target-nand += "${STM32MP_DT_FILES_ED}"
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG_target-nand += "${STM32MP_DT_FILES_EV}"
+UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG_target-nor += "${STM32MP_DT_FILES_ED}"
+UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG_target-nor += "${STM32MP_DT_FILES_EV}"
 # Define extra label configuration
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157c-dk2] += "stm32mp157c-dk2-a7-examples"
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157f-dk2] += "stm32mp157f-dk2-a7-examples"

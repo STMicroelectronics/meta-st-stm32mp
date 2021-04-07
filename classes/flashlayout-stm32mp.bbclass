@@ -105,6 +105,9 @@ FLASHLAYOUT_SUFFIX   ??= "tsv"
 # Configure flashlayout file generation for stm32wrapper4dbg
 ENABLE_FLASHLAYOUT_CONFIG_WRAPPER4DBG ??= "0"
 
+# Configure partition file extension
+PARTITION_SUFFIX ??= ".ext4"
+
 # Configure folders for flashlayout file generation
 FLASHLAYOUT_DEPLOYDIR ?= "${DEPLOY_DIR}/images/${MACHINE}"
 FLASHLAYOUT_TOPDIR ?= "${WORKDIR}/flashlayout-destdir/"
@@ -757,6 +760,7 @@ python flashlayout_partition_image_config() {
     # The "doc" varflag is special, we don't want to see it here
     partitionsconfigflags.pop('doc', None)
     partitionsconfig = (d.getVar('PARTITIONS_CONFIG') or "").split()
+    partitionssuffix = (d.getVar('PARTITION_SUFFIX') or ".ext4")
 
     if len(partitionsconfig) > 0:
         for config in partitionsconfig:
@@ -780,11 +784,11 @@ python flashlayout_partition_image_config() {
                     d.setVar('FLASHLAYOUT_PARTITION_ENABLE_%s' % fl_label, 'P')
                     if items[2] == '':
                         # There is no mountpoint specified, so we apply rootfs image format
-                        bb.debug(1, "Set FLASHLAYOUT_PARTITION_BIN2LOAD_%s to %s." % (fl_label, items[0] + "-${MACHINE}.ext4"))
-                        d.setVar('FLASHLAYOUT_PARTITION_BIN2LOAD_%s' % fl_label, items[0] + "-${MACHINE}.ext4")
+                        bb.debug(1, "Set FLASHLAYOUT_PARTITION_BIN2LOAD_%s to %s." % (fl_label, items[0] + "-${MACHINE}"+partitionssuffix))
+                        d.setVar('FLASHLAYOUT_PARTITION_BIN2LOAD_%s' % fl_label, items[0] + "-${MACHINE}"+partitionssuffix)
                     else:
-                        bb.debug(1, "Set FLASHLAYOUT_PARTITION_BIN2LOAD_%s to %s." % (fl_label, items[0] + "-${DISTRO}-${MACHINE}.ext4"))
-                        d.setVar('FLASHLAYOUT_PARTITION_BIN2LOAD_%s' % fl_label, items[0] + "-${DISTRO}-${MACHINE}.ext4")
+                        bb.debug(1, "Set FLASHLAYOUT_PARTITION_BIN2LOAD_%s to %s." % (fl_label, items[0] + "-${DISTRO}-${MACHINE}"+partitionssuffix))
+                        d.setVar('FLASHLAYOUT_PARTITION_BIN2LOAD_%s' % fl_label, items[0] + "-${DISTRO}-${MACHINE}"+partitionssuffix)
                     if items[3]:
                         bb.debug(1, "Set FLASHLAYOUT_PARTITION_SIZE_%s to %s." % (fl_label, items[3]))
                         d.setVar('FLASHLAYOUT_PARTITION_SIZE_%s' % fl_label, items[3])
