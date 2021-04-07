@@ -69,13 +69,12 @@ FLASHLAYOUT_BOOTSCHEME_LABELS += "${BOOTSCHEME_LABELS}"
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'emmc', '', d)}"
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', 'nand-4-256', '', d)}"
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', 'nor-sdcard', '', d)}"
+FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'nor', '', d)}"
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'sdcard', '', d)}"
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', 'spinand-2-128', '', d)}"
 
 # Set by default this variable to 0, and set to 1 only when we are using st-example-image-*
 ST_EXAMPLE_IMAGE ??= "0"
-
-#FIXME need to manage overall device size to abort flashlayout creation in case of oversizing the storage devices
 
 # Remove NAND flashlayout when we are using st-example-image-* as rootfs too big for a NAND device size of 1 GBytes
 FLASHLAYOUT_CONFIG_LABELS_remove = "${@bb.utils.contains('ST_EXAMPLE_IMAGE', '1', 'nand-4-256', '', d)}"
@@ -104,11 +103,11 @@ FLASHLAYOUT_TYPE_LABELS_emmc = "${DEVICE_BOARD_ENABLE_EMMC}"
 FLASHLAYOUT_TYPE_LABELS_nand-4-256 = "${DEVICE_BOARD_ENABLE_NAND}"
 # NOR
 # Set flashlayout file generation to eval board only
+FLASHLAYOUT_TYPE_LABELS_nor = "${DEVICE_BOARD_ENABLE_NOR}"
 FLASHLAYOUT_TYPE_LABELS_nor-sdcard = "${DEVICE_BOARD_ENABLE_NOR}"
 # SDCARD
 # Set flashlayout file generation for all boards
 FLASHLAYOUT_TYPE_LABELS_sdcard = "${DEVICE_BOARD_ENABLE_SDCARD}"
-
 # SPINAND
 # Set flashlayout file generation for all boards
 FLASHLAYOUT_TYPE_LABELS_spinand-2-128 = "${DEVICE_BOARD_ENABLE_SPINAND}"
@@ -143,6 +142,12 @@ FLASHLAYOUT_PARTITION_LABELS_optee_nand-4-256 = "\
     ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', ' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'nand-4-256').split()]), d)} \
     ubifs \
     "
+FLASHLAYOUT_PARTITION_LABELS_optee_nor = "\
+    ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nor').split()])} \
+    ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', ' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'nor').split()]), d)} \
+    ${FLASHLAYOUT_PARTITION_IMAGES} \
+    "
 FLASHLAYOUT_PARTITION_LABELS_optee_nor-sdcard = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nor-sdcard').split()])} \
@@ -172,6 +177,11 @@ FLASHLAYOUT_PARTITION_LABELS_trusted_nand-4-256 = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nand-4-256').split()])} \
     ubifs \
+    "
+FLASHLAYOUT_PARTITION_LABELS_trusted_nor = "\
+    ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nor').split()])} \
+    ${FLASHLAYOUT_PARTITION_IMAGES} \
     "
 FLASHLAYOUT_PARTITION_LABELS_trusted_nor-sdcard = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
@@ -209,11 +219,11 @@ FLASHLAYOUT_PARTITION_ENABLE = "P"
 FLASHLAYOUT_PARTITION_ENABLE_${STM32MP_FSBL1_NAME}-boot = "-"
 FLASHLAYOUT_PARTITION_ENABLE_${STM32MP_SSBL1_NAME}-boot = "-"
 FLASHLAYOUT_PARTITION_ENABLE_empty      = "PE"
+FLASHLAYOUT_PARTITION_ENABLE_nor_${STM32MP_UENV_NAME} = "PDE"
 FLASHLAYOUT_PARTITION_ENABLE_nor-sdcard_${STM32MP_UENV_NAME} = "PDE"
 # Need to make sure to delete partition that contains U-Boot env before update (gpt partitions only)
 FLASHLAYOUT_PARTITION_ENABLE_sdcard_${STM32MP_SSBL1_NAME} = "PD"
 FLASHLAYOUT_PARTITION_ENABLE_emmc_${STM32MP_SSBL1_NAME} = "PD"
-
 # -----------------------------------------------------------------------------
 # Partition ID
 # -----------------------------------------------------------------------------
@@ -224,13 +234,14 @@ FLASHLAYOUT_PARTITION_ENABLE_emmc_${STM32MP_SSBL1_NAME} = "PD"
 FLASHLAYOUT_PARTITION_ID_${STM32MP_FSBL1_NAME}-boot = "0x01"
 FLASHLAYOUT_PARTITION_ID_${STM32MP_SSBL1_NAME}-boot = "0x03"
 
-FLASHLAYOUT_PARTITION_TYPE       = "Binary"
+FLASHLAYOUT_PARTITION_TYPE = "Binary"
 FLASHLAYOUT_PARTITION_TYPE_ubifs = "System"
 
 FLASHLAYOUT_PARTITION_COPY = "1"
 
 FLASHLAYOUT_PARTITION_DEVICE_emmc           = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE_EMMC}:default"
 FLASHLAYOUT_PARTITION_DEVICE_nand-4-256     = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE_NAND}:default"
+FLASHLAYOUT_PARTITION_DEVICE_nor            = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE_NOR}:default"
 FLASHLAYOUT_PARTITION_DEVICE_nor-sdcard     = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE_NOR}:default,${DEVICE_SDCARD}:${FLASHLAYOUT_PARTITION_IMAGES}"
 FLASHLAYOUT_PARTITION_DEVICE_sdcard         = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE_SDCARD}:default"
 FLASHLAYOUT_PARTITION_DEVICE_spinand-2-128  = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE_SPINAND}:default"

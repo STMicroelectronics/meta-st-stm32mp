@@ -98,8 +98,12 @@ DEVICE_START_OFFSET_NOR    ?= "0x00000000"
 DEVICE_MAX_OFFSET_NOR      ?= "0x04000000"
 DEVICE_ALIGNMENT_SIZE_NOR  ?= "0x00010000"
 
+# Configure the rootfs partition uid used in gpt partition table for NOR
+DEVICE_PARTUUID_ROOTFS_NOR ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS_${DEVICE_NOR}')) or ''}"
+
 # Configure the list of boards that enable NOR
 DEVICE_BOARD_ENABLE_NOR    += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard' , '${STM32MP_DT_FILES_EV}', '', d)}"
+DEVICE_BOARD_ENABLE_NOR    += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor' , '${STM32MP_DT_FILES_EV}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # SDCARD
@@ -116,8 +120,8 @@ DEVICE_PARTUUID_ROOTFS_SDCARD ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS_$
 
 # Configure the list of boards that enable SDCARD
 DEVICE_BOARD_ENABLE_SDCARD += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', '${STM32MP_DT_FILES_DK}', '', d)}"
-DEVICE_BOARD_ENABLE_SDCARD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard' ], '${STM32MP_DT_FILES_ED}', '', d)}"
-DEVICE_BOARD_ENABLE_SDCARD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard' ], '${STM32MP_DT_FILES_EV}', '', d)}"
+DEVICE_BOARD_ENABLE_SDCARD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard', 'nor' ], '${STM32MP_DT_FILES_ED}', '', d)}"
+DEVICE_BOARD_ENABLE_SDCARD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard', 'nor' ], '${STM32MP_DT_FILES_EV}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # SPI NAND
@@ -135,3 +139,4 @@ DEVICE_BOARD_ENABLE_SPINAND += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spina
 DEVICE_PARTUUID_ROOTFS_mmc0 ?= "e91c4e10-16e6-4c0e-bd0e-77becf4a3582"
 DEVICE_PARTUUID_ROOTFS_mmc1 ?= "491f6117-415d-4f53-88c9-6e0de54deac6"
 DEVICE_PARTUUID_ROOTFS_mmc2 ?= "fd58f1c7-be0d-4338-8ee9-ad8f050aeb18"
+DEVICE_PARTUUID_ROOTFS_nor0 ?= ""
