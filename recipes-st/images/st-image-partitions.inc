@@ -62,6 +62,6 @@ reformat_rootfs() {
             TARGETROOTFS=$(dirname ${TARGETROOTFS})
         done
     else
-        bbwarn "${IMAGE_PARTITION_MOUNTPOINT} folder not available in rootfs folder, no reformat done..."
+        bbnote "${IMAGE_PARTITION_MOUNTPOINT} folder not available in rootfs folder, no reformat done..."
     fi
 }
