@@ -313,7 +313,7 @@ ST_TOOLS_FOR_SDK_PERL = " \
 "
 
 # For some scripts in kernel source code
-ST_TOOLS_FOR_SDK_PERL = " \
+ST_TOOLS_FOR_SDK_PERL_append = " \
     nativesdk-perl-module-file-spec-functions \
 "
 
