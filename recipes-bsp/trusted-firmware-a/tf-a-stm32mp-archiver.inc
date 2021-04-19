@@ -83,7 +83,8 @@ tf-\$(1): \$2
 			BUILD_PLAT=\$(BLD_PATH)/\$(1) \\
 			DTB_FILE_NAME=\$(dt).dtb \\
 			\$(if \$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS_\$(1))) \\
-			\$(if \$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET_\$(1))) ; \\
+			\$(if \$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET_\$(1))) \\
+			\$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(shell echo \$(dt) | grep -c \$(soc)),\$(shell echo \$(soc) | tr a-z A-Z)=1,)) ; \\
 	)
 endef
 
