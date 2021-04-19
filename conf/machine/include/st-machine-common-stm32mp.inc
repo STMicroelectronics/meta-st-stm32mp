@@ -14,6 +14,11 @@ MACHINEOVERRIDES .= ":stcommon"
 MACHINEOVERRIDES .= ":stm32mpcommon"
 
 # =========================================================================
+# SOC
+# =========================================================================
+STM32MP_SOC_NAME = "stm32mp15"
+
+# =========================================================================
 # boot scheme
 # =========================================================================
 # List of supported boot schemes
@@ -413,9 +418,9 @@ LINUX_A7_EXAMPLES_DT ?= ""
 EXTRA_IMAGEDEPENDS += "virtual/bootloader"
 
 # Define default U-Boot config
-UBOOT_CONFIG += "${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee trusted', 'trusted', '', d)}"
+UBOOT_CONFIG += "${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee trusted', 'trusted_stm32mp15', '', d)}"
 # The 'basic' config is only available for stm32mp1 machines
-UBOOT_CONFIG_append_stm32mp1common = " basic "
+UBOOT_CONFIG_append_stm32mp1common = " basic_stm32mp15 "
 
 # Select u-boot binary that needs specific devicetree suffix (from UBOOT_DEVICETREE)
 # For legacy mode keep the 'u-boot.stm32' but for FIP feature we need both
@@ -424,8 +429,8 @@ UBOOT_CONFIG_append_stm32mp1common = " basic "
 # implemented on u-boot-stm32mp recipe)
 BINARY_NAME = "${@bb.utils.contains('MACHINE_FEATURES', 'fip', 'u-boot.dtb', 'u-boot.stm32', d)}"
 # Define u-boot defconfig and binary to use for each UBOOT_CONFIG
-UBOOT_CONFIG[basic]   = "stm32mp15_basic_defconfig,,u-boot.img"
-UBOOT_CONFIG[trusted] = "stm32mp15_trusted_defconfig,,${BINARY_NAME}"
+UBOOT_CONFIG[basic_stm32mp15]   = "stm32mp15_basic_defconfig,,u-boot.img"
+UBOOT_CONFIG[trusted_stm32mp15] = "stm32mp15_trusted_defconfig,,${BINARY_NAME}"
 
 # List of U-Boot device tree to use
 UBOOT_DEVICETREE = "${STM32MP_DEVICETREE}"
@@ -434,7 +439,7 @@ UBOOT_DEVICETREE = "${STM32MP_DEVICETREE}"
 UBOOT_SPLASH_IMAGE = "splash"
 
 # Enable MTDPART check for UBOOT_CONFIG
-UBOOT_MTDPART_CHECK_ENABLE ?= "${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee trusted', d.getVarFlag('UBOOT_CONFIG', 'trusted').split(',')[0], '', d)}"
+UBOOT_MTDPART_CHECK_ENABLE ?= "${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee trusted', d.getVarFlag('UBOOT_CONFIG', 'trusted_stm32mp15').split(',')[0], '', d)}"
 # Set U-Boot MTD partition configurations
 UBOOT_MTDPART_NAND_BOOT    ?= "${@','.join(['%sk(%s)' % (align_size(d, 'NAND', l.split(',')[2], l.split(',')[4]), l.split(',')[1]) for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nand-4-256').split()])}"
 UBOOT_MTDPART_NAND_TEE     ?= "${@','.join(['%sk(%s)' % (align_size(d, 'NAND', l.split(',')[2], l.split(',')[4]), l.split(',')[1]) for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'nand-4-256').split()])}"
