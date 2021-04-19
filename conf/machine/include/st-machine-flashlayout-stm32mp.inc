@@ -98,16 +98,20 @@ FLASHLAYOUT_CONFIG_LABELS_remove = "${@bb.utils.contains('ST_EXAMPLE_IMAGE', '1'
 # -----------------------------------------------------------------------------
 # EMMC
 # Set flashlayout file generation to eval board (mother and daughter) only
-FLASHLAYOUT_TYPE_LABELS_emmc = "${STM32MP_DT_FILES_ED} ${STM32MP_DT_FILES_EV}"
+FLASHLAYOUT_TYPE_LABELS_emmc = "${DEVICE_BOARD_ENABLE_EMMC}"
 # NAND
 # Set flashlayout file generation to eval board only
-FLASHLAYOUT_TYPE_LABELS_nand-4-256 = "${STM32MP_DT_FILES_EV}"
+FLASHLAYOUT_TYPE_LABELS_nand-4-256 = "${DEVICE_BOARD_ENABLE_NAND}"
 # NOR
 # Set flashlayout file generation to eval board only
-FLASHLAYOUT_TYPE_LABELS_nor-sdcard = "${STM32MP_DT_FILES_EV}"
+FLASHLAYOUT_TYPE_LABELS_nor-sdcard = "${DEVICE_BOARD_ENABLE_NOR}"
 # SDCARD
 # Set flashlayout file generation for all boards
-FLASHLAYOUT_TYPE_LABELS_sdcard = "${STM32MP_DT_FILES_DK} ${STM32MP_DT_FILES_ED} ${STM32MP_DT_FILES_EV}"
+FLASHLAYOUT_TYPE_LABELS_sdcard = "${DEVICE_BOARD_ENABLE_SDCARD}"
+
+# SPINAND
+# Set flashlayout file generation for all boards
+FLASHLAYOUT_TYPE_LABELS_spinand-2-128 = "${DEVICE_BOARD_ENABLE_SPINAND}"
 
 # -----------------------------------------------------------------------------
 # Define partitions to consider for flashlayout file generation
