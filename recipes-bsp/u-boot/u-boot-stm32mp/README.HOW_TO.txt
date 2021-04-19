@@ -126,25 +126,24 @@ As mentionned in help, OpenSTLinux has activated FIP by default, so the FIP_arti
   - Compile default U-Boot configuration:
     $> make -f $PWD/../Makefile.sdk all
 
-Default U-Boot configuration is done in 'Makefile.sdk' file through two specific
-variables 'DEVICE_TREE' and 'UBOOT_CONFIGS':
-  - 'DEVICE_TREE' is a list of device tree to build, using 'space' as separator.
-    ex: DEVICE_TREE="<devicetree1> <devicetree2>"
-  - 'UBOOT_CONFIGS' is a list of '<defconfig>,<type>,<binary>' configurations,
-        <defconfig> is the u-boot defconfig to use to build
-        <type> is the name append to u-boot binaries (ex: 'trusted', 'basic', etc)
-        <binary> is the u-boot binary to export (ex: 'u-boot.bin', 'u-boot.stm32', etc)
-    ex: UBOOT_CONFIGS="<defconfig1>,basic,u-boot.bin <defconfig1>,trusted,u-boot.stm32"
+Default U-Boot configuration is done in 'Makefile.sdk' file through specific variables
+'BOOT_CONFIG', 'UBOOT_DEFCONFIG', 'UBOOT_BINARY' and 'UBOOT_DEVICETREE':
+  - 'UBOOT_CONFIG' is the name to append to U-boot binaries (ex: 'trusted', etc).
+    ex: UBOOT_CONFIG=trusted
+  - 'UBOOT_DEFCONFIG' is the name of U-Boot defconfig to build
+    ex: UBOOT_DEFCONFIG=stm32mp15_trusted_defconfig
+  - 'UBOOT_BINARY' is the U-Boot binary to export (ex: 'u-boot.dtb', 'u-boot.img', etc)
+    ex: UBOOT_BINARY=u-boot.dtb
+  - 'UBOOT_DEVICETREE' is a list of device tree to build, using 'space' as separator.
+    ex: UBOOT_DEVICETREE="<devicetree1> <devicetree2>"
 
 The generated FIP images are available in $FIP_DEPLOYDIR_ROOT/fip
 
 You can override the default U-Boot configuration if you specify these variables:
   - Compile default U-Boot configuration but applying specific devicetree(s):
-    $ make -f $PWD/../Makefile.sdk all DEVICE_TREE="<devicetree1> <devicetree2>"
+    $ make -f $PWD/../Makefile.sdk all UBOOT_DEVICETREE="<devicetree1> <devicetree2>"
   - Compile for a specific U-Boot configuration:
-    $ make -f $PWD/../Makefile.sdk all UBOOT_CONFIGS=<u-boot defconfig>,<u-boot type>,<u-boot binary>
-  - Compile for a specific U-Boot configuration and applying specific devicetree(s):
-    $ make -f $PWD/../Makefile.sdk all UBOOT_CONFIGS=<u-boot defconfig>,<u-boot type>,<u-boot binary> DEVICE_TREE="<devicetree1> <devicetree2>"
+    $ make -f $PWD/../Makefile.sdk all UBOOT_CONFIG=trusted UBOOT_DEFCONFIG=stm32mp15_trusted_defconfig UBOOT_BINARY=u-boot.dtb DEVICETREE=stm32mp157f-dk2
 
 6. Update software on board:
 ----------------------------

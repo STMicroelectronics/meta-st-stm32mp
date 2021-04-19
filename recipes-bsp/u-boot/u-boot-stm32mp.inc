@@ -69,9 +69,9 @@ do_configure_prepend() {
             if [ -f "${S}/configs/${config}" ]; then
                 # Create copy of original defconfig
                 cp -f "${S}/configs/${config}" "${WORKDIR}/"
-                i=$(expr $i + 1);
+                i=$(expr $i + 1)
                 for binary in ${UBOOT_BINARIES}; do
-                    j=$(expr $j + 1);
+                    j=$(expr $j + 1)
                     if [ $j -eq $i ]; then
                         binarysuffix=$(echo ${binary} | cut -d'.' -f2)
                         # Make sure to select STM32IMAGE if requested
@@ -85,7 +85,6 @@ do_configure_prepend() {
                 unset j
             fi
         done
-        unset i
     fi
 }
 
@@ -142,48 +141,52 @@ do_configure_append() {
 #
 do_compile_append() {
     if [ -n "${UBOOT_DEVICETREE}" ]; then
-        for devicetree in ${UBOOT_DEVICETREE}; do
-            if [ -n "${UBOOT_CONFIG}" ]; then
-                unset i j k
-                for config in ${UBOOT_MACHINE}; do
-                    i=$(expr $i + 1);
-                    for type in ${UBOOT_CONFIG}; do
-                        j=$(expr $j + 1);
-                        if [ $j -eq $i ]; then
-                            if [ -f ${B}/${config}/dts/dt.dtb ];
-                            then
-                                rm ${B}/${config}/dts/dt.dtb
+        if [ -n "${UBOOT_CONFIG}" ]; then
+            unset i j k
+            for config in ${UBOOT_MACHINE}; do
+                i=$(expr $i + 1);
+                for type in ${UBOOT_CONFIG}; do
+                    j=$(expr $j + 1);
+                    if [ $j -eq $i ]; then
+                        # Get short suffix for current type
+                        type_suffix=$(echo ${type} | cut -d'_' -f1)
+                        type_filter=$(echo ${type} | cut -d'_' -f2)
+                        [ "${type_suffix}" = "${type_filter}" ] && type_filter=""
+                        for devicetree in ${UBOOT_DEVICETREE}; do
+                            if [ -n "${type_filter}" ]; then
+                                if [ "$(echo ${devicetree} | grep -c ${type_filter})" -eq 1 ]; then
+                                    bbnote "The ${type_filter} filter for ${type_suffix} config matches ${devicetree} device tree. Go for build..."
+                                else
+                                    bbnote "The ${type_filter} filter for ${type_suffix} config doesn't match ${devicetree} device tree. Skip build!"
+                                    continue
+                                fi
                             fi
+                            # Cleanup previous build artifact
+                            [ -f "${B}/${config}/dts/dt.dtb" ] && rm "${B}/${config}/dts/dt.dtb"
+                            # Build target
                             oe_runmake -C ${S} O=${B}/${config} DEVICE_TREE=${devicetree} DEVICE_TREE_EXT=${devicetree}.dtb
+                            # Install specific binary
                             for binary in ${UBOOT_BINARIES}; do
-                                binarysuffix=$(echo ${binary} | cut -d'.' -f2)
-                                binaryprefix=$(echo ${binary} | cut -d'.' -f1)
                                 k=$(expr $k + 1);
                                 if [ $k -eq $i ]; then
-                                    install -m 644 ${B}/${config}/${binary} ${B}/${config}/u-boot-${devicetree}-${type}.${binarysuffix}
-                                    if [ -n "${UBOOT_ELF}" ]; then
-                                        install -m 644 ${B}/${config}/${UBOOT_ELF} ${B}/${config}/u-boot-${devicetree}-${type}.${UBOOT_ELF_SUFFIX}
-                                    fi
-                                    # As soon as SPL binary exists, copy it with specific binary_type name
-                                    # This allow to mix u-boot configuration, with and without SPL
-                                    if [ -f ${B}/${config}/${SPL_BINARY_STM32} ]; then
-                                        install -m 644 ${B}/${config}/${SPL_BINARY_STM32} ${B}/${config}/${SPL_BINARYNAME}-${devicetree}-${type}
-                                    fi
-                                    if [ -n "${SPL_ELF}" ] && [ -f ${B}/${config}/${SPL_ELF} ]; then
-                                        install -m 644 ${B}/${config}/${SPL_ELF} ${B}/${config}/${SPL_ELF_NAME}-${devicetree}-${type}
-                                    fi
+                                    binarysuffix=$(echo ${binary} | cut -d'.' -f2)
+                                    install -m 644 ${B}/${config}/${binary} ${B}/${config}/u-boot-${devicetree}-${type_suffix}.${binarysuffix}
                                 fi
                             done
                             unset k
-                        fi
-                    done
-                    unset j
+                            # As soon as SPL binary exists, copy it with specific binary_type name
+                            # This allow to mix u-boot configuration, with and without SPL
+                            if [ -f "${B}/${config}/${SPL_BINARY_STM32}" ]; then
+                                install -m 644 ${B}/${config}/${SPL_BINARY_STM32} ${B}/${config}/${SPL_BINARYNAME}-${devicetree}-${type_suffix}
+                            fi
+                        done
+                    fi
                 done
-                unset i
-            else
-                bbfatal "Wrong u-boot-stm32mp configuration: please make sure to use UBOOT_CONFIG through BOOTSCHEME_LABELS config"
-            fi
-        done
+                unset j
+            done
+        else
+            bbfatal "Wrong u-boot-stm32mp configuration: please make sure to use UBOOT_CONFIG through BOOTSCHEME_LABELS config"
+        fi
     fi
 }
 
@@ -193,72 +196,79 @@ do_compile_append() {
 do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/u-boot"
 do_deploy_append() {
     if [ -n "${UBOOT_DEVICETREE}" ]; then
-        # Clean deploydir from any available binary first
-        # This allows to only install the devicetree binary ones
-        rm -rf ${DEPLOYDIR}
+        if [ -n "${UBOOT_CONFIG}" ]; then
+            # Clean deploydir from any available binary first
+            # This allows to only install the devicetree binary ones
+            rm -rf ${DEPLOYDIR}
+            install -d ${DEPLOYDIR}
 
-        for devicetree in ${UBOOT_DEVICETREE}; do
-            if [ -n "${UBOOT_CONFIG}" ]; then
-                unset i j k
-                for config in ${UBOOT_MACHINE}; do
-                    i=$(expr $i + 1);
-                    for type in ${UBOOT_CONFIG}; do
-                        j=$(expr $j + 1);
-                        if [ $j -eq $i ]; then
-                            for binary in ${UBOOT_BINARIES}; do
+            unset i j k
+            for config in ${UBOOT_MACHINE}; do
+                i=$(expr $i + 1)
+                for type in ${UBOOT_CONFIG}; do
+                    j=$(expr $j + 1)
+                    if [ $j -eq $i ]; then
+                        for binary in ${UBOOT_BINARIES}; do
+                            k=$(expr $k + 1)
+                            if [ $k -eq $i ]; then
                                 binarysuffix=$(echo ${binary} | cut -d'.' -f2)
-                                k=$(expr $k + 1);
-                                if [ $k -eq $i ]; then
-                                    # Manage subfolder in case of u-boot.img
-                                    if [ "${binarysuffix}" = "img" ]; then
-                                        SUBFOLDER=/${type}
-                                    else
-                                        SUBFOLDER=""
-                                    fi
-                                    # Install destination folder
-                                    install -d ${DEPLOYDIR}${SUBFOLDER}
-                                    if [ -n "${ELF_DEBUG_ENABLE}" ]; then
-                                        install -d ${DEPLOYDIR}${SUBFOLDER}/debug
+                                # Manage subfolder in case of u-boot.img
+                                if [ "${binarysuffix}" = "img" ]; then
+                                    SUBFOLDER="/${type}"
+                                else
+                                    SUBFOLDER=""
+                                fi
+                                # Install destination folder
+                                install -d ${DEPLOYDIR}${SUBFOLDER}
+                                [ -n "${ELF_DEBUG_ENABLE}" ] && install -d ${DEPLOYDIR}${SUBFOLDER}/debug
+                                # Get short suffix for current type
+                                type_suffix=$(echo ${type} | cut -d'_' -f1)
+                                type_filter=$(echo ${type} | cut -d'_' -f2)
+                                [ "${type_suffix}" = "${type_filter}" ] && type_filter=""
+                                for devicetree in ${UBOOT_DEVICETREE}; do
+                                    if [ -n "${type_filter}" ]; then
+                                        if [ "$(echo ${devicetree} | grep -c ${type_filter})" -eq 1 ]; then
+                                            bbnote "The ${type_filter} filter for ${type_suffix} config matches ${devicetree} device tree. Go for binary deploy..."
+                                        else
+                                            bbnote "The ${type_filter} filter for ${type_suffix} config doesn't match ${devicetree} device tree. Skip binary deploy!"
+                                            continue
+                                        fi
                                     fi
                                     # Install u-boot binary
-                                    install -m 644 ${B}/${config}/u-boot-${devicetree}-${type}.${binarysuffix} ${DEPLOYDIR}${SUBFOLDER}
-                                    if [ -n "${UBOOT_ELF}" ]; then
-                                        install -d ${DEPLOYDIR}${SUBFOLDER}/debug
-                                        install -m 644 ${B}/${config}/u-boot-${devicetree}-${type}.${UBOOT_ELF_SUFFIX} ${DEPLOYDIR}${SUBFOLDER}/debug/
+                                    install -m 644 ${B}/${config}/u-boot-${devicetree}-${type_suffix}.${binarysuffix} ${DEPLOYDIR}${SUBFOLDER}/
+                                    # As soon as SPL binary exists, install it
+                                    # This allow to mix u-boot configuration, with and without SPL
+                                    if [ -f "${B}/${config}/${SPL_BINARYNAME}-${devicetree}-${type_suffix}" ]; then
+                                        install -m 644 ${B}/${config}/${SPL_BINARYNAME}-${devicetree}-${type_suffix} ${DEPLOYDIR}${SUBFOLDER}/
+                                    fi
+                                    # Init soc suffix
+                                    soc_suffix=""
+                                    if [ -n "${STM32MP_SOC_NAME}" ]; then
+                                        for soc in ${STM32MP_SOC_NAME}; do
+                                            [ "$(echo ${devicetree} | grep -c ${soc})" -eq 1 ] && soc_suffix="-${soc}"
+                                        done
                                     fi
                                     # Install 'u-boot-nodtb.bin' binary in case '*.dtb' binary installation configured
                                     if [ "${binarysuffix}" = "dtb" ]; then
-                                        # Init soc suffix
-                                        soc_suffix=""
-                                        if [ -n "${STM32MP_SOC_NAME}" ]; then
-                                            for soc in ${STM32MP_SOC_NAME}; do
-                                                if [ "$(echo ${devicetree} | grep -c ${soc})" -eq 1 ]; then
-                                                    soc_suffix="-${soc}"
-                                                fi
-                                            done
-                                        fi
                                         install -m 644 ${B}/${config}/u-boot-nodtb.bin ${DEPLOYDIR}${SUBFOLDER}/u-boot-nodtb${soc_suffix}.bin
                                     fi
-                                    # As soon as SPL binary exists, install it
-                                    # This allow to mix u-boot configuration, with and without SPL
-                                    if [ -f ${B}/${config}/${SPL_BINARYNAME}-${devicetree}-${type} ]; then
-                                        install -m 644 ${B}/${config}/${SPL_BINARYNAME}-${devicetree}-${type} ${DEPLOYDIR}${SUBFOLDER}/
+                                    if [ -n "${UBOOT_ELF}" ]; then
+                                        install -m 644 ${B}/${config}/${UBOOT_ELF} ${DEPLOYDIR}${SUBFOLDER}/debug/u-boot${soc_suffix}-${type_suffix}.${UBOOT_ELF_SUFFIX}
                                     fi
-                                    if [ -n "${SPL_ELF}" ] && [ -f ${B}/${config}/${SPL_ELF_NAME}-${devicetree}-${type} ]; then
-                                        install -m 644 ${B}/${config}/${SPL_ELF_NAME}-${devicetree}-${type} ${DEPLOYDIR}${SUBFOLDER}/debug
+                                    if [ -n "${SPL_ELF}" ] && [ -f "${B}/${config}/${SPL_ELF}" ]; then
+                                        install -m 644 ${B}/${config}/${SPL_ELF} ${DEPLOYDIR}${SUBFOLDER}/debug/${SPL_ELF_NAME}${soc_suffix}-${type_suffix}
                                     fi
-                                fi
-                            done
-                            unset k
-                        fi
-                    done
-                    unset j
+                                done
+                            fi
+                        done
+                        unset k
+                    fi
                 done
-                unset i
-            else
-                bbfatal "Wrong u-boot-stm32mp configuration: please make sure to use UBOOT_CONFIG through BOOTSCHEME_LABELS config"
-            fi
-        done
+                unset j
+            done
+        else
+            bbfatal "Wrong u-boot-stm32mp configuration: please make sure to use UBOOT_CONFIG through BOOTSCHEME_LABELS config"
+        fi
     fi
 }
 
