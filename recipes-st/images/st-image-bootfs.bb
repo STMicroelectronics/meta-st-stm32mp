@@ -15,8 +15,8 @@ PACKAGE_INSTALL += " \
     ${@bb.utils.contains('MACHINE_FEATURES', 'splashscreen', 'u-boot-stm32mp-splash', '', d)} \
 "
 
-# Add specific autoresize package to bootfs
-AUTORESIZE ?= ""
+# Add specific initrd package to bootfs
+INITRD_PACKAGE ?= ""
 PACKAGE_INSTALL += " \
-    ${@bb.utils.contains('COMBINED_FEATURES', 'autoresize', '${AUTORESIZE}', '', d)} \
+    ${@bb.utils.contains('MACHINE_FEATURES', 'initrd', '${INITRD_PACKAGE}', '', d)} \
 "
