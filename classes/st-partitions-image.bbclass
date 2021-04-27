@@ -108,11 +108,11 @@ python __anonymous () {
                 # Init RAMFS image if any
                 initramfs = d.getVar('INITRAMFS_IMAGE') or ""
                 # Init INITRD image if any
-                initrd = d.getVar('INITRD_IMAGE') or ""
+                initrd = d.getVar('INITRD_IMAGE_ALL') or d.getVar('INITRD_IMAGE') or ""
                 # We need to append partition images generation only to image
                 # that are not one of the defined partitions and not the InitRAMFS image.
                 # Without this check we would create circular dependency
-                if current_image_name not in image_partitions and current_image_name != initramfs and current_image_name != initrd:
+                if current_image_name not in image_partitions and current_image_name != initramfs and current_image_name not in initrd:
                     for partition in image_partitions:
                         bb.debug(1, "Appending %s image build to 'do_image' depends tasks." % partition)
                         # We need to make sure the manifest file is deployed as we need it for 'image_rootfs_image_clean_task'

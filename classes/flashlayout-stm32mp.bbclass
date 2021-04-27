@@ -168,7 +168,7 @@ python __anonymous () {
                 # Init RAMFS image if any
                 initramfs = d.getVar('INITRAMFS_IMAGE') or ""
                 # Init INITRD image if any
-                initrd = d.getVar('INITRD_IMAGE') or ""
+                initrd = d.getVar('INITRD_IMAGE_ALL') or d.getVar('INITRD_IMAGE') or ""
                 # Init partition list from PARTITIONS_CONFIG
                 image_partitions = []
                 # Append image_partitions list with all configured partition images:
@@ -193,7 +193,7 @@ python __anonymous () {
                                 break
 
                 # We need to clearly identify ROOTFS build, not InitRAMFS/initRD one (if any), not partition one either
-                if current_image_name not in image_partitions and current_image_name != initramfs and current_image_name != initrd:
+                if current_image_name not in image_partitions and current_image_name != initramfs and current_image_name not in initrd:
                     # We add the flashlayout file creation task just after the do_image_complete for ROOTFS build
                     bb.build.addtask('do_create_flashlayout_config', 'do_build', 'do_image_complete', d)
                     # We add also the function that feeds the FLASHLAYOUT_PARTITION_* vars from PARTITIONS_CONFIG
