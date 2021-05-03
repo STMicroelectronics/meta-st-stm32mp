@@ -1,0 +1,2957 @@
+From 0aacafd68c7d68c67f70cc5a9e37c5034d1076d9 Mon Sep 17 00:00:00 2001
+From: Lionel Vitte <lionel.vitte@st.com>
+Date: Mon, 18 Oct 2021 17:12:24 +0200
+Subject: [PATCH 09/11] ARM v2020.10-stm32mp-r2 MISC-DRIVERS
+
+---
+ cmd/pxe_utils.c                          | 103 +++++++++++
+ cmd/pxe_utils.h                          |   1 +
+ common/Kconfig                           |   9 +
+ common/Makefile                          |   2 +-
+ common/fdt_simplefb.c                    | 144 +++++++++++++++
+ common/lcd_simplefb.c                    |  90 ---------
+ doc/README.pxe                           |   9 +
+ drivers/adc/stm32-adc.c                  | 136 ++++++++++++--
+ drivers/clk/clk_stm32mp1.c               |  14 ++
+ drivers/dfu/dfu.c                        |  12 ++
+ drivers/firmware/scmi/smt.c              |   6 +-
+ drivers/i2c/stm32f7_i2c.c                |  92 ++++++----
+ drivers/led/led_gpio.c                   |   7 +-
+ drivers/net/Kconfig                      |   1 +
+ drivers/net/dwc_eth_qos.c                | 152 +++-------------
+ drivers/net/eth-phy-uclass.c             |  78 +++++++-
+ drivers/phy/phy-stm32-usbphyc.c          | 212 ++++++++++++++++++++--
+ drivers/ram/stm32mp1/stm32mp1_ddr.c      |   8 +-
+ drivers/ram/stm32mp1/stm32mp1_ddr_regs.h |   1 +
+ drivers/remoteproc/rproc-optee.c         |  22 ++-
+ drivers/remoteproc/stm32_copro.c         | 213 ++++++++--------------
+ drivers/spi/stm32_qspi.c                 |  29 +--
+ drivers/spi/stm32_spi.c                  | 222 +++++++++++++----------
+ drivers/video/video-uclass.c             |  14 ++
+ include/configs/rpi.h                    |   1 -
+ include/configs/stm32mp1.h               |   1 +
+ include/dfu.h                            |  11 ++
+ include/fdt_simplefb.h                   |   5 +-
+ include/video.h                          |   7 +
+ scripts/config_whitelist.txt             |   1 -
+ 30 files changed, 1034 insertions(+), 569 deletions(-)
+ create mode 100644 common/fdt_simplefb.c
+ delete mode 100644 common/lcd_simplefb.c
+
+diff --git a/cmd/pxe_utils.c b/cmd/pxe_utils.c
+index 8716e782f6..25367190a7 100644
+--- a/cmd/pxe_utils.c
++++ b/cmd/pxe_utils.c
+@@ -13,6 +13,8 @@
+ #include <mapmem.h>
+ #include <lcd.h>
+ #include <net.h>
++#include <fdt_support.h>
++#include <linux/libfdt.h>
+ #include <linux/string.h>
+ #include <linux/ctype.h>
+ #include <errno.h>
+@@ -284,6 +286,9 @@ static void label_destroy(struct pxe_label *label)
+ 	if (label->fdtdir)
+ 		free(label->fdtdir);
+ 
++	if (label->fdtoverlays)
++		free(label->fdtoverlays);
++
+ 	free(label);
+ }
+ 
+@@ -331,6 +336,92 @@ static int label_localboot(struct pxe_label *label)
+ 	return run_command_list(localcmd, strlen(localcmd), 0);
+ }
+ 
++/*
++ * Loads fdt overlays specified in 'fdtoverlays'.
++ */
++#ifdef CONFIG_OF_LIBFDT_OVERLAY
++static void label_boot_fdtoverlay(struct cmd_tbl *cmdtp, struct pxe_label *label)
++{
++	char *fdtoverlay = label->fdtoverlays;
++	struct fdt_header *working_fdt;
++	char *fdtoverlay_addr_env;
++	ulong fdtoverlay_addr;
++	ulong fdt_addr;
++	int err;
++
++	/* Get the main fdt and map it */
++	fdt_addr = simple_strtoul(env_get("fdt_addr_r"), NULL, 16);
++	working_fdt = map_sysmem(fdt_addr, 0);
++	err = fdt_check_header(working_fdt);
++	if (err)
++		return;
++
++	/* Get the specific overlay loading address */
++	fdtoverlay_addr_env = env_get("fdtoverlay_addr_r");
++	if (!fdtoverlay_addr_env) {
++		printf("Invalid fdtoverlay_addr_r for loading overlays\n");
++		return;
++	}
++
++	fdtoverlay_addr = simple_strtoul(fdtoverlay_addr_env, NULL, 16);
++
++	/* Cycle over the overlay files and apply them in order */
++	do {
++		struct fdt_header *blob;
++		char *overlayfile;
++		char *end;
++		int len;
++
++		/* Drop leading spaces */
++		while (*fdtoverlay == ' ')
++			++fdtoverlay;
++
++		/* Copy a single filename if multiple provided */
++		end = strstr(fdtoverlay, " ");
++		if (end) {
++			len = (int)(end - fdtoverlay);
++			overlayfile = malloc(len + 1);
++			strncpy(overlayfile, fdtoverlay, len);
++			overlayfile[len] = '\0';
++		} else
++			overlayfile = fdtoverlay;
++
++		if (!strlen(overlayfile))
++			goto skip_overlay;
++
++		/* Load overlay file */
++		err = get_relfile_envaddr(cmdtp, overlayfile,
++					  "fdtoverlay_addr_r");
++		if (err < 0) {
++			printf("Failed loading overlay %s\n", overlayfile);
++			goto skip_overlay;
++		}
++
++		/* Resize main fdt */
++		fdt_shrink_to_minimum(working_fdt, 8192);
++
++		blob = map_sysmem(fdtoverlay_addr, 0);
++		err = fdt_check_header(blob);
++		if (err) {
++			printf("Invalid overlay %s, skipping\n",
++			       overlayfile);
++			goto skip_overlay;
++		}
++
++		err = fdt_overlay_apply_verbose(working_fdt, blob);
++		if (err) {
++			printf("Failed to apply overlay %s, skipping\n",
++			       overlayfile);
++			goto skip_overlay;
++		}
++
++skip_overlay:
++		if (end)
++			free(overlayfile);
++	} while ((fdtoverlay = strstr(fdtoverlay, " ")));
++}
++#endif
++
+ /*
+  * Boot according to the contents of a pxe_label.
+  *
+@@ -525,6 +616,11 @@ static int label_boot(struct cmd_tbl *cmdtp, struct pxe_label *label)
+ 				       label->name);
+ 				goto cleanup;
+ 			}
++
++#ifdef CONFIG_OF_LIBFDT_OVERLAY
++			if (label->fdtoverlays)
++				label_boot_fdtoverlay(cmdtp, label);
++#endif
+ 		} else {
+ 			bootm_argv[3] = NULL;
+ 		}
+@@ -582,6 +678,7 @@ enum token_type {
+ 	T_INCLUDE,
+ 	T_FDT,
+ 	T_FDTDIR,
++	T_FDTOVERLAYS,
+ 	T_ONTIMEOUT,
+ 	T_IPAPPEND,
+ 	T_BACKGROUND,
+@@ -616,6 +713,7 @@ static const struct token keywords[] = {
+ 	{"fdt", T_FDT},
+ 	{"devicetreedir", T_FDTDIR},
+ 	{"fdtdir", T_FDTDIR},
++	{"fdtoverlays", T_FDTOVERLAYS},
+ 	{"ontimeout", T_ONTIMEOUT,},
+ 	{"ipappend", T_IPAPPEND,},
+ 	{"background", T_BACKGROUND,},
+@@ -1048,6 +1146,11 @@ static int parse_label(char **c, struct pxe_menu *cfg)
+ 				err = parse_sliteral(c, &label->fdtdir);
+ 			break;
+ 
++		case T_FDTOVERLAYS:
++			if (!label->fdtoverlays)
++				err = parse_sliteral(c, &label->fdtoverlays);
++			break;
++
+ 		case T_LOCALBOOT:
+ 			label->localboot = 1;
+ 			err = parse_integer(c, &label->localboot_val);
+diff --git a/cmd/pxe_utils.h b/cmd/pxe_utils.h
+index 77d2588875..6af9523734 100644
+--- a/cmd/pxe_utils.h
++++ b/cmd/pxe_utils.h
+@@ -43,6 +43,7 @@ struct pxe_label {
+ 	char *initrd;
+ 	char *fdt;
+ 	char *fdtdir;
++	char *fdtoverlays;
+ 	int ipappend;
+ 	int attempted;
+ 	int localboot;
+diff --git a/common/Kconfig b/common/Kconfig
+index 7099bbf902..f1dd16bd2d 100644
+--- a/common/Kconfig
++++ b/common/Kconfig
+@@ -1146,3 +1146,12 @@ config SPL_IMAGE_SIGN_INFO
+ 	  Enable image_sign_info helper functions in SPL.
+ 
+ endif
++
++config FDT_SIMPLEFB
++	bool "FDT tools for simplefb support"
++	depends on OF_LIBFDT
++	help
++	  Enable the fdt tools to manage the simple fb nodes in device tree.
++	  These functions can be used by board to indicate to the OS
++	  the presence of the simple frame buffer with associated reserved
++	  memory
+\ No newline at end of file
+diff --git a/common/Makefile b/common/Makefile
+index 2e7a090588..39d65b941b 100644
+--- a/common/Makefile
++++ b/common/Makefile
+@@ -28,6 +28,7 @@ obj-$(CONFIG_CMD_BOOTZ) += bootm.o bootm_os.o
+ obj-$(CONFIG_CMD_BOOTI) += bootm.o bootm_os.o
+ 
+ obj-$(CONFIG_CMD_BEDBUG) += bedbug.o
++obj-$(CONFIG_FDT_SIMPLEFB) += fdt_simplefb.o
+ obj-$(CONFIG_$(SPL_TPL_)OF_LIBFDT) += fdt_support.o
+ obj-$(CONFIG_MII) += miiphyutil.o
+ obj-$(CONFIG_CMD_MII) += miiphyutil.o
+@@ -50,7 +51,6 @@ ifndef CONFIG_DM_VIDEO
+ obj-$(CONFIG_LCD) += lcd.o lcd_console.o
+ endif
+ obj-$(CONFIG_LCD_ROTATION) += lcd_console_rotation.o
+-obj-$(CONFIG_LCD_DT_SIMPLEFB) += lcd_simplefb.o
+ obj-$(CONFIG_LYNXKDI) += lynxkdi.o
+ obj-$(CONFIG_MENU) += menu.o
+ obj-$(CONFIG_UPDATE_TFTP) += update.o
+diff --git a/common/fdt_simplefb.c b/common/fdt_simplefb.c
+new file mode 100644
+index 0000000000..06a02bfde5
+--- /dev/null
++++ b/common/fdt_simplefb.c
+@@ -0,0 +1,144 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Simplefb device tree support
++ *
++ * (C) Copyright 2015
++ * Stephen Warren <swarren@wwwdotorg.org>
++ */
++
++#include <common.h>
++#include <dm.h>
++#include <lcd.h>
++#include <fdt_support.h>
++#include <linux/libfdt.h>
++#include <video.h>
++
++DECLARE_GLOBAL_DATA_PTR;
++
++static int fdt_simplefb_configure_node(void *blob, int off)
++{
++	int xsize, ysize;
++	int bpix; /* log2 of bits per pixel */
++	const char *name;
++	ulong fb_base;
++#ifdef CONFIG_DM_VIDEO
++	struct video_uc_platdata *plat;
++	struct video_priv *uc_priv;
++	struct udevice *dev;
++	int ret;
++
++	ret = uclass_first_device_err(UCLASS_VIDEO, &dev);
++	if (ret)
++		return ret;
++	uc_priv = dev_get_uclass_priv(dev);
++	plat = dev_get_uclass_platdata(dev);
++	xsize = uc_priv->xsize;
++	ysize = uc_priv->ysize;
++	bpix = uc_priv->bpix;
++	fb_base = plat->base;
++#else
++	xsize = lcd_get_pixel_width();
++	ysize = lcd_get_pixel_height();
++	bpix = LCD_BPP;
++	fb_base = gd->fb_base;
++#endif
++	switch (bpix) {
++	case 4: /* VIDEO_BPP16 */
++		name = "r5g6b5";
++		break;
++	case 5: /* VIDEO_BPP32 */
++		name = "a8r8g8b8";
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return fdt_setup_simplefb_node(blob, off, fb_base, xsize, ysize,
++				       xsize * (1 << bpix) / 8, name);
++}
++
++int fdt_simplefb_add_node(void *blob)
++{
++	static const char compat[] = "simple-framebuffer";
++	static const char disabled[] = "disabled";
++	int off, ret;
++	int na, ns, len;
++	fdt32_t value;
++	const fdt32_t *c;
++
++	/* find or create "/chosen" node. */
++	off = fdt_find_or_add_subnode(blob, 0, "chosen");
++	if (off < 0)
++		return off;
++
++	/* inherit #address-cells and #size-cells from the root node */
++	c = fdt_getprop(blob, off, "#address-cells", &len);
++	if (!c && len == -FDT_ERR_NOTFOUND) {
++		na = fdt_address_cells(blob, 0);
++		value = cpu_to_fdt32(na);
++		ret = fdt_setprop(blob, off, "#address-cells", &value, sizeof(value));
++		if (ret < 0)
++			return ret;
++	}
++
++	c = fdt_getprop(blob, off, "#size-cells", &len);
++	if (!c && len == -FDT_ERR_NOTFOUND) {
++		ns = fdt_size_cells(blob, 0);
++		value = cpu_to_fdt32(ns);
++		ret = fdt_setprop(blob, off, "#size-cells", &value, sizeof(value));
++		if (ret < 0)
++			return ret;
++	}
++
++	/* add empty "ranges" property to indicate 1:1 translation */
++	ret = fdt_setprop_empty(blob, off, "ranges");
++	if (ret < 0)
++		return ret;
++
++	off = fdt_add_subnode(blob, off, "framebuffer");
++	if (off < 0)
++		return -1;
++
++	ret = fdt_setprop(blob, off, "status", disabled, sizeof(disabled));
++	if (ret < 0)
++		return -1;
++
++	ret = fdt_setprop(blob, off, "compatible", compat, sizeof(compat));
++	if (ret < 0)
++		return -1;
++
++	return fdt_simplefb_configure_node(blob, off);
++}
++
++#if CONFIG_IS_ENABLED(DM_VIDEO)
++int fdt_simplefb_add_node_and_mem_rsv(void *blob)
++{
++	struct fdt_memory mem;
++	int ret;
++
++	/* nothing to do when no the frame buffer or video is not active */
++	if (gd->video_bottom == gd->video_top || !video_is_active())
++		return 0;
++
++	ret = fdt_simplefb_add_node(blob);
++	if (ret)
++		return ret;
++
++	/* reserved with no-map tag the video buffer */
++	mem.start = gd->video_bottom;
++	mem.end = gd->video_top - 1;
++
++	return fdtdec_add_reserved_memory(blob, "framebuffer", &mem, NULL, true);
++}
++#endif
++
++int fdt_simplefb_enable_existing_node(void *blob)
++{
++	int off;
++
++	off = fdt_node_offset_by_compatible(blob, -1, "simple-framebuffer");
++	if (off < 0)
++		return -1;
++
++	return fdt_simplefb_configure_node(blob, off);
++}
+diff --git a/common/lcd_simplefb.c b/common/lcd_simplefb.c
+deleted file mode 100644
+index fca600691e..0000000000
+--- a/common/lcd_simplefb.c
++++ /dev/null
+@@ -1,90 +0,0 @@
+-// SPDX-License-Identifier: GPL-2.0+
+-/*
+- * Simplefb device tree support
+- *
+- * (C) Copyright 2015
+- * Stephen Warren <swarren@wwwdotorg.org>
+- */
+-
+-#include <common.h>
+-#include <dm.h>
+-#include <lcd.h>
+-#include <fdt_support.h>
+-#include <linux/libfdt.h>
+-#include <video.h>
+-
+-DECLARE_GLOBAL_DATA_PTR;
+-
+-static int lcd_dt_simplefb_configure_node(void *blob, int off)
+-{
+-	int xsize, ysize;
+-	int bpix; /* log2 of bits per pixel */
+-	const char *name;
+-	ulong fb_base;
+-#ifdef CONFIG_DM_VIDEO
+-	struct video_uc_platdata *plat;
+-	struct video_priv *uc_priv;
+-	struct udevice *dev;
+-	int ret;
+-
+-	ret = uclass_first_device_err(UCLASS_VIDEO, &dev);
+-	if (ret)
+-		return ret;
+-	uc_priv = dev_get_uclass_priv(dev);
+-	plat = dev_get_uclass_platdata(dev);
+-	xsize = uc_priv->xsize;
+-	ysize = uc_priv->ysize;
+-	bpix = uc_priv->bpix;
+-	fb_base = plat->base;
+-#else
+-	xsize = lcd_get_pixel_width();
+-	ysize = lcd_get_pixel_height();
+-	bpix = LCD_BPP;
+-	fb_base = gd->fb_base;
+-#endif
+-	switch (bpix) {
+-	case 4: /* VIDEO_BPP16 */
+-		name = "r5g6b5";
+-		break;
+-	case 5: /* VIDEO_BPP32 */
+-		name = "a8r8g8b8";
+-		break;
+-	default:
+-		return -EINVAL;
+-	}
+-
+-	return fdt_setup_simplefb_node(blob, off, fb_base, xsize, ysize,
+-				       xsize * (1 << bpix) / 8, name);
+-}
+-
+-int lcd_dt_simplefb_add_node(void *blob)
+-{
+-	static const char compat[] = "simple-framebuffer";
+-	static const char disabled[] = "disabled";
+-	int off, ret;
+-
+-	off = fdt_add_subnode(blob, 0, "framebuffer");
+-	if (off < 0)
+-		return -1;
+-
+-	ret = fdt_setprop(blob, off, "status", disabled, sizeof(disabled));
+-	if (ret < 0)
+-		return -1;
+-
+-	ret = fdt_setprop(blob, off, "compatible", compat, sizeof(compat));
+-	if (ret < 0)
+-		return -1;
+-
+-	return lcd_dt_simplefb_configure_node(blob, off);
+-}
+-
+-int lcd_dt_simplefb_enable_existing_node(void *blob)
+-{
+-	int off;
+-
+-	off = fdt_node_offset_by_compatible(blob, -1, "simple-framebuffer");
+-	if (off < 0)
+-		return -1;
+-
+-	return lcd_dt_simplefb_configure_node(blob, off);
+-}
+diff --git a/doc/README.pxe b/doc/README.pxe
+index 42f913c61f..b67151ca51 100644
+--- a/doc/README.pxe
++++ b/doc/README.pxe
+@@ -89,6 +89,9 @@ pxe boot
+      fdt_addr - the location of a fdt blob. 'fdt_addr' will be passed to bootm
+      command if it is set and 'fdt_addr_r' is not passed to bootm command.
+ 
++     fdtoverlay_addr_r - location in RAM at which 'pxe boot' will temporarily store
++     fdt overlay(s) before applying them to the fdt blob stored at 'fdt_addr_r'.
++
+ pxe file format
+ ===============
+ The pxe file format is nearly a subset of the PXELINUX file format; see
+@@ -148,6 +151,12 @@ kernel <path>	    - if this label is chosen, use tftp to retrieve the kernel
+ 		      It useful for overlay selection in pxe file
+ 		      (see: doc/uImage.FIT/overlay-fdt-boot.txt)
+ 
++fdtoverlays <path> [...] - if this label is chosen, use tftp to retrieve the DT
++                      overlay(s) at <path>. it will be temporarily stored at the
++                      address indicated in the fdtoverlay_addr_r environment variable,
++                      and then applied in the load order to the fdt blob stored at the
++                      address indicated in the fdt_addr_r environment variable.
++
+ append <string>	    - use <string> as the kernel command line when booting this
+ 		      label.
+ 
+diff --git a/drivers/adc/stm32-adc.c b/drivers/adc/stm32-adc.c
+index 3f0ed48846..c007209657 100644
+--- a/drivers/adc/stm32-adc.c
++++ b/drivers/adc/stm32-adc.c
+@@ -33,8 +33,11 @@
+ #define STM32H7_ADRDY			BIT(0)
+ 
+ /* STM32H7_ADC_CR - bit fields */
++#define STM32H7_ADCAL			BIT(31)
++#define STM32H7_ADCALDIF		BIT(30)
+ #define STM32H7_DEEPPWD			BIT(29)
+ #define STM32H7_ADVREGEN		BIT(28)
++#define STM32H7_ADCALLIN		BIT(16)
+ #define STM32H7_BOOST			BIT(8)
+ #define STM32H7_ADSTART			BIT(2)
+ #define STM32H7_ADDIS			BIT(1)
+@@ -65,47 +68,72 @@ struct stm32_adc {
+ 	const struct stm32_adc_cfg *cfg;
+ };
+ 
+-static int stm32_adc_stop(struct udevice *dev)
++static void stm32_adc_enter_pwr_down(struct udevice *dev)
+ {
+ 	struct stm32_adc *adc = dev_get_priv(dev);
+ 
+-	setbits_le32(adc->regs + STM32H7_ADC_CR, STM32H7_ADDIS);
+ 	clrbits_le32(adc->regs + STM32H7_ADC_CR, STM32H7_BOOST);
+ 	/* Setting DEEPPWD disables ADC vreg and clears ADVREGEN */
+ 	setbits_le32(adc->regs + STM32H7_ADC_CR, STM32H7_DEEPPWD);
+-	adc->active_channel = -1;
+-
+-	return 0;
+ }
+ 
+-static int stm32_adc_start_channel(struct udevice *dev, int channel)
++static int stm32_adc_exit_pwr_down(struct udevice *dev)
+ {
+-	struct adc_uclass_platdata *uc_pdata = dev_get_uclass_platdata(dev);
+-	struct stm32_adc_common *common = dev_get_priv(dev_get_parent(dev));
+ 	struct stm32_adc *adc = dev_get_priv(dev);
++	struct stm32_adc_common *common = dev_get_priv(dev_get_parent(dev));
+ 	int ret;
+ 	u32 val;
+ 
++	/* return immediately if ADC is not in deep power down mode */
++	if (!(readl(adc->regs + STM32H7_ADC_CR) & STM32H7_DEEPPWD))
++		return 0;
++
+ 	/* Exit deep power down, then enable ADC voltage regulator */
+ 	clrbits_le32(adc->regs + STM32H7_ADC_CR, STM32H7_DEEPPWD);
+ 	setbits_le32(adc->regs + STM32H7_ADC_CR, STM32H7_ADVREGEN);
++
+ 	if (common->rate > STM32H7_BOOST_CLKRATE)
+ 		setbits_le32(adc->regs + STM32H7_ADC_CR, STM32H7_BOOST);
+ 
+ 	/* Wait for startup time */
+ 	if (!adc->cfg->has_vregready) {
+ 		udelay(20);
+-	} else {
+-		ret = readl_poll_timeout(adc->regs + STM32H7_ADC_ISR, val,
+-					 val & STM32MP1_VREGREADY,
+-					 STM32_ADC_TIMEOUT_US);
+-		if (ret < 0) {
+-			stm32_adc_stop(dev);
+-			dev_err(dev, "Failed to enable vreg: %d\n", ret);
+-			return ret;
+-		}
++		return 0;
+ 	}
+ 
++	ret = readl_poll_timeout(adc->regs + STM32H7_ADC_ISR, val,
++				 val & STM32MP1_VREGREADY,
++				 STM32_ADC_TIMEOUT_US);
++	if (ret < 0) {
++		stm32_adc_enter_pwr_down(dev);
++		dev_err(dev, "Failed to enable vreg: %d\n", ret);
++	}
++
++	return ret;
++}
++
++static int stm32_adc_stop(struct udevice *dev)
++{
++	struct stm32_adc *adc = dev_get_priv(dev);
++
++	setbits_le32(adc->regs + STM32H7_ADC_CR, STM32H7_ADDIS);
++	stm32_adc_enter_pwr_down(dev);
++	adc->active_channel = -1;
++
++	return 0;
++}
++
++static int stm32_adc_start_channel(struct udevice *dev, int channel)
++{
++	struct adc_uclass_platdata *uc_pdata = dev_get_uclass_platdata(dev);
++	struct stm32_adc *adc = dev_get_priv(dev);
++	int ret;
++	u32 val;
++
++	ret = stm32_adc_exit_pwr_down(dev);
++	if (ret < 0)
++		return ret;
++
+ 	/* Only use single ended channels */
+ 	writel(0, adc->regs + STM32H7_ADC_DIFSEL);
+ 
+@@ -162,6 +190,64 @@ static int stm32_adc_channel_data(struct udevice *dev, int channel,
+ 	return 0;
+ }
+ 
++/**
++ * Fixed timeout value for ADC calibration.
++ * worst cases:
++ * - low clock frequency (0.12 MHz min)
++ * - maximum prescalers
++ * Calibration requires:
++ * - 16384 ADC clock cycle for the linear calibration
++ * - 20 ADC clock cycle for the offset calibration
++ *
++ * Set to 100ms for now
++ */
++#define STM32H7_ADC_CALIB_TIMEOUT_US		100000
++
++static int stm32_adc_selfcalib(struct udevice *dev)
++{
++	struct stm32_adc *adc = dev_get_priv(dev);
++	int ret;
++	u32 val;
++
++	/*
++	 * Select calibration mode:
++	 * - Offset calibration for single ended inputs
++	 * - No linearity calibration. Done in next step.
++	 */
++	clrbits_le32(adc->regs + STM32H7_ADC_CR, STM32H7_ADCALDIF | STM32H7_ADCALLIN);
++
++	/* Start calibration, then wait for completion */
++	setbits_le32(adc->regs + STM32H7_ADC_CR, STM32H7_ADCAL);
++	ret = readl_poll_sleep_timeout(adc->regs + STM32H7_ADC_CR, val,
++				       !(val & STM32H7_ADCAL), 100,
++				       STM32H7_ADC_CALIB_TIMEOUT_US);
++	if (ret) {
++		dev_err(dev, "calibration failed\n");
++		goto out;
++	}
++
++	/*
++	 * Select calibration mode, then start calibration:
++	 * - Offset calibration for differential input
++	 * - Linearity calibration (needs to be done only once for single/diff)
++	 *   will run simultaneously with offset calibration.
++	 */
++	setbits_le32(adc->regs + STM32H7_ADC_CR, STM32H7_ADCALDIF | STM32H7_ADCALLIN);
++
++	/* Start calibration, then wait for completion */
++	setbits_le32(adc->regs + STM32H7_ADC_CR, STM32H7_ADCAL);
++	ret = readl_poll_sleep_timeout(adc->regs + STM32H7_ADC_CR, val,
++				       !(val & STM32H7_ADCAL), 100,
++				       STM32H7_ADC_CALIB_TIMEOUT_US);
++	if (ret)
++		dev_err(dev, "calibration failed\n");
++
++out:
++	clrbits_le32(adc->regs + STM32H7_ADC_CR, STM32H7_ADCALDIF | STM32H7_ADCALLIN);
++
++	return ret;
++}
++
+ static int stm32_adc_chan_of_init(struct udevice *dev)
+ {
+ 	struct adc_uclass_platdata *uc_pdata = dev_get_uclass_platdata(dev);
+@@ -209,7 +295,7 @@ static int stm32_adc_probe(struct udevice *dev)
+ 	struct adc_uclass_platdata *uc_pdata = dev_get_uclass_platdata(dev);
+ 	struct stm32_adc_common *common = dev_get_priv(dev_get_parent(dev));
+ 	struct stm32_adc *adc = dev_get_priv(dev);
+-	int offset;
++	int offset, ret;
+ 
+ 	offset = dev_read_u32_default(dev, "reg", -ENODATA);
+ 	if (offset < 0) {
+@@ -224,7 +310,19 @@ static int stm32_adc_probe(struct udevice *dev)
+ 	uc_pdata->vdd_microvolts = common->vref_uv;
+ 	uc_pdata->vss_microvolts = 0;
+ 
+-	return stm32_adc_chan_of_init(dev);
++	ret = stm32_adc_chan_of_init(dev);
++	if (ret < 0)
++		return ret;
++
++	ret = stm32_adc_exit_pwr_down(dev);
++	if (ret < 0)
++		return ret;
++
++	ret = stm32_adc_selfcalib(dev);
++	if (ret)
++		stm32_adc_enter_pwr_down(dev);
++
++	return ret;
+ }
+ 
+ static const struct adc_ops stm32_adc_ops = {
+diff --git a/drivers/clk/clk_stm32mp1.c b/drivers/clk/clk_stm32mp1.c
+index efa402da52..a4cfef1e3d 100644
+--- a/drivers/clk/clk_stm32mp1.c
++++ b/drivers/clk/clk_stm32mp1.c
+@@ -69,6 +69,7 @@ DECLARE_GLOBAL_DATA_PTR;
+ #define RCC_PLL2FRACR		0xA0
+ #define RCC_PLL2CSGR		0xA4
+ #define RCC_I2C46CKSELR		0xC0
++#define RCC_SPI6CKSELR		0xC4
+ #define RCC_CPERCKSELR		0xD0
+ #define RCC_STGENCKSELR		0xD4
+ #define RCC_DDRITFCR		0xD8
+@@ -99,6 +100,7 @@ DECLARE_GLOBAL_DATA_PTR;
+ #define RCC_I2C12CKSELR		0x8C0
+ #define RCC_I2C35CKSELR		0x8C4
+ #define RCC_SPI2S1CKSELR	0x8D8
++#define RCC_SPI2S23CKSELR	0x8DC
+ #define RCC_SPI45CKSELR		0x8E0
+ #define RCC_UART6CKSELR		0x8E4
+ #define RCC_UART24CKSELR	0x8E8
+@@ -309,7 +311,9 @@ enum stm32mp1_parent_sel {
+ 	_DSI_SEL,
+ 	_ADC12_SEL,
+ 	_SPI1_SEL,
++	_SPI23_SEL,
+ 	_SPI45_SEL,
++	_SPI6_SEL,
+ 	_RTC_SEL,
+ 	_PARENT_SEL_NB,
+ 	_UNKNOWN_SEL = 0xff,
+@@ -520,6 +524,8 @@ static const struct stm32mp1_clk_gate stm32mp1_clk_gate[] = {
+ 	STM32MP1_CLK(RCC_DDRITFCR, 9, DDRPHYCAPB, _UNKNOWN_SEL),
+ 	STM32MP1_CLK(RCC_DDRITFCR, 10, DDRPHYCAPBLP, _UNKNOWN_SEL),
+ 
++	STM32MP1_CLK_SET_CLR(RCC_MP_APB1ENSETR, 11, SPI2_K, _SPI23_SEL),
++	STM32MP1_CLK_SET_CLR(RCC_MP_APB1ENSETR, 12, SPI3_K, _SPI23_SEL),
+ 	STM32MP1_CLK_SET_CLR(RCC_MP_APB1ENSETR, 14, USART2_K, _UART24_SEL),
+ 	STM32MP1_CLK_SET_CLR(RCC_MP_APB1ENSETR, 15, USART3_K, _UART35_SEL),
+ 	STM32MP1_CLK_SET_CLR(RCC_MP_APB1ENSETR, 16, UART4_K, _UART24_SEL),
+@@ -532,10 +538,12 @@ static const struct stm32mp1_clk_gate stm32mp1_clk_gate[] = {
+ 	STM32MP1_CLK_SET_CLR(RCC_MP_APB1ENSETR, 24, I2C5_K, _I2C35_SEL),
+ 
+ 	STM32MP1_CLK_SET_CLR(RCC_MP_APB2ENSETR, 8, SPI1_K, _SPI1_SEL),
++	STM32MP1_CLK_SET_CLR(RCC_MP_APB2ENSETR, 9, SPI4_K, _SPI45_SEL),
+ 	STM32MP1_CLK_SET_CLR(RCC_MP_APB2ENSETR, 10, SPI5_K, _SPI45_SEL),
+ 	STM32MP1_CLK_SET_CLR(RCC_MP_APB2ENSETR, 13, USART6_K, _UART6_SEL),
+ 
+ 	STM32MP1_CLK_SET_CLR_F(RCC_MP_APB3ENSETR, 13, VREF, _PCLK3),
++	STM32MP1_CLK_SET_CLR_F(RCC_MP_APB3ENSETR, 11, SYSCFG, _UNKNOWN_SEL),
+ 
+ 	STM32MP1_CLK_SET_CLR_F(RCC_MP_APB4ENSETR, 0, LTDC_PX, _PLL4_Q),
+ 	STM32MP1_CLK_SET_CLR_F(RCC_MP_APB4ENSETR, 4, DSI_PX, _PLL4_Q),
+@@ -544,6 +552,7 @@ static const struct stm32mp1_clk_gate stm32mp1_clk_gate[] = {
+ 	STM32MP1_CLK_SET_CLR(RCC_MP_APB4ENSETR, 15, IWDG2, _UNKNOWN_SEL),
+ 	STM32MP1_CLK_SET_CLR(RCC_MP_APB4ENSETR, 16, USBPHY_K, _USBPHY_SEL),
+ 
++	STM32MP1_CLK_SET_CLR(RCC_MP_APB5ENSETR, 0, SPI6_K, _SPI6_SEL),
+ 	STM32MP1_CLK_SET_CLR(RCC_MP_APB5ENSETR, 2, I2C4_K, _I2C46_SEL),
+ 	STM32MP1_CLK_SET_CLR(RCC_MP_APB5ENSETR, 3, I2C6_K, _I2C46_SEL),
+ 	STM32MP1_CLK_SET_CLR(RCC_MP_APB5ENSETR, 8, RTCAPB, _PCLK5),
+@@ -608,10 +617,13 @@ static const u8 usbo_parents[] = {_PLL4_R, _USB_PHY_48};
+ static const u8 stgen_parents[] = {_HSI_KER, _HSE_KER};
+ static const u8 dsi_parents[] = {_DSI_PHY, _PLL4_P};
+ static const u8 adc_parents[] = {_PLL4_R, _CK_PER, _PLL3_Q};
++/* same parents for SPI1=RCC_SPI2S1CKSELR and SPI2&3 = RCC_SPI2S23CKSELR */
+ static const u8 spi_parents[] = {_PLL4_P, _PLL3_Q, _I2S_CKIN, _CK_PER,
+ 				 _PLL3_R};
+ static const u8 spi45_parents[] = {_PCLK2, _PLL4_Q, _HSI_KER, _CSI_KER,
+ 				   _HSE_KER};
++static const u8 spi6_parents[] = {_PCLK5, _PLL4_Q, _HSI_KER, _CSI_KER,
++				  _HSE_KER, _PLL3_Q};
+ static const u8 rtc_parents[] = {_UNKNOWN_ID, _LSE, _LSI, _HSE};
+ 
+ static const struct stm32mp1_clk_sel stm32mp1_clk_sel[_PARENT_SEL_NB] = {
+@@ -638,7 +650,9 @@ static const struct stm32mp1_clk_sel stm32mp1_clk_sel[_PARENT_SEL_NB] = {
+ 	STM32MP1_CLK_PARENT(_DSI_SEL, RCC_DSICKSELR, 0, 0x1, dsi_parents),
+ 	STM32MP1_CLK_PARENT(_ADC12_SEL, RCC_ADCCKSELR, 0, 0x3, adc_parents),
+ 	STM32MP1_CLK_PARENT(_SPI1_SEL, RCC_SPI2S1CKSELR, 0, 0x7, spi_parents),
++	STM32MP1_CLK_PARENT(_SPI23_SEL, RCC_SPI2S23CKSELR, 0, 0x7, spi_parents),
+ 	STM32MP1_CLK_PARENT(_SPI45_SEL, RCC_SPI45CKSELR, 0, 0x7, spi45_parents),
++	STM32MP1_CLK_PARENT(_SPI6_SEL, RCC_SPI6CKSELR, 0, 0x7, spi6_parents),
+ 	STM32MP1_CLK_PARENT(_RTC_SEL, RCC_BDCR, RCC_BDCR_RTCSRC_SHIFT,
+ 			    (RCC_BDCR_RTCSRC_MASK >> RCC_BDCR_RTCSRC_SHIFT),
+ 			    rtc_parents),
+diff --git a/drivers/dfu/dfu.c b/drivers/dfu/dfu.c
+index a298c2c439..7fdcfa1aba 100644
+--- a/drivers/dfu/dfu.c
++++ b/drivers/dfu/dfu.c
+@@ -42,6 +42,14 @@ __weak void dfu_initiated_callback(struct dfu_entity *dfu)
+ {
+ }
+ 
++/*
++ * The purpose of the dfu_error_callback() function is to
++ * provide callback for dfu user
++ */
++__weak void dfu_error_callback(struct dfu_entity *dfu, const char *msg)
++{
++}
++
+ /*
+  * The purpose of the dfu_usb_get_reset() function is to
+  * provide information if after USB_DETACH request
+@@ -338,6 +346,7 @@ int dfu_write(struct dfu_entity *dfu, void *buf, int size, int blk_seq_num)
+ 		printf("%s: Wrong sequence number! [%d] [%d]\n",
+ 		       __func__, dfu->i_blk_seq_num, blk_seq_num);
+ 		dfu_transaction_cleanup(dfu);
++		dfu_error_callback(dfu, "Wrong sequence number");
+ 		return -1;
+ 	}
+ 
+@@ -362,6 +371,7 @@ int dfu_write(struct dfu_entity *dfu, void *buf, int size, int blk_seq_num)
+ 		ret = dfu_write_buffer_drain(dfu);
+ 		if (ret) {
+ 			dfu_transaction_cleanup(dfu);
++			dfu_error_callback(dfu, "DFU write error");
+ 			return ret;
+ 		}
+ 	}
+@@ -371,6 +381,7 @@ int dfu_write(struct dfu_entity *dfu, void *buf, int size, int blk_seq_num)
+ 		pr_err("Buffer overflow! (0x%p + 0x%x > 0x%p)\n", dfu->i_buf,
+ 		      size, dfu->i_buf_end);
+ 		dfu_transaction_cleanup(dfu);
++		dfu_error_callback(dfu, "Buffer overflow");
+ 		return -1;
+ 	}
+ 
+@@ -382,6 +393,7 @@ int dfu_write(struct dfu_entity *dfu, void *buf, int size, int blk_seq_num)
+ 		ret = dfu_write_buffer_drain(dfu);
+ 		if (ret) {
+ 			dfu_transaction_cleanup(dfu);
++			dfu_error_callback(dfu, "DFU write error");
+ 			return ret;
+ 		}
+ 	}
+diff --git a/drivers/firmware/scmi/smt.c b/drivers/firmware/scmi/smt.c
+index ce8fe49939..7f0223cc17 100644
+--- a/drivers/firmware/scmi/smt.c
++++ b/drivers/firmware/scmi/smt.c
+@@ -53,8 +53,10 @@ int scmi_dt_get_smt_buffer(struct udevice *dev, struct scmi_smt *smt)
+ 
+ #ifdef CONFIG_ARM
+ 	if (dcache_status())
+-		mmu_set_region_dcache_behaviour((uintptr_t)smt->buf,
+-						smt->size, DCACHE_OFF);
++		mmu_set_region_dcache_behaviour(ALIGN_DOWN((uintptr_t)smt->buf, MMU_SECTION_SIZE),
++						ALIGN(smt->size, MMU_SECTION_SIZE),
++						DCACHE_OFF);
++
+ #endif
+ 
+ 	return 0;
+diff --git a/drivers/i2c/stm32f7_i2c.c b/drivers/i2c/stm32f7_i2c.c
+index 2f60911549..07b9356f3f 100644
+--- a/drivers/i2c/stm32f7_i2c.c
++++ b/drivers/i2c/stm32f7_i2c.c
+@@ -43,6 +43,8 @@ struct stm32_i2c_regs {
+ 
+ /* STM32 I2C control 1 */
+ #define STM32_I2C_CR1_ANFOFF			BIT(12)
++#define STM32_I2C_CR1_DNF_MASK			GENMASK(11, 8)
++#define STM32_I2C_CR1_DNF(n)			(((n) & 0xf) << 8)
+ #define STM32_I2C_CR1_ERRIE			BIT(7)
+ #define STM32_I2C_CR1_TCIE			BIT(6)
+ #define STM32_I2C_CR1_STOPIE			BIT(5)
+@@ -103,10 +105,8 @@ struct stm32_i2c_regs {
+ 
+ #define STM32_I2C_MAX_LEN			0xff
+ 
+-#define STM32_I2C_DNF_DEFAULT			0
+-#define STM32_I2C_DNF_MAX			16
++#define STM32_I2C_DNF_MAX			15
+ 
+-#define STM32_I2C_ANALOG_FILTER_ENABLE	1
+ #define STM32_I2C_ANALOG_FILTER_DELAY_MIN	50	/* ns */
+ #define STM32_I2C_ANALOG_FILTER_DELAY_MAX	260	/* ns */
+ 
+@@ -154,9 +154,8 @@ struct stm32_i2c_spec {
+  * @clock_src: I2C clock source frequency (Hz)
+  * @rise_time: Rise time (ns)
+  * @fall_time: Fall time (ns)
+- * @dnf: Digital filter coefficient (0-16)
++ * @dnf: value of digital filter to apply
+  * @analog_filter: Analog filter delay (On/Off)
+- * @fmp_clr_offset: Fast Mode Plus clear register offset from set register
+  */
+ struct stm32_i2c_setup {
+ 	u32 speed_freq;
+@@ -165,6 +164,13 @@ struct stm32_i2c_setup {
+ 	u32 fall_time;
+ 	u8 dnf;
+ 	bool analog_filter;
++};
++
++/**
++ * struct stm32_i2c_data - driver data for I2C configuration by compatible
++ * @fmp_clr_offset: Fast Mode Plus clear register offset from set register
++ */
++struct stm32_i2c_data {
+ 	u32 fmp_clr_offset;
+ };
+ 
+@@ -195,16 +201,18 @@ struct stm32_i2c_timings {
+  * @regmap_sreg: register address for setting Fast Mode Plus bits
+  * @regmap_creg: register address for clearing Fast Mode Plus bits
+  * @regmap_mask: mask for Fast Mode Plus bits
++ * @dnf_dt: value of digital filter requested via dt
+  */
+ struct stm32_i2c_priv {
+ 	struct stm32_i2c_regs *regs;
+ 	struct clk clk;
+-	struct stm32_i2c_setup *setup;
++	struct stm32_i2c_setup setup;
+ 	u32 speed;
+ 	struct regmap *regmap;
+ 	u32 regmap_sreg;
+ 	u32 regmap_creg;
+ 	u32 regmap_mask;
++	u32 dnf_dt;
+ };
+ 
+ static const struct stm32_i2c_spec i2c_specs[] = {
+@@ -249,18 +257,11 @@ static const struct stm32_i2c_spec i2c_specs[] = {
+ 	},
+ };
+ 
+-static const struct stm32_i2c_setup stm32f7_setup = {
+-	.rise_time = STM32_I2C_RISE_TIME_DEFAULT,
+-	.fall_time = STM32_I2C_FALL_TIME_DEFAULT,
+-	.dnf = STM32_I2C_DNF_DEFAULT,
+-	.analog_filter = STM32_I2C_ANALOG_FILTER_ENABLE,
++static const struct stm32_i2c_data stm32f7_data = {
++	.fmp_clr_offset = 0x00,
+ };
+ 
+-static const struct stm32_i2c_setup stm32mp15_setup = {
+-	.rise_time = STM32_I2C_RISE_TIME_DEFAULT,
+-	.fall_time = STM32_I2C_FALL_TIME_DEFAULT,
+-	.dnf = STM32_I2C_DNF_DEFAULT,
+-	.analog_filter = STM32_I2C_ANALOG_FILTER_ENABLE,
++static const struct stm32_i2c_data stm32mp15_data = {
+ 	.fmp_clr_offset = 0x40,
+ };
+ 
+@@ -504,14 +505,13 @@ static int stm32_i2c_xfer(struct udevice *bus, struct i2c_msg *msg,
+ 	return 0;
+ }
+ 
+-static int stm32_i2c_compute_solutions(struct stm32_i2c_setup *setup,
++static int stm32_i2c_compute_solutions(u32 i2cclk,
++				       struct stm32_i2c_setup *setup,
+ 				       const struct stm32_i2c_spec *specs,
+ 				       struct list_head *solutions)
+ {
+ 	struct stm32_i2c_timings *v;
+ 	u32 p_prev = STM32_PRESC_MAX;
+-	u32 i2cclk = DIV_ROUND_CLOSEST(STM32_NSEC_PER_SEC,
+-				       setup->clock_src);
+ 	u32 af_delay_min, af_delay_max;
+ 	u16 p, l, a;
+ 	int sdadel_min, sdadel_max, scldel_min;
+@@ -579,7 +579,8 @@ static int stm32_i2c_compute_solutions(struct stm32_i2c_setup *setup,
+ 	return ret;
+ }
+ 
+-static int stm32_i2c_choose_solution(struct stm32_i2c_setup *setup,
++static int stm32_i2c_choose_solution(u32 i2cclk,
++				     struct stm32_i2c_setup *setup,
+ 				     const struct stm32_i2c_spec *specs,
+ 				     struct list_head *solutions,
+ 				     struct stm32_i2c_timings *s)
+@@ -588,8 +589,6 @@ static int stm32_i2c_choose_solution(struct stm32_i2c_setup *setup,
+ 	u32 i2cbus = DIV_ROUND_CLOSEST(STM32_NSEC_PER_SEC,
+ 				       setup->speed_freq);
+ 	u32 clk_error_prev = i2cbus;
+-	u32 i2cclk = DIV_ROUND_CLOSEST(STM32_NSEC_PER_SEC,
+-				       setup->clock_src);
+ 	u32 clk_min, clk_max;
+ 	u32 af_delay_min;
+ 	u32 dnf_delay;
+@@ -676,12 +675,13 @@ static const struct stm32_i2c_spec *get_specs(u32 rate)
+ }
+ 
+ static int stm32_i2c_compute_timing(struct stm32_i2c_priv *i2c_priv,
+-				    struct stm32_i2c_setup *setup,
+ 				    struct stm32_i2c_timings *output)
+ {
++	struct stm32_i2c_setup *setup = &i2c_priv->setup;
+ 	const struct stm32_i2c_spec *specs;
+ 	struct stm32_i2c_timings *v, *_v;
+ 	struct list_head solutions;
++	u32 i2cclk = DIV_ROUND_CLOSEST(STM32_NSEC_PER_SEC, setup->clock_src);
+ 	int ret;
+ 
+ 	specs = get_specs(setup->speed_freq);
+@@ -700,6 +700,8 @@ static int stm32_i2c_compute_timing(struct stm32_i2c_priv *i2c_priv,
+ 		return -EINVAL;
+ 	}
+ 
++	/*  Analog and Digital Filters */
++	setup->dnf = DIV_ROUND_CLOSEST(i2c_priv->dnf_dt, i2cclk);
+ 	if (setup->dnf > STM32_I2C_DNF_MAX) {
+ 		pr_err("%s: DNF out of bound %d/%d\n", __func__,
+ 		       setup->dnf, STM32_I2C_DNF_MAX);
+@@ -707,11 +709,11 @@ static int stm32_i2c_compute_timing(struct stm32_i2c_priv *i2c_priv,
+ 	}
+ 
+ 	INIT_LIST_HEAD(&solutions);
+-	ret = stm32_i2c_compute_solutions(setup, specs, &solutions);
++	ret = stm32_i2c_compute_solutions(i2cclk, setup, specs, &solutions);
+ 	if (ret)
+ 		goto exit;
+ 
+-	ret = stm32_i2c_choose_solution(setup, specs, &solutions, output);
++	ret = stm32_i2c_choose_solution(i2cclk, setup, specs, &solutions, output);
+ 	if (ret)
+ 		goto exit;
+ 
+@@ -744,7 +746,7 @@ static u32 get_lower_rate(u32 rate)
+ static int stm32_i2c_setup_timing(struct stm32_i2c_priv *i2c_priv,
+ 				  struct stm32_i2c_timings *timing)
+ {
+-	struct stm32_i2c_setup *setup = i2c_priv->setup;
++	struct stm32_i2c_setup *setup = &i2c_priv->setup;
+ 	int ret = 0;
+ 
+ 	setup->speed_freq = i2c_priv->speed;
+@@ -756,7 +758,7 @@ static int stm32_i2c_setup_timing(struct stm32_i2c_priv *i2c_priv,
+ 	}
+ 
+ 	do {
+-		ret = stm32_i2c_compute_timing(i2c_priv, setup, timing);
++		ret = stm32_i2c_compute_timing(i2c_priv, timing);
+ 		if (ret) {
+ 			debug("%s: failed to compute I2C timings.\n",
+ 			      __func__);
+@@ -839,10 +841,15 @@ static int stm32_i2c_hw_config(struct stm32_i2c_priv *i2c_priv)
+ 	writel(timing, &regs->timingr);
+ 
+ 	/* Enable I2C */
+-	if (i2c_priv->setup->analog_filter)
++	if (i2c_priv->setup.analog_filter)
+ 		clrbits_le32(&regs->cr1, STM32_I2C_CR1_ANFOFF);
+ 	else
+ 		setbits_le32(&regs->cr1, STM32_I2C_CR1_ANFOFF);
++
++	/* Program the Digital Filter */
++	clrsetbits_le32(&regs->cr1, STM32_I2C_CR1_DNF_MASK,
++			STM32_I2C_CR1_DNF(i2c_priv->setup.dnf));
++
+ 	setbits_le32(&regs->cr1, STM32_I2C_CR1_PE);
+ 
+ 	return 0;
+@@ -903,21 +910,27 @@ clk_free:
+ 
+ static int stm32_ofdata_to_platdata(struct udevice *dev)
+ {
++	const struct stm32_i2c_data *data;
+ 	struct stm32_i2c_priv *i2c_priv = dev_get_priv(dev);
+ 	u32 rise_time, fall_time;
+ 	int ret;
+ 
+-	i2c_priv->setup = (struct stm32_i2c_setup *)dev_get_driver_data(dev);
+-	if (!i2c_priv->setup)
++	data = (const struct stm32_i2c_data *)dev_get_driver_data(dev);
++	if (!data)
+ 		return -EINVAL;
+ 
+-	rise_time = dev_read_u32_default(dev, "i2c-scl-rising-time-ns", 0);
+-	if (rise_time)
+-		i2c_priv->setup->rise_time = rise_time;
++	rise_time = dev_read_u32_default(dev, "i2c-scl-rising-time-ns",
++					 STM32_I2C_RISE_TIME_DEFAULT);
++
++
++	fall_time = dev_read_u32_default(dev, "i2c-scl-falling-time-ns",
++					 STM32_I2C_FALL_TIME_DEFAULT);
++
++	i2c_priv->dnf_dt = dev_read_u32_default(dev, "i2c-digital-filter-width-ns", 0);
++	if (!dev_read_bool(dev, "i2c-digital-filter"))
++		i2c_priv->dnf_dt = 0;
+ 
+-	fall_time = dev_read_u32_default(dev, "i2c-scl-falling-time-ns", 0);
+-	if (fall_time)
+-		i2c_priv->setup->fall_time = fall_time;
++	i2c_priv->setup.analog_filter = dev_read_bool(dev, "i2c-analog-filter");
+ 
+ 	/* Optional */
+ 	i2c_priv->regmap = syscon_regmap_lookup_by_phandle(dev,
+@@ -930,8 +943,7 @@ static int stm32_ofdata_to_platdata(struct udevice *dev)
+ 			return ret;
+ 
+ 		i2c_priv->regmap_sreg = fmp[1];
+-		i2c_priv->regmap_creg = fmp[1] +
+-					i2c_priv->setup->fmp_clr_offset;
++		i2c_priv->regmap_creg = fmp[1] + data->fmp_clr_offset;
+ 		i2c_priv->regmap_mask = fmp[2];
+ 	}
+ 
+@@ -944,8 +956,8 @@ static const struct dm_i2c_ops stm32_i2c_ops = {
+ };
+ 
+ static const struct udevice_id stm32_i2c_of_match[] = {
+-	{ .compatible = "st,stm32f7-i2c", .data = (ulong)&stm32f7_setup },
+-	{ .compatible = "st,stm32mp15-i2c", .data = (ulong)&stm32mp15_setup },
++	{ .compatible = "st,stm32f7-i2c", .data = (ulong)&stm32f7_data },
++	{ .compatible = "st,stm32mp15-i2c", .data = (ulong)&stm32mp15_data },
+ 	{}
+ };
+ 
+diff --git a/drivers/led/led_gpio.c b/drivers/led/led_gpio.c
+index ef9b61ee62..2cdb0269f4 100644
+--- a/drivers/led/led_gpio.c
++++ b/drivers/led/led_gpio.c
+@@ -99,11 +99,8 @@ static int led_gpio_bind(struct udevice *parent)
+ 		const char *label;
+ 
+ 		label = ofnode_read_string(node, "label");
+-		if (!label) {
+-			debug("%s: node %s has no label\n", __func__,
+-			      ofnode_get_name(node));
+-			return -EINVAL;
+-		}
++		if (!label)
++			label = ofnode_get_name(node);
+ 		ret = device_bind_driver_to_node(parent, "gpio_led",
+ 						 ofnode_get_name(node),
+ 						 node, &dev);
+diff --git a/drivers/net/Kconfig b/drivers/net/Kconfig
+index 039f9fb058..2f11ba2e2d 100644
+--- a/drivers/net/Kconfig
++++ b/drivers/net/Kconfig
+@@ -168,6 +168,7 @@ config DWC_ETH_QOS_IMX
+ config DWC_ETH_QOS_STM32
+ 	bool "Synopsys DWC Ethernet QOS device support for STM32"
+ 	depends on DWC_ETH_QOS
++	select DM_ETH_PHY
+ 	default y if ARCH_STM32MP
+ 	help
+ 	  The Synopsys Designware Ethernet QOS IP block with the specific
+diff --git a/drivers/net/dwc_eth_qos.c b/drivers/net/dwc_eth_qos.c
+index 810a2b95b1..0f33c08253 100644
+--- a/drivers/net/dwc_eth_qos.c
++++ b/drivers/net/dwc_eth_qos.c
+@@ -300,7 +300,7 @@ struct eqos_ops {
+ 	int (*eqos_remove_resources)(struct udevice *dev);
+ 	int (*eqos_stop_resets)(struct udevice *dev);
+ 	int (*eqos_start_resets)(struct udevice *dev);
+-	void (*eqos_stop_clks)(struct udevice *dev);
++	int (*eqos_stop_clks)(struct udevice *dev);
+ 	int (*eqos_start_clks)(struct udevice *dev);
+ 	int (*eqos_calibrate_pads)(struct udevice *dev);
+ 	int (*eqos_disable_calibration)(struct udevice *dev);
+@@ -326,7 +326,6 @@ struct eqos_priv {
+ 	struct clk clk_slave_bus;
+ 	struct mii_dev *mii;
+ 	struct phy_device *phy;
+-	int phyaddr;
+ 	u32 max_speed;
+ 	void *descs;
+ 	struct eqos_desc *tx_descs;
+@@ -653,12 +652,7 @@ err:
+ #endif
+ }
+ 
+-static int eqos_start_clks_imx(struct udevice *dev)
+-{
+-	return 0;
+-}
+-
+-static void eqos_stop_clks_tegra186(struct udevice *dev)
++static int eqos_stop_clks_tegra186(struct udevice *dev)
+ {
+ #ifdef CONFIG_CLK
+ 	struct eqos_priv *eqos = dev_get_priv(dev);
+@@ -673,9 +667,10 @@ static void eqos_stop_clks_tegra186(struct udevice *dev)
+ #endif
+ 
+ 	debug("%s: OK\n", __func__);
++	return 0;
+ }
+ 
+-static void eqos_stop_clks_stm32(struct udevice *dev)
++static int eqos_stop_clks_stm32(struct udevice *dev)
+ {
+ #ifdef CONFIG_CLK
+ 	struct eqos_priv *eqos = dev_get_priv(dev);
+@@ -690,11 +685,7 @@ static void eqos_stop_clks_stm32(struct udevice *dev)
+ #endif
+ 
+ 	debug("%s: OK\n", __func__);
+-}
+-
+-static void eqos_stop_clks_imx(struct udevice *dev)
+-{
+-	/* empty */
++	return 0;
+ }
+ 
+ static int eqos_start_resets_tegra186(struct udevice *dev)
+@@ -736,39 +727,6 @@ static int eqos_start_resets_tegra186(struct udevice *dev)
+ 	return 0;
+ }
+ 
+-static int eqos_start_resets_stm32(struct udevice *dev)
+-{
+-	struct eqos_priv *eqos = dev_get_priv(dev);
+-	int ret;
+-
+-	debug("%s(dev=%p):\n", __func__, dev);
+-	if (dm_gpio_is_valid(&eqos->phy_reset_gpio)) {
+-		ret = dm_gpio_set_value(&eqos->phy_reset_gpio, 1);
+-		if (ret < 0) {
+-			pr_err("dm_gpio_set_value(phy_reset, assert) failed: %d",
+-			       ret);
+-			return ret;
+-		}
+-
+-		udelay(2);
+-
+-		ret = dm_gpio_set_value(&eqos->phy_reset_gpio, 0);
+-		if (ret < 0) {
+-			pr_err("dm_gpio_set_value(phy_reset, deassert) failed: %d",
+-			       ret);
+-			return ret;
+-		}
+-	}
+-	debug("%s: OK\n", __func__);
+-
+-	return 0;
+-}
+-
+-static int eqos_start_resets_imx(struct udevice *dev)
+-{
+-	return 0;
+-}
+-
+ static int eqos_stop_resets_tegra186(struct udevice *dev)
+ {
+ 	struct eqos_priv *eqos = dev_get_priv(dev);
+@@ -779,28 +737,6 @@ static int eqos_stop_resets_tegra186(struct udevice *dev)
+ 	return 0;
+ }
+ 
+-static int eqos_stop_resets_stm32(struct udevice *dev)
+-{
+-	struct eqos_priv *eqos = dev_get_priv(dev);
+-	int ret;
+-
+-	if (dm_gpio_is_valid(&eqos->phy_reset_gpio)) {
+-		ret = dm_gpio_set_value(&eqos->phy_reset_gpio, 1);
+-		if (ret < 0) {
+-			pr_err("dm_gpio_set_value(phy_reset, assert) failed: %d",
+-			       ret);
+-			return ret;
+-		}
+-	}
+-
+-	return 0;
+-}
+-
+-static int eqos_stop_resets_imx(struct udevice *dev)
+-{
+-	return 0;
+-}
+-
+ static int eqos_calibrate_pads_tegra186(struct udevice *dev)
+ {
+ 	struct eqos_priv *eqos = dev_get_priv(dev);
+@@ -889,26 +825,6 @@ static ulong eqos_get_tick_clk_rate_imx(struct udevice *dev)
+ 	return imx_get_eqos_csr_clk();
+ }
+ 
+-static int eqos_calibrate_pads_stm32(struct udevice *dev)
+-{
+-	return 0;
+-}
+-
+-static int eqos_calibrate_pads_imx(struct udevice *dev)
+-{
+-	return 0;
+-}
+-
+-static int eqos_disable_calibration_stm32(struct udevice *dev)
+-{
+-	return 0;
+-}
+-
+-static int eqos_disable_calibration_imx(struct udevice *dev)
+-{
+-	return 0;
+-}
+-
+ static int eqos_set_full_duplex(struct udevice *dev)
+ {
+ 	struct eqos_priv *eqos = dev_get_priv(dev);
+@@ -1005,11 +921,6 @@ static int eqos_set_tx_clk_speed_tegra186(struct udevice *dev)
+ 	return 0;
+ }
+ 
+-static int eqos_set_tx_clk_speed_stm32(struct udevice *dev)
+-{
+-	return 0;
+-}
+-
+ static int eqos_set_tx_clk_speed_imx(struct udevice *dev)
+ {
+ 	struct eqos_priv *eqos = dev_get_priv(dev);
+@@ -1815,7 +1726,6 @@ static int eqos_probe_resources_stm32(struct udevice *dev)
+ 	struct eqos_priv *eqos = dev_get_priv(dev);
+ 	int ret;
+ 	phy_interface_t interface;
+-	struct ofnode_phandle_args phandle_args;
+ 
+ 	debug("%s(dev=%p):\n", __func__, dev);
+ 
+@@ -1855,24 +1765,6 @@ static int eqos_probe_resources_stm32(struct udevice *dev)
+ 	if (ret)
+ 		pr_warn("No phy clock provided %d", ret);
+ 
+-	eqos->phyaddr = -1;
+-	ret = dev_read_phandle_with_args(dev, "phy-handle", NULL, 0, 0,
+-					 &phandle_args);
+-	if (!ret) {
+-		/* search "reset-gpios" in phy node */
+-		ret = gpio_request_by_name_nodev(phandle_args.node,
+-						 "reset-gpios", 0,
+-						 &eqos->phy_reset_gpio,
+-						 GPIOD_IS_OUT |
+-						 GPIOD_IS_OUT_ACTIVE);
+-		if (ret)
+-			pr_warn("gpio_request_by_name(phy reset) not provided %d",
+-				ret);
+-
+-		eqos->phyaddr = ofnode_read_u32_default(phandle_args.node,
+-							"reg", -1);
+-	}
+-
+ 	debug("%s: OK\n", __func__);
+ 	return 0;
+ 
+@@ -1980,11 +1872,6 @@ static int eqos_remove_resources_stm32(struct udevice *dev)
+ 	return 0;
+ }
+ 
+-static int eqos_remove_resources_imx(struct udevice *dev)
+-{
+-	return 0;
+-}
+-
+ static int eqos_probe(struct udevice *dev)
+ {
+ 	struct eqos_priv *eqos = dev_get_priv(dev);
+@@ -2073,6 +1960,11 @@ static int eqos_remove(struct udevice *dev)
+ 	return 0;
+ }
+ 
++static int eqos_null_ops(struct udevice *dev)
++{
++	return 0;
++}
++
+ static const struct eth_ops eqos_ops = {
+ 	.start = eqos_start,
+ 	.stop = eqos_stop,
+@@ -2117,13 +2009,13 @@ static struct eqos_ops eqos_stm32_ops = {
+ 	.eqos_flush_buffer = eqos_flush_buffer_generic,
+ 	.eqos_probe_resources = eqos_probe_resources_stm32,
+ 	.eqos_remove_resources = eqos_remove_resources_stm32,
+-	.eqos_stop_resets = eqos_stop_resets_stm32,
+-	.eqos_start_resets = eqos_start_resets_stm32,
++	.eqos_stop_resets = eqos_null_ops,
++	.eqos_start_resets = eqos_null_ops,
+ 	.eqos_stop_clks = eqos_stop_clks_stm32,
+ 	.eqos_start_clks = eqos_start_clks_stm32,
+-	.eqos_calibrate_pads = eqos_calibrate_pads_stm32,
+-	.eqos_disable_calibration = eqos_disable_calibration_stm32,
+-	.eqos_set_tx_clk_speed = eqos_set_tx_clk_speed_stm32,
++	.eqos_calibrate_pads = eqos_null_ops,
++	.eqos_disable_calibration = eqos_null_ops,
++	.eqos_set_tx_clk_speed = eqos_null_ops,
+ 	.eqos_get_tick_clk_rate = eqos_get_tick_clk_rate_stm32
+ };
+ 
+@@ -2143,13 +2035,13 @@ static struct eqos_ops eqos_imx_ops = {
+ 	.eqos_inval_buffer = eqos_inval_buffer_generic,
+ 	.eqos_flush_buffer = eqos_flush_buffer_generic,
+ 	.eqos_probe_resources = eqos_probe_resources_imx,
+-	.eqos_remove_resources = eqos_remove_resources_imx,
+-	.eqos_stop_resets = eqos_stop_resets_imx,
+-	.eqos_start_resets = eqos_start_resets_imx,
+-	.eqos_stop_clks = eqos_stop_clks_imx,
+-	.eqos_start_clks = eqos_start_clks_imx,
+-	.eqos_calibrate_pads = eqos_calibrate_pads_imx,
+-	.eqos_disable_calibration = eqos_disable_calibration_imx,
++	.eqos_remove_resources = eqos_null_ops,
++	.eqos_stop_resets = eqos_null_ops,
++	.eqos_start_resets = eqos_null_ops,
++	.eqos_stop_clks = eqos_null_ops,
++	.eqos_start_clks = eqos_null_ops,
++	.eqos_calibrate_pads = eqos_null_ops,
++	.eqos_disable_calibration = eqos_null_ops,
+ 	.eqos_set_tx_clk_speed = eqos_set_tx_clk_speed_imx,
+ 	.eqos_get_tick_clk_rate = eqos_get_tick_clk_rate_imx
+ };
+diff --git a/drivers/net/eth-phy-uclass.c b/drivers/net/eth-phy-uclass.c
+index b383f45527..ded7d77a35 100644
+--- a/drivers/net/eth-phy-uclass.c
++++ b/drivers/net/eth-phy-uclass.c
+@@ -5,13 +5,20 @@
+ 
+ #include <common.h>
+ #include <dm.h>
++#include <log.h>
+ #include <net.h>
++#include <asm-generic/gpio.h>
++#include <dm/device_compat.h>
+ #include <dm/device-internal.h>
+ #include <dm/uclass-internal.h>
+ #include <dm/lists.h>
++#include <linux/delay.h>
+ 
+ struct eth_phy_device_priv {
+ 	struct mii_dev *mdio_bus;
++	struct gpio_desc reset_gpio;
++	u32 reset_assert_delay;
++	u32 reset_deassert_delay;
+ };
+ 
+ int eth_phy_binds_nodes(struct udevice *eth_dev)
+@@ -20,27 +27,33 @@ int eth_phy_binds_nodes(struct udevice *eth_dev)
+ 	const char *node_name;
+ 	int ret;
+ 
+-	mdio_node = dev_read_subnode(eth_dev, "mdio");
++	/* search a subnode named "mdio.*" */
++	dev_for_each_subnode(mdio_node, eth_dev) {
++		node_name = ofnode_get_name(mdio_node);
++		if (!strncmp(node_name, "mdio", 4))
++			break;
++	}
+ 	if (!ofnode_valid(mdio_node)) {
+-		debug("%s: %s mdio subnode not found!", __func__,
+-		      eth_dev->name);
++		dev_dbg(eth_dev, "%s: %s mdio subnode not found!\n", __func__,
++			eth_dev->name);
+ 		return -ENXIO;
+ 	}
++	dev_dbg(eth_dev, "%s: %s subnode found!\n", __func__, node_name);
+ 
+ 	ofnode_for_each_subnode(phy_node, mdio_node) {
+ 		node_name = ofnode_get_name(phy_node);
+ 
+-		debug("* Found child node: '%s'\n", node_name);
++		dev_dbg(eth_dev, "* Found child node: '%s'\n", node_name);
+ 
+ 		ret = device_bind_driver_to_node(eth_dev,
+ 						 "eth_phy_generic_drv",
+ 						 node_name, phy_node, NULL);
+ 		if (ret) {
+-			debug("  - Eth phy binding error: %d\n", ret);
++			dev_dbg(eth_dev, "  - Eth phy binding error: %d\n", ret);
+ 			continue;
+ 		}
+ 
+-		debug("  - bound phy device: '%s'\n", node_name);
++		dev_dbg(eth_dev, "  - bound phy device: '%s'\n", node_name);
+ 	}
+ 
+ 	return 0;
+@@ -81,14 +94,14 @@ struct mii_dev *eth_phy_get_mdio_bus(struct udevice *eth_dev)
+ 			 */
+ 			uc_priv = (struct eth_phy_device_priv *)(phy_dev->uclass_priv);
+ 			if (uc_priv->mdio_bus)
+-				printf("Get shared mii bus on %s\n", eth_dev->name);
++				log_notice("Get shared mii bus on %s\n", eth_dev->name);
+ 			else
+-				printf("Can't get shared mii bus on %s\n", eth_dev->name);
++				log_notice("Can't get shared mii bus on %s\n", eth_dev->name);
+ 
+ 			return uc_priv->mdio_bus;
+ 		}
+ 	} else {
+-		printf("FEC: can't find phy-handle\n");
++		log_notice("FEC: can't find phy-handle\n");
+ 	}
+ 
+ 	return NULL;
+@@ -101,7 +114,7 @@ int eth_phy_get_addr(struct udevice *dev)
+ 
+ 	if (dev_read_phandle_with_args(dev, "phy-handle", NULL, 0, 0,
+ 				       &phandle_args)) {
+-		debug("Failed to find phy-handle");
++		dev_dbg(dev, "Failed to find phy-handle");
+ 		return -ENODEV;
+ 	}
+ 
+@@ -110,13 +123,58 @@ int eth_phy_get_addr(struct udevice *dev)
+ 	return reg;
+ }
+ 
++/* parsing generic properties of devicetree/bindings/net/ethernet-phy.yaml */
++static int eth_phy_of_to_plat(struct udevice *dev)
++{
++	struct eth_phy_device_priv *uc_priv = dev_get_uclass_priv(dev);
++	int ret;
++
++	/* search "reset-gpios" in phy node */
++	ret = gpio_request_by_name(dev, "reset-gpios", 0,
++				   &uc_priv->reset_gpio,
++				   GPIOD_IS_OUT);
++	if (ret != -ENOENT)
++		return ret;
++
++	uc_priv->reset_assert_delay = dev_read_u32_default(dev, "reset-assert-us", 0);
++	uc_priv->reset_deassert_delay = dev_read_u32_default(dev, "reset-deassert-us", 0);
++
++	return 0;
++}
++
++void eth_phy_reset(struct udevice *dev, int value)
++{
++	struct eth_phy_device_priv *uc_priv = dev_get_uclass_priv(dev);
++	u32 delay;
++
++	if (!dm_gpio_is_valid(&uc_priv->reset_gpio))
++		return;
++
++	dm_gpio_set_value(&uc_priv->reset_gpio, value);
++
++	delay = value ? uc_priv->reset_assert_delay : uc_priv->reset_deassert_delay;
++	if (delay)
++		udelay(delay);
++}
++
++static int eth_phy_pre_probe(struct udevice *dev)
++{
++	/* Assert and deassert the reset signal */
++	eth_phy_reset(dev, 1);
++	eth_phy_reset(dev, 0);
++
++	return 0;
++}
++
+ UCLASS_DRIVER(eth_phy_generic) = {
+ 	.id		= UCLASS_ETH_PHY,
+ 	.name		= "eth_phy_generic",
+ 	.per_device_auto_alloc_size = sizeof(struct eth_phy_device_priv),
++	.pre_probe	= eth_phy_pre_probe,
+ };
+ 
+ U_BOOT_DRIVER(eth_phy_generic_drv) = {
+ 	.name		= "eth_phy_generic_drv",
+ 	.id		= UCLASS_ETH_PHY,
++	.ofdata_to_platdata	= eth_phy_of_to_plat,
+ };
+diff --git a/drivers/phy/phy-stm32-usbphyc.c b/drivers/phy/phy-stm32-usbphyc.c
+index d4a82f73f4..6d89c85516 100644
+--- a/drivers/phy/phy-stm32-usbphyc.c
++++ b/drivers/phy/phy-stm32-usbphyc.c
+@@ -15,6 +15,8 @@
+ #include <usb.h>
+ #include <asm/io.h>
+ #include <dm/device_compat.h>
++#include <dm/of_access.h>
++#include <linux/bitfield.h>
+ #include <linux/bitops.h>
+ #include <linux/delay.h>
+ #include <power/regulator.h>
+@@ -22,6 +24,7 @@
+ /* USBPHYC registers */
+ #define STM32_USBPHYC_PLL	0x0
+ #define STM32_USBPHYC_MISC	0x8
++#define STM32_USBPHYC_TUNE(X)	(0x10C + ((X) * 0x100))
+ 
+ /* STM32_USBPHYC_PLL bit fields */
+ #define PLLNDIV			GENMASK(6, 0)
+@@ -38,6 +41,26 @@
+ /* STM32_USBPHYC_MISC bit fields */
+ #define SWITHOST		BIT(0)
+ 
++/* STM32_USBPHYC_TUNE bit fields */
++#define INCURREN		BIT(0)
++#define INCURRINT		BIT(1)
++#define LFSCAPEN		BIT(2)
++#define HSDRVSLEW		BIT(3)
++#define HSDRVDCCUR		BIT(4)
++#define HSDRVDCLEV		BIT(5)
++#define HSDRVCURINCR		BIT(6)
++#define FSDRVRFADJ		BIT(7)
++#define HSDRVRFRED		BIT(8)
++#define HSDRVCHKITRM		GENMASK(12, 9)
++#define HSDRVCHKZTRM		GENMASK(14, 13)
++#define OTPCOMP			GENMASK(19, 15)
++#define SQLCHCTL		GENMASK(21, 20)
++#define HDRXGNEQEN		BIT(22)
++#define HSRXOFF			GENMASK(24, 23)
++#define HSFALLPREEM		BIT(25)
++#define SHTCCTCTLPROT		BIT(26)
++#define STAGSEL			BIT(27)
++
+ #define MAX_PHYS		2
+ 
+ /* max 100 us for PLL lock and 100 us for PHY init */
+@@ -47,6 +70,63 @@
+ #define PLL_INFF_MIN_RATE	19200000 /* in Hz */
+ #define PLL_INFF_MAX_RATE	38400000 /* in Hz */
+ 
++enum boosting_vals {
++	BOOST_1_MA = 1,
++	BOOST_2_MA,
++	BOOST_MAX,
++};
++
++enum dc_level_vals {
++	DC_MINUS_5_TO_7_MV,
++	DC_PLUS_5_TO_7_MV,
++	DC_PLUS_10_TO_14_MV,
++	DC_MAX,
++};
++
++enum current_trim {
++	CUR_NOMINAL,
++	CUR_PLUS_1_56_PCT,
++	CUR_PLUS_3_12_PCT,
++	CUR_PLUS_4_68_PCT,
++	CUR_PLUS_6_24_PCT,
++	CUR_PLUS_7_8_PCT,
++	CUR_PLUS_9_36_PCT,
++	CUR_PLUS_10_92_PCT,
++	CUR_PLUS_12_48_PCT,
++	CUR_PLUS_14_04_PCT,
++	CUR_PLUS_15_6_PCT,
++	CUR_PLUS_17_16_PCT,
++	CUR_PLUS_19_01_PCT,
++	CUR_PLUS_20_58_PCT,
++	CUR_PLUS_22_16_PCT,
++	CUR_PLUS_23_73_PCT,
++	CUR_MAX,
++};
++
++enum impedance_trim {
++	IMP_NOMINAL,
++	IMP_MINUS_2_OHMS,
++	IMP_MINUS_4_OMHS,
++	IMP_MINUS_6_OHMS,
++	IMP_MAX,
++};
++
++enum squelch_level {
++	SQLCH_NOMINAL,
++	SQLCH_PLUS_7_MV,
++	SQLCH_MINUS_5_MV,
++	SQLCH_PLUS_14_MV,
++	SQLCH_MAX,
++};
++
++enum rx_offset {
++	NO_RX_OFFSET,
++	RX_OFFSET_PLUS_5_MV,
++	RX_OFFSET_PLUS_10_MV,
++	RX_OFFSET_MINUS_5_MV,
++	RX_OFFSET_MAX,
++};
++
+ struct pll_params {
+ 	u8 ndiv;
+ 	u16 frac;
+@@ -325,6 +405,98 @@ static int stm32_usbphyc_of_xlate(struct phy *phy,
+ 	return 0;
+ }
+ 
++static void stm32_usbphyc_tuning(struct udevice *dev, ofnode node, u32 index)
++{
++	struct stm32_usbphyc *usbphyc = dev_get_priv(dev);
++	struct ofnode_phandle_args tune_phandle;
++	u32 reg = STM32_USBPHYC_TUNE(index);
++	u32 otpcomp, val, tune = 0;
++	int ret;
++
++	ret = ofnode_parse_phandle_with_args(node, "st,phy-tuning", NULL, 0,
++					     0, &tune_phandle);
++	if (ret) {
++		dev_dbg(dev, "phy%d: can't find phy tuning phandle\n", index);
++		return;
++	}
++
++	/* Backup OTP compensation code */
++	otpcomp = FIELD_GET(OTPCOMP, readl(usbphyc->base + reg));
++
++	ret = ofnode_read_u32(tune_phandle.node, "st,current-boost", &val);
++	if (!ret && val < BOOST_MAX) {
++		val = (val == BOOST_2_MA) ? 1 : 0;
++		tune |= INCURREN | FIELD_PREP(INCURRINT, val);
++	} else if (ret != -EINVAL) {
++		dev_warn(dev, "phy%d: invalid st,current-boost value\n", index);
++	}
++
++	if (!ofnode_read_bool(tune_phandle.node, "st,no-lsfs-fb-cap"))
++		tune |= LFSCAPEN;
++
++	if (ofnode_read_bool(tune_phandle.node, "st,hs-slew-ctrl"))
++		tune |= HSDRVSLEW;
++
++	ret = ofnode_read_u32(tune_phandle.node, "st,hs-dc-level", &val);
++	if (!ret && val < DC_MAX) {
++		if (val == DC_MINUS_5_TO_7_MV) {
++			tune |= HSDRVDCCUR;
++		} else {
++			val = (val == DC_PLUS_10_TO_14_MV) ? 1 : 0;
++			tune |= HSDRVCURINCR | FIELD_PREP(HSDRVDCLEV, val);
++		}
++	} else if (ret != -EINVAL) {
++		dev_warn(dev, "phy%d: invalid st,hs-dc-level value\n", index);
++	}
++
++	if (ofnode_read_bool(tune_phandle.node, "st,fs-rftime-tuning"))
++		tune |= FSDRVRFADJ;
++
++	if (ofnode_read_bool(tune_phandle.node, "st,hs-rftime-reduction"))
++		tune |= HSDRVRFRED;
++
++	ret = ofnode_read_u32(tune_phandle.node, "st,hs-current-trim", &val);
++	if (!ret && val < CUR_MAX)
++		tune |= FIELD_PREP(HSDRVCHKITRM, val);
++	else if (ret != -EINVAL)
++		dev_warn(dev, "phy%d: invalid st,hs-current-trim value\n", index);
++
++	ret = ofnode_read_u32(tune_phandle.node, "st,hs-impedance-trim", &val);
++	if (!ret && val < IMP_MAX)
++		tune |= FIELD_PREP(HSDRVCHKZTRM, val);
++	else if (ret != -EINVAL)
++		dev_warn(dev, "phy%d: invalid hs-impedance-trim value\n", index);
++
++	ret = ofnode_read_u32(tune_phandle.node, "st,squelch-level", &val);
++	if (!ret && val < SQLCH_MAX)
++		tune |= FIELD_PREP(SQLCHCTL, val);
++	else if (ret != -EINVAL)
++		dev_warn(dev, "phy%d: invalid st,squelch-level value\n", index);
++
++	if (ofnode_read_bool(tune_phandle.node, "st,hs-rx-gain-eq"))
++		tune |= HDRXGNEQEN;
++
++	ret = ofnode_read_u32(tune_phandle.node, "st,hs-rx-offset", &val);
++	if (!ret && val < RX_OFFSET_MAX)
++		tune |= FIELD_PREP(HSRXOFF, val);
++	else if (ret != -EINVAL)
++		dev_warn(dev, "phy%d: invalid st,hs-rx-offset value\n", index);
++
++	if (ofnode_read_bool(tune_phandle.node, "st,no-hs-ftime-ctrl"))
++		tune |= HSFALLPREEM;
++
++	if (!ofnode_read_bool(tune_phandle.node, "st,no-lsfs-sc"))
++		tune |= SHTCCTCTLPROT;
++
++	if (ofnode_read_bool(tune_phandle.node, "st,hs-tx-staggering"))
++		tune |= STAGSEL;
++
++	/* Restore OTP compensation code */
++	tune |= FIELD_PREP(OTPCOMP, otpcomp);
++
++	writel(tune, usbphyc->base + reg);
++}
++
+ static const struct phy_ops stm32_usbphyc_phy_ops = {
+ 	.init = stm32_usbphyc_phy_init,
+ 	.exit = stm32_usbphyc_phy_exit,
+@@ -337,8 +509,8 @@ static int stm32_usbphyc_probe(struct udevice *dev)
+ {
+ 	struct stm32_usbphyc *usbphyc = dev_get_priv(dev);
+ 	struct reset_ctl reset;
+-	ofnode node;
+-	int i, ret;
++	ofnode node, connector;
++	int ret;
+ 
+ 	usbphyc->base = dev_read_addr(dev);
+ 	if (usbphyc->base == FDT_ADDR_T_NONE)
+@@ -376,14 +548,22 @@ static int stm32_usbphyc_probe(struct udevice *dev)
+ 		return ret;
+ 	}
+ 
+-	/*
+-	 * parse all PHY subnodes in order to populate regulator associated
+-	 * to each PHY port
+-	 */
+-	node = dev_read_first_subnode(dev);
+-	for (i = 0; i < MAX_PHYS; i++) {
+-		struct stm32_usbphyc_phy *usbphyc_phy = usbphyc->phys + i;
++	/* parse all PHY subnodes to populate regulator associated to each PHY port */
++	dev_for_each_subnode(node, dev) {
++		fdt_addr_t phy_id;
++		struct stm32_usbphyc_phy *usbphyc_phy;
+ 
++		phy_id = ofnode_read_u32_default(node, "reg", FDT_ADDR_T_NONE);
++		if (phy_id >= MAX_PHYS) {
++			dev_err(dev, "invalid reg value %lx for %s\n",
++				phy_id, ofnode_get_name(node));
++			return -ENOENT;
++		}
++
++		/* Configure phy tuning */
++		stm32_usbphyc_tuning(dev, node, phy_id);
++
++		usbphyc_phy = usbphyc->phys + phy_id;
+ 		usbphyc_phy->init = false;
+ 		usbphyc_phy->powered = false;
+ 		ret = stm32_usbphyc_get_regulator(node, "phy-supply",
+@@ -393,12 +573,14 @@ static int stm32_usbphyc_probe(struct udevice *dev)
+ 			return ret;
+ 		}
+ 
+-		ret = stm32_usbphyc_get_regulator(node, "vbus-supply",
+-						  &usbphyc_phy->vbus);
+-		if (ret)
+-			usbphyc_phy->vbus = NULL;
+-
+-		node = dev_read_next_subnode(node);
++		usbphyc_phy->vbus = NULL;
++		connector = ofnode_find_subnode(node, "connector");
++		if (ofnode_valid(connector)) {
++			ret = stm32_usbphyc_get_regulator(connector, "vbus-supply",
++							  &usbphyc_phy->vbus);
++			if (ret)
++				usbphyc_phy->vbus = NULL;
++		}
+ 	}
+ 
+ 	/* Check if second port has to be used for host controller */
+diff --git a/drivers/ram/stm32mp1/stm32mp1_ddr.c b/drivers/ram/stm32mp1/stm32mp1_ddr.c
+index bf3a4c97a4..cc3269c52b 100644
+--- a/drivers/ram/stm32mp1/stm32mp1_ddr.c
++++ b/drivers/ram/stm32mp1/stm32mp1_ddr.c
+@@ -824,8 +824,12 @@ start:
+  */
+ 
+ /* 10. configure PUBL PIR register to specify which training step to run */
+-	/* warning : RVTRN  is not supported by this PUBL */
+-		stm32mp1_ddrphy_init(priv->phy, DDRPHYC_PIR_QSTRN);
++		/* RVTRN is executed only on LPDDR2/LPDDR3 */
++		if (config->c_reg.mstr & DDRCTRL_MSTR_DDR3)
++			pir = DDRPHYC_PIR_QSTRN;
++		else
++			pir = DDRPHYC_PIR_QSTRN | DDRPHYC_PIR_RVTRN;
++		stm32mp1_ddrphy_init(priv->phy, pir);
+ 
+ /* 11. monitor PUB PGSR.IDONE to poll cpmpletion of training sequence */
+ 		ddrphy_idone_wait(priv->phy);
+diff --git a/drivers/ram/stm32mp1/stm32mp1_ddr_regs.h b/drivers/ram/stm32mp1/stm32mp1_ddr_regs.h
+index 3c8885a965..ada3087328 100644
+--- a/drivers/ram/stm32mp1/stm32mp1_ddr_regs.h
++++ b/drivers/ram/stm32mp1/stm32mp1_ddr_regs.h
+@@ -309,6 +309,7 @@ struct stm32mp1_ddrphy {
+ #define DDRPHYC_PIR_DRAMRST			BIT(5)
+ #define DDRPHYC_PIR_DRAMINIT			BIT(6)
+ #define DDRPHYC_PIR_QSTRN			BIT(7)
++#define DDRPHYC_PIR_RVTRN			BIT(8)
+ #define DDRPHYC_PIR_ICPC			BIT(16)
+ #define DDRPHYC_PIR_ZCALBYP			BIT(30)
+ #define DDRPHYC_PIR_INITSTEPS_MASK		GENMASK(31, 7)
+diff --git a/drivers/remoteproc/rproc-optee.c b/drivers/remoteproc/rproc-optee.c
+index 07d2811e22..8b0b4bdd51 100644
+--- a/drivers/remoteproc/rproc-optee.c
++++ b/drivers/remoteproc/rproc-optee.c
+@@ -202,18 +202,32 @@ int rproc_optee_open(struct rproc_optee *trproc)
+ 
+ 	tee_optee_ta_uuid_to_octets(arg.uuid, &uuid);
+ 	rc = tee_open_session(tee, &arg, 0, NULL);
+-	if (!rc) {
+-		trproc->tee = tee;
+-		trproc->session = arg.session;
++	if (rc < 0 || arg.ret != 0) {
++		if (!rc)
++			rc = -EIO;
++		return rc;
+ 	}
+ 
++	trproc->tee = tee;
++	trproc->session = arg.session;
++
+ 	return 0;
+ }
+ 
+ int rproc_optee_close(struct rproc_optee *trproc)
+ {
++	int rc;
++
+ 	if (!trproc->tee)
+ 		return -ENODEV;
+ 
+-	return tee_close_session(trproc->tee, trproc->session);
++	rc = tee_close_session(trproc->tee, trproc->session);
++	if (rc)
++		return rc;
++
++	trproc->tee = NULL;
++	trproc->session = 0;
++
++	return 0;
++
+ }
+diff --git a/drivers/remoteproc/stm32_copro.c b/drivers/remoteproc/stm32_copro.c
+index 55d7303c55..847d98b387 100644
+--- a/drivers/remoteproc/stm32_copro.c
++++ b/drivers/remoteproc/stm32_copro.c
+@@ -27,6 +27,7 @@ struct stm32_copro_privdata {
+ 	struct reset_ctl reset_ctl;
+ 	struct reset_ctl hold_boot;
+ 	ulong rsc_table_addr;
++	struct rproc_optee trproc;
+ };
+ 
+ /**
+@@ -36,10 +37,16 @@ struct stm32_copro_privdata {
+  */
+ static int stm32_copro_probe(struct udevice *dev)
+ {
+-	struct stm32_copro_privdata *priv;
++	struct stm32_copro_privdata *priv = dev_get_priv(dev);
++	struct rproc_optee *trproc = &priv->trproc;
+ 	int ret;
+ 
+-	priv = dev_get_priv(dev);
++	trproc->fw_id = (u32)dev_get_driver_data(dev);
++	ret = rproc_optee_open(trproc);
++	if (!ret) {
++		dev_info(dev, "delegate the firmware management to OPTEE\n");
++		return 0;
++	}
+ 
+ 	ret = reset_get_by_name(dev, "mcu_rst", &priv->reset_ctl);
+ 	if (ret) {
+@@ -58,30 +65,20 @@ static int stm32_copro_probe(struct udevice *dev)
+ 	return 0;
+ }
+ 
+-/**
+- * stm32_copro_optee_probe() - Open a session toward rproc trusted application
+- * @dev:	corresponding STM32 remote processor device
+- * @return 0 if all went ok, else corresponding -ve error
+- */
+-static int stm32_copro_optee_probe(struct udevice *dev)
+-{
+-	struct rproc_optee *trproc = dev_get_priv(dev);
+-
+-	trproc->fw_id = (u32)dev_get_driver_data(dev);
+-
+-	return rproc_optee_open(trproc);
+-}
+-
+ /**
+  * stm32_copro_optee_remove() - Close the rproc trusted application session
+  * @dev:	corresponding STM32 remote processor device
+  * @return 0 if all went ok, else corresponding -ve error
+  */
+-static int stm32_copro_optee_remove(struct udevice *dev)
++static int stm32_copro_remove(struct udevice *dev)
+ {
+-	struct rproc_optee *trproc = dev_get_priv(dev);
++	struct stm32_copro_privdata *priv = dev_get_priv(dev);
++	struct rproc_optee *trproc = &priv->trproc;
++
++	if (trproc->tee)
++		return rproc_optee_close(trproc);
+ 
+-	return rproc_optee_close(trproc);
++	return 0;
+ }
+ 
+ /**
+@@ -121,11 +118,13 @@ static void *stm32_copro_device_to_virt(struct udevice *dev, ulong da,
+  */
+ static int stm32_copro_load(struct udevice *dev, ulong addr, ulong size)
+ {
+-	struct stm32_copro_privdata *priv;
++	struct stm32_copro_privdata *priv = dev_get_priv(dev);
++	struct rproc_optee *trproc = &priv->trproc;
+ 	ulong rsc_table_size;
+ 	int ret;
+ 
+-	priv = dev_get_priv(dev);
++	if (trproc->tee)
++		return rproc_optee_load(trproc, addr, size);
+ 
+ 	ret = reset_assert(&priv->hold_boot);
+ 	if (ret) {
+@@ -148,18 +147,6 @@ static int stm32_copro_load(struct udevice *dev, ulong addr, ulong size)
+ 	return rproc_elf32_load_image(dev, addr, size);
+ }
+ 
+-/**
+- * stm32_copro_optee_load() - Request OP−TEE to load the remote processor firmware
+- * @dev:	corresponding OP-TEE remote processor device
+- * @return 0 if all went ok, else corresponding -ve error
+- */
+-static int stm32_copro_optee_load(struct udevice *dev, ulong addr, ulong size)
+-{
+-	struct rproc_optee *trproc = dev_get_priv(dev);
+-
+-	return rproc_optee_load(trproc, addr, size);
+-}
+-
+ /**
+  * stm32_copro_start() - Start the STM32 remote processor
+  * @dev:	corresponding STM32 remote processor device
+@@ -167,25 +154,39 @@ static int stm32_copro_optee_load(struct udevice *dev, ulong addr, ulong size)
+  */
+ static int stm32_copro_start(struct udevice *dev)
+ {
+-	struct stm32_copro_privdata *priv;
++	struct stm32_copro_privdata *priv = dev_get_priv(dev);
++	struct rproc_optee *trproc = &priv->trproc;
++	phys_size_t rsc_size;
+ 	int ret;
+ 
+-	priv = dev_get_priv(dev);
+-
+-	ret = reset_deassert(&priv->hold_boot);
+-	if (ret) {
+-		dev_err(dev, "Unable to deassert hold boot (ret=%d)\n", ret);
+-		return ret;
++	if (trproc->tee) {
++		ret = rproc_optee_get_rsc_table(trproc, &priv->rsc_table_addr,
++						&rsc_size);
++		if (ret)
++			return ret;
++
++		ret = rproc_optee_start(trproc);
++		if (ret)
++			return ret;
++
++	} else {
++		ret = reset_deassert(&priv->hold_boot);
++		if (ret) {
++			dev_err(dev, "Unable to deassert hold boot (ret=%d)\n",
++				ret);
++			return ret;
++		}
++
++		/*
++		 * Once copro running, reset hold boot flag to avoid copro
++		 * rebooting autonomously (error should never occur)
++		 */
++		ret = reset_assert(&priv->hold_boot);
++		if (ret)
++			dev_err(dev, "Unable to assert hold boot (ret=%d)\n",
++				ret);
+ 	}
+ 
+-	/*
+-	 * Once copro running, reset hold boot flag to avoid copro
+-	 * rebooting autonomously (error should never occur)
+-	 */
+-	ret = reset_assert(&priv->hold_boot);
+-	if (ret)
+-		dev_err(dev, "Unable to assert hold boot (ret=%d)\n", ret);
+-
+ 	/* indicates that copro is running */
+ 	writel(TAMP_COPRO_STATE_CRUN, TAMP_COPRO_STATE);
+ 	/* Store rsc_address in bkp register */
+@@ -194,34 +195,6 @@ static int stm32_copro_start(struct udevice *dev)
+ 	return 0;
+ }
+ 
+-/**
+- * stm32_copro_optee_start() - Request OP−TEE to start the STM32 remote processor
+- * @dev:	corresponding OP-TEE remote processor device
+- * @return 0 if all went ok, else corresponding -ve error
+- */
+-static int stm32_copro_optee_start(struct udevice *dev)
+-{
+-	struct rproc_optee *trproc = dev_get_priv(dev);
+-	phys_addr_t rsc_addr;
+-	phys_size_t rsc_size;
+-	int ret;
+-
+-	ret = rproc_optee_get_rsc_table(trproc, &rsc_addr, &rsc_size);
+-	if (ret)
+-		return ret;
+-
+-	ret = rproc_optee_start(trproc);
+-	if (ret)
+-		return ret;
+-
+-	/* indicates that copro is running */
+-	writel(TAMP_COPRO_STATE_CRUN, TAMP_COPRO_STATE);
+-	/* Store rsc_address in bkp register */
+-	writel(rsc_addr, TAMP_COPRO_RSC_TBL_ADDRESS);
+-
+-	return 0;
+-}
+-
+ /**
+  * stm32_copro_reset() - Reset the STM32 remote processor
+  * @dev:	corresponding STM32 remote processor device
+@@ -229,21 +202,29 @@ static int stm32_copro_optee_start(struct udevice *dev)
+  */
+ static int stm32_copro_reset(struct udevice *dev)
+ {
+-	struct stm32_copro_privdata *priv;
++	struct stm32_copro_privdata *priv = dev_get_priv(dev);
++	struct rproc_optee *trproc = &priv->trproc;
+ 	int ret;
+ 
+-	priv = dev_get_priv(dev);
+ 
+-	ret = reset_assert(&priv->hold_boot);
+-	if (ret) {
+-		dev_err(dev, "Unable to assert hold boot (ret=%d)\n", ret);
+-		return ret;
+-	}
+-
+-	ret = reset_assert(&priv->reset_ctl);
+-	if (ret) {
+-		dev_err(dev, "Unable to assert reset line (ret=%d)\n", ret);
+-		return ret;
++	if (trproc->tee) {
++		ret = rproc_optee_stop(trproc);
++		if (ret)
++			return ret;
++	} else {
++		ret = reset_assert(&priv->hold_boot);
++		if (ret) {
++			dev_err(dev, "Unable to assert hold boot (ret=%d)\n",
++				ret);
++			return ret;
++		}
++
++		ret = reset_assert(&priv->reset_ctl);
++		if (ret) {
++			dev_err(dev, "Unable to assert reset line (ret=%d)\n",
++				ret);
++			return ret;
++		}
+ 	}
+ 
+ 	writel(TAMP_COPRO_STATE_OFF, TAMP_COPRO_STATE);
+@@ -261,35 +242,6 @@ static int stm32_copro_stop(struct udevice *dev)
+ 	return stm32_copro_reset(dev);
+ }
+ 
+-/**
+- * stm32_copro_optee_reset() - Request OP−TEE to reset the STM32 remote processor
+- * @dev:	corresponding STM32 remote processor device
+- * @return 0 if all went ok, else corresponding -ve error
+- */
+-static int stm32_copro_optee_reset(struct udevice *dev)
+-{
+-	struct rproc_optee *trproc = dev_get_priv(dev);
+-	int ret;
+-
+-	ret = rproc_optee_stop(trproc);
+-	if (ret)
+-		return ret;
+-
+-	writel(TAMP_COPRO_STATE_OFF, TAMP_COPRO_STATE);
+-
+-	return 0;
+-}
+-
+-/**
+- * stm32_copro_optee_stop() - Request OP−TEE to stop the STM32 remote processor
+- * @dev:	corresponding STM32 remote processor device
+- * @return 0 if all went ok, else corresponding -ve error
+- */
+-static int stm32_copro_optee_stop(struct udevice *dev)
+-{
+-	return stm32_copro_optee_reset(dev);
+-}
+-
+ /**
+  * stm32_copro_is_running() - Is the STM32 remote processor running
+  * @dev:	corresponding STM32 remote processor device
+@@ -310,7 +262,7 @@ static const struct dm_rproc_ops stm32_copro_ops = {
+ };
+ 
+ static const struct udevice_id stm32_copro_ids[] = {
+-	{.compatible = "st,stm32mp1-m4"},
++	{ .compatible = "st,stm32mp1-m4", .data = STM32MP15_M4_FW_ID },
+ 	{}
+ };
+ 
+@@ -320,30 +272,7 @@ U_BOOT_DRIVER(stm32_copro) = {
+ 	.id = UCLASS_REMOTEPROC,
+ 	.ops = &stm32_copro_ops,
+ 	.probe = stm32_copro_probe,
++	.remove = stm32_copro_remove,
+ 	.priv_auto_alloc_size = sizeof(struct stm32_copro_privdata),
+-};
+-
+-static const struct dm_rproc_ops stm32_copro_optee_ops = {
+-	.load = stm32_copro_optee_load,
+-	.start = stm32_copro_optee_start,
+-	.stop = stm32_copro_optee_stop,
+-	.reset = stm32_copro_optee_reset,
+-	.is_running = stm32_copro_is_running,
+-	.device_to_virt = stm32_copro_device_to_virt,
+-};
+-
+-static const struct udevice_id stm32_copro_optee_ids[] = {
+-	{ .compatible = "st,stm32mp1-m4_optee", .data = STM32MP15_M4_FW_ID },
+-	{}
+-};
+-
+-U_BOOT_DRIVER(stm32_copro_optee) = {
+-	.name = "stm32_m4_proc_optee",
+-	.of_match = stm32_copro_optee_ids,
+-	.id = UCLASS_REMOTEPROC,
+-	.ops = &stm32_copro_optee_ops,
+-	.probe = stm32_copro_optee_probe,
+-	.remove = stm32_copro_optee_remove,
+-	.priv_auto_alloc_size = sizeof(struct rproc_optee),
+ 	.flags = DM_FLAG_OS_PREPARE,
+ };
+diff --git a/drivers/spi/stm32_qspi.c b/drivers/spi/stm32_qspi.c
+index 72a169e196..864ee96e77 100644
+--- a/drivers/spi/stm32_qspi.c
++++ b/drivers/spi/stm32_qspi.c
+@@ -146,23 +146,24 @@ static int _stm32_qspi_wait_cmd(struct stm32_qspi_priv *priv,
+ 				const struct spi_mem_op *op)
+ {
+ 	u32 sr;
+-	int ret;
+-
+-	if (!op->data.nbytes)
+-		return _stm32_qspi_wait_for_not_busy(priv);
++	int ret = 0;
+ 
+-	ret = readl_poll_timeout(&priv->regs->sr, sr,
+-				 sr & STM32_QSPI_SR_TCF,
+-				 STM32_QSPI_CMD_TIMEOUT_US);
+-	if (ret) {
+-		pr_err("cmd timeout (stat:%#x)\n", sr);
+-	} else if (readl(&priv->regs->sr) & STM32_QSPI_SR_TEF) {
+-		pr_err("transfer error (stat:%#x)\n", sr);
+-		ret = -EIO;
++	if (op->data.nbytes) {
++		ret = readl_poll_timeout(&priv->regs->sr, sr,
++					 sr & STM32_QSPI_SR_TCF,
++					 STM32_QSPI_CMD_TIMEOUT_US);
++		if (ret) {
++			pr_err("cmd timeout (stat:%#x)\n", sr);
++		} else if (readl(&priv->regs->sr) & STM32_QSPI_SR_TEF) {
++			pr_err("transfer error (stat:%#x)\n", sr);
++			ret = -EIO;
++		}
++		/* clear flags */
++		writel(STM32_QSPI_FCR_CTCF | STM32_QSPI_FCR_CTEF, &priv->regs->fcr);
+ 	}
+ 
+-	/* clear flags */
+-	writel(STM32_QSPI_FCR_CTCF | STM32_QSPI_FCR_CTEF, &priv->regs->fcr);
++	if (!ret)
++		ret = _stm32_qspi_wait_for_not_busy(priv);
+ 
+ 	return ret;
+ }
+diff --git a/drivers/spi/stm32_spi.c b/drivers/spi/stm32_spi.c
+index 4a0833b6fa..b2b1f9dcb8 100644
+--- a/drivers/spi/stm32_spi.c
++++ b/drivers/spi/stm32_spi.c
+@@ -94,11 +94,14 @@
+ #define SPI_SIMPLEX_RX		2
+ #define SPI_HALF_DUPLEX		3
+ 
+-struct stm32_spi_priv {
++struct stm32_spi_platdata {
+ 	void __iomem *base;
+ 	struct clk clk;
+ 	struct reset_ctl rst_ctl;
+ 	struct gpio_desc cs_gpios[MAX_CS_COUNT];
++};
++
++struct stm32_spi_priv {
+ 	ulong bus_clk_rate;
+ 	unsigned int fifo_size;
+ 	unsigned int cur_bpw;
+@@ -112,28 +115,32 @@ struct stm32_spi_priv {
+ 	bool cs_high;
+ };
+ 
+-static void stm32_spi_write_txfifo(struct stm32_spi_priv *priv)
++static void stm32_spi_write_txfifo(struct udevice *bus)
+ {
++	struct stm32_spi_priv *priv = dev_get_priv(bus);
++	struct stm32_spi_platdata *plat = dev_get_platdata(bus);
++	void __iomem *base = plat->base;
++
+ 	while ((priv->tx_len > 0) &&
+-	       (readl(priv->base + STM32_SPI_SR) & SPI_SR_TXP)) {
++	       (readl(base + STM32_SPI_SR) & SPI_SR_TXP)) {
+ 		u32 offs = priv->cur_xferlen - priv->tx_len;
+ 
+ 		if (priv->tx_len >= sizeof(u32) &&
+ 		    IS_ALIGNED((uintptr_t)(priv->tx_buf + offs), sizeof(u32))) {
+ 			const u32 *tx_buf32 = (const u32 *)(priv->tx_buf + offs);
+ 
+-			writel(*tx_buf32, priv->base + STM32_SPI_TXDR);
++			writel(*tx_buf32, base + STM32_SPI_TXDR);
+ 			priv->tx_len -= sizeof(u32);
+ 		} else if (priv->tx_len >= sizeof(u16) &&
+ 			   IS_ALIGNED((uintptr_t)(priv->tx_buf + offs), sizeof(u16))) {
+ 			const u16 *tx_buf16 = (const u16 *)(priv->tx_buf + offs);
+ 
+-			writew(*tx_buf16, priv->base + STM32_SPI_TXDR);
++			writew(*tx_buf16, base + STM32_SPI_TXDR);
+ 			priv->tx_len -= sizeof(u16);
+ 		} else {
+ 			const u8 *tx_buf8 = (const u8 *)(priv->tx_buf + offs);
+ 
+-			writeb(*tx_buf8, priv->base + STM32_SPI_TXDR);
++			writeb(*tx_buf8, base + STM32_SPI_TXDR);
+ 			priv->tx_len -= sizeof(u8);
+ 		}
+ 	}
+@@ -141,9 +148,12 @@ static void stm32_spi_write_txfifo(struct stm32_spi_priv *priv)
+ 	debug("%s: %d bytes left\n", __func__, priv->tx_len);
+ }
+ 
+-static void stm32_spi_read_rxfifo(struct stm32_spi_priv *priv)
++static void stm32_spi_read_rxfifo(struct udevice *bus)
+ {
+-	u32 sr = readl(priv->base + STM32_SPI_SR);
++	struct stm32_spi_priv *priv = dev_get_priv(bus);
++	struct stm32_spi_platdata *plat = dev_get_platdata(bus);
++	void __iomem *base = plat->base;
++	u32 sr = readl(base + STM32_SPI_SR);
+ 	u32 rxplvl = (sr & SPI_SR_RXPLVL) >> SPI_SR_RXPLVL_SHIFT;
+ 
+ 	while ((priv->rx_len > 0) &&
+@@ -155,7 +165,7 @@ static void stm32_spi_read_rxfifo(struct stm32_spi_priv *priv)
+ 		    (priv->rx_len >= sizeof(u32) || (sr & SPI_SR_RXWNE))) {
+ 			u32 *rx_buf32 = (u32 *)(priv->rx_buf + offs);
+ 
+-			*rx_buf32 = readl(priv->base + STM32_SPI_RXDR);
++			*rx_buf32 = readl(base + STM32_SPI_RXDR);
+ 			priv->rx_len -= sizeof(u32);
+ 		} else if (IS_ALIGNED((uintptr_t)(priv->rx_buf + offs), sizeof(u16)) &&
+ 			   (priv->rx_len >= sizeof(u16) ||
+@@ -163,38 +173,38 @@ static void stm32_spi_read_rxfifo(struct stm32_spi_priv *priv)
+ 			    (rxplvl >= 2 || priv->cur_bpw > 8)))) {
+ 			u16 *rx_buf16 = (u16 *)(priv->rx_buf + offs);
+ 
+-			*rx_buf16 = readw(priv->base + STM32_SPI_RXDR);
++			*rx_buf16 = readw(base + STM32_SPI_RXDR);
+ 			priv->rx_len -= sizeof(u16);
+ 		} else {
+ 			u8 *rx_buf8 = (u8 *)(priv->rx_buf + offs);
+ 
+-			*rx_buf8 = readb(priv->base + STM32_SPI_RXDR);
++			*rx_buf8 = readb(base + STM32_SPI_RXDR);
+ 			priv->rx_len -= sizeof(u8);
+ 		}
+ 
+-		sr = readl(priv->base + STM32_SPI_SR);
++		sr = readl(base + STM32_SPI_SR);
+ 		rxplvl = (sr & SPI_SR_RXPLVL) >> SPI_SR_RXPLVL_SHIFT;
+ 	}
+ 
+ 	debug("%s: %d bytes left\n", __func__, priv->rx_len);
+ }
+ 
+-static int stm32_spi_enable(struct stm32_spi_priv *priv)
++static int stm32_spi_enable(void __iomem *base)
+ {
+ 	debug("%s\n", __func__);
+ 
+ 	/* Enable the SPI hardware */
+-	setbits_le32(priv->base + STM32_SPI_CR1, SPI_CR1_SPE);
++	setbits_le32(base + STM32_SPI_CR1, SPI_CR1_SPE);
+ 
+ 	return 0;
+ }
+ 
+-static int stm32_spi_disable(struct stm32_spi_priv *priv)
++static int stm32_spi_disable(void __iomem *base)
+ {
+ 	debug("%s\n", __func__);
+ 
+ 	/* Disable the SPI hardware */
+-	clrbits_le32(priv->base + STM32_SPI_CR1, SPI_CR1_SPE);
++	clrbits_le32(base + STM32_SPI_CR1, SPI_CR1_SPE);
+ 
+ 	return 0;
+ }
+@@ -202,45 +212,48 @@ static int stm32_spi_disable(struct stm32_spi_priv *priv)
+ static int stm32_spi_claim_bus(struct udevice *slave)
+ {
+ 	struct udevice *bus = dev_get_parent(slave);
+-	struct stm32_spi_priv *priv = dev_get_priv(bus);
++	struct stm32_spi_platdata *plat = dev_get_platdata(bus);
++	void __iomem *base = plat->base;
+ 
+ 	debug("%s\n", __func__);
+ 
+ 	/* Enable the SPI hardware */
+-	return stm32_spi_enable(priv);
++	return stm32_spi_enable(base);
+ }
+ 
+ static int stm32_spi_release_bus(struct udevice *slave)
+ {
+ 	struct udevice *bus = dev_get_parent(slave);
+-	struct stm32_spi_priv *priv = dev_get_priv(bus);
++	struct stm32_spi_platdata *plat = dev_get_platdata(bus);
++	void __iomem *base = plat->base;
+ 
+ 	debug("%s\n", __func__);
+ 
+ 	/* Disable the SPI hardware */
+-	return stm32_spi_disable(priv);
++	return stm32_spi_disable(base);
+ }
+ 
+ static void stm32_spi_stopxfer(struct udevice *dev)
+ {
+-	struct stm32_spi_priv *priv = dev_get_priv(dev);
++	struct stm32_spi_platdata *plat = dev_get_platdata(dev);
++	void __iomem *base = plat->base;
+ 	u32 cr1, sr;
+ 	int ret;
+ 
+ 	debug("%s\n", __func__);
+ 
+-	cr1 = readl(priv->base + STM32_SPI_CR1);
++	cr1 = readl(base + STM32_SPI_CR1);
+ 
+ 	if (!(cr1 & SPI_CR1_SPE))
+ 		return;
+ 
+ 	/* Wait on EOT or suspend the flow */
+-	ret = readl_poll_timeout(priv->base + STM32_SPI_SR, sr,
++	ret = readl_poll_timeout(base + STM32_SPI_SR, sr,
+ 				 !(sr & SPI_SR_EOT), 100000);
+ 	if (ret < 0) {
+ 		if (cr1 & SPI_CR1_CSTART) {
+-			writel(cr1 | SPI_CR1_CSUSP, priv->base + STM32_SPI_CR1);
+-			if (readl_poll_timeout(priv->base + STM32_SPI_SR,
++			writel(cr1 | SPI_CR1_CSUSP, base + STM32_SPI_CR1);
++			if (readl_poll_timeout(base + STM32_SPI_SR,
+ 					       sr, !(sr & SPI_SR_SUSP),
+ 					       100000) < 0)
+ 				dev_err(dev, "Suspend request timeout\n");
+@@ -248,11 +261,12 @@ static void stm32_spi_stopxfer(struct udevice *dev)
+ 	}
+ 
+ 	/* clear status flags */
+-	setbits_le32(priv->base + STM32_SPI_IFCR, SPI_IFCR_ALL);
++	setbits_le32(base + STM32_SPI_IFCR, SPI_IFCR_ALL);
+ }
+ 
+ static int stm32_spi_set_cs(struct udevice *dev, unsigned int cs, bool enable)
+ {
++	struct stm32_spi_platdata *plat = dev_get_platdata(dev);
+ 	struct stm32_spi_priv *priv = dev_get_priv(dev);
+ 
+ 	debug("%s: cs=%d enable=%d\n", __func__, cs, enable);
+@@ -260,18 +274,20 @@ static int stm32_spi_set_cs(struct udevice *dev, unsigned int cs, bool enable)
+ 	if (cs >= MAX_CS_COUNT)
+ 		return -ENODEV;
+ 
+-	if (!dm_gpio_is_valid(&priv->cs_gpios[cs]))
++	if (!dm_gpio_is_valid(&plat->cs_gpios[cs]))
+ 		return -EINVAL;
+ 
+ 	if (priv->cs_high)
+ 		enable = !enable;
+ 
+-	return dm_gpio_set_value(&priv->cs_gpios[cs], enable ? 1 : 0);
++	return dm_gpio_set_value(&plat->cs_gpios[cs], enable ? 1 : 0);
+ }
+ 
+ static int stm32_spi_set_mode(struct udevice *bus, uint mode)
+ {
+ 	struct stm32_spi_priv *priv = dev_get_priv(bus);
++	struct stm32_spi_platdata *plat = dev_get_platdata(bus);
++	void __iomem *base = plat->base;
+ 	u32 cfg2_clrb = 0, cfg2_setb = 0;
+ 
+ 	debug("%s: mode=%d\n", __func__, mode);
+@@ -292,7 +308,7 @@ static int stm32_spi_set_mode(struct udevice *bus, uint mode)
+ 		cfg2_clrb |= SPI_CFG2_LSBFRST;
+ 
+ 	if (cfg2_clrb || cfg2_setb)
+-		clrsetbits_le32(priv->base + STM32_SPI_CFG2,
++		clrsetbits_le32(base + STM32_SPI_CFG2,
+ 				cfg2_clrb, cfg2_setb);
+ 
+ 	if (mode & SPI_CS_HIGH)
+@@ -305,6 +321,8 @@ static int stm32_spi_set_mode(struct udevice *bus, uint mode)
+ static int stm32_spi_set_fthlv(struct udevice *dev, u32 xfer_len)
+ {
+ 	struct stm32_spi_priv *priv = dev_get_priv(dev);
++	struct stm32_spi_platdata *plat = dev_get_platdata(dev);
++	void __iomem *base = plat->base;
+ 	u32 fthlv, half_fifo;
+ 
+ 	/* data packet should not exceed 1/2 of fifo space */
+@@ -318,7 +336,7 @@ static int stm32_spi_set_fthlv(struct udevice *dev, u32 xfer_len)
+ 
+ 	if (!fthlv)
+ 		fthlv = 1;
+-	clrsetbits_le32(priv->base + STM32_SPI_CFG1, SPI_CFG1_FTHLV,
++	clrsetbits_le32(base + STM32_SPI_CFG1, SPI_CFG1_FTHLV,
+ 			(fthlv - 1) << SPI_CFG1_FTHLV_SHIFT);
+ 
+ 	return 0;
+@@ -327,6 +345,8 @@ static int stm32_spi_set_fthlv(struct udevice *dev, u32 xfer_len)
+ static int stm32_spi_set_speed(struct udevice *bus, uint hz)
+ {
+ 	struct stm32_spi_priv *priv = dev_get_priv(bus);
++	struct stm32_spi_platdata *plat = dev_get_platdata(bus);
++	void __iomem *base = plat->base;
+ 	u32 mbrdiv;
+ 	long div;
+ 
+@@ -350,7 +370,7 @@ static int stm32_spi_set_speed(struct udevice *bus, uint hz)
+ 	if (!mbrdiv)
+ 		return -EINVAL;
+ 
+-	clrsetbits_le32(priv->base + STM32_SPI_CFG1, SPI_CFG1_MBR,
++	clrsetbits_le32(base + STM32_SPI_CFG1, SPI_CFG1_MBR,
+ 			(mbrdiv - 1) << SPI_CFG1_MBR_SHIFT);
+ 
+ 	priv->cur_hz = hz;
+@@ -364,6 +384,8 @@ static int stm32_spi_xfer(struct udevice *slave, unsigned int bitlen,
+ 	struct udevice *bus = dev_get_parent(slave);
+ 	struct dm_spi_slave_platdata *slave_plat;
+ 	struct stm32_spi_priv *priv = dev_get_priv(bus);
++	struct stm32_spi_platdata *plat = dev_get_platdata(bus);
++	void __iomem *base = plat->base;
+ 	u32 sr;
+ 	u32 ifcr = 0;
+ 	u32 xferlen;
+@@ -373,7 +395,7 @@ static int stm32_spi_xfer(struct udevice *slave, unsigned int bitlen,
+ 	xferlen = bitlen / 8;
+ 
+ 	if (xferlen <= SPI_CR2_TSIZE)
+-		writel(xferlen, priv->base + STM32_SPI_CR2);
++		writel(xferlen, base + STM32_SPI_CR2);
+ 	else
+ 		return -EMSGSIZE;
+ 
+@@ -393,15 +415,15 @@ static int stm32_spi_xfer(struct udevice *slave, unsigned int bitlen,
+ 		priv->cur_xferlen = xferlen;
+ 
+ 		/* Disable the SPI hardware to unlock CFG1/CFG2 registers */
+-		stm32_spi_disable(priv);
++		stm32_spi_disable(base);
+ 
+-		clrsetbits_le32(priv->base + STM32_SPI_CFG2, SPI_CFG2_COMM,
++		clrsetbits_le32(base + STM32_SPI_CFG2, SPI_CFG2_COMM,
+ 				mode << SPI_CFG2_COMM_SHIFT);
+ 
+ 		stm32_spi_set_fthlv(bus, xferlen);
+ 
+ 		/* Enable the SPI hardware */
+-		stm32_spi_enable(priv);
++		stm32_spi_enable(base);
+ 	}
+ 
+ 	debug("%s: priv->tx_len=%d priv->rx_len=%d\n", __func__,
+@@ -413,12 +435,12 @@ static int stm32_spi_xfer(struct udevice *slave, unsigned int bitlen,
+ 
+ 	/* Be sure to have data in fifo before starting data transfer */
+ 	if (priv->tx_buf)
+-		stm32_spi_write_txfifo(priv);
++		stm32_spi_write_txfifo(bus);
+ 
+-	setbits_le32(priv->base + STM32_SPI_CR1, SPI_CR1_CSTART);
++	setbits_le32(base + STM32_SPI_CR1, SPI_CR1_CSTART);
+ 
+ 	while (1) {
+-		sr = readl(priv->base + STM32_SPI_SR);
++		sr = readl(base + STM32_SPI_SR);
+ 
+ 		if (sr & SPI_SR_OVR) {
+ 			dev_err(bus, "Overrun: RX data lost\n");
+@@ -430,7 +452,7 @@ static int stm32_spi_xfer(struct udevice *slave, unsigned int bitlen,
+ 			dev_warn(bus, "System too slow is limiting data throughput\n");
+ 
+ 			if (priv->rx_buf && priv->rx_len > 0)
+-				stm32_spi_read_rxfifo(priv);
++				stm32_spi_read_rxfifo(bus);
+ 
+ 			ifcr |= SPI_SR_SUSP;
+ 		}
+@@ -440,23 +462,23 @@ static int stm32_spi_xfer(struct udevice *slave, unsigned int bitlen,
+ 
+ 		if (sr & SPI_SR_TXP)
+ 			if (priv->tx_buf && priv->tx_len > 0)
+-				stm32_spi_write_txfifo(priv);
++				stm32_spi_write_txfifo(bus);
+ 
+ 		if (sr & SPI_SR_RXP)
+ 			if (priv->rx_buf && priv->rx_len > 0)
+-				stm32_spi_read_rxfifo(priv);
++				stm32_spi_read_rxfifo(bus);
+ 
+ 		if (sr & SPI_SR_EOT) {
+ 			if (priv->rx_buf && priv->rx_len > 0)
+-				stm32_spi_read_rxfifo(priv);
++				stm32_spi_read_rxfifo(bus);
+ 			break;
+ 		}
+ 
+-		writel(ifcr, priv->base + STM32_SPI_IFCR);
++		writel(ifcr, base + STM32_SPI_IFCR);
+ 	}
+ 
+ 	/* clear status flags */
+-	setbits_le32(priv->base + STM32_SPI_IFCR, SPI_IFCR_ALL);
++	setbits_le32(base + STM32_SPI_IFCR, SPI_IFCR_ALL);
+ 	stm32_spi_stopxfer(bus);
+ 
+ 	if (flags & SPI_XFER_END)
+@@ -467,42 +489,72 @@ static int stm32_spi_xfer(struct udevice *slave, unsigned int bitlen,
+ 
+ static int stm32_spi_get_fifo_size(struct udevice *dev)
+ {
+-	struct stm32_spi_priv *priv = dev_get_priv(dev);
++	struct stm32_spi_platdata *plat = dev_get_platdata(dev);
++	void __iomem *base = plat->base;
+ 	u32 count = 0;
+ 
+-	stm32_spi_enable(priv);
++	stm32_spi_enable(base);
+ 
+-	while (readl(priv->base + STM32_SPI_SR) & SPI_SR_TXP)
+-		writeb(++count, priv->base + STM32_SPI_TXDR);
++	while (readl(base + STM32_SPI_SR) & SPI_SR_TXP)
++		writeb(++count, base + STM32_SPI_TXDR);
+ 
+-	stm32_spi_disable(priv);
++	stm32_spi_disable(base);
+ 
+ 	debug("%s %d x 8-bit fifo size\n", __func__, count);
+ 
+ 	return count;
+ }
+ 
++static int stm32_spi_ofdata_to_platdata(struct udevice *dev)
++{
++	struct stm32_spi_platdata *plat = dev_get_platdata(dev);
++	int ret;
++
++	plat->base = dev_read_addr_ptr(dev);
++	if (!plat->base) {
++		dev_err(dev, "can't get registers base address\n");
++		return -ENOENT;
++	}
++
++	ret = clk_get_by_index(dev, 0, &plat->clk);
++	if (ret < 0)
++		return ret;
++
++	ret = reset_get_by_index(dev, 0, &plat->rst_ctl);
++	if (ret < 0)
++		goto clk_err;
++
++	ret = gpio_request_list_by_name(dev, "cs-gpios", plat->cs_gpios,
++					ARRAY_SIZE(plat->cs_gpios), 0);
++	if (ret < 0) {
++		dev_err(dev, "Can't get %s cs gpios: %d", dev->name, ret);
++		ret = -ENOENT;
++		goto clk_err;
++	}
++
++	return 0;
++
++clk_err:
++	clk_free(&plat->clk);
++
++	return ret;
++}
++
+ static int stm32_spi_probe(struct udevice *dev)
+ {
++	struct stm32_spi_platdata *plat = dev_get_platdata(dev);
+ 	struct stm32_spi_priv *priv = dev_get_priv(dev);
++	void __iomem *base = plat->base;
+ 	unsigned long clk_rate;
+ 	int ret;
+ 	unsigned int i;
+ 
+-	priv->base = dev_remap_addr(dev);
+-	if (!priv->base)
+-		return -EINVAL;
+-
+ 	/* enable clock */
+-	ret = clk_get_by_index(dev, 0, &priv->clk);
++	ret = clk_enable(&plat->clk);
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	ret = clk_enable(&priv->clk);
+-	if (ret < 0)
+-		return ret;
+-
+-	clk_rate = clk_get_rate(&priv->clk);
++	clk_rate = clk_get_rate(&plat->clk);
+ 	if (!clk_rate) {
+ 		ret = -EINVAL;
+ 		goto clk_err;
+@@ -511,46 +563,34 @@ static int stm32_spi_probe(struct udevice *dev)
+ 	priv->bus_clk_rate = clk_rate;
+ 
+ 	/* perform reset */
+-	ret = reset_get_by_index(dev, 0, &priv->rst_ctl);
+-	if (ret < 0)
+-		goto clk_err;
+-
+-	reset_assert(&priv->rst_ctl);
++	reset_assert(&plat->rst_ctl);
+ 	udelay(2);
+-	reset_deassert(&priv->rst_ctl);
+-
+-	ret = gpio_request_list_by_name(dev, "cs-gpios", priv->cs_gpios,
+-					ARRAY_SIZE(priv->cs_gpios), 0);
+-	if (ret < 0) {
+-		pr_err("Can't get %s cs gpios: %d", dev->name, ret);
+-		goto reset_err;
+-	}
++	reset_deassert(&plat->rst_ctl);
+ 
+ 	priv->fifo_size = stm32_spi_get_fifo_size(dev);
+-
+ 	priv->cur_mode = SPI_FULL_DUPLEX;
+ 	priv->cur_xferlen = 0;
+ 	priv->cur_bpw = SPI_DEFAULT_WORDLEN;
+-	clrsetbits_le32(priv->base + STM32_SPI_CFG1, SPI_CFG1_DSIZE,
++	clrsetbits_le32(base + STM32_SPI_CFG1, SPI_CFG1_DSIZE,
+ 			priv->cur_bpw - 1);
+ 
+-	for (i = 0; i < ARRAY_SIZE(priv->cs_gpios); i++) {
+-		if (!dm_gpio_is_valid(&priv->cs_gpios[i]))
++	for (i = 0; i < ARRAY_SIZE(plat->cs_gpios); i++) {
++		if (!dm_gpio_is_valid(&plat->cs_gpios[i]))
+ 			continue;
+ 
+-		dm_gpio_set_dir_flags(&priv->cs_gpios[i],
++		dm_gpio_set_dir_flags(&plat->cs_gpios[i],
+ 				      GPIOD_IS_OUT | GPIOD_IS_OUT_ACTIVE);
+ 	}
+ 
+ 	/* Ensure I2SMOD bit is kept cleared */
+-	clrbits_le32(priv->base + STM32_SPI_I2SCFGR, SPI_I2SCFGR_I2SMOD);
++	clrbits_le32(base + STM32_SPI_I2SCFGR, SPI_I2SCFGR_I2SMOD);
+ 
+ 	/*
+ 	 * - SS input value high
+ 	 * - transmitter half duplex direction
+ 	 * - automatic communication suspend when RX-Fifo is full
+ 	 */
+-	setbits_le32(priv->base + STM32_SPI_CR1,
++	setbits_le32(base + STM32_SPI_CR1,
+ 		     SPI_CR1_SSI | SPI_CR1_HDDIR | SPI_CR1_MASRX);
+ 
+ 	/*
+@@ -559,40 +599,38 @@ static int stm32_spi_probe(struct udevice *dev)
+ 	 *   SS input value is determined by the SSI bit
+ 	 * - keep control of all associated GPIOs
+ 	 */
+-	setbits_le32(priv->base + STM32_SPI_CFG2,
++	setbits_le32(base + STM32_SPI_CFG2,
+ 		     SPI_CFG2_MASTER | SPI_CFG2_SSM | SPI_CFG2_AFCNTR);
+ 
+ 	return 0;
+ 
+-reset_err:
+-	reset_free(&priv->rst_ctl);
+-
+ clk_err:
+-	clk_disable(&priv->clk);
+-	clk_free(&priv->clk);
++	clk_disable(&plat->clk);
++	clk_free(&plat->clk);
+ 
+ 	return ret;
+ };
+ 
+ static int stm32_spi_remove(struct udevice *dev)
+ {
+-	struct stm32_spi_priv *priv = dev_get_priv(dev);
++	struct stm32_spi_platdata *plat = dev_get_platdata(dev);
++	void __iomem *base = plat->base;
+ 	int ret;
+ 
+ 	stm32_spi_stopxfer(dev);
+-	stm32_spi_disable(priv);
++	stm32_spi_disable(base);
+ 
+-	ret = reset_assert(&priv->rst_ctl);
++	ret = reset_assert(&plat->rst_ctl);
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	reset_free(&priv->rst_ctl);
++	reset_free(&plat->rst_ctl);
+ 
+-	ret = clk_disable(&priv->clk);
++	ret = clk_disable(&plat->clk);
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	clk_free(&priv->clk);
++	clk_free(&plat->clk);
+ 
+ 	return ret;
+ };
+@@ -615,6 +653,8 @@ U_BOOT_DRIVER(stm32_spi) = {
+ 	.id			= UCLASS_SPI,
+ 	.of_match		= stm32_spi_ids,
+ 	.ops			= &stm32_spi_ops,
++	.ofdata_to_platdata	= stm32_spi_ofdata_to_platdata,
++	.platdata_auto_alloc_size = sizeof(struct stm32_spi_platdata),
+ 	.priv_auto_alloc_size	= sizeof(struct stm32_spi_priv),
+ 	.probe			= stm32_spi_probe,
+ 	.remove			= stm32_spi_remove,
+diff --git a/drivers/video/video-uclass.c b/drivers/video/video-uclass.c
+index 650891e49d..2939e5d0a0 100644
+--- a/drivers/video/video-uclass.c
++++ b/drivers/video/video-uclass.c
+@@ -210,6 +210,20 @@ void video_sync_all(void)
+ 	}
+ }
+ 
++bool video_is_active(void)
++{
++	struct udevice *dev;
++
++	for (uclass_find_first_device(UCLASS_VIDEO, &dev);
++	     dev;
++	     uclass_find_next_device(&dev)) {
++		if (device_active(dev))
++			return true;
++	}
++
++	return false;
++}
++
+ int video_get_xsize(struct udevice *dev)
+ {
+ 	struct video_priv *priv = dev_get_uclass_priv(dev);
+diff --git a/include/configs/rpi.h b/include/configs/rpi.h
+index 834f1cd236..86f59ae2a1 100644
+--- a/include/configs/rpi.h
++++ b/include/configs/rpi.h
+@@ -65,7 +65,6 @@
+ /* GPIO */
+ #define CONFIG_BCM2835_GPIO
+ /* LCD */
+-#define CONFIG_LCD_DT_SIMPLEFB
+ #define CONFIG_VIDEO_BCM2835
+ 
+ #ifdef CONFIG_CMD_USB
+diff --git a/include/configs/stm32mp1.h b/include/configs/stm32mp1.h
+index 32d0723d62..72424abb8b 100644
+--- a/include/configs/stm32mp1.h
++++ b/include/configs/stm32mp1.h
+@@ -150,6 +150,7 @@
+ #define CONFIG_EXTRA_ENV_SETTINGS \
+ 	"kernel_addr_r=0xc2000000\0" \
+ 	"fdt_addr_r=0xc4000000\0" \
++	"fdtoverlay_addr_r=0xc4100000\0" \
+ 	"scriptaddr=0xc4100000\0" \
+ 	"pxefile_addr_r=0xc4200000\0" \
+ 	"splashimage=0xc4300000\0"  \
+diff --git a/include/dfu.h b/include/dfu.h
+index 84abdc79ac..45f6fd9b40 100644
+--- a/include/dfu.h
++++ b/include/dfu.h
+@@ -378,6 +378,17 @@ void dfu_initiated_callback(struct dfu_entity *dfu);
+  */
+ void dfu_flush_callback(struct dfu_entity *dfu);
+ 
++/**
++ * dfu_error_callback() - weak callback called at the DFU write error
++ *
++ * It is a callback function called by DFU stack after DFU write error.
++ * This function allows to manage some board specific behavior on DFU targets
++ *
++ * @dfu:	pointer to the dfu_entity which cause the error
++ * @msg:	the message of the error
++ */
++void dfu_error_callback(struct dfu_entity *dfu, const char *msg);
++
+ int dfu_transaction_initiate(struct dfu_entity *dfu, bool read);
+ void dfu_transaction_cleanup(struct dfu_entity *dfu);
+ 
+diff --git a/include/fdt_simplefb.h b/include/fdt_simplefb.h
+index 7cc305e1fd..2ac13a5131 100644
+--- a/include/fdt_simplefb.h
++++ b/include/fdt_simplefb.h
+@@ -8,6 +8,7 @@
+ 
+ #ifndef _FDT_SIMPLEFB_H_
+ #define _FDT_SIMPLEFB_H_
+-int lcd_dt_simplefb_add_node(void *blob);
+-int lcd_dt_simplefb_enable_existing_node(void *blob);
++int fdt_simplefb_add_node(void *blob);
++int fdt_simplefb_add_node_and_mem_rsv(void *blob);
++int fdt_simplefb_enable_existing_node(void *blob);
+ #endif
+diff --git a/include/video.h b/include/video.h
+index 1a0ffd8037..39f36c32fd 100644
+--- a/include/video.h
++++ b/include/video.h
+@@ -243,6 +243,13 @@ static inline int video_sync_copy(struct udevice *dev, void *from, void *to)
+ }
+ #endif
+ 
++/**
++ * video_is_active() - Test if one video device it active
++ *
++ * @return true if at least one video device is active, else false.
++ */
++bool video_is_active(void);
++
+ #endif /* CONFIG_DM_VIDEO */
+ 
+ #ifndef CONFIG_DM_VIDEO
+diff --git a/scripts/config_whitelist.txt b/scripts/config_whitelist.txt
+index bb6aef5ce4..04740122a0 100644
+--- a/scripts/config_whitelist.txt
++++ b/scripts/config_whitelist.txt
+@@ -957,7 +957,6 @@ CONFIG_LBA48
+ CONFIG_LBDAF
+ CONFIG_LCD_ALIGNMENT
+ CONFIG_LCD_BMP_RLE8
+-CONFIG_LCD_DT_SIMPLEFB
+ CONFIG_LCD_INFO
+ CONFIG_LCD_INFO_BELOW_LOGO
+ CONFIG_LCD_IN_PSRAM
+-- 
+2.25.1
+
