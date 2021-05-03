@@ -1,0 +1,946 @@
+From 85fa6b016df48fdd465f8b5314b2e96a575c3228 Mon Sep 17 00:00:00 2001
+From: Lionel Vitte <lionel.vitte@st.com>
+Date: Mon, 18 Oct 2021 17:10:29 +0200
+Subject: [PATCH 07/11] ARM v2020.10-stm32mp-r2 MACHINE
+
+---
+ Makefile                                      |   2 +-
+ arch/arm/cpu/armv7/cache_v7.c                 |   3 -
+ arch/arm/include/asm/cache.h                  |   1 -
+ arch/arm/include/asm/system.h                 |  18 +-
+ arch/arm/lib/cache-cp15.c                     |  13 +-
+ arch/arm/mach-omap2/omap-cache.c              |  17 --
+ arch/arm/mach-stm32mp/Kconfig                 |   4 +-
+ arch/arm/mach-stm32mp/cmd_stm32key.c          | 235 +++++++++++++++---
+ .../cmd_stm32prog/cmd_stm32prog.c             |  36 ++-
+ .../mach-stm32mp/cmd_stm32prog/stm32prog.c    |  35 ++-
+ .../mach-stm32mp/cmd_stm32prog/stm32prog.h    |   3 +
+ .../cmd_stm32prog/stm32prog_serial.c          |  10 +-
+ .../cmd_stm32prog/stm32prog_usb.c             |   9 +-
+ arch/arm/mach-stm32mp/cpu.c                   |  61 ++++-
+ arch/arm/mach-stm32mp/dram_init.c             |  19 +-
+ arch/arm/mach-stm32mp/syscon.c                |  14 ++
+ 16 files changed, 351 insertions(+), 129 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 59493deed3..25a42acc37 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3,7 +3,7 @@
+ VERSION = 2020
+ PATCHLEVEL = 10
+ SUBLEVEL =
+-EXTRAVERSION = -stm32mp-r1.1
++EXTRAVERSION = -stm32mp-r2
+ NAME =
+ 
+ # *DOCUMENTATION*
+diff --git a/arch/arm/cpu/armv7/cache_v7.c b/arch/arm/cpu/armv7/cache_v7.c
+index 146cf52608..19ff432352 100644
+--- a/arch/arm/cpu/armv7/cache_v7.c
++++ b/arch/arm/cpu/armv7/cache_v7.c
+@@ -176,9 +176,6 @@ void mmu_page_table_flush(unsigned long start, unsigned long stop)
+ {
+ }
+ 
+-void arm_init_domains(void)
+-{
+-}
+ #endif /* #if !CONFIG_IS_ENABLED(SYS_DCACHE_OFF) */
+ 
+ #if !CONFIG_IS_ENABLED(SYS_ICACHE_OFF)
+diff --git a/arch/arm/include/asm/cache.h b/arch/arm/include/asm/cache.h
+index c20e05ec7f..b10edf805b 100644
+--- a/arch/arm/include/asm/cache.h
++++ b/arch/arm/include/asm/cache.h
+@@ -35,7 +35,6 @@ void l2_cache_disable(void);
+ void set_section_dcache(int section, enum dcache_option option);
+ 
+ void arm_init_before_mmu(void);
+-void arm_init_domains(void);
+ void cpu_cache_initialization(void);
+ void dram_bank_mmu_setup(int bank);
+ 
+diff --git a/arch/arm/include/asm/system.h b/arch/arm/include/asm/system.h
+index 932f12af1c..cab23ca7b2 100644
+--- a/arch/arm/include/asm/system.h
++++ b/arch/arm/include/asm/system.h
+@@ -397,20 +397,6 @@ static inline void set_cr(unsigned int val)
+ 	isb();
+ }
+ 
+-static inline unsigned int get_dacr(void)
+-{
+-	unsigned int val;
+-	asm("mrc p15, 0, %0, c3, c0, 0	@ get DACR" : "=r" (val) : : "cc");
+-	return val;
+-}
+-
+-static inline void set_dacr(unsigned int val)
+-{
+-	asm volatile("mcr p15, 0, %0, c3, c0, 0	@ set DACR"
+-	  : : "r" (val) : "cc");
+-	isb();
+-}
+-
+ #ifdef CONFIG_ARMV7_LPAE
+ /* Long-Descriptor Translation Table Level 1/2 Bits */
+ #define TTB_SECT_XN_MASK	(1ULL << 54)
+@@ -476,7 +462,7 @@ enum dcache_option {
+ #define TTB_SECT_XN_MASK	(1 << 4)
+ #define TTB_SECT_C_MASK		(1 << 3)
+ #define TTB_SECT_B_MASK		(1 << 2)
+-#define TTB_SECT			(2 << 0)
++#define TTB_SECT		(2 << 0)
+ 
+ /*
+  * Short-descriptor format memory region attributes, without TEX remap
+@@ -491,7 +477,7 @@ enum dcache_option {
+ enum dcache_option {
+ 	INVALID_ENTRY = 0,
+ 	DCACHE_OFF = TTB_SECT_DOMAIN(0) | TTB_SECT_XN_MASK | TTB_SECT,
+-	DCACHE_WRITETHROUGH = DCACHE_OFF | TTB_SECT_C_MASK,
++	DCACHE_WRITETHROUGH = TTB_SECT_DOMAIN(0) | TTB_SECT | TTB_SECT_C_MASK,
+ 	DCACHE_WRITEBACK = DCACHE_WRITETHROUGH | TTB_SECT_B_MASK,
+ 	DCACHE_WRITEALLOC = DCACHE_WRITEBACK | TTB_SECT_TEX(1),
+ };
+diff --git a/arch/arm/lib/cache-cp15.c b/arch/arm/lib/cache-cp15.c
+index 94e9b9c861..369be44b17 100644
+--- a/arch/arm/lib/cache-cp15.c
++++ b/arch/arm/lib/cache-cp15.c
+@@ -22,10 +22,6 @@ __weak void arm_init_before_mmu(void)
+ {
+ }
+ 
+-__weak void arm_init_domains(void)
+-{
+-}
+-
+ static void set_section_phys(int section, phys_addr_t phys,
+ 			     enum dcache_option option)
+ {
+@@ -209,11 +205,12 @@ static inline void mmu_setup(void)
+ 	asm volatile("mcr p15, 0, %0, c2, c0, 0"
+ 		     : : "r" (gd->arch.tlb_addr) : "memory");
+ #endif
+-	/* Set the access control to all-supervisor */
++	/*
++	 * initial value of Domain Access Control Register (DACR)
++	 * Set the access control to client (1U) for each of the 16 domains
++	 */
+ 	asm volatile("mcr p15, 0, %0, c3, c0, 0"
+-		     : : "r" (~0));
+-
+-	arm_init_domains();
++		     : : "r" (0x55555555));
+ 
+ 	/* and enable the mmu */
+ 	reg = get_cr();	/* get control reg. */
+diff --git a/arch/arm/mach-omap2/omap-cache.c b/arch/arm/mach-omap2/omap-cache.c
+index 502ea6987a..451d8e4542 100644
+--- a/arch/arm/mach-omap2/omap-cache.c
++++ b/arch/arm/mach-omap2/omap-cache.c
+@@ -40,9 +40,6 @@ DECLARE_GLOBAL_DATA_PTR;
+ #define ARMV7_DCACHE_POLICY	DCACHE_WRITEBACK & ~TTB_SECT_XN_MASK
+ #endif
+ 
+-#define ARMV7_DOMAIN_CLIENT	1
+-#define ARMV7_DOMAIN_MASK	(0x3 << 0)
+-
+ void enable_caches(void)
+ {
+ 
+@@ -66,17 +63,3 @@ void dram_bank_mmu_setup(int bank)
+ 	for (i = start; i < end; i++)
+ 		set_section_dcache(i, ARMV7_DCACHE_POLICY);
+ }
+-
+-void arm_init_domains(void)
+-{
+-	u32 reg;
+-
+-	reg = get_dacr();
+-	/*
+-	* Set DOMAIN to client access so that all permissions
+-	* set in pagetables are validated by the mmu.
+-	*/
+-	reg &= ~ARMV7_DOMAIN_MASK;
+-	reg |= ARMV7_DOMAIN_CLIENT;
+-	set_dacr(reg);
+-}
+diff --git a/arch/arm/mach-stm32mp/Kconfig b/arch/arm/mach-stm32mp/Kconfig
+index af0246d031..44bfac9000 100644
+--- a/arch/arm/mach-stm32mp/Kconfig
++++ b/arch/arm/mach-stm32mp/Kconfig
+@@ -130,10 +130,12 @@ config STM32_ETZPC
+ 
+ config CMD_STM32KEY
+ 	bool "command stm32key to fuse public key hash"
+-	default y
++	default n
+ 	help
+ 		fuse public key hash in corresponding fuse used to authenticate
+ 		binary.
++		This command is used to evaluate the secure boot on stm32mp SOC,
++		it is deactivated by default in real products.
+ 
+ config PRE_CON_BUF_ADDR
+ 	default 0xC02FF000
+diff --git a/arch/arm/mach-stm32mp/cmd_stm32key.c b/arch/arm/mach-stm32mp/cmd_stm32key.c
+index f191085a12..d1755f4595 100644
+--- a/arch/arm/mach-stm32mp/cmd_stm32key.c
++++ b/arch/arm/mach-stm32mp/cmd_stm32key.c
+@@ -10,13 +10,30 @@
+ #include <dm/device.h>
+ #include <dm/uclass.h>
+ 
+-#define STM32_OTP_HASH_KEY_START 24
+-#define STM32_OTP_HASH_KEY_SIZE 8
++/* Closed device : bit 6 of OPT0*/
++#define STM32_OTP_CLOSE_ID		0
++#define STM32_OTP_CLOSE_MASK		BIT(6)
++
++/* HASH of key: 8 OTPs, starting with OTP24) */
++#define STM32_OTP_HASH_KEY_START	24
++#define STM32_OTP_HASH_KEY_SIZE		8
++
++static int get_misc_dev(struct udevice **dev)
++{
++	int ret;
++
++	ret = uclass_get_device_by_driver(UCLASS_MISC, DM_GET_DRIVER(stm32mp_bsec), dev);
++	if (ret)
++		pr_err("Can't find stm32mp_bsec driver\n");
++
++	return ret;
++}
+ 
+ static void read_hash_value(u32 addr)
+ {
+ 	int i;
+ 
++	printf("Read KEY at 0x%x\n", addr);
+ 	for (i = 0; i < STM32_OTP_HASH_KEY_SIZE; i++) {
+ 		printf("OTP value %i: %x\n", STM32_OTP_HASH_KEY_START + i,
+ 		       __be32_to_cpu(*(u32 *)addr));
+@@ -24,32 +41,101 @@ static void read_hash_value(u32 addr)
+ 	}
+ }
+ 
+-static void fuse_hash_value(u32 addr, bool print)
++static int read_hash_otp(bool print, bool *locked, bool *closed)
+ {
+ 	struct udevice *dev;
+-	u32 word, val;
+-	int i, ret;
++	int i, word, ret;
++	int nb_invalid = 0, nb_zero = 0, nb_lock = 0;
++	u32 val, lock;
++	bool status;
+ 
+-	ret = uclass_get_device_by_driver(UCLASS_MISC,
+-					  DM_GET_DRIVER(stm32mp_bsec),
+-					  &dev);
+-	if (ret) {
+-		pr_err("Can't find stm32mp_bsec driver\n");
+-		return;
++	ret = get_misc_dev(&dev);
++	if (ret)
++		return ret;
++
++	for (i = 0, word = STM32_OTP_HASH_KEY_START; i < STM32_OTP_HASH_KEY_SIZE; i++, word++) {
++		ret = misc_read(dev, STM32_BSEC_OTP(word), &val, 4);
++		if (ret != 4)
++			val = ~0x0;
++		ret = misc_read(dev, STM32_BSEC_LOCK(word), &lock, 4);
++		if (ret != 4)
++			lock = -1;
++		if (print)
++			printf("OTP HASH %i: %x lock : %d\n", word, val, lock);
++		if (val == ~0x0)
++			nb_invalid++;
++		else if (val == 0x0)
++			nb_zero++;
++		if (lock == 1)
++			nb_lock++;
+ 	}
+ 
+-	for (i = 0; i < STM32_OTP_HASH_KEY_SIZE; i++) {
++	word = STM32_OTP_CLOSE_ID;
++	ret = misc_read(dev, STM32_BSEC_OTP(word), &val, 4);
++	if (ret != 4)
++		val = 0x0;
++	ret = misc_read(dev, STM32_BSEC_LOCK(word), &lock, 4);
++	if (ret != 4)
++		lock = -1;
++
++	status = (val & STM32_OTP_CLOSE_MASK) == STM32_OTP_CLOSE_MASK;
++	if (closed)
++		*closed = status;
++	if (print)
++		printf("OTP %d: closed status: %d lock : %d\n", word, status, lock);
++
++	status = (nb_lock == STM32_OTP_HASH_KEY_SIZE);
++	if (locked)
++		*locked = status;
++	if (!status && print)
++		printf("HASK key is not locked!\n");
++
++	if (nb_invalid == STM32_OTP_HASH_KEY_SIZE) {
++		if (print)
++			printf("HASK key is invalid!\n");
++		return -EINVAL;
++	}
++	if (nb_zero == STM32_OTP_HASH_KEY_SIZE) {
+ 		if (print)
+-			printf("Fuse OTP %i : %x\n",
+-			       STM32_OTP_HASH_KEY_START + i,
+-			       __be32_to_cpu(*(u32 *)addr));
++			printf("HASK key is free!\n");
++		return -ENOENT;
++	}
++
++	return 0;
++}
+ 
+-		word = STM32_OTP_HASH_KEY_START + i;
++static int fuse_hash_value(u32 addr, bool print)
++{
++	struct udevice *dev;
++	u32 word, val;
++	int i, ret;
++
++	ret = get_misc_dev(&dev);
++	if (ret)
++		return ret;
++
++	for (i = 0, word = STM32_OTP_HASH_KEY_START;
++	     i < STM32_OTP_HASH_KEY_SIZE;
++	     i++, word++, addr += 4) {
+ 		val = __be32_to_cpu(*(u32 *)addr);
+-		misc_write(dev, STM32_BSEC_OTP(word), &val, 4);
++		if (print)
++			printf("Fuse OTP %i : %x\n", word, val);
+ 
+-		addr += 4;
++		ret = misc_write(dev, STM32_BSEC_OTP(word), &val, 4);
++		if (ret != 4) {
++			printf("Fuse OTP %i failed\n", word);
++			return ret;
++		}
++		/* on success, lock the OTP for HASH key */
++		val = 1;
++		ret = misc_write(dev, STM32_BSEC_LOCK(word), &val, 4);
++		if (ret != 4) {
++			printf("Lock OTP %i failed\n", word);
++			return ret;
++		}
+ 	}
++
++	return 0;
+ }
+ 
+ static int confirm_prog(void)
+@@ -66,36 +152,113 @@ static int confirm_prog(void)
+ 	return 0;
+ }
+ 
+-static int do_stm32key(struct cmd_tbl *cmdtp, int flag, int argc,
+-		       char *const argv[])
++static int do_stm32key_read(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
+ {
+ 	u32 addr;
+-	const char *op = argc >= 2 ? argv[1] : NULL;
+-	int confirmed = argc > 3 && !strcmp(argv[2], "-y");
+ 
+-	argc -= 2 + confirmed;
+-	argv += 2 + confirmed;
++	if (argc == 1) {
++		read_hash_otp(true, NULL, NULL);
++		return CMD_RET_SUCCESS;
++	}
+ 
+-	if (argc < 1)
++	addr = simple_strtoul(argv[1], NULL, 16);
++	if (!addr)
+ 		return CMD_RET_USAGE;
+ 
+-	addr = simple_strtoul(argv[0], NULL, 16);
++	read_hash_value(addr);
++
++	return CMD_RET_SUCCESS;
++}
++
++static int do_stm32key_fuse(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
++{
++	u32 addr;
++	bool yes = false, lock, closed;
++
++	if (argc < 2)
++		return CMD_RET_USAGE;
++
++	if (argc == 3) {
++		if (strcmp(argv[1], "-y"))
++			return CMD_RET_USAGE;
++		yes = true;
++	}
++
++	addr = simple_strtoul(argv[argc - 1], NULL, 16);
+ 	if (!addr)
+ 		return CMD_RET_USAGE;
+ 
+-	if (!strcmp(op, "read"))
+-		read_hash_value(addr);
++	if (read_hash_otp(!yes, &lock, &closed) != -ENOENT) {
++		printf("Error: can't fuse again the OTP\n");
++		return CMD_RET_FAILURE;
++	}
+ 
+-	if (!strcmp(op, "fuse")) {
+-		if (!confirmed && !confirm_prog())
+-			return CMD_RET_FAILURE;
+-		fuse_hash_value(addr, !confirmed);
++	if (lock || closed) {
++		printf("Error: invalid OTP configuration (lock=%d, closed=%d)\n", lock, closed);
++		return CMD_RET_FAILURE;
+ 	}
+ 
++	if (!yes && !confirm_prog())
++		return CMD_RET_FAILURE;
++
++	if (fuse_hash_value(addr, !yes))
++		return CMD_RET_FAILURE;
++
++	printf("Hash key updated !\n");
++
+ 	return CMD_RET_SUCCESS;
+ }
+ 
+-U_BOOT_CMD(stm32key, 4, 1, do_stm32key,
+-	   "Fuse ST Hash key",
+-	   "read <addr>: Read the hash store at addr in memory\n"
+-	   "stm32key fuse [-y] <addr> : Fuse hash store at addr in otp\n");
++static int do_stm32key_close(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
++{
++	bool yes, lock, closed;
++	struct udevice *dev;
++	u32 val;
++	int ret;
++
++	yes = false;
++	if (argc == 2) {
++		if (strcmp(argv[1], "-y"))
++			return CMD_RET_USAGE;
++		yes = true;
++	}
++
++	if (read_hash_otp(!yes, &lock, &closed))
++		return CMD_RET_FAILURE;
++
++	if (closed) {
++		printf("Error: already closed!\n");
++		return CMD_RET_FAILURE;
++	}
++
++	if (!lock)
++		printf("Warning: OTP not locked, revocation is possible!\n");
++
++	if (!yes && !confirm_prog())
++		return CMD_RET_FAILURE;
++
++	ret = get_misc_dev(&dev);
++	if (ret)
++		return CMD_RET_FAILURE;
++
++	val = STM32_OTP_CLOSE_MASK;
++	ret = misc_write(dev, STM32_BSEC_OTP(STM32_OTP_CLOSE_ID), &val, 4);
++	if (ret != 4) {
++		printf("Error: can't update OTP\n");
++		return CMD_RET_FAILURE;
++	}
++
++	printf("Device is closed !\n");
++
++	return CMD_RET_SUCCESS;
++}
++
++static char stm32key_help_text[] =
++	"read [<addr>]: Read the hash stored at addr in memory or in OTP\n"
++	"stm32key fuse [-y] <addr> : Fuse hash stored at addr in OTP\n"
++	"stm32key close [-y] : Close the device, the hash stored in OTP\n";
++
++U_BOOT_CMD_WITH_SUBCMDS(stm32key, "Fuse ST Hash key", stm32key_help_text,
++	U_BOOT_SUBCMD_MKENT(read, 2, 0, do_stm32key_read),
++	U_BOOT_SUBCMD_MKENT(fuse, 3, 0, do_stm32key_fuse),
++	U_BOOT_SUBCMD_MKENT(close, 2, 0, do_stm32key_close));
+diff --git a/arch/arm/mach-stm32mp/cmd_stm32prog/cmd_stm32prog.c b/arch/arm/mach-stm32mp/cmd_stm32prog/cmd_stm32prog.c
+index a20980a6ae..b2a17314ee 100644
+--- a/arch/arm/mach-stm32mp/cmd_stm32prog/cmd_stm32prog.c
++++ b/arch/arm/mach-stm32mp/cmd_stm32prog/cmd_stm32prog.c
+@@ -45,7 +45,6 @@ static int do_stm32prog(struct cmd_tbl *cmdtp, int flag, int argc,
+ 	bool reset = false;
+ 	struct image_header_s header;
+ 	struct stm32prog_data *data;
+-	u32 uimage, dtb;
+ 
+ 	if (argc < 3 ||  argc > 5)
+ 		return CMD_RET_USAGE;
+@@ -78,10 +77,12 @@ static int do_stm32prog(struct cmd_tbl *cmdtp, int flag, int argc,
+ 		if (header.type == HEADER_STM32IMAGE) {
+ 			size = header.image_length + BL_HEADER_SIZE;
+ 
++#if defined(CONFIG_LEGACY_IMAGE_FORMAT)
+ 			/* uImage detected in STM32IMAGE, execute the script */
+ 			if (IMAGE_FORMAT_LEGACY ==
+ 			    genimg_get_format((void *)(addr + BL_HEADER_SIZE)))
+ 				return image_source_script(addr + BL_HEADER_SIZE, "script@1");
++#endif
+ 		}
+ 	}
+ 
+@@ -98,7 +99,7 @@ static int do_stm32prog(struct cmd_tbl *cmdtp, int flag, int argc,
+ 
+ 	ret = stm32prog_init(data, addr, size);
+ 	if (ret)
+-		printf("Invalid or missing layout file.");
++		log_debug("Invalid or missing layout file at 0x%lx.\n", addr);
+ 
+ 	/* prepare DFU for device read/write */
+ 	ret = stm32prog_dfu_init(data);
+@@ -119,21 +120,23 @@ static int do_stm32prog(struct cmd_tbl *cmdtp, int flag, int argc,
+ 		goto cleanup;
+ 	}
+ 
+-	uimage = data->uimage;
+-	dtb = data->dtb;
+-
+ 	stm32prog_clean(data);
+ 	free(stm32prog_data);
+ 	stm32prog_data = NULL;
+ 
+ 	puts("Download done\n");
+ 
+-	if (uimage) {
++	if (data->uimage) {
+ 		char boot_addr_start[20];
+ 		char dtb_addr[20];
++		char initrd_addr[40];
+ 		char *bootm_argv[5] = {
+ 			"bootm", boot_addr_start, "-", dtb_addr, NULL
+ 		};
++		u32 uimage = data->uimage;
++		u32 dtb = data->dtb;
++		u32 initrd = data->initrd;
++
+ 		if (!dtb)
+ 			bootm_argv[3] = env_get("fdtcontroladdr");
+ 		else
+@@ -142,8 +145,15 @@ static int do_stm32prog(struct cmd_tbl *cmdtp, int flag, int argc,
+ 
+ 		snprintf(boot_addr_start, sizeof(boot_addr_start) - 1,
+ 			 "0x%x", uimage);
+-		printf("Booting kernel at %s - %s...\n\n\n",
+-		       boot_addr_start, bootm_argv[3]);
++
++		if (initrd) {
++			snprintf(initrd_addr, sizeof(initrd_addr) - 1, "0x%x:0x%x",
++				 initrd, data->initrd_size);
++			bootm_argv[2] = initrd_addr;
++		}
++
++		printf("Booting kernel at %s %s %s...\n\n\n",
++		       boot_addr_start, bootm_argv[2], bootm_argv[3]);
+ 		/* Try bootm for legacy and FIT format image */
+ 		if (genimg_get_format((void *)uimage) != IMAGE_FORMAT_INVALID)
+ 			do_bootm(cmdtp, 0, 4, bootm_argv);
+@@ -167,12 +177,12 @@ cleanup:
+ }
+ 
+ U_BOOT_CMD(stm32prog, 5, 0, do_stm32prog,
++	   "start communication with tools STM32Cubeprogrammer",
+ 	   "<link> <dev> [<addr>] [<size>]\n"
+-	   "start communication with tools STM32Cubeprogrammer on <link> with Flashlayout at <addr>",
+-	   "<link> = serial|usb\n"
+-	   "<dev>  = device instance\n"
+-	   "<addr> = address of flashlayout\n"
+-	   "<size> = size of flashlayout\n"
++	   "  <link> = serial|usb\n"
++	   "  <dev>  = device instance\n"
++	   "  <addr> = address of flashlayout\n"
++	   "  <size> = size of flashlayout (optional for image with STM32 header)\n"
+ );
+ 
+ #ifdef CONFIG_STM32MP15x_STM32IMAGE
+diff --git a/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog.c b/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog.c
+index 7cd31462ba..62b386582d 100644
+--- a/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog.c
++++ b/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog.c
+@@ -1153,7 +1153,10 @@ static int dfu_init_entities(struct stm32prog_data *data)
+ 	struct dfu_entity *dfu;
+ 	int alt_nb;
+ 
+-	alt_nb = 3; /* number of virtual = CMD, OTP, PMIC*/
++	alt_nb = 2; /* number of virtual = CMD, OTP*/
++	if (CONFIG_IS_ENABLED(DM_PMIC))
++		alt_nb++; /* PMIC NVMEM*/
++
+ 	if (data->part_nb == 0)
+ 		alt_nb++;  /* +1 for FlashLayout */
+ 	else
+@@ -1199,13 +1202,13 @@ static int dfu_init_entities(struct stm32prog_data *data)
+ 	}
+ 
+ 	if (!ret)
+-		ret = stm32prog_alt_add_virt(dfu, "virtual", PHASE_CMD, 512);
++		ret = stm32prog_alt_add_virt(dfu, "virtual", PHASE_CMD, CMD_SIZE);
+ 
+ 	if (!ret)
+-		ret = stm32prog_alt_add_virt(dfu, "OTP", PHASE_OTP, 512);
++		ret = stm32prog_alt_add_virt(dfu, "OTP", PHASE_OTP, OTP_SIZE);
+ 
+ 	if (!ret && CONFIG_IS_ENABLED(DM_PMIC))
+-		ret = stm32prog_alt_add_virt(dfu, "PMIC", PHASE_PMIC, 8);
++		ret = stm32prog_alt_add_virt(dfu, "PMIC", PHASE_PMIC, PMIC_SIZE);
+ 
+ 	if (ret)
+ 		stm32prog_err("dfu init failed: %d", ret);
+@@ -1476,7 +1479,7 @@ error:
+ 	return ret;
+ }
+ 
+-static void stm32prog_end_phase(struct stm32prog_data *data)
++static void stm32prog_end_phase(struct stm32prog_data *data, u64 offset)
+ {
+ 	if (data->phase == PHASE_FLASHLAYOUT) {
+ 		if (parse_flash_layout(data, STM32_DDR_BASE, 0))
+@@ -1492,6 +1495,10 @@ static void stm32prog_end_phase(struct stm32prog_data *data)
+ 			data->uimage = data->cur_part->addr;
+ 		if (data->cur_part->part_type == PART_FILESYSTEM)
+ 			data->dtb = data->cur_part->addr;
++		if (data->cur_part->part_type == PART_BINARY) {
++			data->initrd = data->cur_part->addr;
++			data->initrd_size = offset;
++		}
+ 	}
+ 
+ 	if (CONFIG_IS_ENABLED(MMC) &&
+@@ -1750,7 +1757,7 @@ void dfu_flush_callback(struct dfu_entity *dfu)
+ 	if (dfu->dev_type == DFU_DEV_RAM) {
+ 		if (dfu->alt == 0 &&
+ 		    stm32prog_data->phase == PHASE_FLASHLAYOUT) {
+-			stm32prog_end_phase(stm32prog_data);
++			stm32prog_end_phase(stm32prog_data, dfu->offset);
+ 			/* waiting DFU DETACH for reenumeration */
+ 		}
+ 	}
+@@ -1759,7 +1766,7 @@ void dfu_flush_callback(struct dfu_entity *dfu)
+ 		return;
+ 
+ 	if (dfu->alt == stm32prog_data->cur_part->alt_id) {
+-		stm32prog_end_phase(stm32prog_data);
++		stm32prog_end_phase(stm32prog_data, dfu->offset);
+ 		stm32prog_next_phase(stm32prog_data);
+ 	}
+ }
+@@ -1779,3 +1786,17 @@ void dfu_initiated_callback(struct dfu_entity *dfu)
+ 		pr_debug("dfu offset = 0x%llx\n", dfu->offset);
+ 	}
+ }
++
++void dfu_error_callback(struct dfu_entity *dfu, const char *msg)
++{
++	struct stm32prog_data *data = stm32prog_data;
++
++	if (!stm32prog_data)
++		return;
++
++	if (!stm32prog_data->cur_part)
++		return;
++
++	if (dfu->alt == stm32prog_data->cur_part->alt_id)
++		stm32prog_err(msg);
++}
+diff --git a/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog.h b/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog.h
+index eebc4d2e71..f4243ae2ec 100644
+--- a/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog.h
++++ b/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog.h
+@@ -19,6 +19,7 @@
+ 
+ #define DEFAULT_ADDRESS		0xFFFFFFFF
+ 
++#define CMD_SIZE		512
+ #define OTP_SIZE		1024
+ #define PMIC_SIZE		8
+ 
+@@ -144,6 +145,8 @@ struct stm32prog_data {
+ 	/* bootm information */
+ 	u32	uimage;
+ 	u32	dtb;
++	u32	initrd;
++	u32	initrd_size;
+ };
+ 
+ extern struct stm32prog_data *stm32prog_data;
+diff --git a/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog_serial.c b/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog_serial.c
+index a0bf7e1884..3d32adcf62 100644
+--- a/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog_serial.c
++++ b/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog_serial.c
+@@ -10,6 +10,7 @@
+ #include <malloc.h>
+ #include <serial.h>
+ #include <watchdog.h>
++#include <asm/arch/sys_proto.h>
+ #include <dm/lists.h>
+ #include <dm/device-internal.h>
+ #include <linux/delay.h>
+@@ -18,8 +19,7 @@
+ /* - configuration part -----------------------------*/
+ #define USART_BL_VERSION	0x40	/* USART bootloader version V4.0*/
+ #define UBOOT_BL_VERSION	0x03	/* bootloader version V0.3*/
+-#define DEVICE_ID_BYTE1		0x05	/* MSB byte of device ID*/
+-#define DEVICE_ID_BYTE2		0x00	/* LSB byte of device ID*/
++
+ #define USART_RAM_BUFFER_SIZE	256	/* Size of USART_RAM_Buf buffer*/
+ 
+ /* - Commands -----------------------------*/
+@@ -435,10 +435,12 @@ static void get_version_command(struct stm32prog_data *data)
+  */
+ static void get_id_command(struct stm32prog_data *data)
+ {
++	u32 cpu = get_cpu_dev();
++
+ 	/* Send Device IDCode */
+ 	stm32prog_serial_putc(0x1);
+-	stm32prog_serial_putc(DEVICE_ID_BYTE1);
+-	stm32prog_serial_putc(DEVICE_ID_BYTE2);
++	stm32prog_serial_putc((cpu >> 8) & 0xFF);
++	stm32prog_serial_putc(cpu & 0xFF);
+ 	stm32prog_serial_result(ACK_BYTE);
+ }
+ 
+diff --git a/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog_usb.c b/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog_usb.c
+index 30547f94c9..6ddf08523e 100644
+--- a/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog_usb.c
++++ b/arch/arm/mach-stm32mp/cmd_stm32prog/stm32prog_usb.c
+@@ -178,7 +178,7 @@ int stm32prog_get_medium_size_virt(struct dfu_entity *dfu, u64 *size)
+ 
+ 	switch (dfu->data.virt.dev_num) {
+ 	case PHASE_CMD:
+-		*size = 512;
++		*size = CMD_SIZE;
+ 		break;
+ 	case PHASE_OTP:
+ 		*size = OTP_SIZE;
+@@ -207,13 +207,10 @@ bool stm32prog_usb_loop(struct stm32prog_data *data, int dev)
+ 
+ 	if (stm32prog_data->phase == PHASE_FLASHLAYOUT) {
+ 		ret = run_usb_dnl_gadget(dev, "usb_dnl_dfu");
+-		if (ret || stm32prog_data->phase == PHASE_DO_RESET)
++		if (ret || stm32prog_data->phase != PHASE_FLASHLAYOUT)
+ 			return ret;
+ 		/* prepare the second enumeration with the FlashLayout */
+-		if (stm32prog_data->phase == PHASE_FLASHLAYOUT)
+-			stm32prog_dfu_init(data);
+-		/* found next selected partition */
+-		stm32prog_next_phase(data);
++		stm32prog_dfu_init(data);
+ 	}
+ 
+ 	ret = run_usb_dnl_gadget(dev, "usb_dnl_dfu");
+diff --git a/arch/arm/mach-stm32mp/cpu.c b/arch/arm/mach-stm32mp/cpu.c
+index b81825a0bf..2495d4aaad 100644
+--- a/arch/arm/mach-stm32mp/cpu.c
++++ b/arch/arm/mach-stm32mp/cpu.c
+@@ -9,6 +9,7 @@
+ #include <env.h>
+ #include <init.h>
+ #include <log.h>
++#include <lmb.h>
+ #include <misc.h>
+ #include <net.h>
+ #include <asm/io.h>
+@@ -86,6 +87,8 @@
+  */
+ u8 early_tlb[PGTABLE_SIZE] __section(".data") __aligned(0x4000);
+ 
++struct lmb lmb;
++
+ #if !defined(CONFIG_SPL) || defined(CONFIG_SPL_BUILD)
+ #ifndef CONFIG_TFABOOT
+ static void security_init(void)
+@@ -207,6 +210,44 @@ u32 get_bootmode(void)
+ 		    TAMP_BOOT_MODE_SHIFT;
+ }
+ 
++/*
++ * weak function overidde: set the DDR/SYSRAM executable before to enable the
++ * MMU and configure DACR, for early early_enable_caches (SPL or pre-reloc)
++ */
++void dram_bank_mmu_setup(int bank)
++{
++	struct bd_info *bd = gd->bd;
++	int	i;
++	phys_addr_t start;
++	phys_size_t size;
++	bool use_lmb = false;
++	enum dcache_option option;
++
++	if (IS_ENABLED(CONFIG_SPL_BUILD)) {
++#ifdef CONFIG_SPL
++		start = ALIGN_DOWN(STM32_SYSRAM_BASE, MMU_SECTION_SIZE);
++		size = ALIGN(STM32_SYSRAM_SIZE, MMU_SECTION_SIZE);
++#endif
++	} else if (gd->flags & GD_FLG_RELOC) {
++		/* bd->bi_dram is available only after relocation */
++		start = bd->bi_dram[bank].start;
++		size =  bd->bi_dram[bank].size;
++		use_lmb = true;
++	} else {
++		/* mark cacheable and executable the beggining of the DDR */
++		start = STM32_DDR_BASE;
++		size = CONFIG_DDR_CACHEABLE_SIZE;
++	}
++
++	for (i = start >> MMU_SECTION_SHIFT;
++	     i < (start >> MMU_SECTION_SHIFT) + (size >> MMU_SECTION_SHIFT);
++	     i++) {
++		option = DCACHE_DEFAULT_OPTION;
++		if (use_lmb && lmb_is_reserved_flags(&lmb, i << MMU_SECTION_SHIFT, LMB_NOMAP))
++			option = INVALID_ENTRY;
++		set_section_dcache(i, option);
++	}
++}
+ /*
+  * initialize the MMU and activate cache in SPL or in U-Boot pre-reloc stage
+  * MMU/TLB is updated in enable_caches() for U-Boot after relocation
+@@ -224,17 +265,8 @@ static void early_enable_caches(void)
+ 	gd->arch.tlb_addr = (unsigned long)&early_tlb;
+ #endif
+ 
++	/* enable MMU (default configuration) */
+ 	dcache_enable();
+-
+-	if (IS_ENABLED(CONFIG_SPL_BUILD))
+-		mmu_set_region_dcache_behaviour(
+-			ALIGN_DOWN(STM32_SYSRAM_BASE, MMU_SECTION_SIZE),
+-			ALIGN(STM32_SYSRAM_SIZE, MMU_SECTION_SIZE),
+-			DCACHE_DEFAULT_OPTION);
+-	else
+-		mmu_set_region_dcache_behaviour(STM32_DDR_BASE,
+-						CONFIG_DDR_CACHEABLE_SIZE,
+-						DCACHE_DEFAULT_OPTION);
+ }
+ 
+ /*
+@@ -278,6 +310,9 @@ int arch_cpu_init(void)
+ 
+ void enable_caches(void)
+ {
++	/* parse device tree when data cache is still activated */
++	lmb_init_and_reserve(&lmb, gd->bd, (void *)gd->fdt_blob);
++
+ 	/* I-cache is already enabled in start.S: icache_enable() not needed */
+ 
+ 	/* deactivate the data cache, early enabled in arch_cpu_init() */
+@@ -479,7 +514,7 @@ static void setup_boot_mode(void)
+ 				gd->flags &= ~(GD_FLG_SILENT |
+ 					       GD_FLG_DISABLE_CONSOLE);
+ 			printf("uart%d = %s not found in device tree!\n",
+-			       instance, cmd);
++			       instance + 1, cmd);
+ 			break;
+ 		}
+ 		sprintf(cmd, "%d", dev->seq);
+@@ -517,7 +552,9 @@ static void setup_boot_mode(void)
+ 		env_set("boot_instance", "0");
+ 		break;
+ 	default:
+-		pr_debug("unexpected boot mode = %x\n", boot_mode);
++		env_set("boot_device", "invalid");
++		env_set("boot_instance", "");
++		log_err("unexpected boot mode = %x\n", boot_mode);
+ 		break;
+ 	}
+ 
+diff --git a/arch/arm/mach-stm32mp/dram_init.c b/arch/arm/mach-stm32mp/dram_init.c
+index 0e8ce63f4a..2c409ee217 100644
+--- a/arch/arm/mach-stm32mp/dram_init.c
++++ b/arch/arm/mach-stm32mp/dram_init.c
+@@ -10,6 +10,7 @@
+ #include <lmb.h>
+ #include <log.h>
+ #include <ram.h>
++#include <asm/system.h>
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+@@ -38,17 +39,27 @@ int dram_init(void)
+ 
+ ulong board_get_usable_ram_top(ulong total_size)
+ {
++	phys_size_t size;
+ 	phys_addr_t reg;
+ 	struct lmb lmb;
+ 
++	if (!total_size)
++		return gd->ram_top;
++
+ 	/* found enough not-reserved memory to relocated U-Boot */
+ 	lmb_init(&lmb);
+ 	lmb_add(&lmb, gd->ram_base, gd->ram_size);
+ 	boot_fdt_add_mem_rsv_regions(&lmb, (void *)gd->fdt_blob);
+-	reg = lmb_alloc(&lmb, CONFIG_SYS_MALLOC_LEN + total_size, SZ_4K);
++	/* add 8M for reserved memory for display, fdt, gd,... */
++	size = ALIGN(SZ_8M + CONFIG_SYS_MALLOC_LEN + total_size, MMU_SECTION_SIZE),
++	reg = lmb_alloc(&lmb, size, MMU_SECTION_SIZE);
++
++	if (!reg)
++		reg = gd->ram_top - size;
+ 
+-	if (reg)
+-		return ALIGN(reg + CONFIG_SYS_MALLOC_LEN + total_size, SZ_4K);
++	/* before relocation, mark the U-Boot memory as cacheable by default */
++	if (!(gd->flags & GD_FLG_RELOC))
++		mmu_set_region_dcache_behaviour(reg, size, DCACHE_DEFAULT_OPTION);
+ 
+-	return gd->ram_top;
++	return reg + size;
+ }
+diff --git a/arch/arm/mach-stm32mp/syscon.c b/arch/arm/mach-stm32mp/syscon.c
+index 3e61ce4097..a0e8e1dfdc 100644
+--- a/arch/arm/mach-stm32mp/syscon.c
++++ b/arch/arm/mach-stm32mp/syscon.c
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include <common.h>
++#include <clk.h>
+ #include <dm.h>
+ #include <syscon.h>
+ #include <asm/arch/stm32.h>
+@@ -14,9 +15,22 @@ static const struct udevice_id stm32mp_syscon_ids[] = {
+ 	{ }
+ };
+ 
++static int stm32mp_syscon_probe(struct udevice *dev)
++{
++	struct clk_bulk clk_bulk;
++	int ret;
++
++	ret = clk_get_bulk(dev, &clk_bulk);
++	if (!ret)
++		clk_enable_bulk(&clk_bulk);
++
++	return 0;
++}
++
+ U_BOOT_DRIVER(syscon_stm32mp) = {
+ 	.name = "stmp32mp_syscon",
+ 	.id = UCLASS_SYSCON,
+ 	.of_match = stm32mp_syscon_ids,
+ 	.bind = dm_scan_fdt_dev,
++	.probe = stm32mp_syscon_probe,
+ };
+-- 
+2.25.1
+
