@@ -72,6 +72,46 @@ FIP_DEPENDS_class-nativesdk = ""
 # -----------------------------------------------
 # Handle FIP config and set internal vars
 #   FIP_BL32_CONF
+def get_sign_key_path(d, relative_path):
+    if relative_path != None:
+        for p in d.getVar("BBPATH").split(":"):
+            file_path = os.path.join(p, relative_path)
+            if os.path.isfile(file_path):
+                bb.debug(1, "Set FIP_SIGN_KEY to '%s' path." % file_path)
+                return file_path
+    return None
+def generate_sign_key_path(d):
+    default_fip_signingkey = d.getVar('FIP_SIGN_KEY')
+    if not default_fip_signingkey:
+        bb.note("Please make sure to configure \"FIP_SIGN_KEY\" var to signing key file.")
+    else:
+        if d.getVar('FIP_SIGN_KEY_EXTERNAL') == '1':
+            default_fip_signingkey_path = get_sign_key_path(d, default_fip_signingkey)
+            if default_fip_signingkey_path:
+                d.setVar('FIP_SIGN_KEY_PATH', default_fip_signingkey_path)
+            else:
+                bbpaths = d.getVar('BBPATH').replace(':','\n\t')
+                bb.fatal('\nNot able to find "%s" path from current BBPATH var:\n\t%s.' % (default_fip_signingkey, bbpaths))
+        else:
+            d.setVar('FIP_SIGN_KEY_PATH', default_fip_signingkey)
+
+    socname_list = d.getVar('STM32MP_SOC_NAME')
+    if socname_list and len(socname_list) > 0:
+        d.setVar('FIP_SIGN_KEY_PATH_SOC_LIST', '')
+        for socname in socname_list.split():
+            fip_signingkey = d.getVar('FIP_SIGN_KEY_%s' % socname)
+            if not fip_signingkey and not default_fip_signingkey:
+                bb.fatal("Please make sure to configure \"FIP_SIGN_KEY_%s\" var to signing key file." % socname)
+            if d.getVar('FIP_SIGN_KEY_EXTERNAL') == '1':
+                fip_signingkey_path = get_sign_key_path(d, fip_signingkey)
+                if fip_signingkey_path:
+                    d.appendVar('FIP_SIGN_KEY_PATH_SOC_LIST', fip_signingkey_path + ',')
+                else:
+                    bbpaths = d.getVar('BBPATH').replace(':','\n\t')
+                    bb.fatal('\nNot able to find "%s" (socname %s) path from current BBPATH var:\n\t%s.' % (fip_signingkey, socname, bbpaths))
+            else:
+                d.appendVar('FIP_SIGN_KEY_PATH_SOC_LIST', fip_signingkey + ',')
+
 python () {
     import re
 
@@ -94,6 +134,8 @@ python () {
         raise bb.parse.SkipRecipe("FIP_CONFIG must be set in the %s machine configuration." % d.getVar("MACHINE"))
     if (d.getVar('FIP_BL32_CONF') or "").split():
         raise bb.parse.SkipRecipe("You cannot use FIP_BL32_CONF as it is internal to FIP_CONFIG var expansion.")
+    if (d.getVar('FIP_DEVICETREE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use FIP_DEVICETREE as it is internal to FIP_CONFIG var expansion.")
     if len(fipconfig) > 0:
         for config in fipconfig:
             for f, v in fipconfigflags.items():
@@ -103,30 +145,16 @@ python () {
                     if not v.strip():
                         bb.fatal('[FIP_CONFIG] Missing configuration for %s config' % config)
                     items = v.split(',')
-                    if items[0] and len(items) > 1:
-                        raise bb.parse.SkipRecipe('Only <BL32_CONF> can be specified!')
+                    if items[0] and len(items) > 2:
+                        raise bb.parse.SkipRecipe('Only <BL32_CONF> and <DT_CONFIG> can be specified!')
                     # Set internal vars
                     bb.debug(1, "Appending '%s' to FIP_BL32_CONF" % items[0])
                     d.appendVar('FIP_BL32_CONF', items[0] + ',')
+                    bb.debug(1, "Appending '%s' to FIP_DEVICETREE" % items[1])
+                    d.appendVar('FIP_DEVICETREE', items[1] + ',')
                     break
-
-    # Manage signing settings
     if d.getVar('FIP_SIGN_ENABLE') == '1':
-        fip_signingkey = d.getVar('FIP_SIGN_KEY')
-        if not fip_signingkey:
-            bb.fatal('Please make sure to configure "FIP_SIGN_KEY" var to signing key file.')
-        bb.debug(1, "Manage to find signing key file location from BBPATH...")
-        if d.getVar('FIP_SIGN_KEY_EXTERNAL') == '1':
-            found_signingkey = False
-            for p in d.getVar("BBPATH").split(":"):
-                file_path = os.path.join(p, fip_signingkey)
-                if os.path.isfile(file_path):
-                    bb.debug(1, "Set FIP_SIGN_KEY to '%s' path." % file_path)
-                    d.setVar('FIP_SIGN_KEY', file_path)
-                    found_signingkey = True
-            if not found_signingkey:
-                bbpaths = d.getVar('BBPATH').replace(':','\n\t')
-                bb.fatal('\nNot able to find "%s" path from current BBPATH var:\n\t%s.' % (fip_signingkey, bbpaths))
+        generate_sign_key_path(d)
 }
 
 # Deploy the fip binary for current target
@@ -138,7 +166,8 @@ do_deploy_append_class-target() {
     for config in ${FIP_CONFIG}; do
         i=$(expr $i + 1)
         bl32_conf=$(echo ${FIP_BL32_CONF} | cut -d',' -f${i})
-        for dt in ${FIP_DEVICETREE}; do
+        dt_config=$(echo ${FIP_DEVICETREE} | cut -d',' -f${i})
+        for dt in ${dt_config}; do
             # Init soc suffix
             soc_suffix=""
             if [ -n "${STM32MP_SOC_NAME}" ]; then
@@ -190,6 +219,21 @@ do_deploy_append_class-target() {
             fi
             # Init certificate settings
             if [ "${FIP_SIGN_ENABLE}" = "1" ]; then
+                soc_sign_suffix=""
+                if [ -n "${STM32MP_SOC_NAME}" ]; then
+                    unset k
+                    for soc in ${STM32MP_SOC_NAME}; do
+                        k=$(expr $k + 1)
+                        if [ "$(echo ${dt} | grep -c ${soc})" -eq 1 ]; then
+                            sign_key=$(echo ${FIP_SIGN_KEY_PATH_SOC_LIST} | cut -d',' -f${k})
+                        fi
+                    done
+                else
+                    sign_key="${FIP_SIGN_KEY_PATH}"
+                fi
+                if [ -z "${sign_key}" ]; then
+                    bbfatal "Please make sure to configure \"FIP_SIGN_KEY\" var to signing key file."
+                fi
                 FIP_CERTCONF="\
                     --tb-fw-cert ${WORKDIR}/tb_fw.crt \
                     --trusted-key-cert ${WORKDIR}/trusted_key.crt \
@@ -202,7 +246,7 @@ do_deploy_append_class-target() {
                 touch ${WORKDIR}/bl2-fake.bin
                 # Generate certificates
                 ${CERTTOOL} -n --tfw-nvctr 0 --ntfw-nvctr 0 --key-alg ecdsa --hash-alg sha256 \
-                        --rot-key ${FIP_SIGN_KEY} \
+                        --rot-key ${sign_key} \
                         --rot-key-pwd ${FIP_SIGN_KEY_PASS} \
                         ${FIP_FWCONFIG} \
                         ${FIP_HWCONFIG} \
@@ -265,10 +309,11 @@ echo "${FIPTOOL_WRAPPER} config:"
 for config in \$FIP_CONFIG; do
     i=\$(expr \$i + 1)
     bl32_conf=\$(echo \$FIP_BL32_CONF | cut -d',' -f\$i)
+    dt_config=\$(echo \$FIP_DEVICETREE | cut -d',' -f\$i)
     echo "  \${config}:" ; \\
     echo "    bl32 config value: \${bl32_conf}"
+    echo "    devicetree config: \${dt_config}"
 done
-echo "  FIP_DEVICETREE: \$FIP_DEVICETREE"
 echo ""
 echo "  FIP_DEPLOYDIR_FIP   : \$FIP_DEPLOYDIR_FIP"
 echo "  FIP_DEPLOYDIR_TFA   : \$FIP_DEPLOYDIR_TFA"
@@ -281,7 +326,8 @@ unset i
 for config in \$FIP_CONFIG; do
     i=\$(expr \$i + 1)
     bl32_conf=\$(echo \$FIP_BL32_CONF | cut -d',' -f\$i)
-    for dt in \$FIP_DEVICETREE; do
+    dt_config=\$(echo \$FIP_DEVICETREE | cut -d',' -f\$i)
+    for dt in \${dt_config}; do
         # Init soc suffix
         soc_suffix=""
         if [ -n "${STM32MP_SOC_NAME}" ]; then

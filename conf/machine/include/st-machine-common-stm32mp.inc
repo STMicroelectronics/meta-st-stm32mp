@@ -608,11 +608,12 @@ FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'optee', '', d
 FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'trusted', 'trusted', '', d)}"
 
 # Define config for each FIP_CONFIG
-FIP_CONFIG[optee]   ?= "optee"
-FIP_CONFIG[trusted] ?= "tfa"
+FIP_CONFIG[optee]   ?= "optee,${FIP_DEVICETREE_OPTEE}"
+FIP_CONFIG[trusted] ?= "tfa,${FIP_DEVICETREE_TRUSTED}"
 
 # List of device tree to use for fip binary creation
-FIP_DEVICETREE ?= "${STM32MP_DEVICETREE}"
+FIP_DEVICETREE_OPTEE   ?= "${STM32MP_DEVICETREE}"
+FIP_DEVICETREE_TRUSTED ?= "${STM32MP_DEVICETREE}"
 
 # Define fiptool wrapper name
 FIPTOOL_WRAPPER ?= "fiptool-stm32mp"
