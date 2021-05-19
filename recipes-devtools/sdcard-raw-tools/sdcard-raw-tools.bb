@@ -9,7 +9,7 @@ SRC_URI = "file://create_sdcard_from_flashlayout.sh"
 
 BBCLASSEXTEND = "native nativesdk"
 
-RDEPENDS_${PN}_append = "bash"
+RDEPENDS_${PN}_append = " bash"
 
 RRECOMMENDS_${PN}_append_class-nativesdk = "nativesdk-gptfdisk"
 
