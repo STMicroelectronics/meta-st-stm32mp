@@ -11,7 +11,7 @@ BBCLASSEXTEND = "native nativesdk"
 
 RDEPENDS_${PN}_append = " bash "
 
-RRECOMMENDS_${PN}_append_class-nativesdk = "nativesdk-gptfdisk"
+RRECOMMENDS_${PN}_append_class-nativesdk = " nativesdk-gptfdisk "
 
 inherit deploy
 
