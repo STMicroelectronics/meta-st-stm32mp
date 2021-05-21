@@ -6,10 +6,12 @@ SECTION = "libs"
 LICENSE = "BSD-3-Clause | GPLv3"
 LIC_FILES_CHKSUM = "file://LICENSE.txt;md5=7c3949a631240cb6c31c50f3eb696077"
 
-SRC_URI = "git://github.com/signal11/hidapi.git"
-SRCREV = "a6a622ffb680c55da0de787ff93b80280498330f"
+SRC_URI = "git://github.com/libusb/hidapi.git;protocol=https \
+           file://0001-configure.ac-remove-duplicate-AC_CONFIG_MACRO_DIR-22.patch \
+"
+SRCREV = "f6d0073fcddbdda24549199445e844971d3c9cef"
 
-PV = "0.8.0-rc1-git.${SRCPV}"
+PV = "0.10.1-git.${SRCPV}"
 
 S = "${WORKDIR}/git"
 
@@ -17,7 +19,7 @@ inherit autotools pkgconfig
 
 BBCLASSEXTEND += "native nativesdk"
 
-DEPENDS += "libusb1"
+DEPENDS += "libusb"
 
 DEPENDS_class-native += "libusb-native"
 DEPENDS_class-nativesdk += "nativesdk-libusb"
