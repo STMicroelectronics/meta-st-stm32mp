@@ -2,7 +2,6 @@ FILESEXTRAPATHS_prepend_stm32mpcommon := "${THISDIR}/${PN}:"
 
 SRC_URI_append_stm32mpcommon = " \
        file://${BUSYBOX_CONFIG_FRAGMENT} \
-       file://0001-miscutils-watchdog-Add-gettimeleft.patch \
        file://ifplugd.conf \
        file://ifplugd.action \
        file://ifplugd.sh \
