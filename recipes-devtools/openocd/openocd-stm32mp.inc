@@ -1,6 +1,6 @@
 DEPENDS = "hidapi-stm32mp"
 
-RDEPENDS_${PN} += "libusb1 hidapi-stm32mp"
+RDEPENDS_${PN} = "libusb1 hidapi-stm32mp"
 
 inherit pkgconfig autotools-brokensep gettext
 
@@ -17,12 +17,6 @@ SRCREV_libjaylink = "9aa7a5957c07bb6e862fc1a6d3153d109c7407e4"
 S = "${WORKDIR}/git"
 
 BBCLASSEXTEND += "native nativesdk"
-
-DEPENDS += "hidapi-stm32mp"
-DEPENDS_class-native = "hidapi-stm32mp-native"
-DEPENDS_class-nativesdk = "nativesdk-hidapi-stm32mp"
-
-RDEPENDS_${PN} += "libusb1 hidapi-stm32mp"
 
 EXTRA_OECONF = " \
     --disable-doxygen-html \
@@ -60,3 +54,6 @@ FILES_${PN} = " \
   ${datadir}/openocd/* \
   ${bindir}/openocd \
   "
+
+# Can't be built with ccache
+CCACHE_DISABLE = "1"
