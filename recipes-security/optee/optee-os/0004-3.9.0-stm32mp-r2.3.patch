@@ -1,0 +1,231 @@
+From 35021f2d02056b50e49c38b4ebe9625b1939718b Mon Sep 17 00:00:00 2001
+From: Lionel Vitte <lionel.vitte@st.com>
+Date: Thu, 30 Sep 2021 10:42:48 +0200
+Subject: [PATCH] 3.9.0-stm32mp-r2.3
+
+---
+ core/arch/arm/kernel/thread_optee_smc.c       | 34 ++++++++++---------
+ .../arm/plat-stm32mp1/drivers/stm32mp1_clk.c  | 19 +++++++++--
+ core/drivers/stm32_i2c.c                      | 33 ++++++++++++++++++
+ core/drivers/stm32_rtc.c                      |  2 +-
+ 4 files changed, 68 insertions(+), 20 deletions(-)
+
+diff --git a/core/arch/arm/kernel/thread_optee_smc.c b/core/arch/arm/kernel/thread_optee_smc.c
+index 3013dd99..8305bafe 100644
+--- a/core/arch/arm/kernel/thread_optee_smc.c
++++ b/core/arch/arm/kernel/thread_optee_smc.c
+@@ -519,29 +519,31 @@ static void thread_rpc_free(unsigned int bt, uint64_t cookie, struct mobj *mobj)
+ }
+ 
+ static struct mobj *get_rpc_alloc_res(struct optee_msg_arg *arg,
+-				      unsigned int bt)
++				      unsigned int bt, size_t size)
+ {
+ 	struct mobj *mobj = NULL;
+ 	uint64_t cookie = 0;
++	size_t sz = 0;
++	paddr_t p = 0;
+ 
+ 	if (arg->ret || arg->num_params != 1)
+ 		return NULL;
+ 
+-	if (arg->params[0].attr == OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT) {
+-		cookie = arg->params[0].u.tmem.shm_ref;
+-		mobj = mobj_shm_alloc(arg->params[0].u.tmem.buf_ptr,
+-				      arg->params[0].u.tmem.size,
+-				      cookie);
+-	} else if (arg->params[0].attr == (OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT |
+-					   OPTEE_MSG_ATTR_NONCONTIG)) {
+-		paddr_t p = arg->params[0].u.tmem.buf_ptr;
+-		size_t sz = arg->params[0].u.tmem.size;
+-
+-		cookie = arg->params[0].u.tmem.shm_ref;
+-		mobj = msg_param_mobj_from_noncontig(p, sz, cookie, true);
+-	} else {
++	if (arg->params[0].attr != OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT  &&
++	    arg->params[0].attr != (OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT |
++				    OPTEE_MSG_ATTR_NONCONTIG))
+ 		return NULL;
+-	}
++
++	p = arg->params[0].u.tmem.buf_ptr;
++	sz = READ_ONCE(arg->params[0].u.tmem.size);
++	cookie = arg->params[0].u.tmem.shm_ref;
++	if (sz < size)
++		return NULL;
++
++	if (arg->params[0].attr == OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT)
++		mobj = mobj_shm_alloc(p, sz, cookie);
++	else
++		mobj = msg_param_mobj_from_noncontig(p, sz, cookie, true);
+ 
+ 	if (!mobj) {
+ 		thread_rpc_free(bt, cookie, mobj);
+@@ -577,7 +579,7 @@ static struct mobj *thread_rpc_alloc(size_t size, size_t align, unsigned int bt)
+ 	reg_pair_from_64(carg, rpc_args + 1, rpc_args + 2);
+ 	thread_rpc(rpc_args);
+ 
+-	return get_rpc_alloc_res(arg, bt);
++	return get_rpc_alloc_res(arg, bt, size);
+ }
+ 
+ struct mobj *thread_rpc_alloc_payload(size_t size)
+diff --git a/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_clk.c b/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_clk.c
+index 79129480..4d2769d3 100644
+--- a/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_clk.c
++++ b/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_clk.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0+)
+ /*
+- * Copyright (C) 2018-2019, STMicroelectronics
++ * Copyright (C) 2018-2021, STMicroelectronics
+  */
+ 
+ #include <assert.h>
+@@ -64,6 +64,7 @@ enum stm32mp1_parent_id {
+ 	_HSI_KER = NB_OSC,
+ 	_HSE_KER,
+ 	_HSE_KER_DIV2,
++	_HSE_RTC,
+ 	_CSI_KER,
+ 	_PLL1_P,
+ 	_PLL1_Q,
+@@ -129,6 +130,7 @@ static const uint8_t parent_id_clock_id[_PARENT_NB] = {
+ 	[_HSI_KER] = CK_HSI,
+ 	[_HSE_KER] = CK_HSE,
+ 	[_HSE_KER_DIV2] = CK_HSE_DIV2,
++	[_HSE_RTC] = _UNKNOWN_ID,
+ 	[_CSI_KER] = CK_CSI,
+ 	[_PLL1_P] = PLL1_P,
+ 	[_PLL1_Q] = PLL1_Q,
+@@ -491,7 +493,7 @@ static const uint8_t mcuss_parents[] = {
+ };
+ 
+ static const uint8_t rtc_parents[] = {
+-	_UNKNOWN_ID, _LSE, _LSI, _HSE
++	_UNKNOWN_ID, _LSE, _LSI, _HSE_RTC
+ };
+ 
+ #ifdef STM32MP1_USE_MPU0_RESET
+@@ -519,7 +521,7 @@ static const struct stm32mp1_clk_sel stm32mp1_clk_sel[_PARENT_SEL_NB] = {
+ 	_CLK_PARENT(_SPI6_SEL, RCC_SPI6CKSELR, 0, 0x7, spi6_parents),
+ 	_CLK_PARENT(_USART1_SEL, RCC_UART1CKSELR, 0, 0x7, usart1_parents),
+ 	_CLK_PARENT(_RNG1_SEL, RCC_RNG1CKSELR, 0, 0x3, rng1_parents),
+-	_CLK_PARENT(_RTC_SEL, RCC_BDCR, 0, 0x3, rtc_parents),
++	_CLK_PARENT(_RTC_SEL, RCC_BDCR, 16, 0x3, rtc_parents),
+ 	_CLK_PARENT(_MPU_SEL, RCC_MPCKSELR, 0, 0x3, mpu_parents),
+ 	_CLK_PARENT(_AXISS_SEL, RCC_ASSCKSELR, 0, 0x3, axiss_parents),
+ 	_CLK_PARENT(_MCUSS_SEL, RCC_MSSCKSELR, 0, 0x3, mcuss_parents),
+@@ -606,6 +608,7 @@ static const char __maybe_unused *const stm32mp1_clk_parent_name[_PARENT_NB] = {
+ 	[_HSI_KER] = "HSI_KER",
+ 	[_HSE_KER] = "HSE_KER",
+ 	[_HSE_KER_DIV2] = "HSE_KER_DIV2",
++	[_HSE_RTC] = "HSE_RTC",
+ 	[_CSI_KER] = "CSI_KER",
+ 	[_PLL1_P] = "PLL1_P",
+ 	[_PLL1_Q] = "PLL1_Q",
+@@ -1101,6 +1104,10 @@ static unsigned long get_clock_rate(int p)
+ 	case _HSE_KER_DIV2:
+ 		clock = osc_frequency(_HSE) >> 1;
+ 		break;
++	case _HSE_RTC:
++		clock = osc_frequency(_HSE);
++		clock /= (io_read32(rcc_base + RCC_RTCDIVR) & RCC_DIVR_DIV_MASK) + 1U;
++		break;
+ 	case _LSI:
+ 		clock = osc_frequency(_LSI);
+ 		break;
+@@ -1212,6 +1219,7 @@ static bool clock_is_always_on(unsigned long id)
+ 	case CK_AXI:
+ 	case CK_MPU:
+ 	case CK_MCU:
++	case RTC:
+ 		return true;
+ 	default:
+ 		return false;
+@@ -1436,6 +1444,7 @@ static void secure_parent_clocks(unsigned long parent_id)
+ 	case _HSE:
+ 	case _HSE_KER:
+ 	case _HSE_KER_DIV2:
++	case _HSE_RTC:
+ 	case _LSE:
+ 	case _PLL1_P:
+ 	case _PLL1_Q:
+@@ -2564,6 +2573,10 @@ static void stm32_clock_resume(void)
+ 	for (idx = 0; idx < NB_GATES; idx++) {
+ 		struct stm32mp1_clk_gate const *gate = gate_ref(idx);
+ 
++		if (clock_is_always_on(gate->clock_id)) {
++			continue;
++		}
++
+ 		if (gate_is_non_secure(gate))
+ 			continue;
+ 
+diff --git a/core/drivers/stm32_i2c.c b/core/drivers/stm32_i2c.c
+index efd5ade0..8a8c1107 100644
+--- a/core/drivers/stm32_i2c.c
++++ b/core/drivers/stm32_i2c.c
+@@ -869,6 +869,33 @@ static int wait_isr_event(struct i2c_handle_s *hi2c, uint32_t bit_mask,
+ 	return -1;
+ }
+ 
++static int wait_isr_event_nack(struct i2c_handle_s *hi2c, uint32_t bit_mask,
++			       unsigned int awaited_value, uint64_t timeout_ref)
++{
++	vaddr_t isr = get_base(hi2c) + I2C_ISR;
++	uint32_t val;
++
++	assert(IS_POWER_OF_TWO(bit_mask) && !(awaited_value & ~1U));
++
++	/* May timeout while TEE thread is suspended */
++	while (!timeout_elapsed(timeout_ref)) {
++		val = io_read32(isr);
++		if (val & I2C_ISR_NACKF)
++			return -1;
++		if (!!(val & bit_mask) == awaited_value)
++			break;
++	}
++
++	val = io_read32(isr);
++	if (val & I2C_ISR_NACKF)
++		return -1;
++	if (!!(val & bit_mask) == awaited_value)
++		return 0;
++
++	notif_i2c_timeout(hi2c);
++	return -1;
++}
++
+ /* Handle Acknowledge-Failed sequence detection during an I2C Communication */
+ static int i2c_ack_failed(struct i2c_handle_s *hi2c, uint64_t timeout_ref)
+ {
+@@ -1328,6 +1355,12 @@ static int i2c_read(struct i2c_handle_s *hi2c, struct i2c_request *request,
+ 				    I2C_AUTOEND_MODE, I2C_GENERATE_START_READ);
+ 	}
+ 
++	/* Start polling for data but return if NACK indicates we should poll later */
++	if (wait_isr_event_nack(hi2c, I2C_ISR_RXNE, 1, timeout_ref)) {
++		i2c_ack_failed(hi2c, timeout_ref);
++		goto bail;
++	}
++
+ 	do {
+ 		if (wait_isr_event(hi2c, I2C_ISR_RXNE, 1, timeout_ref))
+ 			goto bail;
+diff --git a/core/drivers/stm32_rtc.c b/core/drivers/stm32_rtc.c
+index 1abeaabc..b4226ee2 100644
+--- a/core/drivers/stm32_rtc.c
++++ b/core/drivers/stm32_rtc.c
+@@ -70,7 +70,7 @@
+ 
+ #define RTC_ICSR_RSF		BIT(5)
+ 
+-#define RTC_PRER_PREDIV_S_MASK	GENMASK_32(15, 0)
++#define RTC_PRER_PREDIV_S_MASK	GENMASK_32(14, 0)
+ 
+ #define RTC_CR_BYPSHAD		BIT(5)
+ #define RTC_CR_BYPSHAD_SHIFT	5
+-- 
+2.25.1
+

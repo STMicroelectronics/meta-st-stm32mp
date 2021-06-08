@@ -1,0 +1,578 @@
+From d759e21b421533b8f497fbd2e45eb5832b15e653 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Tue, 8 Jun 2021 16:30:46 +0200
+Subject: [PATCH 3/4] 3.9.0-stm32mp-r2.2
+
+---
+ core/arch/arm/include/kernel/tlb_helpers.h    |  9 +++-
+ core/arch/arm/include/mm/core_mmu.h           | 12 +++++
+ core/arch/arm/include/mm/pgt_cache.h          |  5 +-
+ core/arch/arm/mm/core_mmu.c                   | 15 ++++++
+ core/arch/arm/mm/pgt_cache.c                  | 52 ++++++++++++++++++-
+ core/arch/arm/mm/tee_mmu.c                    | 42 +++++++--------
+ .../arm/plat-stm32mp1/drivers/stm32mp1_pmic.c | 49 ++++++++++++++++-
+ .../arm/plat-stm32mp1/drivers/stm32mp1_pmic.h |  8 ++-
+ .../plat-stm32mp1/drivers/stm32mp1_syscfg.c   |  7 ++-
+ core/arch/arm/plat-stm32mp1/main.c            | 22 +++++++-
+ scripts/sign_rproc_fw.py                      | 28 +++++++---
+ ta/remoteproc/elf_parser.c                    |  5 ++
+ 12 files changed, 215 insertions(+), 39 deletions(-)
+
+diff --git a/core/arch/arm/include/kernel/tlb_helpers.h b/core/arch/arm/include/kernel/tlb_helpers.h
+index d33dd5c0..2dbcbcf0 100644
+--- a/core/arch/arm/include/kernel/tlb_helpers.h
++++ b/core/arch/arm/include/kernel/tlb_helpers.h
+@@ -25,11 +25,10 @@ static inline void tlbi_mva_allasid_nosync(vaddr_t va)
+ #endif
+ }
+ 
+-static inline void tlbi_mva_asid(vaddr_t va, uint32_t asid)
++static inline void tlbi_mva_asid_nosync(vaddr_t va, uint32_t asid)
+ {
+ 	uint32_t a = asid & TLBI_ASID_MASK;
+ 
+-	dsb_ishst();
+ #ifdef ARM64
+ 	tlbi_vale1is((va >> TLBI_MVA_SHIFT) | SHIFT_U64(a, TLBI_ASID_SHIFT));
+ 	tlbi_vale1is((va >> TLBI_MVA_SHIFT) |
+@@ -38,6 +37,12 @@ static inline void tlbi_mva_asid(vaddr_t va, uint32_t asid)
+ 	write_tlbimvais((va & ~(BIT32(TLBI_MVA_SHIFT) - 1)) | a);
+ 	write_tlbimvais((va & ~(BIT32(TLBI_MVA_SHIFT) - 1)) | a | 1);
+ #endif
++}
++
++static inline void tlbi_mva_asid(vaddr_t va, uint32_t asid)
++{
++	dsb_ishst();
++	tlbi_mva_asid_nosync(va, asid);
+ 	dsb_ish();
+ 	isb();
+ }
+diff --git a/core/arch/arm/include/mm/core_mmu.h b/core/arch/arm/include/mm/core_mmu.h
+index 05db229a..d56ae0b1 100644
+--- a/core/arch/arm/include/mm/core_mmu.h
++++ b/core/arch/arm/include/mm/core_mmu.h
+@@ -613,6 +613,18 @@ enum teecore_tlb_op {
+ /* TLB invalidation for a range of virtual address */
+ void tlbi_mva_range(vaddr_t va, size_t size, size_t granule);
+ 
++/*
++ * tlbi_mva_range_asid() - Invalidate TLB for virtual address range for
++ *			   a specific ASID
++ * @va:		start virtual address, must be a multiple of @granule
++ * @len:	length in bytes of range, must be a multiple of @granule
++ * @granule:	granularity of mapping, supported values are
++ *		CORE_MMU_PGDIR_SIZE or SMALL_PAGE_SIZE. This value must
++ *		match the actual mappings.
++ * @asid:	Address space identifier
++ */
++void tlbi_mva_range_asid(vaddr_t va, size_t len, size_t granule, uint32_t asid);
++
+ /* deprecated: please call straight tlbi_all() and friends */
+ int core_tlb_maintenance(int op, unsigned long a) __deprecated;
+ 
+diff --git a/core/arch/arm/include/mm/pgt_cache.h b/core/arch/arm/include/mm/pgt_cache.h
+index 99b90586..50bff51a 100644
+--- a/core/arch/arm/include/mm/pgt_cache.h
++++ b/core/arch/arm/include/mm/pgt_cache.h
+@@ -21,8 +21,8 @@
+ 
+ struct pgt {
+ 	void *tbl;
+-#if defined(CFG_PAGED_USER_TA)
+ 	vaddr_t vabase;
++#if defined(CFG_PAGED_USER_TA)
+ 	struct tee_ta_ctx *ctx;
+ 	size_t num_used_entries;
+ #endif
+@@ -54,6 +54,8 @@ void pgt_alloc(struct pgt_cache *pgt_cache, void *owning_ctx,
+ 	       vaddr_t begin, vaddr_t last);
+ void pgt_free(struct pgt_cache *pgt_cache, bool save_ctx);
+ 
++void pgt_clear_ctx_range(struct pgt_cache *pgt_cache, void *ctx,
++			 vaddr_t begin, vaddr_t end);
+ #ifdef CFG_PAGED_USER_TA
+ void pgt_flush_ctx_range(struct pgt_cache *pgt_cache, void *ctx,
+ 			 vaddr_t begin, vaddr_t last);
+@@ -66,6 +68,7 @@ static inline void pgt_flush_ctx_range(struct pgt_cache *pgt_cache __unused,
+ }
+ #endif
+ 
++
+ void pgt_init(void);
+ 
+ #if defined(CFG_PAGED_USER_TA)
+diff --git a/core/arch/arm/mm/core_mmu.c b/core/arch/arm/mm/core_mmu.c
+index 2131d0bd..5821872d 100644
+--- a/core/arch/arm/mm/core_mmu.c
++++ b/core/arch/arm/mm/core_mmu.c
+@@ -1428,6 +1428,21 @@ void tlbi_mva_range(vaddr_t va, size_t size, size_t granule)
+ 	isb();
+ }
+ 
++void tlbi_mva_range_asid(vaddr_t va, size_t len, size_t granule, uint32_t asid)
++{
++	assert(granule == CORE_MMU_PGDIR_SIZE || granule == SMALL_PAGE_SIZE);
++	assert(!(va & (granule - 1)) && !(len & (granule - 1)));
++
++	dsb_ishst();
++	while (len) {
++		tlbi_mva_asid_nosync(va, asid);
++		len -= granule;
++		va += granule;
++	}
++	dsb_ish();
++	isb();
++}
++
+ TEE_Result cache_op_inner(enum cache_op op, void *va, size_t len)
+ {
+ 	switch (op) {
+diff --git a/core/arch/arm/mm/pgt_cache.c b/core/arch/arm/mm/pgt_cache.c
+index 6c40fc20..f081fdfc 100644
+--- a/core/arch/arm/mm/pgt_cache.c
++++ b/core/arch/arm/mm/pgt_cache.c
+@@ -416,10 +416,60 @@ static void pgt_free_unlocked(struct pgt_cache *pgt_cache,
+ static struct pgt *pop_from_some_list(vaddr_t vabase __unused,
+ 				      void *ctx __unused)
+ {
+-	return pop_from_free_list();
++	struct pgt *p = pop_from_free_list();
++
++	if (p)
++		p->vabase = vabase;
++
++	return p;
+ }
+ #endif /*!CFG_PAGED_USER_TA*/
+ 
++static void clear_ctx_range_from_list(struct pgt_cache *pgt_cache,
++				      void *ctx __maybe_unused,
++				      vaddr_t begin, vaddr_t end)
++{
++	struct pgt *p = NULL;
++#ifdef CFG_WITH_LPAE
++	uint64_t *tbl = NULL;
++#else
++	uint32_t *tbl = NULL;
++#endif
++	unsigned int idx = 0;
++	unsigned int n = 0;
++
++	SLIST_FOREACH(p, pgt_cache, link) {
++		vaddr_t b = MAX(p->vabase, begin);
++		vaddr_t e = MIN(p->vabase + CORE_MMU_PGDIR_SIZE, end);
++
++#ifdef CFG_PAGED_USER_TA
++		if (p->ctx != ctx)
++			continue;
++#endif
++		if (b >= e)
++			continue;
++
++		tbl = p->tbl;
++		idx = (b - p->vabase) / SMALL_PAGE_SIZE;
++		n = (e - b) / SMALL_PAGE_SIZE;
++		memset(tbl + idx, 0, n * sizeof(*tbl));
++	}
++}
++
++void pgt_clear_ctx_range(struct pgt_cache *pgt_cache, void *ctx,
++			 vaddr_t begin, vaddr_t end)
++{
++	mutex_lock(&pgt_mu);
++
++	if (pgt_cache)
++		clear_ctx_range_from_list(pgt_cache, ctx, begin, end);
++#ifdef CFG_PAGED_USER_TA
++	clear_ctx_range_from_list(&pgt_cache_list, ctx, begin, end);
++#endif
++
++	mutex_unlock(&pgt_mu);
++}
++
+ static bool pgt_alloc_unlocked(struct pgt_cache *pgt_cache, void *ctx,
+ 			       vaddr_t begin, vaddr_t last)
+ {
+diff --git a/core/arch/arm/mm/tee_mmu.c b/core/arch/arm/mm/tee_mmu.c
+index 616619b4..79816167 100644
+--- a/core/arch/arm/mm/tee_mmu.c
++++ b/core/arch/arm/mm/tee_mmu.c
+@@ -163,14 +163,26 @@ static TEE_Result alloc_pgt(struct user_mode_ctx *uctx)
+ 	return TEE_SUCCESS;
+ }
+ 
+-static void maybe_free_pgt(struct user_mode_ctx *uctx, struct vm_region *r)
++static void rem_um_region(struct user_mode_ctx *uctx, struct vm_region *r)
+ {
+-	struct thread_specific_data *tsd = NULL;
++	struct thread_specific_data *tsd = thread_get_tsd();
+ 	struct pgt_cache *pgt_cache = NULL;
+ 	vaddr_t begin = ROUNDDOWN(r->va, CORE_MMU_PGDIR_SIZE);
+ 	vaddr_t last = ROUNDUP(r->va + r->size, CORE_MMU_PGDIR_SIZE);
+ 	struct vm_region *r2 = NULL;
+ 
++	if (&uctx->ctx == tsd->ctx)
++		pgt_cache = &tsd->pgt_cache;
++
++	if (mobj_is_paged(r->mobj)) {
++		tee_pager_rem_um_region(uctx, r->va, r->size);
++	} else {
++		pgt_clear_ctx_range(pgt_cache, &uctx->ctx, r->va,
++				    r->va + r->size);
++		tlbi_mva_range_asid(r->va, r->size, SMALL_PAGE_SIZE,
++				    uctx->vm_info.asid);
++	}
++
+ 	r2 = TAILQ_NEXT(r, link);
+ 	if (r2)
+ 		last = MIN(last, ROUNDDOWN(r2->va, CORE_MMU_PGDIR_SIZE));
+@@ -184,10 +196,6 @@ static void maybe_free_pgt(struct user_mode_ctx *uctx, struct vm_region *r)
+ 	if (begin >= last)
+ 		return;
+ 
+-	tsd = thread_get_tsd();
+-	if (&uctx->ctx == tsd->ctx)
+-		pgt_cache = &tsd->pgt_cache;
+-
+ 	pgt_flush_ctx_range(pgt_cache, &uctx->ctx, r->va, r->va + r->size);
+ }
+ 
+@@ -529,9 +537,7 @@ TEE_Result vm_remap(struct user_mode_ctx *uctx, vaddr_t *new_va, vaddr_t old_va,
+ 		if (r->va + r->size > old_va + len)
+ 			break;
+ 		r_next = TAILQ_NEXT(r, link);
+-		if (fobj)
+-			tee_pager_rem_um_region(uctx, r->va, r->size);
+-		maybe_free_pgt(uctx, r);
++		rem_um_region(uctx, r);
+ 		TAILQ_REMOVE(&uctx->vm_info.regions, r, link);
+ 		TAILQ_INSERT_TAIL(&regs, r, link);
+ 	}
+@@ -736,21 +742,13 @@ TEE_Result vm_unmap(struct user_mode_ctx *uctx, vaddr_t va, size_t len)
+ 	while (true) {
+ 		r_next = TAILQ_NEXT(r, link);
+ 		unmap_end_va = r->va + r->size;
+-		if (mobj_is_paged(r->mobj))
+-			tee_pager_rem_um_region(uctx, r->va, r->size);
+-		maybe_free_pgt(uctx, r);
++		rem_um_region(uctx, r);
+ 		umap_remove_region(&uctx->vm_info, r);
+ 		if (!r_next || unmap_end_va == end_va)
+ 			break;
+ 		r = r_next;
+ 	}
+ 
+-	/*
+-	 * Synchronize change to translation tables. Even though the pager
+-	 * case unmaps immediately we may still free a translation table.
+-	 */
+-	tee_mmu_set_ctx(&uctx->ctx);
+-
+ 	return TEE_SUCCESS;
+ }
+ 
+@@ -805,9 +803,7 @@ void tee_mmu_clean_param(struct user_mode_ctx *uctx)
+ 
+ 	TAILQ_FOREACH_SAFE(r, &uctx->vm_info.regions, link, next_r) {
+ 		if (r->flags & VM_FLAG_EPHEMERAL) {
+-			if (mobj_is_paged(r->mobj))
+-				tee_pager_rem_um_region(uctx, r->va, r->size);
+-			maybe_free_pgt(uctx, r);
++			rem_um_region(uctx, r);
+ 			umap_remove_region(&uctx->vm_info, r);
+ 		}
+ 	}
+@@ -1017,9 +1013,7 @@ void tee_mmu_rem_rwmem(struct user_mode_ctx *uctx, struct mobj *mobj,
+ 
+ 	TAILQ_FOREACH(r, &uctx->vm_info.regions, link) {
+ 		if (r->mobj == mobj && r->va == va) {
+-			if (mobj_is_paged(r->mobj))
+-				tee_pager_rem_um_region(uctx, r->va, r->size);
+-			maybe_free_pgt(uctx, r);
++			rem_um_region(uctx, r);
+ 			umap_remove_region(&uctx->vm_info, r);
+ 			return;
+ 		}
+diff --git a/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pmic.c b/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pmic.c
+index f0164ac5..8c048544 100644
+--- a/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pmic.c
++++ b/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pmic.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: BSD-3-Clause
+ /*
+- * Copyright (c) 2017-2020, STMicroelectronics
++ * Copyright (c) 2017-2021, STMicroelectronics
+  */
+ 
+ #include <drivers/stm32_i2c.h>
+@@ -33,6 +33,7 @@ static struct i2c_handle_s i2c_handle;
+ static uint32_t pmic_i2c_addr;
+ 
+ static char cpu_supply_name[PMIC_REGU_SUPPLY_NAME_LEN];
++static char *usb_supply_name;
+ 
+ bool stm32mp_with_pmic(void)
+ {
+@@ -420,6 +421,49 @@ const char *stm32mp_pmic_get_cpu_supply_name(void)
+ 	return cpu_supply_name;
+ }
+ 
++/* Return a libfdt compliant status value */
++static int save_usb_supply_name(void)
++{
++	void *fdt = NULL;
++	int node = 0;
++	int subnode = 0;
++	const fdt32_t *cuint = NULL;
++	const char *name = NULL;
++
++	fdt = get_embedded_dt();
++	if (!fdt)
++		panic();
++
++	node = fdt_node_offset_by_compatible(fdt, -1, "st,stm32mp1-usbphyc");
++	if (node < 0)
++		return -FDT_ERR_NOTFOUND;
++
++	fdt_for_each_subnode(subnode, fdt, node) {
++		cuint = fdt_getprop(fdt, subnode, "phy-supply", NULL);
++		if (cuint)
++			break;
++	}
++	if (!cuint)
++		return -FDT_ERR_NOTFOUND;
++
++	node = fdt_node_offset_by_phandle(fdt, fdt32_to_cpu(*cuint));
++	if (node < 0)
++		return -FDT_ERR_NOTFOUND;
++
++	name = fdt_get_name(fdt, node, NULL);
++	assert(name);
++	usb_supply_name = strdup(name);
++	if (!usb_supply_name)
++		panic();
++
++	return 0;
++}
++
++const char *stm32mp_pmic_get_usb_supply_name(void)
++{
++	return usb_supply_name;
++}
++
+ static void save_power_configurations(void)
+ {
+ 	size_t n = 0;
+@@ -427,6 +471,9 @@ static void save_power_configurations(void)
+ 	if (save_cpu_supply_name())
+ 		DMSG("No CPU supply provided");
+ 
++	if (save_usb_supply_name())
++		DMSG("No USB supply provided");
++
+ 	if (save_boot_on_config())
+ 		DMSG("No CPU supply provided");
+ 
+diff --git a/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pmic.h b/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pmic.h
+index 4625af12..f9165473 100644
+--- a/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pmic.h
++++ b/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pmic.h
+@@ -1,6 +1,6 @@
+ /* SPDX-License-Identifier: BSD-3-Clause */
+ /*
+- * Copyright (c) 2017-2020, STMicroelectronics
++ * Copyright (c) 2017-2021, STMicroelectronics
+  */
+ 
+ #ifndef __STM32MP1_PMIC_H__
+@@ -15,6 +15,7 @@ void stm32mp_get_pmic(void);
+ void stm32mp_put_pmic(void);
+ int stm32mp_dt_pmic_status(void);
+ const char *stm32mp_pmic_get_cpu_supply_name(void);
++const char *stm32mp_pmic_get_usb_supply_name(void);
+ #else
+ static inline void stm32mp_pmic_apply_boot_on_config(void)
+ {
+@@ -43,6 +44,11 @@ static inline const char *stm32mp_pmic_get_cpu_supply_name(void)
+ {
+ 	return NULL;
+ }
++
++static inline const char *stm32mp_pmic_get_usb_supply_name(void)
++{
++	return NULL;
++}
+ #endif
+ 
+ #endif /*__STM32MP1_PMIC_H__*/
+diff --git a/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_syscfg.c b/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_syscfg.c
+index 37d2cb0d..1bd2f734 100644
+--- a/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_syscfg.c
++++ b/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_syscfg.c
+@@ -17,6 +17,7 @@
+  */
+ #define SYSCFG_CMPCR				0x20U
+ #define SYSCFG_CMPENSETR			0x24U
++#define SYSCFG_CMPENCLRR			0x28U
+ 
+ /*
+  * SYSCFG_CMPCR Register
+@@ -71,6 +72,9 @@ void stm32mp_syscfg_disable_io_compensation(void)
+ 	vaddr_t syscfg_base = get_syscfg_base();
+ 	uint32_t value = 0;
+ 
++	 /* No refcount balance needed on non-secure SYSCFG clock */
++	stm32_clock_enable(SYSCFG);
++
+ 	value = io_read32(syscfg_base + SYSCFG_CMPCR) >>
+ 		SYSCFG_CMPCR_ANSRC_SHIFT;
+ 
+@@ -84,9 +88,8 @@ void stm32mp_syscfg_disable_io_compensation(void)
+ 
+ 	DMSG("SYSCFG.cmpcr = %#"PRIx32, io_read32(syscfg_base + SYSCFG_CMPCR));
+ 
+-	io_clrbits32(syscfg_base + SYSCFG_CMPENSETR, SYSCFG_CMPENSETR_MPU_EN);
++	io_setbits32(syscfg_base + SYSCFG_CMPENCLRR, SYSCFG_CMPENSETR_MPU_EN);
+ 
+-	stm32_clock_disable(SYSCFG);
+ 	stm32_clock_disable(CK_CSI);
+ }
+ 
+diff --git a/core/arch/arm/plat-stm32mp1/main.c b/core/arch/arm/plat-stm32mp1/main.c
+index 07af9fc1..b80a25b2 100644
+--- a/core/arch/arm/plat-stm32mp1/main.c
++++ b/core/arch/arm/plat-stm32mp1/main.c
+@@ -1,7 +1,7 @@
+ // SPDX-License-Identifier: BSD-2-Clause
+ /*
+- * Copyright (c) 2017-2020, STMicroelectronics
+  * Copyright (c) 2016-2018, Linaro Limited
++ * Copyright (c) 2017-2021, STMicroelectronics
+  */
+ 
+ #include <boot_api.h>
+@@ -260,6 +260,26 @@ static TEE_Result initialize_pll1_settings(void)
+ /* Compute PLL1 settings once PMIC init is completed */
+ driver_init_late(initialize_pll1_settings);
+ 
++static TEE_Result disable_usb_phy_regulator(void)
++{
++	if (stm32mp_dt_pmic_status() > 0) {
++		const char *name = stm32mp_pmic_get_usb_supply_name();
++
++		if (!name)
++			return TEE_SUCCESS;
++
++		stm32mp_get_pmic();
++		if (stpmic1_regulator_disable(name))
++			panic();
++
++		stm32mp_put_pmic();
++	}
++
++	return TEE_SUCCESS;
++}
++
++/* Disable USB regulator to avoid initialization issues */
++driver_init_late(disable_usb_phy_regulator);
+ #endif
+ 
+ static uintptr_t stm32_dbgmcu_base(void)
+diff --git a/scripts/sign_rproc_fw.py b/scripts/sign_rproc_fw.py
+index 0fd0a875..4248ed28 100755
+--- a/scripts/sign_rproc_fw.py
++++ b/scripts/sign_rproc_fw.py
+@@ -4,14 +4,25 @@
+ # Copyright (C) 2020, STMicroelectronics - All Rights Reserved
+ #
+ 
+-from elftools.elf.elffile import ELFFile
+-from elftools.elf.sections import SymbolTableSection
+-from elftools.elf.enums import *
++try:
++    from elftools.elf.elffile import ELFFile
++    from elftools.elf.sections import SymbolTableSection
++    from elftools.elf.enums import ENUM_P_TYPE_BASE
++    from elftools.elf.enums import *
++except ImportError:
++    print("""
++***
++ERROR: pyelftools python module is not installed or version < 0.25.
++***
++""")
++    raise
++
+ from Cryptodome.Hash import SHA256
+ from Cryptodome.Signature import pkcs1_15
+ from Cryptodome.PublicKey import RSA
+ from Cryptodome.Signature import DSS
+ from Cryptodome.PublicKey import ECC
++import os
+ import sys
+ import struct
+ import logging
+@@ -113,7 +124,7 @@ class SegmentHash(object):
+             logging.debug("hash computed: %s" % seg.hash)
+             del h
+             struct.pack_into('<I', self._bufview_, self._offset,
+-                             ENUM_P_TYPE[seg.header.p_type])
++                             ENUM_P_TYPE_BASE[seg.header.p_type])
+             self._offset += 4
+             struct.pack_into('<7I', self._bufview_, self._offset,
+                              seg.header.p_offset, seg.header.p_vaddr,
+@@ -209,6 +220,8 @@ def get_args(logger):
+     import textwrap
+     command_base = ['sign']
+     command_choices = command_base
++    default_key = os.path.abspath(os.path.dirname(__file__)) + \
++        '/../keys/default_rproc.pem'
+ 
+     parser = ArgumentParser(
+         description='Sign a remote processor firmware loadable by OP-TEE.',
+@@ -219,13 +232,17 @@ def get_args(logger):
+         '                 Takes arguments --in, --out --key\n' +
+         '   %(prog)s --help  show available commands and arguments\n\n',
+         formatter_class=RawDescriptionHelpFormatter,
++        epilog=textwrap.dedent(
++            '''If no key is specified, the script will default try to ''' +
++            '''use the following private key:''') + '\n' + default_key
+         )
+     parser.add_argument(
+         'command', choices=command_choices, nargs='?',
+         default='sign',
+         help='Command, one of [' + ', '.join(command_base) + ']')
+-    parser.add_argument('--key', required=True,
++    parser.add_argument('--key', required=False,
+                         help='Name of signing key file',
++                        default=default_key,
+                         dest='keyf')
+     parser.add_argument('--key_info', required=False,
+                         help='Name file containing extra key information',
+@@ -288,7 +305,6 @@ def main():
+     from Cryptodome.PublicKey import RSA
+     import base64
+     import logging
+-    import os
+     import struct
+ 
+     logging.basicConfig()
+diff --git a/ta/remoteproc/elf_parser.c b/ta/remoteproc/elf_parser.c
+index 59b7e011..c9854785 100644
+--- a/ta/remoteproc/elf_parser.c
++++ b/ta/remoteproc/elf_parser.c
+@@ -138,6 +138,11 @@ int e32_parser_find_rsc_table(uint8_t *fw, size_t fw_size,
+ 		if (strcmp(name_table + shdr->sh_name, ".resource_table"))
+ 			continue;
+ 
++		if (!size) {
++			IMSG("Ignore empty resource table section");
++			return TEE_ERROR_NO_DATA;
++		}
++
+ 		if (offset + size > fw_size || offset + size < size) {
+ 			EMSG("Resource table truncated");
+ 			return TEE_ERROR_BAD_FORMAT;
+-- 
+2.25.1
+
