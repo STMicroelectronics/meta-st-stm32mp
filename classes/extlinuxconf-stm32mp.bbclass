@@ -98,9 +98,9 @@ def create_extlinux_file(cfile, labels, data):
             if len(labels.split()) > 1:
                 cfgfile.write('menu title Select the boot mode\n')
 
-            splashscreen_name = localdata.getVar('UBOOT_SPLASH_IMAGE')
+            splashscreen_name = localdata.getVar('UBOOT_EXTLINUX_SPLASH')
             if not splashscreen_name:
-                bb.warn('UBOOT_SPLASH_IMAGE not defined')
+                bb.warn('UBOOT_EXTLINUX_SPLASH not defined')
             else:
                 cfgfile.write('MENU BACKGROUND /%s.bmp\n' % (splashscreen_name))
 
@@ -262,6 +262,15 @@ python do_create_multiextlinux_config() {
                         break
                 # Manage new config file creation
                 if extra_extlinuxlabels != "":
+                    socname_list =  d.getVar('STM32MP_SOC_NAME')
+                    if socname_list and len(socname_list.split()) > 0:
+                        for soc in socname_list.split():
+                            if config.find(soc) > -1:
+                                if d.getVar('UBOOT_EXTLINUX_SPLASH_%s' % soc):
+                                    splash = d.getVar('UBOOT_EXTLINUX_SPLASH_%s' % soc)
+                                    bb.note(">>> Specific configuration for SPLASH Screen detected with configuration: %s" % config)
+                                    bb.note(">>> Set UBOOT_EXTLINUX_SPLASH to %s" % splash)
+                                    d.setVar('UBOOT_EXTLINUX_SPLASH', splash)
                     bb.note(">>> Create %s/%s_extlinux.conf file for %s labels" % (subdir, config, extra_extlinuxlabels))
                     create_extlinux_file(extra_cfile, extra_extlinuxlabels, d)
 }
