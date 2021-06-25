@@ -11,6 +11,9 @@ UBOOT_EXTLINUX_DEFAULT_LABEL ?= "OpenSTLinux"
 # Define default INITRD for all configs
 INITRD_IMAGE ??= ""
 UBOOT_EXTLINUX_INITRD ?= "${@bb.utils.contains('COMBINED_FEATURES', 'initrd', '/${INITRD_IMAGE}', '', d)}"
+# Define default SPLASH SCREEN
+UBOOT_EXTLINUX_SPLASH ?= "${UBOOT_SPLASH_LANDSCAPE_IMAGE}"
+UBOOT_EXTLINUX_SPLASH_stm32mp15 ?= "${UBOOT_SPLASH_PORTRAIT_IMAGE}"
 
 UBOOT_EXTLINUX_KERNEL_ARGS ?= "rootwait rw"
 UBOOT_EXTLINUX_KERNEL_ARGS_append += " ${@bb.utils.contains('ST_DEBUG_TRACE', '1', '', '${ST_CMD_LINE_DEBUG_TRACE}', d)} "

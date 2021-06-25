@@ -529,7 +529,8 @@ UBOOT_CONFIG[trusted_stm32mp15] = "stm32mp15_trusted_defconfig,,${BINARY_NAME}"
 UBOOT_DEVICETREE = "${STM32MP_DEVICETREE}"
 
 # Define U-boot splashscreen file naming
-UBOOT_SPLASH_IMAGE = "splash"
+UBOOT_SPLASH_PORTRAIT_IMAGE = "splash_portrait"
+UBOOT_SPLASH_LANDSCAPE_IMAGE = "splash_landscape"
 
 # Enable MTDPART check for UBOOT_CONFIG
 UBOOT_MTDPART_CHECK_ENABLE ?= "${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee trusted', d.getVarFlag('UBOOT_CONFIG', 'trusted_stm32mp15').split(',')[0], '', d)}"
