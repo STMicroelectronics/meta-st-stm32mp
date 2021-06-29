@@ -7,8 +7,10 @@ TF_A_EXTRACONF_LEGACY += "STM32MP_SPI_NAND=1"
 TF_A_EXTRACONF_LEGACY += "STM32MP_USE_STM32IMAGE=1"
 
 # Define config for each TF_A_CONFIG
-TF_A_CONFIG[optee]   ?= "${STM32MP_DEVICETREE},AARCH32_SP=optee ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', '${TF_A_EXTRACONF_LEGACY}', d)},,${@bb.utils.contains('MACHINE_FEATURES', 'fip', bb.utils.contains('FIP_BL31_ENABLE', '1', 'bl31 dtbs', 'dtbs', d), '', d)}"
-TF_A_CONFIG[trusted] ?= "${STM32MP_DEVICETREE},AARCH32_SP=sp_min ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', '${TF_A_EXTRACONF_LEGACY}', d)},,${@bb.utils.contains('MACHINE_FEATURES', 'fip', 'bl32 dtbs', '', d)}"
+#   TF_A_CONFIG[config] ?= "<list of devicetree>,<extra opt flags>,<binary basename (default: 'tf-a')>,<make target (default: 'all')>,<type of binary to deploy: [bl2 bl31 bl32 fwconfig] (default 'bl2')>"
+
+TF_A_CONFIG[optee]   ?= "${STM32MP_DEVICETREE},AARCH32_SP=optee ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', '${TF_A_EXTRACONF_LEGACY}', d)},,${@bb.utils.contains('MACHINE_FEATURES', 'fip', bb.utils.contains('FIP_BL31_ENABLE', '1', 'bl31 dtbs', 'dtbs', d), '', d)},${@bb.utils.contains('MACHINE_FEATURES', 'fip', bb.utils.contains('FIP_BL31_ENABLE', '1', 'bl31 fwconfig', 'fwconfig', d), '', d)}"
+TF_A_CONFIG[trusted] ?= "${STM32MP_DEVICETREE},AARCH32_SP=sp_min ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', '${TF_A_EXTRACONF_LEGACY}', d)},,${@bb.utils.contains('MACHINE_FEATURES', 'fip', 'bl32 dtbs', '', d)},${@bb.utils.contains('MACHINE_FEATURES', 'fip', 'bl32 fwconfig', '', d)}"
 
 TF_A_CONFIG[serialboot] ?= "${STM32MP_DEVICETREE},AARCH32_SP=sp_min STM32MP_UART_PROGRAMMER=1 STM32MP_USB_PROGRAMMER=1 STM32MP_USE_STM32IMAGE=1"
 
