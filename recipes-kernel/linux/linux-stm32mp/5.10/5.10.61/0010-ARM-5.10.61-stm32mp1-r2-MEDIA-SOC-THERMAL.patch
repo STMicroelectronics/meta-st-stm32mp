@@ -1,13 +1,11 @@
-From 88453f29216e4dc473683b0fa9fe5e3e7ae0bff2 Mon Sep 17 00:00:00 2001
-From: Romuald JEANNE <romuald.jeanne@st.com>
-Date: Tue, 16 Mar 2021 09:11:20 +0100
-Subject: [PATCH 10/22] ARM 5.10.10-stm32mp1-r1 MEDIA-SOC-THERMAL
+From 75eede33771d5a5da7fcccae80f2b2682b4897b3 Mon Sep 17 00:00:00 2001
+From: Lionel Vitte <lionel.vitte@st.com>
+Date: Thu, 14 Oct 2021 16:51:46 +0200
+Subject: [PATCH 10/23] ARM 5.10.61-stm32mp1-r2 MEDIA-SOC-THERMAL
 
-Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
 ---
- drivers/media/cec/platform/Makefile       |   1 +
  drivers/media/i2c/ov5640.c                | 111 +++++++---
- drivers/media/platform/stm32/stm32-dcmi.c | 122 +++++++++--
+ drivers/media/platform/stm32/stm32-dcmi.c | 173 +++++++++++++---
  drivers/media/v4l2-core/v4l2-fwnode.c     |   3 +
  drivers/soc/Kconfig                       |   1 +
  drivers/soc/Makefile                      |   1 +
@@ -18,26 +16,15 @@ Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
  drivers/thermal/st/stm_thermal.c          |  30 +--
  include/dt-bindings/soc/stm32-hdp.h       | 108 ++++++++++
  include/media/v4l2-fwnode.h               |   2 +
- 13 files changed, 784 insertions(+), 68 deletions(-)
+ 12 files changed, 824 insertions(+), 78 deletions(-)
  create mode 100644 drivers/soc/st/Kconfig
  create mode 100644 drivers/soc/st/Makefile
  create mode 100644 drivers/soc/st/stm32_hdp.c
  create mode 100644 drivers/soc/st/stm32_pm_domain.c
  create mode 100644 include/dt-bindings/soc/stm32-hdp.h
 
-diff --git a/drivers/media/cec/platform/Makefile b/drivers/media/cec/platform/Makefile
-index 3a947159b25a..ea6f8ee8161c 100644
---- a/drivers/media/cec/platform/Makefile
-+++ b/drivers/media/cec/platform/Makefile
-@@ -10,5 +10,6 @@ obj-$(CONFIG_CEC_MESON_AO)	+= meson/
- obj-$(CONFIG_CEC_SAMSUNG_S5P)	+= s5p/
- obj-$(CONFIG_CEC_SECO)		+= seco/
- obj-$(CONFIG_CEC_STI)		+= sti/
-+obj-$(CONFIG_CEC_STM32)		+= stm32/
- obj-$(CONFIG_CEC_TEGRA)		+= tegra/
- 
 diff --git a/drivers/media/i2c/ov5640.c b/drivers/media/i2c/ov5640.c
-index 8f0812e85901..d7d36ad863ea 100644
+index 8f0812e85..d7d36ad86 100644
 --- a/drivers/media/i2c/ov5640.c
 +++ b/drivers/media/i2c/ov5640.c
 @@ -65,6 +65,7 @@
@@ -338,7 +325,7 @@ index 8f0812e85901..d7d36ad863ea 100644
  		ret = hdl->error;
  		goto free_ctrls;
 diff --git a/drivers/media/platform/stm32/stm32-dcmi.c b/drivers/media/platform/stm32/stm32-dcmi.c
-index fd1c41cba52f..60ef8a65f16c 100644
+index fd1c41cba..af7fe3e37 100644
 --- a/drivers/media/platform/stm32/stm32-dcmi.c
 +++ b/drivers/media/platform/stm32/stm32-dcmi.c
 @@ -95,6 +95,9 @@ enum state {
@@ -351,7 +338,16 @@ index fd1c41cba52f..60ef8a65f16c 100644
  #define TIMEOUT_MS	1000
  
  #define OVERRUN_ERROR_THRESHOLD	3
-@@ -157,6 +160,7 @@ struct stm32_dcmi {
+@@ -120,7 +123,7 @@ struct dcmi_framesize {
+ struct dcmi_buf {
+ 	struct vb2_v4l2_buffer	vb;
+ 	bool			prepared;
+-	dma_addr_t		paddr;
++	struct sg_table		sgt;
+ 	size_t			size;
+ 	struct list_head	list;
+ };
+@@ -157,11 +160,13 @@ struct stm32_dcmi {
  	struct vb2_queue		queue;
  
  	struct v4l2_fwnode_bus_parallel	bus;
@@ -359,7 +355,13 @@ index fd1c41cba52f..60ef8a65f16c 100644
  	struct completion		complete;
  	struct clk			*mclk;
  	enum state			state;
-@@ -324,7 +328,7 @@ static int dcmi_start_dma(struct stm32_dcmi *dcmi,
+ 	struct dma_chan			*dma_chan;
+ 	dma_cookie_t			dma_cookie;
++	u32				dma_max_burst;
+ 	u32				misr;
+ 	int				errors_count;
+ 	int				overrun_count;
+@@ -324,20 +329,19 @@ static int dcmi_start_dma(struct stm32_dcmi *dcmi,
  	}
  
  	/*
@@ -368,6 +370,22 @@ index fd1c41cba52f..60ef8a65f16c 100644
  	 * dmaengine_prep_slave_single() and dmaengine_submit()
  	 * by locking the whole DMA submission sequence
  	 */
+ 	mutex_lock(&dcmi->dma_lock);
+ 
+ 	/* Prepare a DMA transaction */
+-	desc = dmaengine_prep_slave_single(dcmi->dma_chan, buf->paddr,
+-					   buf->size,
++	desc = dmaengine_prep_slave_sg(dcmi->dma_chan, buf->sgt.sgl,
++					   buf->sgt.nents,
+ 					   DMA_DEV_TO_MEM,
+ 					   DMA_PREP_INTERRUPT);
+ 	if (!desc) {
+-		dev_err(dcmi->dev, "%s: DMA dmaengine_prep_slave_single failed for buffer phy=%pad size=%zu\n",
+-			__func__, &buf->paddr, buf->size);
++		dev_err(dcmi->dev, "%s: DMA dmaengine_prep_slave_sg failed\n", __func__);
+ 		mutex_unlock(&dcmi->dma_lock);
+ 		return -EINVAL;
+ 	}
 @@ -438,7 +442,7 @@ static void dcmi_process_jpeg(struct stm32_dcmi *dcmi)
  	}
  
@@ -377,7 +395,59 @@ index fd1c41cba52f..60ef8a65f16c 100644
  
  	/* Restart capture */
  	if (dcmi_restart_capture(dcmi))
-@@ -777,6 +781,23 @@ static int dcmi_start_streaming(struct vb2_queue *vq, unsigned int count)
+@@ -529,6 +533,10 @@ static int dcmi_buf_prepare(struct vb2_buffer *vb)
+ 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
+ 	struct dcmi_buf *buf = container_of(vbuf, struct dcmi_buf, vb);
+ 	unsigned long size;
++	unsigned int num_sgs;
++	dma_addr_t dma_buf;
++	struct scatterlist *sg;
++	int i, ret;
+ 
+ 	size = dcmi->fmt.fmt.pix.sizeimage;
+ 
+@@ -542,15 +550,35 @@ static int dcmi_buf_prepare(struct vb2_buffer *vb)
+ 
+ 	if (!buf->prepared) {
+ 		/* Get memory addresses */
+-		buf->paddr =
+-			vb2_dma_contig_plane_dma_addr(&buf->vb.vb2_buf, 0);
+ 		buf->size = vb2_plane_size(&buf->vb.vb2_buf, 0);
+-		buf->prepared = true;
++		if (buf->size <= dcmi->dma_max_burst)
++			num_sgs = 1;
++		else
++			num_sgs = DIV_ROUND_UP(buf->size, dcmi->dma_max_burst);
++
++		ret = sg_alloc_table(&buf->sgt, num_sgs, GFP_ATOMIC);
++		if (ret) {
++			dev_err(dcmi->dev, "sg table alloc failed\n");
++			return ret;
++		}
+ 
+-		vb2_set_plane_payload(&buf->vb.vb2_buf, 0, buf->size);
++		dma_buf = vb2_dma_contig_plane_dma_addr(&buf->vb.vb2_buf, 0);
+ 
+ 		dev_dbg(dcmi->dev, "buffer[%d] phy=%pad size=%zu\n",
+-			vb->index, &buf->paddr, buf->size);
++			vb->index, &dma_buf, buf->size);
++
++		for_each_sg(buf->sgt.sgl, sg, num_sgs, i) {
++			size_t bytes = min_t(size_t, size, dcmi->dma_max_burst);
++
++			sg_dma_address(sg) = dma_buf;
++			sg_dma_len(sg) = bytes;
++			dma_buf += bytes;
++			size -= bytes;
++		}
++
++		buf->prepared = true;
++
++		vb2_set_plane_payload(&buf->vb.vb2_buf, 0, buf->size);
+ 	}
+ 
+ 	return 0;
+@@ -777,6 +805,23 @@ static int dcmi_start_streaming(struct vb2_queue *vq, unsigned int count)
  	if (dcmi->bus.flags & V4L2_MBUS_PCLK_SAMPLE_RISING)
  		val |= CR_PCKPOL;
  
@@ -401,7 +471,7 @@ index fd1c41cba52f..60ef8a65f16c 100644
  	reg_write(dcmi->regs, DCMI_CR, val);
  
  	/* Set crop */
-@@ -784,8 +805,31 @@ static int dcmi_start_streaming(struct vb2_queue *vq, unsigned int count)
+@@ -784,8 +829,31 @@ static int dcmi_start_streaming(struct vb2_queue *vq, unsigned int count)
  		dcmi_set_crop(dcmi);
  
  	/* Enable jpeg capture */
@@ -435,7 +505,7 @@ index fd1c41cba52f..60ef8a65f16c 100644
  
  	/* Enable dcmi */
  	reg_set(dcmi->regs, DCMI_CR, CR_ENABLE);
-@@ -882,7 +926,7 @@ static void dcmi_stop_streaming(struct vb2_queue *vq)
+@@ -882,7 +950,7 @@ static void dcmi_stop_streaming(struct vb2_queue *vq)
  
  	/* Stop all pending DMA operations */
  	mutex_lock(&dcmi->dma_lock);
@@ -444,7 +514,7 @@ index fd1c41cba52f..60ef8a65f16c 100644
  	mutex_unlock(&dcmi->dma_lock);
  
  	pm_runtime_put(dcmi->dev);
-@@ -1067,8 +1111,9 @@ static int dcmi_set_fmt(struct stm32_dcmi *dcmi, struct v4l2_format *f)
+@@ -1067,8 +1135,9 @@ static int dcmi_set_fmt(struct stm32_dcmi *dcmi, struct v4l2_format *f)
  	if (ret)
  		return ret;
  
@@ -456,7 +526,7 @@ index fd1c41cba52f..60ef8a65f16c 100644
  		dcmi->do_crop = false;
  
  	/* pix to mbus format */
-@@ -1574,6 +1619,22 @@ static const struct dcmi_format dcmi_formats[] = {
+@@ -1574,6 +1643,22 @@ static const struct dcmi_format dcmi_formats[] = {
  		.fourcc = V4L2_PIX_FMT_JPEG,
  		.mbus_code = MEDIA_BUS_FMT_JPEG_1X8,
  		.bpp = 1,
@@ -479,7 +549,7 @@ index fd1c41cba52f..60ef8a65f16c 100644
  	},
  };
  
-@@ -1592,6 +1653,11 @@ static int dcmi_formats_init(struct stm32_dcmi *dcmi)
+@@ -1592,6 +1677,11 @@ static int dcmi_formats_init(struct stm32_dcmi *dcmi)
  			if (dcmi_formats[i].mbus_code != mbus_code.code)
  				continue;
  
@@ -491,7 +561,7 @@ index fd1c41cba52f..60ef8a65f16c 100644
  			/* Code supported, have we got this fourcc yet? */
  			for (j = 0; j < num_fmts; j++)
  				if (sd_fmts[j]->fourcc ==
-@@ -1745,6 +1811,15 @@ static int dcmi_graph_notify_bound(struct v4l2_async_notifier *notifier,
+@@ -1745,6 +1835,15 @@ static int dcmi_graph_notify_bound(struct v4l2_async_notifier *notifier,
  
  	dev_dbg(dcmi->dev, "Subdev \"%s\" bound\n", subdev->name);
  
@@ -507,7 +577,7 @@ index fd1c41cba52f..60ef8a65f16c 100644
  	/*
  	 * Link this sub-device to DCMI, it could be
  	 * a parallel camera sensor or a bridge
-@@ -1757,10 +1832,11 @@ static int dcmi_graph_notify_bound(struct v4l2_async_notifier *notifier,
+@@ -1757,10 +1856,11 @@ static int dcmi_graph_notify_bound(struct v4l2_async_notifier *notifier,
  				    &dcmi->vdev->entity, 0,
  				    MEDIA_LNK_FL_IMMUTABLE |
  				    MEDIA_LNK_FL_ENABLED);
@@ -521,7 +591,15 @@ index fd1c41cba52f..60ef8a65f16c 100644
  		dev_dbg(dcmi->dev, "DCMI is now linked to \"%s\"\n",
  			subdev->name);
  
-@@ -1851,7 +1927,9 @@ static int dcmi_probe(struct platform_device *pdev)
+@@ -1835,6 +1935,7 @@ static int dcmi_probe(struct platform_device *pdev)
+ 	struct stm32_dcmi *dcmi;
+ 	struct vb2_queue *q;
+ 	struct dma_chan *chan;
++	struct dma_slave_caps caps;
+ 	struct clk *mclk;
+ 	int irq;
+ 	int ret = 0;
+@@ -1851,7 +1952,9 @@ static int dcmi_probe(struct platform_device *pdev)
  
  	dcmi->rstc = devm_reset_control_get_exclusive(&pdev->dev, NULL);
  	if (IS_ERR(dcmi->rstc)) {
@@ -532,7 +610,7 @@ index fd1c41cba52f..60ef8a65f16c 100644
  		return PTR_ERR(dcmi->rstc);
  	}
  
-@@ -1873,9 +1951,18 @@ static int dcmi_probe(struct platform_device *pdev)
+@@ -1873,9 +1976,18 @@ static int dcmi_probe(struct platform_device *pdev)
  		dev_err(&pdev->dev, "CSI bus not supported\n");
  		return -ENODEV;
  	}
@@ -551,7 +629,20 @@ index fd1c41cba52f..60ef8a65f16c 100644
  
  	irq = platform_get_irq(pdev, 0);
  	if (irq <= 0)
-@@ -1972,15 +2059,6 @@ static int dcmi_probe(struct platform_device *pdev)
+@@ -1917,6 +2029,12 @@ static int dcmi_probe(struct platform_device *pdev)
+ 		return ret;
+ 	}
+ 
++	dcmi->dma_max_burst = UINT_MAX;
++	ret = dma_get_slave_caps(chan, &caps);
++	if (!ret && caps.max_sg_burst)
++		dcmi->dma_max_burst = caps.max_sg_burst	*
++				      DMA_SLAVE_BUSWIDTH_4_BYTES;
++
+ 	spin_lock_init(&dcmi->irqlock);
+ 	mutex_init(&dcmi->lock);
+ 	mutex_init(&dcmi->dma_lock);
+@@ -1972,15 +2090,6 @@ static int dcmi_probe(struct platform_device *pdev)
  	}
  	dcmi->vdev->entity.flags |= MEDIA_ENT_FL_DEFAULT;
  
@@ -567,7 +658,7 @@ index fd1c41cba52f..60ef8a65f16c 100644
  	/* Buffer queue */
  	q->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
  	q->io_modes = VB2_MMAP | VB2_READ | VB2_DMABUF;
-@@ -2001,7 +2079,7 @@ static int dcmi_probe(struct platform_device *pdev)
+@@ -2001,7 +2110,7 @@ static int dcmi_probe(struct platform_device *pdev)
  
  	ret = dcmi_graph_init(dcmi);
  	if (ret < 0)
@@ -576,7 +667,7 @@ index fd1c41cba52f..60ef8a65f16c 100644
  
  	/* Reset device */
  	ret = reset_control_assert(dcmi->rstc);
-@@ -2027,7 +2105,10 @@ static int dcmi_probe(struct platform_device *pdev)
+@@ -2027,7 +2136,10 @@ static int dcmi_probe(struct platform_device *pdev)
  	return 0;
  
  err_cleanup:
@@ -587,7 +678,7 @@ index fd1c41cba52f..60ef8a65f16c 100644
  err_media_entity_cleanup:
  	media_entity_cleanup(&dcmi->vdev->entity);
  err_device_release:
-@@ -2049,6 +2130,7 @@ static int dcmi_remove(struct platform_device *pdev)
+@@ -2049,6 +2161,7 @@ static int dcmi_remove(struct platform_device *pdev)
  
  	v4l2_async_notifier_unregister(&dcmi->notifier);
  	v4l2_async_notifier_cleanup(&dcmi->notifier);
@@ -596,7 +687,7 @@ index fd1c41cba52f..60ef8a65f16c 100644
  	v4l2_device_unregister(&dcmi->v4l2_dev);
  	media_device_cleanup(&dcmi->mdev);
 diff --git a/drivers/media/v4l2-core/v4l2-fwnode.c b/drivers/media/v4l2-core/v4l2-fwnode.c
-index dfc53d11053f..7d0e2f5d1700 100644
+index dfc53d110..7d0e2f5d1 100644
 --- a/drivers/media/v4l2-core/v4l2-fwnode.c
 +++ b/drivers/media/v4l2-core/v4l2-fwnode.c
 @@ -356,6 +356,9 @@ v4l2_fwnode_endpoint_parse_parallel_bus(struct fwnode_handle *fwnode,
@@ -610,7 +701,7 @@ index dfc53d11053f..7d0e2f5d1700 100644
  	default:
  		bus->flags = flags;
 diff --git a/drivers/soc/Kconfig b/drivers/soc/Kconfig
-index 425ab6f7e375..30afdfbfd9cc 100644
+index 425ab6f7e..30afdfbfd 100644
 --- a/drivers/soc/Kconfig
 +++ b/drivers/soc/Kconfig
 @@ -15,6 +15,7 @@ source "drivers/soc/renesas/Kconfig"
@@ -622,7 +713,7 @@ index 425ab6f7e375..30afdfbfd9cc 100644
  source "drivers/soc/tegra/Kconfig"
  source "drivers/soc/ti/Kconfig"
 diff --git a/drivers/soc/Makefile b/drivers/soc/Makefile
-index 36452bed86ef..6b957db9a9bb 100644
+index 36452bed8..6b957db9a 100644
 --- a/drivers/soc/Makefile
 +++ b/drivers/soc/Makefile
 @@ -21,6 +21,7 @@ obj-y				+= renesas/
@@ -635,7 +726,7 @@ index 36452bed86ef..6b957db9a9bb 100644
  obj-y				+= ti/
 diff --git a/drivers/soc/st/Kconfig b/drivers/soc/st/Kconfig
 new file mode 100644
-index 000000000000..8ab604999db4
+index 000000000..8ab604999
 --- /dev/null
 +++ b/drivers/soc/st/Kconfig
 @@ -0,0 +1,17 @@
@@ -658,7 +749,7 @@ index 000000000000..8ab604999db4
 +endif # ARCH_STM32
 diff --git a/drivers/soc/st/Makefile b/drivers/soc/st/Makefile
 new file mode 100644
-index 000000000000..85905b7688ed
+index 000000000..85905b768
 --- /dev/null
 +++ b/drivers/soc/st/Makefile
 @@ -0,0 +1,2 @@
@@ -666,7 +757,7 @@ index 000000000000..85905b7688ed
 +obj-$(CONFIG_STM32_HDP) += stm32_hdp.o
 diff --git a/drivers/soc/st/stm32_hdp.c b/drivers/soc/st/stm32_hdp.c
 new file mode 100644
-index 000000000000..47687ebd1ffd
+index 000000000..47687ebd1
 --- /dev/null
 +++ b/drivers/soc/st/stm32_hdp.c
 @@ -0,0 +1,242 @@
@@ -914,7 +1005,7 @@ index 000000000000..47687ebd1ffd
 +module_platform_driver(hdp_driver);
 diff --git a/drivers/soc/st/stm32_pm_domain.c b/drivers/soc/st/stm32_pm_domain.c
 new file mode 100644
-index 000000000000..0386624c20f2
+index 000000000..0386624c2
 --- /dev/null
 +++ b/drivers/soc/st/stm32_pm_domain.c
 @@ -0,0 +1,212 @@
@@ -1131,7 +1222,7 @@ index 000000000000..0386624c20f2
 +}
 +core_initcall(stm32_pm_domains_init);
 diff --git a/drivers/thermal/st/stm_thermal.c b/drivers/thermal/st/stm_thermal.c
-index 5fd3fb8912a6..1e065a3323f9 100644
+index 5fd3fb891..1e065a332 100644
 --- a/drivers/thermal/st/stm_thermal.c
 +++ b/drivers/thermal/st/stm_thermal.c
 @@ -82,8 +82,7 @@
@@ -1215,7 +1306,7 @@ index 5fd3fb8912a6..1e065a3323f9 100644
  
 diff --git a/include/dt-bindings/soc/stm32-hdp.h b/include/dt-bindings/soc/stm32-hdp.h
 new file mode 100644
-index 000000000000..d98665327281
+index 000000000..d98665327
 --- /dev/null
 +++ b/include/dt-bindings/soc/stm32-hdp.h
 @@ -0,0 +1,108 @@
@@ -1328,7 +1419,7 @@ index 000000000000..d98665327281
 +
 +#endif /* _DT_BINDINGS_STM32_HDP_H */
 diff --git a/include/media/v4l2-fwnode.h b/include/media/v4l2-fwnode.h
-index ed0840f3d5df..598822e23e9e 100644
+index ed0840f3d..598822e23 100644
 --- a/include/media/v4l2-fwnode.h
 +++ b/include/media/v4l2-fwnode.h
 @@ -49,11 +49,13 @@ struct v4l2_fwnode_bus_mipi_csi2 {

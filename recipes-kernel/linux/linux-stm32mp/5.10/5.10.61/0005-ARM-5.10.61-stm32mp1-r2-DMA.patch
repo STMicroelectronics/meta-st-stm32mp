@@ -1,17 +1,17 @@
-From 8419770f37f0543bc5c2390651c46892dc520018 Mon Sep 17 00:00:00 2001
-From: Romuald JEANNE <romuald.jeanne@st.com>
-Date: Tue, 16 Mar 2021 08:58:56 +0100
-Subject: [PATCH 05/22] ARM 5.10.10-stm32mp1-r1 DMA
+From f7324af2c2808c281ecd773cdc1efd68026aa3fd Mon Sep 17 00:00:00 2001
+From: Lionel Vitte <lionel.vitte@st.com>
+Date: Thu, 14 Oct 2021 16:51:42 +0200
+Subject: [PATCH 05/23] ARM 5.10.61-stm32mp1-r2 DMA
 
 ---
  drivers/dma/dmaengine.c   |   34 ++
- drivers/dma/stm32-dma.c   | 1011 ++++++++++++++++++++++++++++++++-----
- drivers/dma/stm32-mdma.c  |  188 +++++--
+ drivers/dma/stm32-dma.c   | 1207 +++++++++++++++++++++++++++++++++----
+ drivers/dma/stm32-mdma.c  |  188 ++++--
  include/linux/dmaengine.h |   11 +
- 4 files changed, 1070 insertions(+), 174 deletions(-)
+ 4 files changed, 1272 insertions(+), 168 deletions(-)
 
 diff --git a/drivers/dma/dmaengine.c b/drivers/dma/dmaengine.c
-index 962cbb5e5f7f..1381f15eb6f2 100644
+index af3ee288b..8a0cf0d8a 100644
 --- a/drivers/dma/dmaengine.c
 +++ b/drivers/dma/dmaengine.c
 @@ -873,6 +873,33 @@ struct dma_chan *dma_request_chan(struct device *dev, const char *name)
@@ -63,7 +63,7 @@ index 962cbb5e5f7f..1381f15eb6f2 100644
   * dmaengine_get - register interest in dma_channels
   */
 diff --git a/drivers/dma/stm32-dma.c b/drivers/dma/stm32-dma.c
-index d0055d2f0b9a..1d89e0807ef0 100644
+index 1150aa90e..5dd476365 100644
 --- a/drivers/dma/stm32-dma.c
 +++ b/drivers/dma/stm32-dma.c
 @@ -14,12 +14,14 @@
@@ -147,10 +147,11 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  	struct stm32_dma_sg_req sg_req[];
  };
  
-@@ -206,6 +236,10 @@ struct stm32_dma_chan {
+@@ -206,6 +236,11 @@ struct stm32_dma_chan {
  	u32 threshold;
  	u32 mem_burst;
  	u32 mem_width;
++	enum dma_status status;
 +	struct stm32_dma_mdma mchan;
 +	u32 use_mdma;
 +	u32 sram_size;
@@ -158,7 +159,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  };
  
  struct stm32_dma_device {
-@@ -214,6 +248,7 @@ struct stm32_dma_device {
+@@ -214,6 +249,7 @@ struct stm32_dma_device {
  	struct clk *clk;
  	bool mem2mem;
  	struct stm32_dma_chan chan[STM32_DMA_MAX_CHANNELS];
@@ -166,7 +167,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  };
  
  static struct stm32_dma_device *stm32_dma_get_dev(struct stm32_dma_chan *chan)
-@@ -264,6 +299,7 @@ static int stm32_dma_get_width(struct stm32_dma_chan *chan,
+@@ -264,6 +300,7 @@ static int stm32_dma_get_width(struct stm32_dma_chan *chan,
  }
  
  static enum dma_slave_buswidth stm32_dma_get_max_width(u32 buf_len,
@@ -174,7 +175,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  						       u32 threshold)
  {
  	enum dma_slave_buswidth max_width;
-@@ -277,6 +313,9 @@ static enum dma_slave_buswidth stm32_dma_get_max_width(u32 buf_len,
+@@ -277,6 +314,9 @@ static enum dma_slave_buswidth stm32_dma_get_max_width(u32 buf_len,
  	       max_width > DMA_SLAVE_BUSWIDTH_1_BYTE)
  		max_width = max_width >> 1;
  
@@ -184,7 +185,30 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  	return max_width;
  }
  
-@@ -484,12 +523,20 @@ static void stm32_dma_stop(struct stm32_dma_chan *chan)
+@@ -374,6 +414,16 @@ static void stm32_dma_set_fifo_config(struct stm32_dma_chan *chan,
+ 	}
+ }
+ 
++static void stm32_dma_slave_caps(struct dma_chan *c, struct dma_slave_caps *caps)
++{
++	struct stm32_dma_chan *chan = to_stm32_dma_chan(c);
++
++	if (chan->use_mdma)
++		caps->max_sg_burst = 0; /* unlimited */
++	else
++		caps->max_sg_burst = STM32_DMA_ALIGNED_MAX_DATA_ITEMS;
++}
++
+ static int stm32_dma_slave_config(struct dma_chan *c,
+ 				  struct dma_slave_config *config)
+ {
+@@ -479,17 +529,26 @@ static void stm32_dma_stop(struct stm32_dma_chan *chan)
+ 	}
+ 
+ 	chan->busy = false;
++	chan->status = DMA_COMPLETE;
+ }
+ 
  static int stm32_dma_terminate_all(struct dma_chan *c)
  {
  	struct stm32_dma_chan *chan = to_stm32_dma_chan(c);
@@ -206,7 +230,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  		vchan_terminate_vdesc(&chan->desc->vdesc);
  		if (chan->busy)
  			stm32_dma_stop(chan);
-@@ -503,9 +550,103 @@ static int stm32_dma_terminate_all(struct dma_chan *c)
+@@ -503,9 +562,103 @@ static int stm32_dma_terminate_all(struct dma_chan *c)
  	return 0;
  }
  
@@ -310,7 +334,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  
  	vchan_synchronize(&chan->vchan);
  }
-@@ -528,65 +669,213 @@ static void stm32_dma_dump_reg(struct stm32_dma_chan *chan)
+@@ -528,7 +681,244 @@ static void stm32_dma_dump_reg(struct stm32_dma_chan *chan)
  	dev_dbg(chan2dev(chan), "SFCR:  0x%08x\n", sfcr);
  }
  
@@ -343,8 +367,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
 +		dma_unmap_single(ddev->dev, dma_src_buf, len, DMA_TO_DEVICE);
 +		return ret;
 +	}
- 
--static void stm32_dma_start_transfer(struct stm32_dma_chan *chan)
++
 +	reg.dma_scr =	STM32_DMA_SCR_DIR(STM32_DMA_MEM_TO_MEM) |
 +			STM32_DMA_SCR_PBURST(STM32_DMA_BURST_SINGLE) |
 +			STM32_DMA_SCR_MBURST(STM32_DMA_BURST_SINGLE) |
@@ -373,6 +396,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
 +	stm32_dma_dump_reg(chan);
 +
 +	chan->busy = true;
++	chan->status = DMA_IN_PROGRESS;
 +	/* Start DMA */
 +	reg.dma_scr |= STM32_DMA_SCR_EN;
 +	stm32_dma_write(dmadev, STM32_DMA_SCR(chan->id), reg.dma_scr);
@@ -386,6 +410,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
 +	}
 +
 +	chan->busy = false;
++	chan->status = DMA_COMPLETE;
 +
 +	ret = stm32_dma_disable_chan(chan);
 +	status = stm32_dma_irq_status(chan);
@@ -399,31 +424,21 @@ index d0055d2f0b9a..1d89e0807ef0 100644
 +}
 +
 +static int stm32_dma_mdma_flush_remaining(struct stm32_dma_chan *chan)
- {
- 	struct stm32_dma_device *dmadev = stm32_dma_get_dev(chan);
--	struct virt_dma_desc *vdesc;
++{
++	struct stm32_dma_device *dmadev = stm32_dma_get_dev(chan);
 +	struct stm32_dma_mdma *mchan = &chan->mchan;
- 	struct stm32_dma_sg_req *sg_req;
--	struct stm32_dma_chan_reg *reg;
--	u32 status;
++	struct stm32_dma_sg_req *sg_req;
 +	struct dma_device *ddev = mchan->chan->device;
 +	struct dma_async_tx_descriptor *desc = NULL;
 +	enum dma_status status;
 +	dma_addr_t src_buf, dst_buf;
 +	u32 residue, remain, len, dma_scr;
- 	int ret;
- 
--	ret = stm32_dma_disable_chan(chan);
--	if (ret < 0)
--		return;
++	int ret;
++
 +	residue = stm32_dma_get_remaining_bytes(chan);
 +	if (!residue)
 +		return 0;
- 
--	if (!chan->desc) {
--		vdesc = vchan_next_desc(&chan->vchan);
--		if (!vdesc)
--			return;
++
 +	dma_scr = stm32_dma_read(dmadev, STM32_DMA_SCR(chan->id));
 +	if (!(dma_scr & STM32_DMA_SCR_EN))
 +		return -EPERM;
@@ -448,15 +463,12 @@ index d0055d2f0b9a..1d89e0807ef0 100644
 +			residue = stm32_dma_get_remaining_bytes(chan);
 +		}
 +		stm32_dma_disable_chan(chan);
- 
--		list_del(&vdesc->node);
++
 +		src_buf = mchan->sram_buf + ((len / mchan->sram_period) & 0x1)
 +			* mchan->sram_period;
 +		dst_buf = sg_dma_address(&sg_req->stm32_sgl_req) + len -
 +			(len % mchan->sram_period);
- 
--		chan->desc = to_stm32_dma_desc(vdesc);
--		chan->next_sg = 0;
++
 +		desc = ddev->device_prep_dma_memcpy(mchan->chan,
 +						    dst_buf, src_buf,
 +						    len % mchan->sram_period,
@@ -474,43 +486,28 @@ index d0055d2f0b9a..1d89e0807ef0 100644
 +			dmaengine_terminate_async(mchan->chan);
 +			return -EBUSY;
 +		}
- 	}
- 
--	if (chan->next_sg == chan->desc->num_sgs)
--		chan->next_sg = 0;
++	}
++
 +	return 0;
 +}
- 
--	sg_req = &chan->desc->sg_req[chan->next_sg];
--	reg = &sg_req->chan_reg;
++
 +static void stm32_dma_start_transfer(struct stm32_dma_chan *chan);
- 
--	reg->dma_scr &= ~STM32_DMA_SCR_EN;
--	stm32_dma_write(dmadev, STM32_DMA_SCR(chan->id), reg->dma_scr);
--	stm32_dma_write(dmadev, STM32_DMA_SPAR(chan->id), reg->dma_spar);
--	stm32_dma_write(dmadev, STM32_DMA_SM0AR(chan->id), reg->dma_sm0ar);
--	stm32_dma_write(dmadev, STM32_DMA_SFCR(chan->id), reg->dma_sfcr);
--	stm32_dma_write(dmadev, STM32_DMA_SM1AR(chan->id), reg->dma_sm1ar);
--	stm32_dma_write(dmadev, STM32_DMA_SNDTR(chan->id), reg->dma_sndtr);
++
 +static void stm32_mdma_chan_complete(void *param,
 +				     const struct dmaengine_result *result)
 +{
 +	struct stm32_dma_chan *chan = param;
 +	int ret;
- 
--	chan->next_sg++;
++
 +	chan->busy = false;
++	chan->status = DMA_COMPLETE;
 +	if (result->result == DMA_TRANS_NOERROR) {
 +		ret = stm32_dma_mdma_flush_remaining(chan);
 +		if (ret) {
 +			dev_err(chan2dev(chan), "Can't flush DMA: %d\n", ret);
 +			return;
 +		}
- 
--	/* Clear interrupt status if it is there */
--	status = stm32_dma_irq_status(chan);
--	if (status)
--		stm32_dma_irq_clear(chan, status);
++
 +		if (chan->next_sg == chan->desc->num_sgs) {
 +			vchan_cookie_complete(&chan->desc->vdesc);
 +			chan->desc = NULL;
@@ -521,29 +518,22 @@ index d0055d2f0b9a..1d89e0807ef0 100644
 +			result->result);
 +	}
 +}
- 
--	if (chan->desc->cyclic)
--		stm32_dma_configure_next_sg(chan);
++
 +static int stm32_dma_mdma_start(struct stm32_dma_chan *chan,
 +				struct stm32_dma_sg_req *sg_req)
 +{
 +	struct stm32_dma_mdma *mchan = &chan->mchan;
 +	struct stm32_dma_mdma_desc *m_desc = &sg_req->m_desc;
 +	int ret;
- 
--	stm32_dma_dump_reg(chan);
++
 +	ret = dma_submit_error(dmaengine_submit(m_desc->desc));
 +	if (ret < 0) {
 +		dev_err(chan2dev(chan), "MDMA submit failed\n");
 +		goto error;
 +	}
- 
--	/* Start DMA */
--	reg->dma_scr |= STM32_DMA_SCR_EN;
--	stm32_dma_write(dmadev, STM32_DMA_SCR(chan->id), reg->dma_scr);
++
 +	dma_async_issue_pending(mchan->chan);
- 
--	chan->busy = true;
++
 +	/*
 +	 * In case of M2D transfer, we have to generate dummy DMA transfer to
 +	 * copy 1st sg data into SRAM
@@ -555,56 +545,54 @@ index d0055d2f0b9a..1d89e0807ef0 100644
 +			goto error;
 +		}
 +	}
- 
--	dev_dbg(chan2dev(chan), "vchan %pK: started\n", &chan->vchan);
++
 +	return 0;
 +error:
 +	return ret;
- }
- 
- static void stm32_dma_configure_next_sg(struct stm32_dma_chan *chan)
-@@ -618,22 +907,134 @@ static void stm32_dma_configure_next_sg(struct stm32_dma_chan *chan)
- 	}
- }
- 
--static void stm32_dma_handle_chan_done(struct stm32_dma_chan *chan)
-+static void stm32_dma_start_transfer(struct stm32_dma_chan *chan)
- {
--	if (chan->desc) {
--		if (chan->desc->cyclic) {
--			vchan_cyclic_callback(&chan->desc->vdesc);
--			chan->next_sg++;
--			stm32_dma_configure_next_sg(chan);
++}
++
++static void stm32_dma_configure_next_sg(struct stm32_dma_chan *chan)
++{
 +	struct stm32_dma_device *dmadev = stm32_dma_get_dev(chan);
-+	struct virt_dma_desc *vdesc;
 +	struct stm32_dma_sg_req *sg_req;
-+	struct stm32_dma_chan_reg *reg;
-+	u32 status;
-+	int ret;
++	u32 dma_scr, dma_sm0ar, dma_sm1ar, id;
 +
-+	ret = stm32_dma_disable_chan(chan);
-+	if (ret < 0)
-+		return;
-+
-+	if (!chan->desc) {
-+		vdesc = vchan_next_desc(&chan->vchan);
-+		if (!vdesc)
-+			return;
-+
-+		list_del(&vdesc->node);
-+
-+		chan->desc = to_stm32_dma_desc(vdesc);
-+		chan->next_sg = 0;
-+	} else {
-+		vdesc = &chan->desc->vdesc;
-+	}
++	id = chan->id;
++	dma_scr = stm32_dma_read(dmadev, STM32_DMA_SCR(id));
 +
 +	if (chan->next_sg == chan->desc->num_sgs)
 +		chan->next_sg = 0;
 +
 +	sg_req = &chan->desc->sg_req[chan->next_sg];
-+	reg = &sg_req->chan_reg;
 +
++	if (dma_scr & STM32_DMA_SCR_CT) {
++		dma_sm0ar = sg_req->chan_reg.dma_sm0ar;
++		stm32_dma_write(dmadev, STM32_DMA_SM0AR(id), dma_sm0ar);
++		dev_dbg(chan2dev(chan), "CT=1 <=> SM0AR: 0x%08x\n",
++			stm32_dma_read(dmadev, STM32_DMA_SM0AR(id)));
++	} else {
++		dma_sm1ar = sg_req->chan_reg.dma_sm1ar;
++		stm32_dma_write(dmadev, STM32_DMA_SM1AR(id), dma_sm1ar);
++		dev_dbg(chan2dev(chan), "CT=0 <=> SM1AR: 0x%08x\n",
++			stm32_dma_read(dmadev, STM32_DMA_SM1AR(id)));
++	}
++}
+ 
+ static void stm32_dma_start_transfer(struct stm32_dma_chan *chan)
+ {
+@@ -552,6 +942,8 @@ static void stm32_dma_start_transfer(struct stm32_dma_chan *chan)
+ 
+ 		chan->desc = to_stm32_dma_desc(vdesc);
+ 		chan->next_sg = 0;
++	} else {
++		vdesc = &chan->desc->vdesc;
+ 	}
+ 
+ 	if (chan->next_sg == chan->desc->num_sgs)
+@@ -560,6 +952,59 @@ static void stm32_dma_start_transfer(struct stm32_dma_chan *chan)
+ 	sg_req = &chan->desc->sg_req[chan->next_sg];
+ 	reg = &sg_req->chan_reg;
+ 
 +	/* Clear interrupt status if it is there */
 +	status = stm32_dma_irq_status(chan);
 +	if (status)
@@ -638,10 +626,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
 +				chan->desc = NULL;
 +				return;
 +			}
- 		} else {
--			chan->busy = false;
--			if (chan->next_sg == chan->desc->num_sgs) {
--				vchan_cookie_complete(&chan->desc->vdesc);
++		} else {
 +			reg->dma_scr &= ~STM32_DMA_SCR_TCIE;
 +		}
 +
@@ -653,38 +638,145 @@ index d0055d2f0b9a..1d89e0807ef0 100644
 +				reg->dma_scr |= STM32_DMA_SCR_DBM;
 +			ret = stm32_dma_mdma_start(chan, sg_req);
 +			if (ret < 0) {
- 				chan->desc = NULL;
++				chan->desc = NULL;
 +				return;
- 			}
--			stm32_dma_start_transfer(chan);
- 		}
- 	}
++			}
++		}
++	}
 +
 +	chan->next_sg++;
 +
-+	reg->dma_scr &= ~STM32_DMA_SCR_EN;
-+	stm32_dma_write(dmadev, STM32_DMA_SCR(chan->id), reg->dma_scr);
-+	stm32_dma_write(dmadev, STM32_DMA_SPAR(chan->id), reg->dma_spar);
-+	stm32_dma_write(dmadev, STM32_DMA_SM0AR(chan->id), reg->dma_sm0ar);
-+	stm32_dma_write(dmadev, STM32_DMA_SFCR(chan->id), reg->dma_sfcr);
-+	stm32_dma_write(dmadev, STM32_DMA_SM1AR(chan->id), reg->dma_sm1ar);
-+	stm32_dma_write(dmadev, STM32_DMA_SNDTR(chan->id), reg->dma_sndtr);
+ 	reg->dma_scr &= ~STM32_DMA_SCR_EN;
+ 	stm32_dma_write(dmadev, STM32_DMA_SCR(chan->id), reg->dma_scr);
+ 	stm32_dma_write(dmadev, STM32_DMA_SPAR(chan->id), reg->dma_spar);
+@@ -568,71 +1013,123 @@ static void stm32_dma_start_transfer(struct stm32_dma_chan *chan)
+ 	stm32_dma_write(dmadev, STM32_DMA_SM1AR(chan->id), reg->dma_sm1ar);
+ 	stm32_dma_write(dmadev, STM32_DMA_SNDTR(chan->id), reg->dma_sndtr);
+ 
+-	chan->next_sg++;
+-
+-	/* Clear interrupt status if it is there */
+-	status = stm32_dma_irq_status(chan);
+-	if (status)
+-		stm32_dma_irq_clear(chan, status);
+-
+ 	if (chan->desc->cyclic)
+ 		stm32_dma_configure_next_sg(chan);
+ 
+ 	stm32_dma_dump_reg(chan);
+ 
+ 	/* Start DMA */
++	chan->busy = true;
++	chan->status = DMA_IN_PROGRESS;
+ 	reg->dma_scr |= STM32_DMA_SCR_EN;
+ 	stm32_dma_write(dmadev, STM32_DMA_SCR(chan->id), reg->dma_scr);
+ 
+-	chan->busy = true;
+-
+ 	dev_dbg(chan2dev(chan), "vchan %pK: started\n", &chan->vchan);
+ }
+ 
+-static void stm32_dma_configure_next_sg(struct stm32_dma_chan *chan)
++static void stm32_dma_handle_chan_paused(struct stm32_dma_chan *chan)
++{
++	struct stm32_dma_device *dmadev = stm32_dma_get_dev(chan);
 +
-+	if (chan->desc->cyclic)
-+		stm32_dma_configure_next_sg(chan);
++	/*
++	 * Read and store current remaining data items and peripheral/memory addresses to be
++	 * updated on resume
++	 */
++	chan->chan_reg.dma_scr = stm32_dma_read(dmadev, STM32_DMA_SCR(chan->id));
++	/*
++	 * Transfer can be paused while between a previous resume and reconfiguration on transfer
++	 * complete. If transfer is cyclic and CIRC and DBM have been deactivated for resume, need
++	 * to set it here in SCR backup to ensure a good reconfiguration on transfer complete.
++	 */
++	if (chan->desc && chan->desc->cyclic) {
++		if (chan->desc->num_sgs == 1)
++			chan->chan_reg.dma_scr |= STM32_DMA_SCR_CIRC;
++		else
++			chan->chan_reg.dma_scr |= STM32_DMA_SCR_DBM;
++	}
++	chan->chan_reg.dma_sndtr = stm32_dma_read(dmadev, STM32_DMA_SNDTR(chan->id));
++
++	dev_dbg(chan2dev(chan), "vchan %pK: paused\n", &chan->vchan);
++}
++
++static void stm32_dma_post_resume_reconfigure(struct stm32_dma_chan *chan)
+ {
+ 	struct stm32_dma_device *dmadev = stm32_dma_get_dev(chan);
+ 	struct stm32_dma_sg_req *sg_req;
+-	u32 dma_scr, dma_sm0ar, dma_sm1ar, id;
++	u32 dma_scr, status, id;
+ 
+ 	id = chan->id;
+ 	dma_scr = stm32_dma_read(dmadev, STM32_DMA_SCR(id));
+ 
+-	if (dma_scr & STM32_DMA_SCR_DBM) {
+-		if (chan->next_sg == chan->desc->num_sgs)
+-			chan->next_sg = 0;
++	/* Clear interrupt status if it is there */
++	status = stm32_dma_irq_status(chan);
++	if (status)
++		stm32_dma_irq_clear(chan, status);
+ 
+-		sg_req = &chan->desc->sg_req[chan->next_sg];
++	if (!chan->next_sg)
++		sg_req = &chan->desc->sg_req[chan->desc->num_sgs - 1];
++	else
++		sg_req = &chan->desc->sg_req[chan->next_sg - 1];
+ 
+-		if (dma_scr & STM32_DMA_SCR_CT) {
+-			dma_sm0ar = sg_req->chan_reg.dma_sm0ar;
+-			stm32_dma_write(dmadev, STM32_DMA_SM0AR(id), dma_sm0ar);
+-			dev_dbg(chan2dev(chan), "CT=1 <=> SM0AR: 0x%08x\n",
+-				stm32_dma_read(dmadev, STM32_DMA_SM0AR(id)));
+-		} else {
+-			dma_sm1ar = sg_req->chan_reg.dma_sm1ar;
+-			stm32_dma_write(dmadev, STM32_DMA_SM1AR(id), dma_sm1ar);
+-			dev_dbg(chan2dev(chan), "CT=0 <=> SM1AR: 0x%08x\n",
+-				stm32_dma_read(dmadev, STM32_DMA_SM1AR(id)));
+-		}
++	/* Reconfigure NDTR with the initial value */
++	stm32_dma_write(dmadev, STM32_DMA_SNDTR(chan->id), sg_req->chan_reg.dma_sndtr);
++
++	/* Restore SPAR */
++	stm32_dma_write(dmadev, STM32_DMA_SPAR(id), sg_req->chan_reg.dma_spar);
++
++	/* Restore SM0AR/SM1AR whatever DBM/CT as they may have been modified */
++	stm32_dma_write(dmadev, STM32_DMA_SM0AR(id), sg_req->chan_reg.dma_sm0ar);
++	stm32_dma_write(dmadev, STM32_DMA_SM1AR(id), sg_req->chan_reg.dma_sm1ar);
++
++	/* Reactivate CIRC/DBM if needed */
++	if (chan->chan_reg.dma_scr & STM32_DMA_SCR_DBM) {
++		dma_scr |= STM32_DMA_SCR_DBM;
++		/* Restore CT */
++		if (chan->chan_reg.dma_scr & STM32_DMA_SCR_CT)
++			dma_scr &= ~STM32_DMA_SCR_CT;
++		else
++			dma_scr |= STM32_DMA_SCR_CT;
++	} else if (chan->chan_reg.dma_scr & STM32_DMA_SCR_CIRC) {
++		dma_scr |= STM32_DMA_SCR_CIRC;
+ 	}
++	stm32_dma_write(dmadev, STM32_DMA_SCR(chan->id), dma_scr);
++
++	stm32_dma_configure_next_sg(chan);
 +
 +	stm32_dma_dump_reg(chan);
 +
-+	/* Start DMA */
-+	chan->busy = true;
-+	reg->dma_scr |= STM32_DMA_SCR_EN;
-+	stm32_dma_write(dmadev, STM32_DMA_SCR(chan->id), reg->dma_scr);
++	dma_scr |= STM32_DMA_SCR_EN;
++	stm32_dma_write(dmadev, STM32_DMA_SCR(chan->id), dma_scr);
 +
-+	dev_dbg(chan2dev(chan), "vchan %pK: started\n", &chan->vchan);
-+}
-+
-+static void stm32_dma_handle_chan_done(struct stm32_dma_chan *chan)
-+{
++	dev_dbg(chan2dev(chan), "vchan %pK: reconfigured after pause/resume\n", &chan->vchan);
+ }
+ 
+-static void stm32_dma_handle_chan_done(struct stm32_dma_chan *chan)
++static void stm32_dma_handle_chan_done(struct stm32_dma_chan *chan, u32 scr)
+ {
+-	if (chan->desc) {
+-		if (chan->desc->cyclic) {
+-			vchan_cyclic_callback(&chan->desc->vdesc);
+-			chan->next_sg++;
 +	if (!chan->desc)
 +		return;
 +
@@ -693,22 +785,33 @@ index d0055d2f0b9a..1d89e0807ef0 100644
 +		if (chan->use_mdma)
 +			return;
 +		chan->next_sg++;
-+		stm32_dma_configure_next_sg(chan);
++		/* cyclic while CIRC/DBM disable => post resume reconfiguration needed */
++		if (!(scr & (STM32_DMA_SCR_CIRC | STM32_DMA_SCR_DBM)))
++			stm32_dma_post_resume_reconfigure(chan);
++		else if (scr & STM32_DMA_SCR_DBM)
+ 			stm32_dma_configure_next_sg(chan);
+-		} else {
+-			chan->busy = false;
+-			if (chan->next_sg == chan->desc->num_sgs) {
+-				vchan_cookie_complete(&chan->desc->vdesc);
+-				chan->desc = NULL;
+-			}
+-			stm32_dma_start_transfer(chan);
 +	} else {
 +		chan->busy = false;
++		chan->status = DMA_COMPLETE;
 +		if (chan->use_mdma && chan->mchan.dir != DMA_MEM_TO_DEV)
 +			return;
 +		if (chan->next_sg == chan->desc->num_sgs) {
 +			vchan_cookie_complete(&chan->desc->vdesc);
 +			chan->desc = NULL;
-+		}
+ 		}
 +
 +		stm32_dma_start_transfer(chan);
-+	}
+ 	}
  }
  
- static irqreturn_t stm32_dma_chan_irq(int irq, void *devid)
-@@ -648,21 +1049,12 @@ static irqreturn_t stm32_dma_chan_irq(int irq, void *devid)
+@@ -648,21 +1145,12 @@ static irqreturn_t stm32_dma_chan_irq(int irq, void *devid)
  	scr = stm32_dma_read(dmadev, STM32_DMA_SCR(chan->id));
  	sfcr = stm32_dma_read(dmadev, STM32_DMA_SFCR(chan->id));
  
@@ -732,15 +835,19 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  				dev_err(chan2dev(chan), "FIFO Error\n");
  			else
  				dev_dbg(chan2dev(chan), "FIFO over/underrun\n");
-@@ -674,6 +1066,19 @@ static irqreturn_t stm32_dma_chan_irq(int irq, void *devid)
+@@ -674,6 +1162,23 @@ static irqreturn_t stm32_dma_chan_irq(int irq, void *devid)
  		if (sfcr & STM32_DMA_SCR_DMEIE)
  			dev_dbg(chan2dev(chan), "Direct mode overrun\n");
  	}
 +
 +	if (status & STM32_DMA_TCI) {
 +		stm32_dma_irq_clear(chan, STM32_DMA_TCI);
-+		if (scr & STM32_DMA_SCR_TCIE)
-+			stm32_dma_handle_chan_done(chan);
++		if (scr & STM32_DMA_SCR_TCIE) {
++			if (chan->status == DMA_PAUSED)
++				stm32_dma_handle_chan_paused(chan);
++			else
++				stm32_dma_handle_chan_done(chan, scr);
++		}
 +		status &= ~STM32_DMA_TCI;
 +	}
 +
@@ -752,7 +859,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  	if (status) {
  		stm32_dma_irq_clear(chan, status);
  		dev_err(chan2dev(chan), "DMA error: status=0x%08x\n", status);
-@@ -691,19 +1096,25 @@ static void stm32_dma_issue_pending(struct dma_chan *c)
+@@ -691,19 +1196,125 @@ static void stm32_dma_issue_pending(struct dma_chan *c)
  	struct stm32_dma_chan *chan = to_stm32_dma_chan(c);
  	unsigned long flags;
  
@@ -769,7 +876,107 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  
  	}
 +
++	spin_unlock_irqrestore(&chan->vchan.lock, flags);
++}
++
++static int stm32_dma_pause(struct dma_chan *c)
++{
++	struct stm32_dma_chan *chan = to_stm32_dma_chan(c);
++	unsigned long flags;
++	int ret;
++
++	if (chan->status != DMA_IN_PROGRESS || chan->use_mdma)
++		return -EPERM;
++
++	spin_lock_irqsave(&chan->vchan.lock, flags);
++	ret = stm32_dma_disable_chan(chan);
++	/*
++	 * A transfer complete flag is set to indicate the end of transfer due to the stream
++	 * interruption, so wait for interrupt
++	 */
++	if (!ret)
++		chan->status = DMA_PAUSED;
  	spin_unlock_irqrestore(&chan->vchan.lock, flags);
++
++	return ret;
++}
++
++static int stm32_dma_resume(struct dma_chan *c)
++{
++	struct stm32_dma_chan *chan = to_stm32_dma_chan(c);
++	struct stm32_dma_device *dmadev = stm32_dma_get_dev(chan);
++	struct stm32_dma_chan_reg chan_reg = chan->chan_reg;
++	u32 id = chan->id, scr, ndtr, offset, spar, sm0ar, sm1ar;
++	struct stm32_dma_sg_req *sg_req;
++	unsigned long flags;
++
++	if (chan->status != DMA_PAUSED || chan->use_mdma)
++		return -EPERM;
++
++	scr = stm32_dma_read(dmadev, STM32_DMA_SCR(id));
++	if (WARN_ON(scr & STM32_DMA_SCR_EN))
++		return -EPERM;
++
++	spin_lock_irqsave(&chan->vchan.lock, flags);
++
++	/* sg_reg[prev_sg] contains original ndtr, sm0ar and sm1ar before pausing the transfer */
++	if (!chan->next_sg)
++		sg_req = &chan->desc->sg_req[chan->desc->num_sgs - 1];
++	else
++		sg_req = &chan->desc->sg_req[chan->next_sg - 1];
++
++	ndtr = sg_req->chan_reg.dma_sndtr;
++	offset = (ndtr - chan_reg.dma_sndtr) << STM32_DMA_SCR_PSIZE_GET(chan_reg.dma_scr);
++	spar = sg_req->chan_reg.dma_spar;
++	sm0ar = sg_req->chan_reg.dma_sm0ar;
++	sm1ar = sg_req->chan_reg.dma_sm1ar;
++
++	/*
++	 * The peripheral and/or memory addresses have to be updated in order to adjust the
++	 * address pointers. Need to check increment.
++	 */
++	if (chan_reg.dma_scr & STM32_DMA_SCR_PINC)
++		stm32_dma_write(dmadev, STM32_DMA_SPAR(id), spar + offset);
++	else
++		stm32_dma_write(dmadev, STM32_DMA_SPAR(id), spar);
++
++	if (!(chan_reg.dma_scr & STM32_DMA_SCR_MINC))
++		offset = 0;
++
++	/*
++	 * In case of DBM, the current target could be SM1AR.
++	 * Need to temporarily deactivate CIRC/DBM to finish the current transfer, so
++	 * SM0AR becomes the current target and must be updated with SM1AR + offset if CT=1.
++	 */
++	if ((chan_reg.dma_scr & STM32_DMA_SCR_DBM) && (chan_reg.dma_scr & STM32_DMA_SCR_CT))
++		stm32_dma_write(dmadev, STM32_DMA_SM1AR(id), sm1ar + offset);
++	else
++		stm32_dma_write(dmadev, STM32_DMA_SM0AR(id), sm0ar + offset);
++
++	/* NDTR must be restored otherwise internal HW counter won't be correctly reset */
++	stm32_dma_write(dmadev, STM32_DMA_SNDTR(id), chan_reg.dma_sndtr);
++
++	/*
++	 * Need to temporarily deactivate CIRC/DBM until next Transfer Complete interrupt,
++	 * otherwise NDTR autoreload value will be wrong (lower than the initial period length
++	 */
++	if (chan_reg.dma_scr & (STM32_DMA_SCR_CIRC | STM32_DMA_SCR_DBM)) {
++		chan_reg.dma_scr &= ~(STM32_DMA_SCR_CIRC | STM32_DMA_SCR_DBM);
++		stm32_dma_write(dmadev, STM32_DMA_SCR(id), chan_reg.dma_scr);
++	}
++
++	stm32_dma_dump_reg(chan);
++
++	/* The stream may then be re-enabled to restart transfer from the point it was stopped */
++	chan->status = DMA_IN_PROGRESS;
++	chan_reg.dma_scr |= STM32_DMA_SCR_EN;
++	stm32_dma_write(dmadev, STM32_DMA_SCR(id), chan_reg.dma_scr);
++
++	spin_unlock_irqrestore(&chan->vchan.lock, flags);
++
++	dev_dbg(chan2dev(chan), "vchan %pK: resumed\n", &chan->vchan);
++
++	return 0;
  }
  
  static int stm32_dma_set_xfer_param(struct stm32_dma_chan *chan,
@@ -780,7 +987,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  {
  	enum dma_slave_buswidth src_addr_width, dst_addr_width;
  	int src_bus_width, dst_bus_width;
-@@ -735,14 +1146,21 @@ static int stm32_dma_set_xfer_param(struct stm32_dma_chan *chan,
+@@ -735,14 +1346,21 @@ static int stm32_dma_set_xfer_param(struct stm32_dma_chan *chan,
  			return dst_burst_size;
  
  		/* Set memory data size */
@@ -805,7 +1012,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  		src_best_burst = stm32_dma_get_best_burst(buf_len,
  							  src_maxburst,
  							  fifoth,
-@@ -784,14 +1202,21 @@ static int stm32_dma_set_xfer_param(struct stm32_dma_chan *chan,
+@@ -784,14 +1402,21 @@ static int stm32_dma_set_xfer_param(struct stm32_dma_chan *chan,
  			return src_burst_size;
  
  		/* Set memory data size */
@@ -830,7 +1037,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  		dst_best_burst = stm32_dma_get_best_burst(buf_len,
  							  dst_maxburst,
  							  fifoth,
-@@ -838,6 +1263,162 @@ static void stm32_dma_clear_reg(struct stm32_dma_chan_reg *regs)
+@@ -838,6 +1463,162 @@ static void stm32_dma_clear_reg(struct stm32_dma_chan_reg *regs)
  	memset(regs, 0, sizeof(struct stm32_dma_chan_reg));
  }
  
@@ -993,7 +1200,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  static struct dma_async_tx_descriptor *stm32_dma_prep_slave_sg(
  	struct dma_chan *c, struct scatterlist *sgl,
  	u32 sg_len, enum dma_transfer_direction direction,
-@@ -845,9 +1426,6 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_slave_sg(
+@@ -845,9 +1626,6 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_slave_sg(
  {
  	struct stm32_dma_chan *chan = to_stm32_dma_chan(c);
  	struct stm32_dma_desc *desc;
@@ -1003,7 +1210,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  	int i, ret;
  
  	if (!chan->config_init) {
-@@ -870,48 +1448,140 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_slave_sg(
+@@ -870,48 +1648,140 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_slave_sg(
  	else
  		chan->chan_reg.dma_scr &= ~STM32_DMA_SCR_PFCTRL;
  
@@ -1012,12 +1219,12 @@ index d0055d2f0b9a..1d89e0807ef0 100644
 -					       sg_dma_len(sg));
 -		if (ret < 0)
 -			goto err;
+-
+-		desc->sg_req[i].len = sg_dma_len(sg);
 +	if (chan->use_mdma) {
 +		struct sg_table new_sgt;
 +		struct scatterlist *s, *_sgl;
  
--		desc->sg_req[i].len = sg_dma_len(sg);
--
 -		nb_data_items = desc->sg_req[i].len / buswidth;
 -		if (nb_data_items > STM32_DMA_ALIGNED_MAX_DATA_ITEMS) {
 -			dev_err(chan2dev(chan), "nb items not supported\n");
@@ -1164,7 +1371,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  	int i, ret;
  
  	if (!buf_len || !period_len) {
-@@ -940,7 +1610,7 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_dma_cyclic(
+@@ -940,7 +1810,7 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_dma_cyclic(
  		return NULL;
  	}
  
@@ -1173,7 +1380,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  	if (ret < 0)
  		return NULL;
  
-@@ -959,28 +1629,49 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_dma_cyclic(
+@@ -959,28 +1829,49 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_dma_cyclic(
  	/* Clear periph ctrl if client set it */
  	chan->chan_reg.dma_scr &= ~STM32_DMA_SCR_PFCTRL;
  
@@ -1191,7 +1398,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
 -		desc->sg_req[i].len = period_len;
 +	desc->num_sgs = num_periods;
 +	desc->cyclic = true;
- 
++
 +	if (chan->use_mdma) {
 +		chan->mchan.dir = direction;
 +
@@ -1203,7 +1410,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
 +	} else {
 +		dma_buf = buf_addr;
 +	}
-+
+ 
 +	for (i = 0; i < num_periods; i++) {
 +		sg_dma_len(&desc->sg_req[i].stm32_sgl_req) = period_len;
 +		sg_dma_address(&desc->sg_req[i].stm32_sgl_req) = dma_buf;
@@ -1235,7 +1442,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  	return vchan_tx_prep(&chan->vchan, &desc->vdesc, flags);
  }
  
-@@ -1021,13 +1712,13 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_dma_memcpy(
+@@ -1021,13 +1912,13 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_dma_memcpy(
  			STM32_DMA_SCR_PINC |
  			STM32_DMA_SCR_TCIE |
  			STM32_DMA_SCR_TEIE;
@@ -1251,7 +1458,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  	}
  
  	desc->num_sgs = num_sgs;
-@@ -1036,18 +1727,6 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_dma_memcpy(
+@@ -1036,18 +1927,6 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_dma_memcpy(
  	return vchan_tx_prep(&chan->vchan, &desc->vdesc, flags);
  }
  
@@ -1270,7 +1477,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  /**
   * stm32_dma_is_current_sg - check that expected sg_req is currently transferred
   * @chan: dma channel
-@@ -1094,6 +1773,10 @@ static size_t stm32_dma_desc_residue(struct stm32_dma_chan *chan,
+@@ -1094,6 +1973,10 @@ static size_t stm32_dma_desc_residue(struct stm32_dma_chan *chan,
  	struct stm32_dma_sg_req *sg_req = &chan->desc->sg_req[chan->next_sg];
  	int i;
  
@@ -1281,7 +1488,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  	/*
  	 * Calculate the residue means compute the descriptors
  	 * information:
-@@ -1125,7 +1808,7 @@ static size_t stm32_dma_desc_residue(struct stm32_dma_chan *chan,
+@@ -1125,7 +2008,7 @@ static size_t stm32_dma_desc_residue(struct stm32_dma_chan *chan,
  		n_sg++;
  		if (n_sg == chan->desc->num_sgs)
  			n_sg = 0;
@@ -1290,7 +1497,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  	}
  
  	/*
-@@ -1137,7 +1820,7 @@ static size_t stm32_dma_desc_residue(struct stm32_dma_chan *chan,
+@@ -1137,7 +2020,7 @@ static size_t stm32_dma_desc_residue(struct stm32_dma_chan *chan,
  	 */
  	if (!chan->desc->cyclic || n_sg != 0)
  		for (i = n_sg; i < desc->num_sgs; i++)
@@ -1299,7 +1506,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  
  	if (!chan->mem_burst)
  		return residue;
-@@ -1155,11 +1838,23 @@ static enum dma_status stm32_dma_tx_status(struct dma_chan *c,
+@@ -1155,13 +2038,30 @@ static enum dma_status stm32_dma_tx_status(struct dma_chan *c,
  					   struct dma_tx_state *state)
  {
  	struct stm32_dma_chan *chan = to_stm32_dma_chan(c);
@@ -1321,9 +1528,17 @@ index d0055d2f0b9a..1d89e0807ef0 100644
 +					   state);
 +
  	status = dma_cookie_status(c, cookie, state);
- 	if (status == DMA_COMPLETE || !state)
+-	if (status == DMA_COMPLETE || !state)
++	if (status == DMA_COMPLETE)
++		return status;
++
++	status = chan->status;
++
++	if (!state)
  		return status;
-@@ -1216,27 +1911,53 @@ static void stm32_dma_free_chan_resources(struct dma_chan *c)
+ 
+ 	spin_lock_irqsave(&chan->vchan.lock, flags);
+@@ -1216,27 +2116,53 @@ static void stm32_dma_free_chan_resources(struct dma_chan *c)
  	pm_runtime_put(dmadev->ddev.dev);
  
  	vchan_free_chan_resources(to_virt_chan(c));
@@ -1382,7 +1597,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  }
  
  static struct dma_chan *stm32_dma_of_xlate(struct of_phandle_args *dma_spec,
-@@ -1274,6 +1995,9 @@ static struct dma_chan *stm32_dma_of_xlate(struct of_phandle_args *dma_spec,
+@@ -1274,6 +2200,9 @@ static struct dma_chan *stm32_dma_of_xlate(struct of_phandle_args *dma_spec,
  
  	stm32_dma_set_config(chan, &cfg);
  
@@ -1392,7 +1607,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  	return c;
  }
  
-@@ -1286,11 +2010,13 @@ MODULE_DEVICE_TABLE(of, stm32_dma_of_match);
+@@ -1286,11 +2215,13 @@ MODULE_DEVICE_TABLE(of, stm32_dma_of_match);
  static int stm32_dma_probe(struct platform_device *pdev)
  {
  	struct stm32_dma_chan *chan;
@@ -1406,7 +1621,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  	int i, ret;
  
  	match = of_match_device(stm32_dma_of_match, &pdev->dev);
-@@ -1334,6 +2060,13 @@ static int stm32_dma_probe(struct platform_device *pdev)
+@@ -1334,6 +2265,13 @@ static int stm32_dma_probe(struct platform_device *pdev)
  		reset_control_deassert(rst);
  	}
  
@@ -1420,7 +1635,18 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  	dma_set_max_seg_size(&pdev->dev, STM32_DMA_ALIGNED_MAX_DATA_ITEMS);
  
  	dma_cap_set(DMA_SLAVE, dd->cap_mask);
-@@ -1373,11 +2106,27 @@ static int stm32_dma_probe(struct platform_device *pdev)
+@@ -1345,7 +2283,10 @@ static int stm32_dma_probe(struct platform_device *pdev)
+ 	dd->device_issue_pending = stm32_dma_issue_pending;
+ 	dd->device_prep_slave_sg = stm32_dma_prep_slave_sg;
+ 	dd->device_prep_dma_cyclic = stm32_dma_prep_dma_cyclic;
++	dd->device_caps = stm32_dma_slave_caps;
+ 	dd->device_config = stm32_dma_slave_config;
++	dd->device_pause = stm32_dma_pause;
++	dd->device_resume = stm32_dma_resume;
+ 	dd->device_terminate_all = stm32_dma_terminate_all;
+ 	dd->device_synchronize = stm32_dma_synchronize;
+ 	dd->src_addr_widths = BIT(DMA_SLAVE_BUSWIDTH_1_BYTE) |
+@@ -1373,11 +2314,27 @@ static int stm32_dma_probe(struct platform_device *pdev)
  		chan->id = i;
  		chan->vchan.desc_free = stm32_dma_desc_free;
  		vchan_init(&chan->vchan, dd);
@@ -1449,7 +1675,7 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  
  	for (i = 0; i < STM32_DMA_MAX_CHANNELS; i++) {
  		chan = &dmadev->chan[i];
-@@ -1418,6 +2167,10 @@ static int stm32_dma_probe(struct platform_device *pdev)
+@@ -1418,6 +2375,10 @@ static int stm32_dma_probe(struct platform_device *pdev)
  
  err_unregister:
  	dma_async_device_unregister(dd);
@@ -1460,14 +1686,40 @@ index d0055d2f0b9a..1d89e0807ef0 100644
  clk_free:
  	clk_disable_unprepare(dmadev->clk);
  
-@@ -1499,4 +2252,4 @@ static int __init stm32_dma_init(void)
+@@ -1450,7 +2411,7 @@ static int stm32_dma_runtime_resume(struct device *dev)
+ #endif
+ 
+ #ifdef CONFIG_PM_SLEEP
+-static int stm32_dma_suspend(struct device *dev)
++static int stm32_dma_pm_suspend(struct device *dev)
+ {
+ 	struct stm32_dma_device *dmadev = dev_get_drvdata(dev);
+ 	int id, ret, scr;
+@@ -1474,14 +2435,14 @@ static int stm32_dma_suspend(struct device *dev)
+ 	return 0;
+ }
+ 
+-static int stm32_dma_resume(struct device *dev)
++static int stm32_dma_pm_resume(struct device *dev)
+ {
+ 	return pm_runtime_force_resume(dev);
+ }
+ #endif
+ 
+ static const struct dev_pm_ops stm32_dma_pm_ops = {
+-	SET_SYSTEM_SLEEP_PM_OPS(stm32_dma_suspend, stm32_dma_resume)
++	SET_SYSTEM_SLEEP_PM_OPS(stm32_dma_pm_suspend, stm32_dma_pm_resume)
+ 	SET_RUNTIME_PM_OPS(stm32_dma_runtime_suspend,
+ 			   stm32_dma_runtime_resume, NULL)
+ };
+@@ -1499,4 +2460,4 @@ static int __init stm32_dma_init(void)
  {
  	return platform_driver_register(&stm32_dma_driver);
  }
 -subsys_initcall(stm32_dma_init);
 +device_initcall(stm32_dma_init);
 diff --git a/drivers/dma/stm32-mdma.c b/drivers/dma/stm32-mdma.c
-index 08cfbfab837b..a4b25944fba4 100644
+index 9d4739237..88e521bbd 100644
 --- a/drivers/dma/stm32-mdma.c
 +++ b/drivers/dma/stm32-mdma.c
 @@ -199,7 +199,9 @@
@@ -1863,7 +2115,7 @@ index 08cfbfab837b..a4b25944fba4 100644
  	if (config.request >= dmadev->nr_requests) {
  		dev_err(mdma2dev(dmadev), "Bad request line\n");
 diff --git a/include/linux/dmaengine.h b/include/linux/dmaengine.h
-index dd357a747780..42745f58412c 100644
+index dd357a747..42745f584 100644
 --- a/include/linux/dmaengine.h
 +++ b/include/linux/dmaengine.h
 @@ -1474,9 +1474,11 @@ struct dma_chan *__dma_request_channel(const dma_cap_mask_t *mask,

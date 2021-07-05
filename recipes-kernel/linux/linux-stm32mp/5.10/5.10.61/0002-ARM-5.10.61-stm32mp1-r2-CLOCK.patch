@@ -1,18 +1,18 @@
-From f2f9b8ceceeb143fd478d89126a475d26b11f488 Mon Sep 17 00:00:00 2001
-From: Romuald JEANNE <romuald.jeanne@st.com>
-Date: Tue, 16 Mar 2021 08:58:27 +0100
-Subject: [PATCH 02/22] ARM 5.10.10-stm32mp1-r1 CLOCK
+From 449ee632a4a7c7e93107d3c1ea502974d4c206f5 Mon Sep 17 00:00:00 2001
+From: Lionel Vitte <lionel.vitte@st.com>
+Date: Thu, 14 Oct 2021 16:51:41 +0200
+Subject: [PATCH 02/23] ARM 5.10.61-stm32mp1-r2 CLOCK
 
 ---
  drivers/clk/clk-composite.c               |   15 +
- drivers/clk/clk-stm32mp1.c                | 1081 ++++++++++++++++-----
+ drivers/clk/clk-stm32mp1.c                | 1153 ++++++++++++++++-----
  drivers/clk/clk.c                         |    7 +-
  drivers/clocksource/timer-stm32-lp.c      |    4 +-
  include/dt-bindings/clock/stm32mp1-clks.h |   33 +
- 5 files changed, 873 insertions(+), 267 deletions(-)
+ 5 files changed, 945 insertions(+), 267 deletions(-)
 
 diff --git a/drivers/clk/clk-composite.c b/drivers/clk/clk-composite.c
-index 2ddb54f7d3ab..b49ecd1b9e56 100644
+index 2ddb54f7d..b49ecd1b9 100644
 --- a/drivers/clk/clk-composite.c
 +++ b/drivers/clk/clk-composite.c
 @@ -41,6 +41,18 @@ static unsigned long clk_composite_recalc_rate(struct clk_hw *hw,
@@ -45,7 +45,7 @@ index 2ddb54f7d3ab..b49ecd1b9e56 100644
  			clk_composite_ops->determine_rate =
  				clk_composite_determine_rate;
 diff --git a/drivers/clk/clk-stm32mp1.c b/drivers/clk/clk-stm32mp1.c
-index a875649df8b8..bf927befe97b 100644
+index a875649df..ddaf7dc9b 100644
 --- a/drivers/clk/clk-stm32mp1.c
 +++ b/drivers/clk/clk-stm32mp1.c
 @@ -5,15 +5,28 @@
@@ -270,12 +270,12 @@ index a875649df8b8..bf927befe97b 100644
 +	struct clk_mux *mux = to_clk_mux(mux_hw);
 +	struct stm32_clk_mmux *clk_mmux = to_clk_mmux(mux);
 +	int i = 0;
-+
+ 
+-#define to_pll(_hw) container_of(_hw, struct stm32_pll_obj, hw)
 +	for (i = 0; i < clk_mmux->mmux->nbr_clk; i++)
 +		if (__clk_is_enabled(clk_mmux->mmux->hws[i]->clk))
 +			return false;
- 
--#define to_pll(_hw) container_of(_hw, struct stm32_pll_obj, hw)
++
 +	return true;
 +}
  
@@ -380,24 +380,24 @@ index a875649df8b8..bf927befe97b 100644
 -	u32 reg;
 -	unsigned long flags = 0;
 +	struct clk_hw *composite_hw = __clk_get_hw(hw->clk);
-+
-+	clk_mmux_restore_parent(composite_hw);
-+	mp1_mgate_clk_enable(hw);
-+
-+	return  0;
-+}
  
 -	spin_lock_irqsave(clk_elem->lock, flags);
-+static void mp1_mgate_clk_disable_safe(struct clk_hw *hw)
-+{
-+	struct clk_hw *composite_hw = __clk_get_hw(hw->clk);
++	clk_mmux_restore_parent(composite_hw);
++	mp1_mgate_clk_enable(hw);
  
 -	reg = readl_relaxed(clk_elem->reg);
 -	reg &= ~PLL_ON;
 -	writel_relaxed(reg, clk_elem->reg);
-+	mp1_mgate_clk_disable(hw);
++	return  0;
++}
++
++static void mp1_mgate_clk_disable_safe(struct clk_hw *hw)
++{
++	struct clk_hw *composite_hw = __clk_get_hw(hw->clk);
  
 -	spin_unlock_irqrestore(clk_elem->lock, flags);
++	mp1_mgate_clk_disable(hw);
++
 +	if (is_all_clk_on_switch_are_off(composite_hw))
 +		clk_mmux_set_safe_position(composite_hw);
  }
@@ -524,10 +524,10 @@ index a875649df8b8..bf927befe97b 100644
 -	}
 +		if (bit_status)
 +			udelay(120);
++
++	} while (bit_status && --timeout);
  
 -	return rate + rate_frac;
-+	} while (bit_status && --timeout);
-+
 +	return bit_status;
  }
  
@@ -1216,20 +1216,20 @@ index a875649df8b8..bf927befe97b 100644
  	unsigned int maxbinding;
 +	bool (*check_security)(const struct clock_config *cfg);
 +	u32 clear_offset;
- };
- 
--static struct stm32_clock_match_data stm32mp1_data = {
-+static struct stm32_rcc_match_data stm32mp1_data = {
- 	.cfg		= stm32mp1_clock_cfg,
- 	.num		= ARRAY_SIZE(stm32mp1_clock_cfg),
- 	.maxbinding	= STM32MP1_LAST_CLK,
-+	.clear_offset	= RCC_CLR,
 +};
 +
-+static struct stm32_rcc_match_data stm32mp1_data_secure = {
++static struct stm32_rcc_match_data stm32mp1_data = {
 +	.cfg		= stm32mp1_clock_cfg,
 +	.num		= ARRAY_SIZE(stm32mp1_clock_cfg),
 +	.maxbinding	= STM32MP1_LAST_CLK,
++	.clear_offset	= RCC_CLR,
+ };
+ 
+-static struct stm32_clock_match_data stm32mp1_data = {
++static struct stm32_rcc_match_data stm32mp1_data_secure = {
+ 	.cfg		= stm32mp1_clock_cfg,
+ 	.num		= ARRAY_SIZE(stm32mp1_clock_cfg),
+ 	.maxbinding	= STM32MP1_LAST_CLK,
 +	.check_security	= &stm32_check_security,
 +	.clear_offset	= RCC_CLR,
  };
@@ -1249,7 +1249,7 @@ index a875649df8b8..bf927befe97b 100644
  
  static int stm32_register_hw_clk(struct device *dev,
  				 struct clk_hw_onecell_data *clk_data,
-@@ -2040,28 +2317,126 @@ static int stm32_register_hw_clk(struct device *dev,
+@@ -2040,28 +2317,195 @@ static int stm32_register_hw_clk(struct device *dev,
  	return 0;
  }
  
@@ -1373,6 +1373,75 @@ index a875649df8b8..bf927befe97b 100644
 +	return reset_controller_register(&reset_data->rcdev);
 +}
 +
++static struct stm32_clk_boot_on {
++	struct clk **clks;
++	int nb;
++} *clk_boot_on;
++
++static struct stm32_clk_boot_on *clk_boot_on;
++
++static int stm32_clk_boot_on_enable(struct device_node *np,
++				    struct clk_hw_onecell_data *clk_data)
++{
++	struct of_phandle_args clkspec;
++	struct property	*prop;
++	const __be32 *cur;
++	struct clk **clks;
++	int nb, count = 0;
++
++	nb = of_property_count_u32_elems(np, "clocks-boot-on");
++	if (!nb)
++		return 0;
++
++	clks = kcalloc(nb, sizeof(struct clk_bulk_data *), GFP_KERNEL);
++	if (!clks)
++		return -ENOMEM;
++
++	clk_boot_on = kzalloc(sizeof(*clk_boot_on), GFP_KERNEL);
++	if (!clk_boot_on) {
++		kfree(clks);
++		return -ENOMEM;
++	}
++
++	of_property_for_each_u32(np, "clocks-boot-on", prop, cur,
++				 clkspec.args[0]) {
++		struct clk_hw *hw;
++
++		hw = of_clk_hw_onecell_get(&clkspec, clk_data);
++		if (IS_ERR(hw))
++			continue;
++
++		if (clk_prepare_enable(hw->clk)) {
++			pr_warn("can't enable clock %s !\n",
++				clk_hw_get_name(hw));
++			continue;
++		}
++
++		clks[count++] = hw->clk;
++	}
++
++	clk_boot_on->clks = clks;
++	clk_boot_on->nb = count;
++
++	return 0;
++}
++
++static int stm32_clk_boot_on_disable(void)
++{
++	int i;
++
++	if (clk_boot_on) {
++		for (i = 0; i < clk_boot_on->nb; i++)
++			clk_disable_unprepare(clk_boot_on->clks[i]);
++
++		kfree(clk_boot_on->clks);
++		kfree(clk_boot_on);
++	}
++
++	return 0;
++}
++late_initcall_sync(stm32_clk_boot_on_disable);
++
 +static int stm32_rcc_clock_init(struct device *dev, void __iomem *base,
 +				const struct of_device_id *match)
 +{
@@ -1390,7 +1459,7 @@ index a875649df8b8..bf927befe97b 100644
  	if (!clk_data)
  		return -ENOMEM;
  
-@@ -2073,36 +2448,218 @@ static int stm32_rcc_init(struct device_node *np,
+@@ -2073,36 +2517,221 @@ static int stm32_rcc_init(struct device_node *np,
  		hws[n] = ERR_PTR(-ENOENT);
  
  	for (n = 0; n < data->num; n++) {
@@ -1413,8 +1482,11 @@ index a875649df8b8..bf927befe97b 100644
  	}
  
 -	return of_clk_add_hw_provider(np, of_clk_hw_onecell_get, clk_data);
-+	return of_clk_add_hw_provider(dev_of_node(dev), of_clk_hw_onecell_get,
-+				      clk_data);
++	err = of_clk_add_hw_provider(dev_of_node(dev), of_clk_hw_onecell_get, clk_data);
++	if (!err)
++		stm32_clk_boot_on_enable(dev_of_node(dev), clk_data);
++
++	return err;
  }
  
 -static void stm32mp1_rcc_init(struct device_node *np)
@@ -1441,11 +1513,8 @@ index a875649df8b8..bf927befe97b 100644
 +	if (err) {
 +		pr_err("stm32mp1 reset failed to initialize\n");
 +		return err;
- 	}
- 
--	if (stm32_rcc_init(np, base, stm32mp1_match_data)) {
--		iounmap(base);
--		of_node_put(np);
++	}
++
 +	/* RCC Clock Configuration */
 +	err = stm32_rcc_clock_init(dev, base, match);
 +	if (err) {
@@ -1467,7 +1536,7 @@ index a875649df8b8..bf927befe97b 100644
 +	if (!rcc_base) {
 +		dev_err(dev, "%pOFn: unable to map resource", dev_of_node(dev));
 +		goto out;
- 	}
++	}
 +
 +	ret = stm32_rcc_init(dev, rcc_base, stm32mp1_match_data);
 +	if (ret)
@@ -1530,9 +1599,8 @@ index a875649df8b8..bf927befe97b 100644
 +	SMC(STM32_SVC_RCC, STM32_WRITE, RCC_CIFR, RCC_IRQ_FLAGS_MASK);
 +
 +	return IRQ_HANDLED;
- }
- 
--CLK_OF_DECLARE_DRIVER(stm32mp1_rcc, "st,stm32mp1-rcc", stm32mp1_rcc_init);
++}
++
 +static int stm32_rcc_init_pwr(struct device *dev, void __iomem *rcc_base)
 +{
 +	int irq;
@@ -1544,8 +1612,11 @@ index a875649df8b8..bf927befe97b 100644
 +	if (irq <= 0) {
 +		pr_err("%s: failed to get RCC generic IRQ\n", __func__);
 +		return irq ? irq : -ENXIO;
-+	}
-+
+ 	}
+ 
+-	if (stm32_rcc_init(np, base, stm32mp1_match_data)) {
+-		iounmap(base);
+-		of_node_put(np);
 +	ret = devm_request_irq(dev, irq, stm32mp1_rcc_irq_handler, IRQF_ONESHOT,
 +			       "rcc irq", NULL);
 +	if (ret) {
@@ -1585,11 +1656,12 @@ index a875649df8b8..bf927befe97b 100644
 +			clk_deps[i] = devm_clk_get(dev, __clk_get_name(clk));
 +			clk_put(clk);
 +		}
-+	}
+ 	}
 +
 +	return 0;
-+}
-+
+ }
+ 
+-CLK_OF_DECLARE_DRIVER(stm32mp1_rcc, "st,stm32mp1-rcc", stm32mp1_rcc_init);
 +static int stm32mp1_rcc_clocks_probe(struct platform_device *pdev)
 +{
 +	struct device *dev = &pdev->dev;
@@ -1627,7 +1699,7 @@ index a875649df8b8..bf927befe97b 100644
 +}
 +core_initcall(stm32mp1_clocks_init);
 diff --git a/drivers/clk/clk.c b/drivers/clk/clk.c
-index f83dac54ed85..6939ea978868 100644
+index 61c78714c..9b9a17695 100644
 --- a/drivers/clk/clk.c
 +++ b/drivers/clk/clk.c
 @@ -1743,6 +1743,7 @@ static void clk_reparent(struct clk_core *core, struct clk_core *new_parent)
@@ -1659,7 +1731,7 @@ index f83dac54ed85..6939ea978868 100644
  }
  
 diff --git a/drivers/clocksource/timer-stm32-lp.c b/drivers/clocksource/timer-stm32-lp.c
-index db2841d0beb8..90c10f378df2 100644
+index db2841d0b..90c10f378 100644
 --- a/drivers/clocksource/timer-stm32-lp.c
 +++ b/drivers/clocksource/timer-stm32-lp.c
 @@ -168,9 +168,7 @@ static int stm32_clkevent_lp_probe(struct platform_device *pdev)
@@ -1674,7 +1746,7 @@ index db2841d0beb8..90c10f378df2 100644
  		ret = dev_pm_set_wake_irq(&pdev->dev, irq);
  		if (ret)
 diff --git a/include/dt-bindings/clock/stm32mp1-clks.h b/include/dt-bindings/clock/stm32mp1-clks.h
-index 4cdaf135829c..ec7b1a93200f 100644
+index 4cdaf1358..ec7b1a932 100644
 --- a/include/dt-bindings/clock/stm32mp1-clks.h
 +++ b/include/dt-bindings/clock/stm32mp1-clks.h
 @@ -179,6 +179,12 @@
