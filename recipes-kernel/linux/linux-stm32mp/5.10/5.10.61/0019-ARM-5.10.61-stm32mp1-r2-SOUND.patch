@@ -1,17 +1,19 @@
-From f934df539b8cdfa58cb512b439749dba32a42932 Mon Sep 17 00:00:00 2001
-From: Romuald JEANNE <romuald.jeanne@st.com>
-Date: Tue, 16 Mar 2021 09:16:24 +0100
-Subject: [PATCH 19/22] ARM 5.10.10-stm32mp1-r1 SOUND
+From e8a701ceba6fdf12989b38212c510bfdfea5c830 Mon Sep 17 00:00:00 2001
+From: Lionel Vitte <lionel.vitte@st.com>
+Date: Thu, 14 Oct 2021 16:51:51 +0200
+Subject: [PATCH 19/23] ARM 5.10.61-stm32mp1-r2 SOUND
 
 ---
  sound/soc/codecs/Kconfig      |   2 +-
  sound/soc/codecs/wm8994.c     |  81 ++++++++-
- sound/soc/stm/stm32_i2s.c     | 310 +++++++++++++++++++++++++++++-----
+ sound/soc/stm/stm32_adfsdm.c  |  11 +-
+ sound/soc/stm/stm32_i2s.c     | 316 +++++++++++++++++++++++++++++-----
  sound/soc/stm/stm32_sai_sub.c |   4 +-
- 4 files changed, 344 insertions(+), 53 deletions(-)
+ sound/soc/stm/stm32_spdifrx.c |   4 +
+ 6 files changed, 361 insertions(+), 57 deletions(-)
 
 diff --git a/sound/soc/codecs/Kconfig b/sound/soc/codecs/Kconfig
-index 34c6dd04b85a..3afc5d1f074d 100644
+index 34c6dd04b..3afc5d1f0 100644
 --- a/sound/soc/codecs/Kconfig
 +++ b/sound/soc/codecs/Kconfig
 @@ -1642,7 +1642,7 @@ config SND_SOC_WM8993
@@ -24,7 +26,7 @@ index 34c6dd04b85a..3afc5d1f074d 100644
  config SND_SOC_WM8995
  	tristate
 diff --git a/sound/soc/codecs/wm8994.c b/sound/soc/codecs/wm8994.c
-index f57884113406..6d30b438ba0f 100644
+index f57884113..6d30b438b 100644
 --- a/sound/soc/codecs/wm8994.c
 +++ b/sound/soc/codecs/wm8994.c
 @@ -7,6 +7,7 @@
@@ -175,11 +177,47 @@ index f57884113406..6d30b438ba0f 100644
  		if (control->revision < 4) {
  			snd_soc_dapm_new_controls(dapm, wm8994_lateclk_revd_widgets,
  						  ARRAY_SIZE(wm8994_lateclk_revd_widgets));
+diff --git a/sound/soc/stm/stm32_adfsdm.c b/sound/soc/stm/stm32_adfsdm.c
+index c4031988f..a67cadc03 100644
+--- a/sound/soc/stm/stm32_adfsdm.c
++++ b/sound/soc/stm/stm32_adfsdm.c
+@@ -12,7 +12,7 @@
+ #include <linux/mutex.h>
+ #include <linux/platform_device.h>
+ #include <linux/slab.h>
+-
++#include <linux/pm_runtime.h>
+ #include <linux/iio/iio.h>
+ #include <linux/iio/consumer.h>
+ #include <linux/iio/adc/stm32-dfsdm-adc.h>
+@@ -353,15 +353,20 @@ static int stm32_adfsdm_probe(struct platform_device *pdev)
+ #endif
+ 
+ 	ret = snd_soc_add_component(component, NULL, 0);
+-	if (ret < 0)
++	if (ret < 0) {
+ 		dev_err(&pdev->dev, "%s: Failed to register PCM platform\n",
+ 			__func__);
++		return ret;
++	}
+ 
+-	return ret;
++	pm_runtime_enable(&pdev->dev);
++
++	return 0;
+ }
+ 
+ static int stm32_adfsdm_remove(struct platform_device *pdev)
+ {
++	pm_runtime_disable(&pdev->dev);
+ 	snd_soc_unregister_component(&pdev->dev);
+ 
+ 	return 0;
 diff --git a/sound/soc/stm/stm32_i2s.c b/sound/soc/stm/stm32_i2s.c
-index 7c4d63c33f15..7d1672cf78cc 100644
+index 7c4d63c33..f324ce974 100644
 --- a/sound/soc/stm/stm32_i2s.c
 +++ b/sound/soc/stm/stm32_i2s.c
-@@ -8,6 +8,7 @@
+@@ -8,10 +8,12 @@
  
  #include <linux/bitfield.h>
  #include <linux/clk.h>
@@ -187,7 +225,12 @@ index 7c4d63c33f15..7d1672cf78cc 100644
  #include <linux/delay.h>
  #include <linux/module.h>
  #include <linux/of_irq.h>
-@@ -196,6 +197,9 @@ enum i2s_datlen {
+ #include <linux/of_platform.h>
++#include <linux/pm_runtime.h>
+ #include <linux/regmap.h>
+ #include <linux/reset.h>
+ #include <linux/spinlock.h>
+@@ -196,6 +198,9 @@ enum i2s_datlen {
  #define STM32_I2S_IS_MASTER(x)		((x)->ms_flg == I2S_MS_MASTER)
  #define STM32_I2S_IS_SLAVE(x)		((x)->ms_flg == I2S_MS_SLAVE)
  
@@ -197,7 +240,7 @@ index 7c4d63c33f15..7d1672cf78cc 100644
  /**
   * struct stm32_i2s_data - private data of I2S
   * @regmap_conf: I2S register map configuration pointer
-@@ -206,6 +210,7 @@ enum i2s_datlen {
+@@ -206,6 +211,7 @@ enum i2s_datlen {
   * @dma_data_rx: dma configuration data for tx channel
   * @substream: PCM substream data pointer
   * @i2sclk: kernel clock feeding the I2S clock generator
@@ -205,7 +248,7 @@ index 7c4d63c33f15..7d1672cf78cc 100644
   * @pclk: peripheral clock driving bus interface
   * @x8kclk: I2S parent clock for sampling frequencies multiple of 8kHz
   * @x11kclk: I2S parent clock for sampling frequencies multiple of 11kHz
-@@ -215,6 +220,9 @@ enum i2s_datlen {
+@@ -215,6 +221,9 @@ enum i2s_datlen {
   * @irq_lock: prevent race condition with IRQ
   * @mclk_rate: master clock frequency (Hz)
   * @fmt: DAI protocol
@@ -215,7 +258,7 @@ index 7c4d63c33f15..7d1672cf78cc 100644
   * @refcount: keep count of opened streams on I2S
   * @ms_flg: master mode flag.
   */
-@@ -227,6 +235,7 @@ struct stm32_i2s_data {
+@@ -227,6 +236,7 @@ struct stm32_i2s_data {
  	struct snd_dmaengine_dai_dma_data dma_data_rx;
  	struct snd_pcm_substream *substream;
  	struct clk *i2sclk;
@@ -223,7 +266,7 @@ index 7c4d63c33f15..7d1672cf78cc 100644
  	struct clk *pclk;
  	struct clk *x8kclk;
  	struct clk *x11kclk;
-@@ -236,10 +245,210 @@ struct stm32_i2s_data {
+@@ -236,10 +246,210 @@ struct stm32_i2s_data {
  	spinlock_t irq_lock; /* used to prevent race condition with IRQ */
  	unsigned int mclk_rate;
  	unsigned int fmt;
@@ -434,7 +477,7 @@ index 7c4d63c33f15..7d1672cf78cc 100644
  static irqreturn_t stm32_i2s_isr(int irq, void *devid)
  {
  	struct stm32_i2s_data *i2s = (struct stm32_i2s_data *)devid;
-@@ -405,18 +614,46 @@ static int stm32_i2s_set_sysclk(struct snd_soc_dai *cpu_dai,
+@@ -405,18 +615,46 @@ static int stm32_i2s_set_sysclk(struct snd_soc_dai *cpu_dai,
  				int clk_id, unsigned int freq, int dir)
  {
  	struct stm32_i2s_data *i2s = snd_soc_dai_get_drvdata(cpu_dai);
@@ -488,7 +531,7 @@ index 7c4d63c33f15..7d1672cf78cc 100644
  }
  
  static int stm32_i2s_configure_clock(struct snd_soc_dai *cpu_dai,
-@@ -424,11 +661,10 @@ static int stm32_i2s_configure_clock(struct snd_soc_dai *cpu_dai,
+@@ -424,11 +662,10 @@ static int stm32_i2s_configure_clock(struct snd_soc_dai *cpu_dai,
  {
  	struct stm32_i2s_data *i2s = snd_soc_dai_get_drvdata(cpu_dai);
  	unsigned long i2s_clock_rate;
@@ -502,7 +545,7 @@ index 7c4d63c33f15..7d1672cf78cc 100644
  
  	if (!(rate % 11025))
  		clk_set_parent(i2s->i2sclk, i2s->x11kclk);
-@@ -449,7 +685,10 @@ static int stm32_i2s_configure_clock(struct snd_soc_dai *cpu_dai,
+@@ -449,7 +686,10 @@ static int stm32_i2s_configure_clock(struct snd_soc_dai *cpu_dai,
  	 *   dsp mode : div = i2s_clk / (nb_bits x ws)
  	 */
  	if (i2s->mclk_rate) {
@@ -514,10 +557,11 @@ index 7c4d63c33f15..7d1672cf78cc 100644
  	} else {
  		frame_len = 32;
  		if ((i2s->fmt & SND_SOC_DAIFMT_FORMAT_MASK) ==
-@@ -462,34 +701,13 @@ static int stm32_i2s_configure_clock(struct snd_soc_dai *cpu_dai,
+@@ -461,35 +701,14 @@ static int stm32_i2s_configure_clock(struct snd_soc_dai *cpu_dai,
+ 		if (ret < 0)
  			return ret;
  
- 		nb_bits = frame_len * ((cgfr & I2S_CGFR_CHLEN) + 1);
+-		nb_bits = frame_len * ((cgfr & I2S_CGFR_CHLEN) + 1);
 -		tmp = DIV_ROUND_CLOSEST(i2s_clock_rate, (nb_bits * rate));
 -	}
 -
@@ -539,6 +583,7 @@ index 7c4d63c33f15..7d1672cf78cc 100644
 -	if (((div == 1) && odd) || (div > I2S_CGFR_I2SDIV_MAX)) {
 -		dev_err(cpu_dai->dev, "Wrong divider setting\n");
 -		return -EINVAL;
++		nb_bits = frame_len * (FIELD_GET(I2S_CGFR_CHLEN, cgfr) + 1);
 +		ret = stm32_i2s_calc_clk_div(i2s, i2s_clock_rate,
 +					     (nb_bits * rate));
 +		if (ret)
@@ -554,7 +599,7 @@ index 7c4d63c33f15..7d1672cf78cc 100644
  	if (ret < 0)
  		return ret;
  
-@@ -694,9 +912,6 @@ static void stm32_i2s_shutdown(struct snd_pcm_substream *substream,
+@@ -694,9 +913,6 @@ static void stm32_i2s_shutdown(struct snd_pcm_substream *substream,
  	struct stm32_i2s_data *i2s = snd_soc_dai_get_drvdata(cpu_dai);
  	unsigned long flags;
  
@@ -564,7 +609,7 @@ index 7c4d63c33f15..7d1672cf78cc 100644
  	clk_disable_unprepare(i2s->i2sclk);
  
  	spin_lock_irqsave(&i2s->irq_lock, flags);
-@@ -861,6 +1076,13 @@ static int stm32_i2s_parse_dt(struct platform_device *pdev,
+@@ -861,6 +1077,13 @@ static int stm32_i2s_parse_dt(struct platform_device *pdev,
  		return PTR_ERR(i2s->x11kclk);
  	}
  
@@ -578,7 +623,15 @@ index 7c4d63c33f15..7d1672cf78cc 100644
  	/* Get irqs */
  	irq = platform_get_irq(pdev, 0);
  	if (irq < 0)
-@@ -906,16 +1128,16 @@ static int stm32_i2s_probe(struct platform_device *pdev)
+@@ -892,6 +1115,7 @@ static int stm32_i2s_remove(struct platform_device *pdev)
+ {
+ 	snd_dmaengine_pcm_unregister(&pdev->dev);
+ 	snd_soc_unregister_component(&pdev->dev);
++	pm_runtime_disable(&pdev->dev);
+ 
+ 	return 0;
+ }
+@@ -906,16 +1130,16 @@ static int stm32_i2s_probe(struct platform_device *pdev)
  	if (!i2s)
  		return -ENOMEM;
  
@@ -599,8 +652,17 @@ index 7c4d63c33f15..7d1672cf78cc 100644
  	ret = stm32_i2s_dais_init(pdev, i2s);
  	if (ret)
  		return ret;
+@@ -974,6 +1198,8 @@ static int stm32_i2s_probe(struct platform_device *pdev)
+ 			FIELD_GET(I2S_VERR_MIN_MASK, val));
+ 	}
+ 
++	pm_runtime_enable(&pdev->dev);
++
+ 	return ret;
+ 
+ error:
 diff --git a/sound/soc/stm/stm32_sai_sub.c b/sound/soc/stm/stm32_sai_sub.c
-index 3aa1cf262402..780f48138985 100644
+index 3aa1cf262..780f48138 100644
 --- a/sound/soc/stm/stm32_sai_sub.c
 +++ b/sound/soc/stm/stm32_sai_sub.c
 @@ -1294,7 +1294,7 @@ static struct snd_soc_dai_driver stm32_sai_playback_dai = {
@@ -621,6 +683,35 @@ index 3aa1cf262402..780f48138985 100644
  			.rate_min = 8000,
  			.rate_max = 192000,
  			.rates = SNDRV_PCM_RATE_CONTINUOUS,
+diff --git a/sound/soc/stm/stm32_spdifrx.c b/sound/soc/stm/stm32_spdifrx.c
+index 1bfa3b2ba..aa38f9df9 100644
+--- a/sound/soc/stm/stm32_spdifrx.c
++++ b/sound/soc/stm/stm32_spdifrx.c
+@@ -12,6 +12,7 @@
+ #include <linux/delay.h>
+ #include <linux/module.h>
+ #include <linux/of_platform.h>
++#include <linux/pm_runtime.h>
+ #include <linux/regmap.h>
+ #include <linux/reset.h>
+ 
+@@ -956,6 +957,7 @@ static int stm32_spdifrx_remove(struct platform_device *pdev)
+ 
+ 	snd_dmaengine_pcm_unregister(&pdev->dev);
+ 	snd_soc_unregister_component(&pdev->dev);
++	pm_runtime_disable(&pdev->dev);
+ 
+ 	return 0;
+ }
+@@ -1046,6 +1048,8 @@ static int stm32_spdifrx_probe(struct platform_device *pdev)
+ 			FIELD_GET(SPDIFRX_VERR_MIN_MASK, ver));
+ 	}
+ 
++	pm_runtime_enable(&pdev->dev);
++
+ 	return ret;
+ 
+ error:
 -- 
 2.17.1
 

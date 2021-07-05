@@ -1,27 +1,26 @@
-From c40d4d83b3de542be7d64b88f0c842ebecc9a6b2 Mon Sep 17 00:00:00 2001
-From: Romuald JEANNE <romuald.jeanne@st.com>
-Date: Tue, 16 Mar 2021 09:09:52 +0100
-Subject: [PATCH 17/22] ARM 5.10.10-stm32mp1-r1 RESET-RTC-WATCHDOG
+From 32651dddd362b90d443aa3e6f15b699d0e1ad26c Mon Sep 17 00:00:00 2001
+From: Lionel Vitte <lionel.vitte@st.com>
+Date: Thu, 14 Oct 2021 16:51:50 +0200
+Subject: [PATCH 17/23] ARM 5.10.61-stm32mp1-r2 RESET-RTC-WATCHDOG
 
-Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
 ---
  drivers/reset/Kconfig                       |   6 -
  drivers/reset/Makefile                      |   1 -
- drivers/reset/reset-stm32mp1.c              | 115 -------------
+ drivers/reset/reset-stm32mp1.c              | 115 -----------
  drivers/rtc/Kconfig                         |   1 +
- drivers/rtc/rtc-stm32.c                     | 180 ++++++++++++++++----
+ drivers/rtc/rtc-stm32.c                     | 214 +++++++++++++++-----
  drivers/watchdog/stm32_iwdg.c               |  13 +-
  include/dt-bindings/reset/stm32mp1-resets.h |  15 ++
  include/dt-bindings/rtc/rtc-stm32.h         |  13 ++
- 8 files changed, 183 insertions(+), 161 deletions(-)
+ 8 files changed, 202 insertions(+), 176 deletions(-)
  delete mode 100644 drivers/reset/reset-stm32mp1.c
  create mode 100644 include/dt-bindings/rtc/rtc-stm32.h
 
 diff --git a/drivers/reset/Kconfig b/drivers/reset/Kconfig
-index 07d162b179fc..c3186d80c33e 100644
+index 147543ad3..6c1409b38 100644
 --- a/drivers/reset/Kconfig
 +++ b/drivers/reset/Kconfig
-@@ -180,12 +180,6 @@ config RESET_SIMPLE
+@@ -182,12 +182,6 @@ config RESET_SIMPLE
  	   - Allwinner SoCs
  	   - ZTE's zx2967 family
  
@@ -35,7 +34,7 @@ index 07d162b179fc..c3186d80c33e 100644
  	bool "SoCFPGA Reset Driver" if COMPILE_TEST && !ARCH_SOCFPGA
  	default ARCH_SOCFPGA
 diff --git a/drivers/reset/Makefile b/drivers/reset/Makefile
-index 16947610cc3b..b2c9eff41d3b 100644
+index 16947610c..b2c9eff41 100644
 --- a/drivers/reset/Makefile
 +++ b/drivers/reset/Makefile
 @@ -24,7 +24,6 @@ obj-$(CONFIG_RESET_QCOM_PDC) += reset-qcom-pdc.o
@@ -48,7 +47,7 @@ index 16947610cc3b..b2c9eff41d3b 100644
  obj-$(CONFIG_RESET_TI_SCI) += reset-ti-sci.o
 diff --git a/drivers/reset/reset-stm32mp1.c b/drivers/reset/reset-stm32mp1.c
 deleted file mode 100644
-index b221a28041fa..000000000000
+index b221a2804..000000000
 --- a/drivers/reset/reset-stm32mp1.c
 +++ /dev/null
 @@ -1,115 +0,0 @@
@@ -168,10 +167,10 @@ index b221a28041fa..000000000000
 -
 -builtin_platform_driver(stm32_reset_driver);
 diff --git a/drivers/rtc/Kconfig b/drivers/rtc/Kconfig
-index 65ad9d0b47ab..f2a4d7c633c8 100644
+index 33e4ecd6c..65619e077 100644
 --- a/drivers/rtc/Kconfig
 +++ b/drivers/rtc/Kconfig
-@@ -1884,6 +1884,7 @@ config RTC_DRV_R7301
+@@ -1885,6 +1885,7 @@ config RTC_DRV_R7301
  config RTC_DRV_STM32
  	tristate "STM32 RTC"
  	select REGMAP_MMIO
@@ -180,7 +179,7 @@ index 65ad9d0b47ab..f2a4d7c633c8 100644
  	help
  	   If you say yes here you get support for the STM32 On-Chip
 diff --git a/drivers/rtc/rtc-stm32.c b/drivers/rtc/rtc-stm32.c
-index d774aa18f57a..7fd6347691bb 100644
+index d096b58cd..ffab177ed 100644
 --- a/drivers/rtc/rtc-stm32.c
 +++ b/drivers/rtc/rtc-stm32.c
 @@ -6,6 +6,8 @@
@@ -333,7 +332,48 @@ index d774aa18f57a..7fd6347691bb 100644
  static void stm32_rtc_wpr_unlock(struct stm32_rtc *rtc)
  {
  	const struct stm32_rtc_registers *regs = &rtc->data->regs;
-@@ -547,7 +642,8 @@ static void stm32_rtc_clear_events(struct stm32_rtc *rtc,
+@@ -160,10 +255,9 @@ static int stm32_rtc_enter_init_mode(struct stm32_rtc *rtc)
+ 		 * slowest rtc_ck frequency may be 32kHz and highest should be
+ 		 * 1MHz, we poll every 10 us with a timeout of 100ms.
+ 		 */
+-		return readl_relaxed_poll_timeout_atomic(
+-					rtc->base + regs->isr,
+-					isr, (isr & STM32_RTC_ISR_INITF),
+-					10, 100000);
++		return readl_relaxed_poll_timeout_atomic(rtc->base + regs->isr, isr,
++							 (isr & STM32_RTC_ISR_INITF),
++							 10, 100000);
+ 	}
+ 
+ 	return 0;
+@@ -448,16 +542,16 @@ static int stm32_rtc_valid_alrm(struct stm32_rtc *rtc, struct rtc_time *tm)
+ 	 *	M-D-Y H:M:S < alarm <= (M+1)-D-Y H:M:S
+ 	 * with a specific case for December...
+ 	 */
+-	if ((((tm->tm_year > cur_year) &&
+-	      (tm->tm_mon == 0x1) && (cur_mon == 0x12)) ||
+-	     ((tm->tm_year == cur_year) &&
+-	      (tm->tm_mon <= cur_mon + 1))) &&
+-	    ((tm->tm_mday > cur_day) ||
+-	     ((tm->tm_mday == cur_day) &&
+-	     ((tm->tm_hour > cur_hour) ||
+-	      ((tm->tm_hour == cur_hour) && (tm->tm_min > cur_min)) ||
+-	      ((tm->tm_hour == cur_hour) && (tm->tm_min == cur_min) &&
+-	       (tm->tm_sec >= cur_sec))))))
++	if (((tm->tm_year > cur_year &&
++	      tm->tm_mon == 0x1 && cur_mon == 0x12) ||
++	     (tm->tm_year == cur_year &&
++	      tm->tm_mon <= cur_mon + 1)) &&
++	    (tm->tm_mday > cur_day ||
++	     (tm->tm_mday == cur_day &&
++	     (tm->tm_hour > cur_hour ||
++	      (tm->tm_hour == cur_hour && tm->tm_min > cur_min) ||
++	      (tm->tm_hour == cur_hour && tm->tm_min == cur_min &&
++	       tm->tm_sec >= cur_sec)))))
+ 		return 0;
+ 
+ 	return -EINVAL;
+@@ -547,7 +641,8 @@ static void stm32_rtc_clear_events(struct stm32_rtc *rtc,
  static const struct stm32_rtc_data stm32_rtc_data = {
  	.has_pclk = false,
  	.need_dbp = true,
@@ -343,7 +383,7 @@ index d774aa18f57a..7fd6347691bb 100644
  	.regs = {
  		.tr = 0x00,
  		.dr = 0x04,
-@@ -558,6 +654,7 @@ static const struct stm32_rtc_data stm32_rtc_data = {
+@@ -558,6 +653,7 @@ static const struct stm32_rtc_data stm32_rtc_data = {
  		.wpr = 0x24,
  		.sr = 0x0C, /* set to ISR offset to ease alarm management */
  		.scr = UNDEF_REG,
@@ -351,7 +391,7 @@ index d774aa18f57a..7fd6347691bb 100644
  		.verr = UNDEF_REG,
  	},
  	.events = {
-@@ -569,7 +666,8 @@ static const struct stm32_rtc_data stm32_rtc_data = {
+@@ -569,7 +665,8 @@ static const struct stm32_rtc_data stm32_rtc_data = {
  static const struct stm32_rtc_data stm32h7_rtc_data = {
  	.has_pclk = true,
  	.need_dbp = true,
@@ -361,7 +401,7 @@ index d774aa18f57a..7fd6347691bb 100644
  	.regs = {
  		.tr = 0x00,
  		.dr = 0x04,
-@@ -580,6 +678,7 @@ static const struct stm32_rtc_data stm32h7_rtc_data = {
+@@ -580,6 +677,7 @@ static const struct stm32_rtc_data stm32h7_rtc_data = {
  		.wpr = 0x24,
  		.sr = 0x0C, /* set to ISR offset to ease alarm management */
  		.scr = UNDEF_REG,
@@ -369,7 +409,7 @@ index d774aa18f57a..7fd6347691bb 100644
  		.verr = UNDEF_REG,
  	},
  	.events = {
-@@ -600,7 +699,8 @@ static void stm32mp1_rtc_clear_events(struct stm32_rtc *rtc,
+@@ -600,7 +698,8 @@ static void stm32mp1_rtc_clear_events(struct stm32_rtc *rtc,
  static const struct stm32_rtc_data stm32mp1_data = {
  	.has_pclk = true,
  	.need_dbp = false,
@@ -379,7 +419,7 @@ index d774aa18f57a..7fd6347691bb 100644
  	.regs = {
  		.tr = 0x00,
  		.dr = 0x04,
-@@ -611,6 +711,7 @@ static const struct stm32_rtc_data stm32mp1_data = {
+@@ -611,6 +710,7 @@ static const struct stm32_rtc_data stm32mp1_data = {
  		.wpr = 0x24,
  		.sr = 0x50,
  		.scr = 0x5C,
@@ -387,32 +427,45 @@ index d774aa18f57a..7fd6347691bb 100644
  		.verr = 0x3F4,
  	},
  	.events = {
-@@ -641,11 +742,20 @@ static int stm32_rtc_init(struct platform_device *pdev,
+@@ -641,18 +741,32 @@ static int stm32_rtc_init(struct platform_device *pdev,
  	pred_a_max = STM32_RTC_PRER_PRED_A >> STM32_RTC_PRER_PRED_A_SHIFT;
  	pred_s_max = STM32_RTC_PRER_PRED_S >> STM32_RTC_PRER_PRED_S_SHIFT;
  
 -	for (pred_a = pred_a_max; pred_a + 1 > 0; pred_a--) {
 -		pred_s = (rate / (pred_a + 1)) - 1;
++	if (rate > (pred_a_max + 1) * (pred_s_max + 1)) {
++		dev_err(&pdev->dev, "rtc_ck rate is too high: %dHz\n", rate);
++		return -EINVAL;
++	}
++
 +	if (rtc->data->need_accuracy) {
 +		for (pred_a = 0; pred_a <= pred_a_max; pred_a++) {
 +			pred_s = (rate / (pred_a + 1)) - 1;
-+
-+			if (((pred_s + 1) * (pred_a + 1)) == rate)
+ 
+-		if (((pred_s + 1) * (pred_a + 1)) == rate)
+-			break;
++			if (pred_s <= pred_s_max && ((pred_s + 1) * (pred_a + 1)) == rate)
 +				break;
 +		}
 +	} else {
 +		for (pred_a = pred_a_max; pred_a + 1 > 0; pred_a--) {
 +			pred_s = (rate / (pred_a + 1)) - 1;
- 
--		if (((pred_s + 1) * (pred_a + 1)) == rate)
--			break;
++
 +			if (((pred_s + 1) * (pred_a + 1)) == rate)
 +				break;
 +		}
  	}
  
  	/*
-@@ -736,13 +846,15 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+ 	 * Can't find a 1Hz, so give priority to RTC power consumption
+ 	 * by choosing the higher possible value for prediv_a
+ 	 */
+-	if ((pred_s > pred_s_max) || (pred_a > pred_a_max)) {
++	if (pred_s > pred_s_max || pred_a > pred_a_max) {
+ 		pred_a = pred_a_max;
+ 		pred_s = (rate / (pred_a + 1)) - 1;
+ 
+@@ -736,13 +850,15 @@ static int stm32_rtc_probe(struct platform_device *pdev)
  	} else {
  		rtc->pclk = devm_clk_get(&pdev->dev, "pclk");
  		if (IS_ERR(rtc->pclk)) {
@@ -425,12 +478,12 @@ index d774aa18f57a..7fd6347691bb 100644
  	}
  	if (IS_ERR(rtc->rtc_ck)) {
 -		dev_err(&pdev->dev, "no rtc_ck clock");
-+		if (PTR_ERR(rtc->pclk) != -EPROBE_DEFER)
++		if (PTR_ERR(rtc->rtc_ck) != -EPROBE_DEFER)
 +			dev_err(&pdev->dev, "no rtc_ck clock");
  		return PTR_ERR(rtc->rtc_ck);
  	}
  
-@@ -779,19 +891,12 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+@@ -779,19 +895,12 @@ static int stm32_rtc_probe(struct platform_device *pdev)
  	}
  
  	ret = device_init_wakeup(&pdev->dev, true);
@@ -455,7 +508,7 @@ index d774aa18f57a..7fd6347691bb 100644
  
  	platform_set_drvdata(pdev, rtc);
  
-@@ -814,6 +919,21 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+@@ -814,6 +923,21 @@ static int stm32_rtc_probe(struct platform_device *pdev)
  		goto err;
  	}
  
@@ -477,7 +530,7 @@ index d774aa18f57a..7fd6347691bb 100644
  	/*
  	 * If INITS flag is reset (calendar year field set to 0x00), calendar
  	 * must be initialized
-@@ -850,6 +970,9 @@ static int stm32_rtc_remove(struct platform_device *pdev)
+@@ -852,6 +976,9 @@ static int stm32_rtc_remove(struct platform_device *pdev)
  	const struct stm32_rtc_registers *regs = &rtc->data->regs;
  	unsigned int cr;
  
@@ -487,7 +540,7 @@ index d774aa18f57a..7fd6347691bb 100644
  	/* Disable interrupts */
  	stm32_rtc_wpr_unlock(rtc);
  	cr = readl_relaxed(rtc->base + regs->cr);
-@@ -879,9 +1002,6 @@ static int stm32_rtc_suspend(struct device *dev)
+@@ -881,9 +1008,6 @@ static int stm32_rtc_suspend(struct device *dev)
  	if (rtc->data->has_pclk)
  		clk_disable_unprepare(rtc->pclk);
  
@@ -497,7 +550,7 @@ index d774aa18f57a..7fd6347691bb 100644
  	return 0;
  }
  
-@@ -903,15 +1023,13 @@ static int stm32_rtc_resume(struct device *dev)
+@@ -905,15 +1029,13 @@ static int stm32_rtc_resume(struct device *dev)
  		return ret;
  	}
  
@@ -517,7 +570,7 @@ index d774aa18f57a..7fd6347691bb 100644
  static struct platform_driver stm32_rtc_driver = {
  	.probe		= stm32_rtc_probe,
 diff --git a/drivers/watchdog/stm32_iwdg.c b/drivers/watchdog/stm32_iwdg.c
-index 25188d6bbe15..a3436c296c97 100644
+index 25188d6bb..a3436c296 100644
 --- a/drivers/watchdog/stm32_iwdg.c
 +++ b/drivers/watchdog/stm32_iwdg.c
 @@ -162,18 +162,15 @@ static int stm32_iwdg_clk_init(struct platform_device *pdev,
@@ -545,7 +598,7 @@ index 25188d6bbe15..a3436c296c97 100644
  		ret = clk_prepare_enable(wdt->clk_pclk);
  		if (ret) {
 diff --git a/include/dt-bindings/reset/stm32mp1-resets.h b/include/dt-bindings/reset/stm32mp1-resets.h
-index f0c3aaef67a0..f3a0ed317835 100644
+index f0c3aaef6..f3a0ed317 100644
 --- a/include/dt-bindings/reset/stm32mp1-resets.h
 +++ b/include/dt-bindings/reset/stm32mp1-resets.h
 @@ -7,6 +7,7 @@
@@ -577,7 +630,7 @@ index f0c3aaef67a0..f3a0ed317835 100644
  #endif /* _DT_BINDINGS_STM32MP1_RESET_H_ */
 diff --git a/include/dt-bindings/rtc/rtc-stm32.h b/include/dt-bindings/rtc/rtc-stm32.h
 new file mode 100644
-index 000000000000..4373c4dea587
+index 000000000..4373c4dea
 --- /dev/null
 +++ b/include/dt-bindings/rtc/rtc-stm32.h
 @@ -0,0 +1,13 @@
