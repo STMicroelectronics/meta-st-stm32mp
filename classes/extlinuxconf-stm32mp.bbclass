@@ -143,7 +143,7 @@ def create_extlinux_file(cfile, labels, data):
 
                 if fit == '1':
                     # Set specific kernel configuration if 'fit' feature is enabled
-                    kernel_image = kernel_image + '#conf@' + label + '.dtb'
+                    kernel_image = kernel_image + '#conf-' + label + '.dtb'
                     cfgfile.write('LABEL %s\n\tKERNEL %s\n' % (menu_description, kernel_image))
                 elif fdt:
                     cfgfile.write('LABEL %s\n\tKERNEL %s\n\tFDT %s\n' %
