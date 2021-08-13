@@ -19,6 +19,9 @@ do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/kernel"
 KERNEL_SIGN_ENABLE ?= "0"
 EXTRA_OEMAKE += "${@oe.utils.ifelse(d.getVar('KERNEL_SIGN_ENABLE') == '1', 'INSTALL_MOD_STRIP=1','')}"
 
+# Deploy kernel config file to deploy folder
+KERNEL_CONFIG_DEPLOY ??= "0"
+
 # YoctoProject bugzilla : 140044
 #   There's a race between do_symlink_kernsrc and do_populate_lic, since the latter is ordered "after do_patch";
 #
@@ -105,6 +108,9 @@ do_deploy_append() {
         mkdir -p ${D}${root_prefix}/lib
         tar -cvzf $deployDir/modules-stripped-${MODULE_TARBALL_NAME}.tgz -C ${WORKDIR}/package/${root_prefix} lib
         ln -sf modules-stripped-${MODULE_TARBALL_NAME}.tgz $deployDir/modules-stripped-${MODULE_TARBALL_LINK_NAME}.tgz
+    fi
+    if [ ${KERNEL_CONFIG_DEPLOY} = "1" ] && [ -f "${D}/boot/config-${KERNEL_VERSION}" ]; then
+        install -m 0644 ${D}/boot/config-${KERNEL_VERSION} $deployDir
     fi
 }
 do_deploy[depends] += " virtual/kernel:do_package "

@@ -400,6 +400,9 @@ KERNEL_ALT_IMAGETYPE =+ " ${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'uImag
 # Define to null to skip kernel image size check
 KERNEL_IMAGE_MAXSIZE ?= ""
 
+# Enable kernel config file deploy
+KERNEL_CONFIG_DEPLOY ?= "1"
+
 # For fit usage
 UBOOT_ENTRYPOINT = "0xC0800000"
 
