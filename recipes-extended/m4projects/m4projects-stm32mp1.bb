@@ -4,12 +4,12 @@ LICENSE = " \
     & MIT \
     & BSD-3-Clause \
     "
-LIC_FILES_CHKSUM = "file://License.md;md5=5272d12bc1c2e29908b787134d73dae9"
+LIC_FILES_CHKSUM = "file://License.md;md5=532c0d9fc2820ec1304ab8e0f227acc7"
 
 SRC_URI = "git://github.com/STMicroelectronics/STM32CubeMP1.git;protocol=https;branch=master"
-SRCREV  = "8206e534360c77f22f616243c3ccf9311af83f33"
+SRCREV  = "817e844fa791a34cf67df8100345f2a7382373d7"
 
-PV = "1.4.0"
+PV = "1.5.0"
 
 S = "${WORKDIR}/git"
 

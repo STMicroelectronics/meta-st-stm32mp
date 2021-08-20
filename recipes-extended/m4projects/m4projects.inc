@@ -41,7 +41,7 @@ M4_INSTALLDIR ?= "${prefix}local"
 M4_OUTPUT_4USERFS = "${M4_INSTALLDIR}/${M4_FOLDER}"
 
 # Use gcc bare toolchain
-EXTRA_OEMAKE += "CROSS_COMPILE=${RECIPE_SYSROOT_NATIVE}/${datadir}/gcc-arm-none-eabi/bin/arm-none-eabi-"
+EXTRA_OEMAKE += "CROSS_COMPILE=${RECIPE_SYSROOT_NATIVE}${datadir}/gcc-arm-none-eabi/bin/arm-none-eabi-"
 EXTRA_OEMAKE += "CPU_TYPE=M4"
 EXTRA_OEMAKE += "BUILD_CONFIG=${BUILD_CONFIG}"
 
