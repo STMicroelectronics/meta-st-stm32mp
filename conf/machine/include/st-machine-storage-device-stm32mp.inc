@@ -53,8 +53,8 @@ python () {
                 if device_type not in supported_device_types:
                     bb.fatal('Wrong DEVICE_STORAGE configuration: "%s" is not part of supported device type (%s)' % (device_type, supported_device_types))
                 # Configure alias
-                d.setVar('DEVICE_%s' % device_name, device_type)
-                d.setVar('DEVICE_%s' % device_type, device_name)
+                d.setVar('DEVICE:%s' % device_name, device_type)
+                d.setVar('DEVICE:%s' % device_type, device_name)
             else:
                 bb.fatal('Wrong DEVICE_STORAGE configuration: expecting DEVICE_STORAGE = "<device_name1>:<devie_type1>,<device_name2>:<device_type2>"')
 }
@@ -64,74 +64,74 @@ python () {
 # Extra space is required to store 'Protective MBR' and 'Primary GPT Header'
 # Currently the required size is 17 KiB (i.e. 0x4400)
 # We need to align this size to get the first offset to use
-DEVICE_START_OFFSET_EMMC    ?= "0x00080000"
+DEVICE_START_OFFSET:EMMC    ?= "0x00080000"
 # 32 Gbit
-DEVICE_MAX_OFFSET_EMMC      ?= "0x100000000"
-DEVICE_ALIGNMENT_SIZE_EMMC  ?= "0x00080000"
+DEVICE_MAX_OFFSET:EMMC      ?= "0x100000000"
+DEVICE_ALIGNMENT_SIZE:EMMC  ?= "0x00080000"
 
 # Specific to EMMC, there are two boot partitions using specific offset to access
-DEVICE_START_OFFSET_BOOT0_EMMC ?= "boot1"
-DEVICE_START_OFFSET_BOOT1_EMMC ?= "boot2"
+DEVICE_START_OFFSET_BOOT0:EMMC ?= "boot1"
+DEVICE_START_OFFSET_BOOT1:EMMC ?= "boot2"
 
 # Configure the rootfs partition uid used in gpt partition table for EMMC
-DEVICE_PARTUUID_ROOTFS_EMMC ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS_${DEVICE_EMMC}')) or ''}"
+DEVICE_PARTUUID_ROOTFS:EMMC ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS:${DEVICE:EMMC}')) or ''}"
 
 # Configure the list of boards that enable EMMC
-DEVICE_BOARD_ENABLE_EMMC += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', '${STM32MP_DT_FILES_ED}', '', d)}"
-DEVICE_BOARD_ENABLE_EMMC += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', '${STM32MP_DT_FILES_EV}', '', d)}"
+DEVICE_BOARD_ENABLE:EMMC += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', '${STM32MP_DT_FILES_ED}', '', d)}"
+DEVICE_BOARD_ENABLE:EMMC += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', '${STM32MP_DT_FILES_EV}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # NAND
-DEVICE_START_OFFSET_NAND   ?= "0x00000000"
+DEVICE_START_OFFSET:NAND   ?= "0x00000000"
 # 8 Gbit
-DEVICE_MAX_OFFSET_NAND     ?= "0x40000000"
-DEVICE_ALIGNMENT_SIZE_NAND ?= "0x00040000"
+DEVICE_MAX_OFFSET:NAND     ?= "0x40000000"
+DEVICE_ALIGNMENT_SIZE:NAND ?= "0x00040000"
 
 # Configure the list of boards that enable NAND
-DEVICE_BOARD_ENABLE_NAND   += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', '${STM32MP_DT_FILES_ED}', '', d)}"
-DEVICE_BOARD_ENABLE_NAND   += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', '${STM32MP_DT_FILES_EV}', '', d)}"
+DEVICE_BOARD_ENABLE:NAND   += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', '${STM32MP_DT_FILES_ED}', '', d)}"
+DEVICE_BOARD_ENABLE:NAND   += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', '${STM32MP_DT_FILES_EV}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # NOR
-DEVICE_START_OFFSET_NOR    ?= "0x00000000"
+DEVICE_START_OFFSET:NOR    ?= "0x00000000"
 # 512 Mbit, only 1 NOR is used
-DEVICE_MAX_OFFSET_NOR      ?= "0x04000000"
-DEVICE_ALIGNMENT_SIZE_NOR  ?= "0x00010000"
+DEVICE_MAX_OFFSET:NOR      ?= "0x04000000"
+DEVICE_ALIGNMENT_SIZE:NOR  ?= "0x00010000"
 
 # Configure the list of boards that enable NOR
-DEVICE_BOARD_ENABLE_NOR    += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard' , '${STM32MP_DT_FILES_EV}', '', d)}"
+DEVICE_BOARD_ENABLE:NOR    += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard' , '${STM32MP_DT_FILES_EV}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # SDCARD
 # Extra space is required to store 'Protective MBR' and 'Primary GPT Header'
 # Currently the required size is 17 KiB (i.e. 0x4400)
 # We need to align this size to get the first offset to use
-DEVICE_START_OFFSET_SDCARD    ?= "0x00004400"
+DEVICE_START_OFFSET:SDCARD    ?= "0x00004400"
 # No limit for SDCARD
-DEVICE_MAX_OFFSET_SDCARD      ?= "none"
-DEVICE_ALIGNMENT_SIZE_SDCARD  ?= "0x00000200"
+DEVICE_MAX_OFFSET:SDCARD      ?= "none"
+DEVICE_ALIGNMENT_SIZE:SDCARD  ?= "0x00000200"
 
 # Configure the rootfs partition uid used in gpt partition table for SDCARD
-DEVICE_PARTUUID_ROOTFS_SDCARD ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS_${DEVICE_SDCARD}')) or ''}"
+DEVICE_PARTUUID_ROOTFS:SDCARD ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS:${DEVICE:SDCARD}')) or ''}"
 
 # Configure the list of boards that enable SDCARD
-DEVICE_BOARD_ENABLE_SDCARD += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', '${STM32MP_DT_FILES_DK}', '', d)}"
-DEVICE_BOARD_ENABLE_SDCARD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard' ], '${STM32MP_DT_FILES_ED}', '', d)}"
-DEVICE_BOARD_ENABLE_SDCARD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard' ], '${STM32MP_DT_FILES_EV}', '', d)}"
+DEVICE_BOARD_ENABLE:SDCARD += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', '${STM32MP_DT_FILES_DK}', '', d)}"
+DEVICE_BOARD_ENABLE:SDCARD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard' ], '${STM32MP_DT_FILES_ED}', '', d)}"
+DEVICE_BOARD_ENABLE:SDCARD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard' ], '${STM32MP_DT_FILES_EV}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # SPI NAND
-DEVICE_START_OFFSET_SPINAND   ?= "0x00000000"
+DEVICE_START_OFFSET:SPINAND   ?= "0x00000000"
 # 2 Gbit
-DEVICE_MAX_OFFSET_SPINAND     ?= "0x10000000"
-DEVICE_ALIGNMENT_SIZE_SPINAND ?= "0x00020000"
+DEVICE_MAX_OFFSET:SPINAND     ?= "0x10000000"
+DEVICE_ALIGNMENT_SIZE:SPINAND ?= "0x00020000"
 
 # Configure the list of boards that enable SPINAND
-DEVICE_BOARD_ENABLE_SPINAND += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', '', '', d)}"
+DEVICE_BOARD_ENABLE:SPINAND += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', '', '', d)}"
 
 # -----------------------------------------------------------------------------
 # Fixed configuration from U-Boot source code
 # -----------------------------------------------------------------------------
-DEVICE_PARTUUID_ROOTFS_mmc0 ?= "e91c4e10-16e6-4c0e-bd0e-77becf4a3582"
-DEVICE_PARTUUID_ROOTFS_mmc1 ?= "491f6117-415d-4f53-88c9-6e0de54deac6"
-DEVICE_PARTUUID_ROOTFS_mmc2 ?= "fd58f1c7-be0d-4338-8ee9-ad8f050aeb18"
+DEVICE_PARTUUID_ROOTFS:mmc0 ?= "e91c4e10-16e6-4c0e-bd0e-77becf4a3582"
+DEVICE_PARTUUID_ROOTFS:mmc1 ?= "491f6117-415d-4f53-88c9-6e0de54deac6"
+DEVICE_PARTUUID_ROOTFS:mmc2 ?= "fd58f1c7-be0d-4338-8ee9-ad8f050aeb18"

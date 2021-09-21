@@ -22,5 +22,5 @@ do_install() {
     fi
 }
 
-ALLOW_EMPTY_${PN} = "1"
-FILES_${PN} = "/boot"
+ALLOW_EMPTY:${PN} = "1"
+FILES:${PN} = "/boot"

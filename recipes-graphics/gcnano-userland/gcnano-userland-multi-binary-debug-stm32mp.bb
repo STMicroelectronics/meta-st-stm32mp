@@ -8,10 +8,10 @@ DEPENDS += " libdrm wayland "
 
 GCNANO_TYPE = "debug"
 
-do_install_append() {
+do_install:append() {
     clean_release_file
 }
 
 include gcnano-userland-binary.inc
 
-PROVIDES_remove = "gcnano-userland"
+PROVIDES:remove = "gcnano-userland"

@@ -1,4 +1,4 @@
-FILESEXTRAPATHS_prepend := "${THISDIR}/files:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 
@@ -6,7 +6,7 @@ PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 B = "${WORKDIR}/build"
 # For external source support with devtools
-EXTERNALSRC_BUILD_pn-${PN} = "${WORKDIR}/build"
+EXTERNALSRC_BUILD:pn-${PN} = "${WORKDIR}/build"
 
 # M4 firwmare build file
 SRC_URI += "file://Makefile.stm32"
@@ -142,8 +142,8 @@ do_install() {
 # -----------------------------------------------------------
 # specific for service: start copro m4 firwmare at boot time
 SYSTEMD_PACKAGES += " m4projects-stm32mp1 "
-SYSTEMD_SERVICE_${PN} = "st-m4firmware-load.service"
-SYSTEMD_AUTO_ENABLE_${PN} = "disable"
+SYSTEMD_SERVICE:${PN} = "st-m4firmware-load.service"
+SYSTEMD_AUTO_ENABLE:${PN} = "disable"
 
 INITSCRIPT_NAME = "st-m4firmware-load-default.sh"
 INITSCRIPT_PARAMS = "stop 22 5 3 ."
@@ -152,8 +152,8 @@ INITSCRIPT_PARAMS = "stop 22 5 3 ."
 INHIBIT_PACKAGE_STRIP = "1"
 INHIBIT_SYSROOT_STRIP = "1"
 
-FILES_${PN} += "${nonarch_base_libdir}/firmware ${sysconfdir}/init.d ${systemd_unitdir}/system ${systemd_unitdir}/system-shutdown"
+FILES:${PN} += "${nonarch_base_libdir}/firmware ${sysconfdir}/init.d ${systemd_unitdir}/system ${systemd_unitdir}/system-shutdown"
 # Configure package split
-FILES_${PN} += "${@bb.utils.contains('M4_PACKAGE_4USERFS', '1', '', '${M4_OUTPUT_4USERFS}', d)}"
-FILES_${PN}-userfs = "${@bb.utils.contains('M4_PACKAGE_4USERFS', '1', '${M4_OUTPUT_4USERFS}', '', d)}"
-RDEPENDS_${PN}-userfs += "busybox"
+FILES:${PN} += "${@bb.utils.contains('M4_PACKAGE_4USERFS', '1', '', '${M4_OUTPUT_4USERFS}', d)}"
+FILES:${PN}-userfs = "${@bb.utils.contains('M4_PACKAGE_4USERFS', '1', '${M4_OUTPUT_4USERFS}', '', d)}"
+RDEPENDS:${PN}-userfs += "busybox"

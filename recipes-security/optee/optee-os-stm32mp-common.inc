@@ -1,13 +1,13 @@
-FILESEXTRAPATHS_prepend := "${THISDIR}/optee-os:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/optee-os:"
 
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 PROVIDES += "virtual/optee-os"
-RPROVIDES_${PN} += "virtual/optee-os virtual/systemd-bootconf"
+RPROVIDES:${PN} += "virtual/optee-os virtual/systemd-bootconf"
 
 B = "${WORKDIR}/build"
 # Configure build dir for externalsrc class usage through devtool
-EXTERNALSRC_BUILD_pn-${PN} = "${WORKDIR}/build"
+EXTERNALSRC_BUILD:pn-${PN} = "${WORKDIR}/build"
 
 DEPENDS += "dtc-native python3-pycryptodomex-native python3-pycrypto-native python3-pyelftools-native"
 
@@ -28,11 +28,11 @@ EXTRA_OEMAKE += "CFG_TEE_CORE_DEBUG=n"
 EXTRA_OEMAKE += "comp-cflagscore='--sysroot=${STAGING_DIR_TARGET}'"
 EXTRA_OEMAKE += "${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', 'CFG_STM32MP15x_STM32IMAGE=y', d)}"
 
-OPTEE_ARCH_armv7a = "arm32"
-OPTEE_ARCH_armv7ve = "arm32"
-OPTEE_ARCH_aarch64 = "arm64"
+OPTEE_ARCH:armv7a = "arm32"
+OPTEE_ARCH:armv7ve = "arm32"
+OPTEE_ARCH:aarch64 = "arm64"
 
-do_configure_prepend(){
+do_configure:prepend(){
     chmod 755 ${S}/scripts/bin_to_c.py
 }
 
@@ -93,9 +93,9 @@ do_deploy() {
 }
 addtask deploy before do_build after do_compile
 
-FILES_${PN} = "${nonarch_base_libdir}/firmware/"
-FILES_${PN}-dev = "/usr/include/optee"
+FILES:${PN} = "${nonarch_base_libdir}/firmware/"
+FILES:${PN}-dev = "/usr/include/optee"
 
-INSANE_SKIP_${PN}-dev = "staticdev"
+INSANE_SKIP:${PN}-dev = "staticdev"
 
 INHIBIT_PACKAGE_STRIP = "1"

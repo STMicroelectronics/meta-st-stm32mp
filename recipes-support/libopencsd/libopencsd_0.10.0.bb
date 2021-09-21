@@ -12,7 +12,7 @@ SRC_URI += "file://0001-add-autotools-support.patch"
 
 S = "${WORKDIR}/OpenCSD-${PV}"
 
-do_install_append() {
+do_install:append() {
 	install -d ${D}${includedir}/opencsd
 	cp ${S}/decoder/include/opencsd/ocsd_if_types.h ${D}${includedir}/opencsd
 	cp ${S}/decoder/include/opencsd/ocsd_if_version.h ${D}${includedir}/opencsd

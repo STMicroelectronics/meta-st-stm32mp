@@ -50,23 +50,23 @@ python __anonymous () {
                         # Update IMAGE vars for each partition image
                         if items[1]:
                             bb.debug(1, "Set UBI_VOLNAME to %s for %s partition image." % (items[1], items[0]))
-                            d.setVar('UBI_VOLNAME_pn-%s' % d.expand(items[0]), items[1])
+                            d.setVar('UBI_VOLNAME:pn-%s' % d.expand(items[0]), items[1])
                             if d.expand(items[1])[-2:] != 'fs':
                                 bb.debug(1, "Set IMAGE_NAME_SUFFIX to '.%sfs' for %s partition image." % (items[1], items[0]))
-                                d.setVar('IMAGE_NAME_SUFFIX_pn-%s' % d.expand(items[0]), '.' + items[1] + 'fs')
+                                d.setVar('IMAGE_NAME_SUFFIX:pn-%s' % d.expand(items[0]), '.' + items[1] + 'fs')
                             else:
                                 bb.debug(1, "Set IMAGE_NAME_SUFFIX to '.%s' for %s partition image." % (items[1], items[0]))
-                                d.setVar('IMAGE_NAME_SUFFIX_pn-%s' % d.expand(items[0]), '.' + items[1])
+                                d.setVar('IMAGE_NAME_SUFFIX:pn-%s' % d.expand(items[0]), '.' + items[1])
                         else:
                             bb.fatal('[PARTITIONS_CONFIG] Missing label setting for %s image' % items[0])
                         if items[2]:
                             bb.debug(1, "Set IMAGE_PARTITION_MOUNTPOINT to %s for %s partition image." % (items[2], items[0]))
-                            d.setVar('IMAGE_PARTITION_MOUNTPOINT_pn-%s' % d.expand(items[0]), items[2])
+                            d.setVar('IMAGE_PARTITION_MOUNTPOINT:pn-%s' % d.expand(items[0]), items[2])
                         if items[3]:
                             if items[2]:
                                 # Mount point available, so we're dealing with partition image
                                 bb.debug(1, "Set IMAGE_ROOTFS_SIZE to %s for %s partition image." % (items[3], items[0]))
-                                d.setVar('IMAGE_ROOTFS_SIZE_pn-%s' % d.expand(items[0]), items[3])
+                                d.setVar('IMAGE_ROOTFS_SIZE:pn-%s' % d.expand(items[0]), items[3])
                         else:
                             bb.fatal('[PARTITIONS_CONFIG] Missing size setting for %s image' % items[0])
 
@@ -242,7 +242,7 @@ python image_rootfs_image_clean_task(){
 # -----------------------------------------------------------------------------
 DEPLOY_BUILDINFO_FILE ??= "0"
 
-buildinfo_append() {
+buildinfo:append() {
     if d.getVar('DEPLOY_BUILDINFO_FILE') != '1':
         return
     # Export build information to deploy dir

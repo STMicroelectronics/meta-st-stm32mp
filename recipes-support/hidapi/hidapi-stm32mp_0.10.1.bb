@@ -21,15 +21,15 @@ BBCLASSEXTEND += "native nativesdk"
 
 DEPENDS += "libusb"
 
-DEPENDS_class-native += "libusb-native"
-DEPENDS_class-nativesdk += "nativesdk-libusb"
+DEPENDS:class-native += "libusb-native"
+DEPENDS:class-nativesdk += "nativesdk-libusb"
 
 # Disable udev backend build in native/nativesdk
 EXTRA_OECONF += "libudev_CFLAGS=' ' libudev_LIBS=' '"
 EXTRA_OEMAKE += "SUBDIRS=libusb"
 
-EXTRA_OECONF_class-native += "libudev_CFLAGS=' ' libudev_LIBS=' '"
-EXTRA_OEMAKE_class-native += "SUBDIRS=libusb"
+EXTRA_OECONF:class-native += "libudev_CFLAGS=' ' libudev_LIBS=' '"
+EXTRA_OEMAKE:class-native += "SUBDIRS=libusb"
 
-EXTRA_OECONF_class-nativesdk += "libudev_CFLAGS=' ' libudev_LIBS=' '"
-EXTRA_OEMAKE_class-nativesdk += "SUBDIRS=libusb"
+EXTRA_OECONF:class-nativesdk += "libudev_CFLAGS=' ' libudev_LIBS=' '"
+EXTRA_OEMAKE:class-nativesdk += "SUBDIRS=libusb"

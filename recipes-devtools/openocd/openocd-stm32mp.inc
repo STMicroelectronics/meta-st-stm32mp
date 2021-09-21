@@ -1,6 +1,6 @@
 DEPENDS = "hidapi-stm32mp"
 
-RDEPENDS_${PN} += "libusb1 hidapi-stm32mp"
+RDEPENDS:${PN} += "libusb1 hidapi-stm32mp"
 
 inherit pkgconfig autotools-brokensep gettext
 
@@ -19,10 +19,10 @@ S = "${WORKDIR}/git"
 BBCLASSEXTEND += "native nativesdk"
 
 DEPENDS += "hidapi-stm32mp"
-DEPENDS_class-native = "hidapi-stm32mp-native"
-DEPENDS_class-nativesdk = "nativesdk-hidapi-stm32mp"
+DEPENDS:class-native = "hidapi-stm32mp-native"
+DEPENDS:class-nativesdk = "nativesdk-hidapi-stm32mp"
 
-RDEPENDS_${PN} += "libusb1 hidapi-stm32mp"
+RDEPENDS:${PN} += "libusb1 hidapi-stm32mp"
 
 EXTRA_OECONF = " \
     --disable-doxygen-html \
@@ -56,7 +56,7 @@ do_install() {
     fi
 }
 
-FILES_${PN} = " \
+FILES:${PN} = " \
   ${datadir}/openocd/* \
   ${bindir}/openocd \
   "

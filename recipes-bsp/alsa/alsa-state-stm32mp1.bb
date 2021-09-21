@@ -25,7 +25,7 @@ SRC_URI = " \
 S = "${WORKDIR}"
 
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
-RDEPENDS_${PN} = "alsa-state"
+RDEPENDS:${PN} = "alsa-state"
 
 do_install() {
     install -d ${D}${sysconfdir}
@@ -59,4 +59,4 @@ do_install() {
     fi
 }
 
-FILES_${PN} = "${localstatedir}/lib/alsa/*.state ${systemd_unitdir}/system-generators ${sysconfdir}/*.conf "
+FILES:${PN} = "${localstatedir}/lib/alsa/*.state ${systemd_unitdir}/system-generators ${sysconfdir}/*.conf "

@@ -1,9 +1,9 @@
 require recipes-bsp/u-boot/u-boot.inc
 
-FILESEXTRAPATHS_prepend := "${THISDIR}/u-boot-stm32mp:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/u-boot-stm32mp:"
 
 # Configure build dir for externalsrc class usage through devtool
-EXTERNALSRC_BUILD_pn-${PN} = "${WORKDIR}/build"
+EXTERNALSRC_BUILD:pn-${PN} = "${WORKDIR}/build"
 B = "${WORKDIR}/build"
 
 # Define dedicated var to configure SPL binary name to override U-Boot default
@@ -34,7 +34,7 @@ STAGING_UBOOT_DIR = "${TMPDIR}/work-shared/${MACHINE}/uboot-source"
 # the symlink.
 do_unpack[cleandirs] += " ${S} ${STAGING_UBOOT_DIR}"
 do_clean[cleandirs] += " ${S} ${STAGING_UBOOT_DIR}"
-base_do_unpack_append () {
+base_do_unpack:append () {
     # Specific part to update devtool-source class
     if bb.data.inherits_class('devtool-source', d):
         # We don't want to move the source to STAGING_UBOOT_DIR here
@@ -62,7 +62,7 @@ base_do_unpack_append () {
 # -----------------------------------------------------------------------------
 # Prepend configure to handle specific configuration (here fip)
 #
-do_configure_prepend() {
+do_configure:prepend() {
     if [ -n "${UBOOT_CONFIG}" ]; then
         unset i j
         for config in ${UBOOT_MACHINE}; do
@@ -91,7 +91,7 @@ do_configure_prepend() {
 # -----------------------------------------------------------------------------
 # Append configure to handle specific MTDPART check if required
 #
-do_configure_append() {
+do_configure:append() {
     if [ -n "${UBOOT_MTDPART_CHECK_ENABLE}" ]; then
         if [ -n "${UBOOT_CONFIG}" ]; then
             for config in ${UBOOT_MACHINE}; do
@@ -139,7 +139,7 @@ do_configure_append() {
 # -----------------------------------------------------------------------------
 # Append compile to handle specific device tree compilation
 #
-do_compile_append() {
+do_compile:append() {
     if [ -n "${UBOOT_DEVICETREE}" ]; then
         if [ -n "${UBOOT_CONFIG}" ]; then
             unset i j k
@@ -194,7 +194,7 @@ do_compile_append() {
 # Append deploy to handle specific device tree binary deployement
 #
 do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/u-boot"
-do_deploy_append() {
+do_deploy:append() {
     if [ -n "${UBOOT_DEVICETREE}" ]; then
         if [ -n "${UBOOT_CONFIG}" ]; then
             # Clean deploydir from any available binary first
@@ -274,8 +274,8 @@ do_deploy_append() {
 
 # ---------------------------------------------------------------------
 # Avoid QA Issue: No GNU_HASH in the elf binary
-INSANE_SKIP_${PN} += "ldflags"
+INSANE_SKIP:${PN} += "ldflags"
 # ---------------------------------------------------------------------
 # Avoid QA Issue: ELF binary has relocations in .text
 # (uboot no need -fPIC option : remove check)
-INSANE_SKIP_${PN} += "textrel"
+INSANE_SKIP:${PN} += "textrel"

@@ -1,6 +1,6 @@
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
-FILESEXTRAPATHS_prepend := "${THISDIR}/tf-a-stm32mp:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/tf-a-stm32mp:"
 
 inherit deploy
 inherit ${@bb.utils.contains('MACHINE_FEATURES', 'fip', 'fip-utils-stm32mp', '', d)}
@@ -17,20 +17,20 @@ SRCREV_mbedtls = "523f0554b6cdc7ace5d360885c3f5bbcc73ec0e8"
 LIC_FILES_CHKSUM_MBEDTLS = "file://mbedtls/LICENSE;md5=3b83ef96387f14655fc854ddc3c6bd57"
 LICENSE_MBEDTLS = "Apache-2.0"
 # Add MBEDTLS to our sources
-SRC_URI_append = " ${@bb.utils.contains('TF_A_SIGN_ENABLE', '1', '${SRC_URI_MBEDTLS}', '', d)}"
+SRC_URI:append = " ${@bb.utils.contains('TF_A_SIGN_ENABLE', '1', '${SRC_URI_MBEDTLS}', '', d)}"
 # Update license variables
-LICENSE_append = "${@bb.utils.contains('TF_A_SIGN_ENABLE', '1', ' & ${LICENSE_MBEDTLS}', '', d)}"
-LIC_FILES_CHKSUM_append = "${@bb.utils.contains('TF_A_SIGN_ENABLE', '1', ' ${LIC_FILES_CHKSUM_MBEDTLS}', '', d)}"
+LICENSE:append = "${@bb.utils.contains('TF_A_SIGN_ENABLE', '1', ' & ${LICENSE_MBEDTLS}', '', d)}"
+LIC_FILES_CHKSUM:append = "${@bb.utils.contains('TF_A_SIGN_ENABLE', '1', ' ${LIC_FILES_CHKSUM_MBEDTLS}', '', d)}"
 # Add mbed TLS to version
-SRCREV_FORMAT_append = "${@bb.utils.contains('TF_A_SIGN_ENABLE', '1', '_mbedtls', '', d)}"
+SRCREV_FORMAT:append = "${@bb.utils.contains('TF_A_SIGN_ENABLE', '1', '_mbedtls', '', d)}"
 # ------------------------------------
 
 B = "${WORKDIR}/build"
 # Configure build dir for externalsrc class usage through devtool
-EXTERNALSRC_BUILD_pn-${PN} = "${WORKDIR}/build"
+EXTERNALSRC_BUILD:pn-${PN} = "${WORKDIR}/build"
 
 DEPENDS += "dtc-native"
-DEPENDS_append = " ${@bb.utils.contains('TF_A_ENABLE_DEBUG_WRAPPER', '1', 'stm32wrapper4dbg-native', '', d)}"
+DEPENDS:append = " ${@bb.utils.contains('TF_A_ENABLE_DEBUG_WRAPPER', '1', 'stm32wrapper4dbg-native', '', d)}"
 
 # Extra make settings
 EXTRA_OEMAKE = 'CROSS_COMPILE=${TARGET_PREFIX}'
@@ -152,7 +152,7 @@ do_unpack[cleandirs] += "${S}"
 do_unpack[cleandirs] += "${@bb.utils.contains('TFA_SHARED_SOURCES', '1', '${STAGING_TFA_DIR}', '', d)}"
 do_clean[cleandirs] += "${S}"
 do_clean[cleandirs] += "${@bb.utils.contains('TFA_SHARED_SOURCES', '1', '${STAGING_TFA_DIR}', '', d)}"
-base_do_unpack_append () {
+base_do_unpack:append () {
     # Specific part to update devtool-source class
     if bb.data.inherits_class('devtool-source', d):
         # We don't want to move the source to STAGING_TFA_DIR here

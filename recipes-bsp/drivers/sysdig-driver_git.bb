@@ -53,7 +53,7 @@ export KERNELDIR = "${STAGING_KERNEL_BUILDDIR}"
 MAKE_TARGETS = "all"
 
 # Compile prepend for cmake build first
-do_compile_prepend() {
+do_compile:prepend() {
 	cmake_runcmake_build --target ${OECMAKE_TARGET_COMPILE}
 }
 
@@ -62,8 +62,8 @@ do_install() {
 	install -m 0755 ${B}/driver/sysdig-probe.ko ${D}${nonarch_base_libdir}/modules/${KERNEL_VERSION}/extra/
 }
 
-FILES_${PN} += " ${base_libdir}/modules/${KERNEL_VERSION}/extra "
+FILES:${PN} += " ${base_libdir}/modules/${KERNEL_VERSION}/extra "
 
 KERNEL_MODULES_META_PACKAGE = ""
 
-RDEPENDS_${PN} = "bash"
+RDEPENDS:${PN} = "bash"

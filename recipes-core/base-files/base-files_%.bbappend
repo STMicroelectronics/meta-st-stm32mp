@@ -1,1 +1,1 @@
-FILESEXTRAPATHS_prepend_stm32mpcommon := "${THISDIR}/${PN}:"
+FILESEXTRAPATHS:prepend_stm32mpcommon := "${THISDIR}/${PN}:"

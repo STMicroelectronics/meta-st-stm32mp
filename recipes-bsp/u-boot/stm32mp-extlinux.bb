@@ -57,4 +57,4 @@ do_install() {
         cp -r ${B}/* ${D}/${UBOOT_EXTLINUX_INSTALL_DIR}
     fi
 }
-FILES_${PN} = "${UBOOT_EXTLINUX_INSTALL_DIR}"
+FILES:${PN} = "${UBOOT_EXTLINUX_INSTALL_DIR}"

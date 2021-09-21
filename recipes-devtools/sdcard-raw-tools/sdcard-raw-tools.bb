@@ -9,9 +9,9 @@ SRC_URI = "file://create_sdcard_from_flashlayout.sh"
 
 BBCLASSEXTEND = "native nativesdk"
 
-RDEPENDS_${PN}_append = " bash "
+RDEPENDS:${PN}:append = " bash "
 
-RRECOMMENDS_${PN}_append_class-nativesdk = " nativesdk-gptfdisk "
+RRECOMMENDS:${PN}:append:class-nativesdk = " nativesdk-gptfdisk "
 
 inherit deploy
 
@@ -28,8 +28,8 @@ do_configure() {
             sed 's/^DEFAULT_RAW_SIZE=.*$/DEFAULT_RAW_SIZE='"$raw_size"'/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
         fi
 
-        bbnote "Update DEFAULT_SDCARD_PARTUUID to ${DEVICE_PARTUUID_ROOTFS_SDCARD}"
-        sed 's/^DEFAULT_SDCARD_PARTUUID=.*$/DEFAULT_SDCARD_PARTUUID='"${DEVICE_PARTUUID_ROOTFS_SDCARD}"'/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
+		bbnote "Update DEFAULT_SDCARD_PARTUUID to ${DEVICE_PARTUUID_ROOTFS:SDCARD}"
+		sed 's/^DEFAULT_SDCARD_PARTUUID=.*$/DEFAULT_SDCARD_PARTUUID='"${DEVICE_PARTUUID_ROOTFS:SDCARD}"'/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
     fi
 }
 
@@ -41,7 +41,7 @@ do_install() {
 do_deploy() {
     :
 }
-do_deploy_class-native() {
+do_deploy:class-native() {
     install -d ${DEPLOYDIR}/${SCRIPT_DEPLOYDIR}
     install -m 0755 ${WORKDIR}/create_sdcard_from_flashlayout.sh ${DEPLOYDIR}/${SCRIPT_DEPLOYDIR}/
 }

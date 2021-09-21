@@ -25,15 +25,15 @@ do_install() {
     install -m 644 ${S}/LICENCE.cypress ${D}${nonarch_base_libdir}/firmware/LICENCE.cypress_bcm4343
 }
 
-LICENSE_${PN} = "Firmware-cypress-bcm4343"
-LICENSE_${PN}-cypress-license = "Firmware-cypress-bcm4343"
+LICENSE:${PN} = "Firmware-cypress-bcm4343"
+LICENSE:${PN}-cypress-license = "Firmware-cypress-bcm4343"
 
-FILES_${PN}-cypress-license = "${nonarch_base_libdir}/firmware/LICENCE.cypress_bcm4343"
-FILES_${PN} = "${nonarch_base_libdir}/firmware/"
+FILES:${PN}-cypress-license = "${nonarch_base_libdir}/firmware/LICENCE.cypress_bcm4343"
+FILES:${PN} = "${nonarch_base_libdir}/firmware/"
 
-RDEPENDS_${PN} += "${PN}-cypress-license"
+RDEPENDS:${PN} += "${PN}-cypress-license"
 
-RRECOMMENDS_${PN}_append_stm32mpcommon += "${@bb.utils.contains('DISTRO_FEATURES', 'systemd', 'bluetooth-suspend', '', d)}"
+RRECOMMENDS:${PN}:append:stm32mpcommon += "${@bb.utils.contains('DISTRO_FEATURES', 'systemd', 'bluetooth-suspend', '', d)}"
 
 # Firmware files are generally not ran on the CPU, so they can be
 # allarch despite being architecture specific

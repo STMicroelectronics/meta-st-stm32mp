@@ -3,9 +3,9 @@ DEPENDS += "tf-a-tools-native"
 # Configure new package to provide fiptool wrapper for SDK usage
 PACKAGES =+ "${FIPTOOL_WRAPPER}"
 
-BBCLASSEXTEND_append = " nativesdk"
+BBCLASSEXTEND:append = " nativesdk"
 
-RRECOMMENDS_${FIPTOOL_WRAPPER}_append_class-nativesdk = " nativesdk-tf-a-tools"
+RRECOMMENDS:${FIPTOOL_WRAPPER}:append:class-nativesdk = " nativesdk-tf-a-tools"
 
 # Define default TF-A FIP namings
 FIP_BASENAME ?= "fip"
@@ -67,7 +67,7 @@ FIP_SIGN_SUFFIX ??= ''
 # Define FIP dependency build
 FIP_DEPENDS += "virtual/bootloader"
 FIP_DEPENDS += "${@bb.utils.contains('MACHINE_FEATURES', 'optee', 'virtual/optee-os', '', d)}"
-FIP_DEPENDS_class-nativesdk = ""
+FIP_DEPENDS:class-nativesdk = ""
 
 # -----------------------------------------------
 # Handle FIP config and set internal vars
@@ -130,7 +130,7 @@ python () {
 }
 
 # Deploy the fip binary for current target
-do_deploy_append_class-target() {
+do_deploy:append:class-target() {
     install -d ${DEPLOYDIR}
     install -d ${FIP_DEPLOYDIR_FIP}
 
@@ -237,11 +237,11 @@ do_deploy_append_class-target() {
 }
 
 # Stub do_compile for nativesdk use case as we only expect to provide FIPTOOL_WRAPPER
-do_compile_class-nativesdk() {
+do_compile:class-nativesdk() {
     return
 }
 
-do_install_class-nativesdk() {
+do_install:class-nativesdk() {
     # Create the FIPTOOL_WRAPPER script to use on sdk side
     cat << EOF > ${WORKDIR}/${FIPTOOL_WRAPPER}
 #!/bin/bash -
@@ -342,4 +342,4 @@ EOF
 }
 
 # Feed package for sdk with our fiptool wrapper
-FILES_${FIPTOOL_WRAPPER}_class-nativesdk = "${bindir}/${FIPTOOL_WRAPPER}"
+FILES:${FIPTOOL_WRAPPER}:class-nativesdk = "${bindir}/${FIPTOOL_WRAPPER}"

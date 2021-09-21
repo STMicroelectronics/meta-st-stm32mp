@@ -1,25 +1,25 @@
-FILESEXTRAPATHS_prepend_stm32mpcommon := "${THISDIR}/${PN}:"
+FILESEXTRAPATHS:prepend:stm32mpcommon := "${THISDIR}/${PN}:"
 
-SRC_URI_append_stm32mpcommon = " \
+SRC_URI:append:stm32mpcommon = " \
        file://${BUSYBOX_CONFIG_FRAGMENT} \
        file://ifplugd.conf \
        file://ifplugd.action \
        file://ifplugd.sh \
        "
 
-BUSYBOX_CONFIG_FRAGMENT_stm32mpcommon = "busybox-stm32mp.cfg"
+BUSYBOX_CONFIG_FRAGMENT:stm32mpcommon = "busybox-stm32mp.cfg"
 
 #inherit update-rc.d
-DEPENDS_append_stm32mpcommon = " ${@bb.utils.contains('DISTRO_FEATURES', 'systemd', '', 'update-rc.d-native', d)}"
+DEPENDS:append:stm32mpcommon = " ${@bb.utils.contains('DISTRO_FEATURES', 'systemd', '', 'update-rc.d-native', d)}"
 
-do_configure_append_stm32mpcommon () {
+do_configure:append:stm32mpcommon () {
     # merge specific configuration to newly generated .config
     merge_config.sh -m -r -O ${B} ${B}/.config ${WORKDIR}/${BUSYBOX_CONFIG_FRAGMENT} 1>&2
     # make sure to generate proper config file for busybox
     cml1_do_configure
 }
 
-do_install_append_stm32mpcommon () {
+do_install:append:stm32mpcommon () {
     if [ "${@bb.utils.contains('DISTRO_FEATURES', 'systemd', '1', '0', d)}" = "0" ]; then
         if grep -q "CONFIG_IFPLUGD=y" ${B}/.config; then
             install -d ${D}${sysconfdir}/ifplugd
