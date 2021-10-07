@@ -529,12 +529,12 @@ FIP_SIGN_SUFFIX ?= "${@bb.utils.contains('FIP_SIGN_ENABLE', '1', '_Signed', '', 
 # =========================================================================
 # Xserver
 # =========================================================================
-XSERVER ?= " \
-    xserver-xorg \
-    xserver-xorg-module-libint10 \
-    xf86-input-evdev \
-    xf86-video-modesetting \
-"
+#XSERVER ?= " \
+#    xserver-xorg \
+#    xserver-xorg-module-libint10 \
+#    xf86-input-evdev \
+#    xf86-video-modesetting \
+#"
 
 # =========================================================================
 # Enable deploy of bootloader elf files
