@@ -8,11 +8,12 @@
 # in an image recipe (for example)
 #
 
-ENABLE_PARTITIONS_IMAGE ?= "1"
+ENABLE_PARTITIONS_IMAGE ??= "1"
 
-PARTITIONS_CONFIG ??= ""
+ENABLE_IMAGE_LICENSE_SUMMARY ??= "0"
+ENABLE_MULTIVOLUME_UBI ??= "0"
+
 PARTITIONS_IMAGE ??= ""
-PARTITIONS_MOUNTPOINT ??= ""
 
 python __anonymous () {
     # We check first if it is requested to generate any partition images
@@ -23,68 +24,66 @@ python __anonymous () {
     # -----------------------------------------------------------------------------
     # Update the partition configuration set by user
     # -----------------------------------------------------------------------------
-    partitionsconfigflags = d.getVarFlags('PARTITIONS_CONFIG')
-    # The "doc" varflag is special, we don't want to see it here
-    partitionsconfigflags.pop('doc', None)
-    partitionsconfig = (d.getVar('PARTITIONS_CONFIG') or "").split()
+    # Init partition list from PARTITIONS_IMAGES
+    image_partitions = []
     # Init image_summary_list
     image_summary_list = ''
+
+    partitionsconfigflags = d.getVarFlags('PARTITIONS_IMAGES')
+    # The "doc" varflag is special, we don't want to see it here
+    partitionsconfigflags.pop('doc', None)
+    partitionsconfig = (d.getVar('PARTITIONS_IMAGES') or "").split()
     if len(partitionsconfig) > 0:
         for config in partitionsconfig:
             for f, v in partitionsconfigflags.items():
                 if config == f:
                     items = v.split(',')
-                    if items[0]:
-                        if len(items) > 5:
-                            raise bb.parse.SkipRecipe('Only image,label,mountpoint,size,type can be specified!')
-                        # Make sure that we're dealing with partition image and not rootfs image
-                        if len(items) > 2 and items[2]:
-                            # Mount point available, so we're dealing with partition image
-                            # PARTITIONS_IMAGE appending
-                            bb.debug(1, "Appending '%s' to PARTITIONS_IMAGE." % items[0])
-                            d.appendVar('PARTITIONS_IMAGE', ' ' + items[0])
-                            # PARTITIONS_MOUNTPOINT appending
-                            bb.debug(1, "Appending '%s' to PARTITIONS_MOUNTPOINT." % items[2])
-                            d.appendVar('PARTITIONS_MOUNTPOINT', ' ' + items[2])
-
-                        # Update IMAGE vars for each partition image
-                        if items[1]:
-                            bb.debug(1, "Set UBI_VOLNAME to %s for %s partition image." % (items[1], items[0]))
-                            d.setVar('UBI_VOLNAME_pn-%s' % d.expand(items[0]), items[1])
-                            if d.expand(items[1])[-2:] != 'fs':
-                                bb.debug(1, "Set IMAGE_NAME_SUFFIX to '.%sfs' for %s partition image." % (items[1], items[0]))
-                                d.setVar('IMAGE_NAME_SUFFIX_pn-%s' % d.expand(items[0]), '.' + items[1] + 'fs')
-                            else:
-                                bb.debug(1, "Set IMAGE_NAME_SUFFIX to '.%s' for %s partition image." % (items[1], items[0]))
-                                d.setVar('IMAGE_NAME_SUFFIX_pn-%s' % d.expand(items[0]), '.' + items[1])
+                    # Make sure about PARTITIONS_IMAGES contents
+                    if len(items) != 5:
+                        bb.fatal('[PARTITIONS_IMAGES] Only image,label,mountpoint,size,type can be specified!')
+                    if items[0] == '':
+                        bb.fatal('[PARTITIONS_IMAGES] Missing image setting')
+                    # Update IMAGE vars for each partition image
+                    if items[1] != '':
+                        bb.debug(1, "Set UBI_VOLNAME to %s for %s partition image." % (items[1], items[0]))
+                        d.setVar('UBI_VOLNAME_pn-%s' % d.expand(items[0]), items[1])
+                        if d.expand(items[1])[-2:] != 'fs':
+                            bb.debug(1, "Set IMAGE_NAME_SUFFIX to '.%sfs' for %s partition image." % (items[1], items[0]))
+                            d.setVar('IMAGE_NAME_SUFFIX_pn-%s' % d.expand(items[0]), '.' + items[1] + 'fs')
                         else:
-                            bb.fatal('[PARTITIONS_CONFIG] Missing label setting for %s image' % items[0])
-                        if items[2]:
-                            bb.debug(1, "Set IMAGE_PARTITION_MOUNTPOINT to %s for %s partition image." % (items[2], items[0]))
-                            d.setVar('IMAGE_PARTITION_MOUNTPOINT_pn-%s' % d.expand(items[0]), items[2])
-                        if items[3]:
-                            if items[2]:
-                                # Mount point available, so we're dealing with partition image
-                                bb.debug(1, "Set IMAGE_ROOTFS_SIZE to %s for %s partition image." % (items[3], items[0]))
-                                d.setVar('IMAGE_ROOTFS_SIZE_pn-%s' % d.expand(items[0]), items[3])
-                        else:
-                            bb.fatal('[PARTITIONS_CONFIG] Missing size setting for %s image' % items[0])
-
-                        # Manage IMAGE_SUMMARY_LIST configuration according to PARTITIONS_CONFIG set
-                        if d.getVar('ENABLE_IMAGE_LICENSE_SUMMARY') == "1":
-                            if not items[2]:
-                                # Set '/' as default mountpoint for rootfs in IMAGE_SUMMARY_LIST
-                                items[2] = '/'
-                            image_summary_list += items[0] + ':' + items[2] + ';'
-
-                        # Manage multiubi volume list STM32MP_UBI_VOLUME
-                        if bb.utils.contains('IMAGE_FSTYPES', 'stmultiubi', True, False, d) and d.getVar('ENABLE_MULTIVOLUME_UBI') == "1":
-                            bb.debug(1, "Appending '%s' image with %s size to STM32MP_UBI_VOLUME." % (items[0], items[3]))
-                            d.appendVar('STM32MP_UBI_VOLUME', ' ' + items[0] + ':' + items[3])
-
+                            bb.debug(1, "Set IMAGE_NAME_SUFFIX to '.%s' for %s partition image." % (items[1], items[0]))
+                            d.setVar('IMAGE_NAME_SUFFIX_pn-%s' % d.expand(items[0]), '.' + items[1])
                     else:
-                        bb.fatal('[PARTITIONS_CONFIG] Missing image setting')
+                        bb.fatal('[PARTITIONS_IMAGES] Missing label setting for %s image' % items[0])
+                    # Make sure that we're dealing with partition image and not rootfs image
+                    if items[2] != '':
+                        # Mount point is available, so we're dealing with partition image
+                        bb.debug(1, "Set IMAGE_PARTITION_MOUNTPOINT to %s for %s partition image." % (items[2], items[0]))
+                        d.setVar('IMAGE_PARTITION_MOUNTPOINT_pn-%s' % d.expand(items[0]), items[2])
+                        # Append image to image_partitions list
+                        image_partitions.append(d.expand(items[0]))
+                        if items[3] != '':
+                            bb.debug(1, "Set IMAGE_ROOTFS_SIZE to %s for %s partition image." % (items[3], items[0]))
+                            d.setVar('IMAGE_ROOTFS_SIZE_pn-%s' % d.expand(items[0]), items[3])
+                        else:
+                            bb.fatal('[PARTITIONS_IMAGES] Missing size setting for %s image' % items[0])
 
+                    # Manage IMAGE_SUMMARY_LIST configuration according to PARTITIONS_IMAGE set
+                    if d.getVar('ENABLE_IMAGE_LICENSE_SUMMARY') == "1":
+                        if items[2] != '':
+                            image_summary_list += items[0] + ':' + items[2] + ';'
+                        else:
+                            # Set '/' as default mountpoint for rootfs in IMAGE_SUMMARY_LIST
+                            image_summary_list += items[0] + ':' + '/' + ';'
+
+                    # Manage multiubi volume list STM32MP_UBI_VOLUME
+                    if bb.utils.contains('IMAGE_FSTYPES', 'stmultiubi', True, False, d) and d.getVar('ENABLE_MULTIVOLUME_UBI') == "1":
+                        # Get the MULTIUBI_BUILD list without any duplicates
+                        ubiconfigs = list(dict.fromkeys((d.getVar('MULTIUBI_BUILD') or "").split()))
+                        if len(ubiconfigs) > 0:
+                            for ubi_config in ubiconfigs:
+                                bb.debug(1, "Appending '%s' image with %s size to STM32MP_UBI_VOLUME." % (items[0], items[3]))
+                                d.appendVar('STM32MP_UBI_VOLUME_%s' % ubi_config, ' ' + items[0] + ':' + items[3])
                     break
 
     # Reset IMAGE_LIST_SUMMARY with computed partition configuration
@@ -92,8 +91,6 @@ python __anonymous () {
         bb.debug(1, "Set IMAGE_SUMMARY_LIST with configuration: %s." % image_summary_list)
         d.setVar('IMAGE_SUMMARY_LIST', image_summary_list)
 
-    # Init partition list from PARTITIONS_IMAGE
-    image_partitions = (d.getVar('PARTITIONS_IMAGE') or "").split()
     # -----------------------------------------------------------------------------
     # Make sure to append the partition build to current image target
     # -----------------------------------------------------------------------------
@@ -136,8 +133,8 @@ python image_rootfs_image_clean_task(){
     machine = d.expand("${MACHINE}")
     distro = d.expand("${DISTRO}")
     img_rootfs = d.getVar('IMAGE_ROOTFS')
-    partitionsconfigflags = d.getVarFlags('PARTITIONS_CONFIG')
-    partitionsconfig = (d.getVar('PARTITIONS_CONFIG') or "").split()
+    partitionsconfigflags = d.getVarFlags('PARTITIONS_IMAGE')
+    partitionsconfig = (d.getVar('PARTITIONS_IMAGE') or "").split()
 
     if len(partitionsconfig) == 0:
         bb.note('No partition image: nothing more to do...')

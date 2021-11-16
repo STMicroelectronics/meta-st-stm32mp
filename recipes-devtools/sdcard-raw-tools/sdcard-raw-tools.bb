@@ -11,7 +11,7 @@ BBCLASSEXTEND = "native nativesdk"
 
 RDEPENDS_${PN}_append = " bash "
 
-RRECOMMENDS_${PN}_append_class-nativesdk = "nativesdk-gptfdisk"
+RRECOMMENDS_${PN}_append_class-nativesdk = " nativesdk-gptfdisk "
 
 inherit deploy
 
@@ -19,11 +19,11 @@ SCRIPT_DEPLOYDIR ?= "scripts"
 
 do_configure() {
     if [ -e ${WORKDIR}/create_sdcard_from_flashlayout.sh ]; then
-        bbnote "Update DEFAULT_ROOTFS_PARTITION_SIZE to ${ROOTFS_PARTITION_SIZE}"
-        sed 's/^DEFAULT_ROOTFS_PARTITION_SIZE=.*$/DEFAULT_ROOTFS_PARTITION_SIZE='"${ROOTFS_PARTITION_SIZE}"'/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
-        if [ ${ROOTFS_PARTITION_SIZE} -gt 1572864 ]; then
-            # rootfs > 1.5GB then put sdcard raw size = ROOTFS_PARTITION_SIZE + 1.5GB
-            raw_size=$(expr ${ROOTFS_PARTITION_SIZE} / 1024 )
+        bbnote "Update DEFAULT_ROOTFS_PARTITION_SIZE to ${STM32MP_ROOTFS_SIZE}"
+        sed 's/^DEFAULT_ROOTFS_PARTITION_SIZE=.*$/DEFAULT_ROOTFS_PARTITION_SIZE='"${STM32MP_ROOTFS_SIZE}"'/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
+        if [ ${STM32MP_ROOTFS_SIZE} -gt 1572864 ]; then
+            # rootfs > 1.5GB then put sdcard raw size = STM32MP_ROOTFS_SIZE + 1.5GB
+            raw_size=$(expr ${STM32MP_ROOTFS_SIZE} / 1024 )
             raw_size=$(expr $raw_size + 1536)
             sed 's/^DEFAULT_RAW_SIZE=.*$/DEFAULT_RAW_SIZE='"$raw_size"'/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
         fi

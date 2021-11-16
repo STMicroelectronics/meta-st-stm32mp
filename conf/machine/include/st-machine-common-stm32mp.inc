@@ -211,68 +211,109 @@ IMAGE_ROOTFS_ALIGNMENT ?= "4"
 # Enable licence summary and configure License content generation
 ENABLE_IMAGE_LICENSE_SUMMARY ?= "1"
 
-# Partitions configuration
-IMAGE_CLASSES += "st-partitions-image"
-
-# Define image to use for extra partitions
-STM32MP_BOOTFS_IMAGE ?= "st-image-bootfs"
-STM32MP_BOOTFS_LABEL ?= "boot"
-STM32MP_BOOTFS_MOUNTPOINT ?= "/boot"
-STM32MP_USERFS_IMAGE ?= "st-image-userfs"
-STM32MP_USERFS_LABEL ?= "userfs"
-STM32MP_USERFS_MOUNTPOINT ?= "/usr/local"
-STM32MP_VENDORFS_IMAGE ?= "st-image-vendorfs"
-STM32MP_VENDORFS_LABEL ?= "vendorfs"
-STM32MP_VENDORFS_MOUNTPOINT ?= "/vendor"
-
 # Define image partition size (supposed to be set as max size in image recipe)
-# Proposed value for bootfs is 64MB
-BOOTFS_PARTITION_SIZE ?= "65536"
+
 # Proposed value for rootfs should fit our highest constraint: NAND size (1GiB)
-# For optee bootscheme we have the maximum partitions:
-#   FSBL1 + SSBL + SSBL2 + TEEH + TEED + TEEX + Multivolume UBI = NAND size
-#   Multivolume UBI = 1GiB - (2MiB + 2MiB + 2MiB + 512KiB + 512KiB + 512KiB) = 1016.5MiB
+# With FIP with have the maximum partitions:
+#   FSBL1 + FIP + FIP2 + Multivolume UBI = NAND size
+#   Multivolume UBI = 1GiB - (2MiB + 4MiB + 4MiB) = 1014MiB
+# With FIP with have the maximum partitions:
+#   FSBL1 + FIP + FIP + Multivolume UBI = SPI NAND size
+#   Multivolume UBI = 1GiB - (2MiB + 4MiB + 4MiB) = 1014MiB
 # With multivolume UBI split:
 #   Multivolume UBI > uboot_config + uboot_config_r + bootfs + vendorfs + rootfs + userfs + UBI Overhead
 # From http://www.linux-mtd.infradead.org/doc/ubi.html#L_overhead, we compute
 # the UBI overhead for our NAND:
-#   (20*4096/1024 + 4) * 256KiB + (256KiB - 248KiB) * (1016.5MiB/256KiB - 20*4096/1024 - 4) = 53360KiB
+#   (20*4096/1024 + 4) * 256KiB + (256KiB - 248KiB) * (1014MiB/256KiB - 20*4096/1024 - 4) = 53280KiB
 # In addition, for each UBIFS, our NAND consummed 9 extra eraseblocks
 # So:
 #   rootfs < Multivolume UBI - (uboot_config + uboot_config_r + bootfs + vendorfs + userfs + UBI Overhead + 4 * 9*eraseblocks)
-#   rootfs < 1016.5MiB - (256KiB + 256KiB + 64MiB + 16MiB + 128MiB + 53360KiB + 4 * 9 * 256KiB)
-#   rootfs < 746.8MiB
-# Proposed value for rootfs is 746MiB
-# Define max size for ROOTFS image being built to this value
-IMAGE_ROOTFS_MAXSIZE ?= "763904"
-# And configure the ROOTFS_PARTITION_SIZE variable accordingly
-ROOTFS_PARTITION_SIZE ?= "${IMAGE_ROOTFS_MAXSIZE}"
-# Proposed value for userfs is 128MB (4*32MB)
-USERFS_PARTITION_SIZE ?= "131072"
-# Proposed value for vendorfs is 16MB
-VENDORFS_PARTITION_SIZE ?= "16384"
+#   rootfs < 1014MiB - (256KiB + 256KiB + 64MiB + 16MiB + 128MiB + 53280KiB + 4 * 9 * 256KiB)
+#   rootfs < 744.5MiB
+# Proposed value for rootfs is 744MiB
+STM32MP_ROOTFS_MAXSIZE_NAND ?= "762336"
+# Default ROOTFS max size for image being built to this value
+IMAGE_ROOTFS_MAXSIZE ?= "${STM32MP_ROOTFS_MAXSIZE_NAND}"
+
+# Partitions configuration
+IMAGE_CLASSES += "st-partitions-image"
 
 # Enable use of extra partition(s)
 ST_BOOTFS   ?= "1"
 ST_VENDORFS ?= "1"
 ST_USERFS   ?= "1"
 
-# Partitions configuration
-PARTITIONS_CONFIG += "${@bb.utils.contains('ST_BOOTFS', '1', 'bootfs', '', d)}"
-PARTITIONS_CONFIG += "${@bb.utils.contains('ST_VENDORFS', '1', 'vendorfs', '', d)}"
-PARTITIONS_CONFIG += "rootfs"
-PARTITIONS_CONFIG += "${@bb.utils.contains('ST_USERFS', '1', 'userfs', '', d)}"
+PARTITIONS_IMAGES += "${@bb.utils.contains('ST_BOOTFS', '1', 'bootfs', '', d)}"
+PARTITIONS_IMAGES += "${@bb.utils.contains('ST_VENDORFS', '1', 'vendorfs', '', d)}"
+PARTITIONS_IMAGES += "rootfs"
+PARTITIONS_IMAGES += "${@bb.utils.contains('ST_USERFS', '1', 'userfs', '', d)}"
 
-PARTITIONS_CONFIG[bootfs]   ?= "${STM32MP_BOOTFS_IMAGE},${STM32MP_BOOTFS_LABEL},${STM32MP_BOOTFS_MOUNTPOINT},${BOOTFS_PARTITION_SIZE},System"
-PARTITIONS_CONFIG[vendorfs] ?= "${STM32MP_VENDORFS_IMAGE},${STM32MP_VENDORFS_LABEL},${STM32MP_VENDORFS_MOUNTPOINT},${VENDORFS_PARTITION_SIZE},FileSystem"
-PARTITIONS_CONFIG[rootfs]   ?= "${IMAGE_BASENAME},rootfs,,${ROOTFS_PARTITION_SIZE},FileSystem"
-PARTITIONS_CONFIG[userfs]   ?= "${STM32MP_USERFS_IMAGE},${STM32MP_USERFS_LABEL},${STM32MP_USERFS_MOUNTPOINT},${USERFS_PARTITION_SIZE},FileSystem"
+# Define image to use for extra partitions
+STM32MP_BOOTFS_IMAGE      ?= "st-image-bootfs"
+STM32MP_BOOTFS_LABEL      ?= "boot"
+STM32MP_BOOTFS_MOUNTPOINT ?= "/boot"
+# Proposed value for bootfs is 64MB
+STM32MP_BOOTFS_SIZE       ?= "65536"
+STM32MP_ROOTFS_IMAGE ?= "${IMAGE_BASENAME}"
+STM32MP_ROOTFS_LABEL ?= "rootfs"
+# Configure the rootfs size with IMAGE_ROOTFS_MAXSIZE variable
+STM32MP_ROOTFS_SIZE  ?= "${IMAGE_ROOTFS_MAXSIZE}"
+STM32MP_USERFS_IMAGE      ?= "st-image-userfs"
+STM32MP_USERFS_LABEL      ?= "userfs"
+STM32MP_USERFS_MOUNTPOINT ?= "/usr/local"
+# Proposed value for userfs is 128MB
+STM32MP_USERFS_SIZE       ?= "131072"
+STM32MP_VENDORFS_IMAGE      ?= "st-image-vendorfs"
+STM32MP_VENDORFS_LABEL      ?= "vendorfs"
+STM32MP_VENDORFS_MOUNTPOINT ?= "/vendor"
+# Proposed value for vendorfs is 16MB
+STM32MP_VENDORFS_SIZE       ?= "16384"
+
+# <image_name>,<partition_label>,<mountpoint>,<size>,<type>
+PARTITIONS_IMAGES[bootfs]   ?= "${STM32MP_BOOTFS_IMAGE},${STM32MP_BOOTFS_LABEL},${STM32MP_BOOTFS_MOUNTPOINT},${STM32MP_BOOTFS_SIZE},System"
+PARTITIONS_IMAGES[vendorfs] ?= "${STM32MP_VENDORFS_IMAGE},${STM32MP_VENDORFS_LABEL},${STM32MP_VENDORFS_MOUNTPOINT},${STM32MP_VENDORFS_SIZE},FileSystem"
+PARTITIONS_IMAGES[rootfs]   ?= "${STM32MP_ROOTFS_IMAGE},${STM32MP_ROOTFS_LABEL},,${STM32MP_ROOTFS_SIZE},FileSystem"
+PARTITIONS_IMAGES[userfs]   ?= "${STM32MP_USERFS_IMAGE},${STM32MP_USERFS_LABEL},${STM32MP_USERFS_MOUNTPOINT},${STM32MP_USERFS_SIZE},FileSystem"
+
+# =========================================================================
+# Image partition configuration : data, label, size (Kbytes)
+# =========================================================================
+STM32MP_UBIFS_DATA ?= "${IMAGE_LINK_NAME}_<CONFIG>_multivolume.ubi"
+STM32MP_UBIFS_NAME ?= "ubifs"
+STM32MP_UBIFS_SIZE ?= ""
+
+# Partitions configuration
+PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'emmc', '', d)}"
+PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', 'nand-4-256', '', d)}"
+PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'nor', '', d)}"
+PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', 'nor-sdcard', '', d)}"
+PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'sdcard', '', d)}"
+PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', 'spinand-2-128', '', d)}"
+
+PARTITIONS_SUFFIX ?= "ext4"
+
+# <binary_name>,<partlabel>,<size>,<type>,<copy>
+PARTITIONS_CONFIG[emmc] ?= "\
+    ${@' '.join(['%s' % partImage2partConfig(config, '${PARTITIONS_SUFFIX}', d) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    "
+PARTITIONS_CONFIG[nand-4-256] ?= "\
+    ${STM32MP_UBIFS_DATA},${STM32MP_UBIFS_NAME},${STM32MP_UBIFS_SIZE},System,1 \
+    "
+PARTITIONS_CONFIG[nor] ?= "\
+    ${@' '.join(['%s' % partImage2partConfig(config, '${PARTITIONS_SUFFIX}', d) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    "
+PARTITIONS_CONFIG[nor-sdcard] ?= "\
+    ${@' '.join(['%s' % partImage2partConfig(config, '${PARTITIONS_SUFFIX}', d) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    "
+PARTITIONS_CONFIG[sdcard] ?= "\
+    ${@' '.join(['%s' % partImage2partConfig(config, '${PARTITIONS_SUFFIX}', d) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    "
+PARTITIONS_CONFIG[spinand-2-128]   ?= "\
+    ${STM32MP_UBIFS_DATA},${STM32MP_UBIFS_NAME},${STM32MP_UBIFS_SIZE},System,1 \
+"
 
 # UBI Configuration
 IMAGE_CLASSES += "image_types-stubi"
-
-# Define two empty volumes to manage U-Boot config beginning of multivolume UBIFS
-STM32MP_UBI_VOLUME_prepend = "uboot_config:256:empty uboot_config_r:256:empty "
 
 # Define UBI volume label to use in kernel command line to mount UBI file system
 UBI_VOLNAME ?= "rootfs"
@@ -283,6 +324,7 @@ UBI_VOLNAME ?= "rootfs"
 #      nor_<BlockSize>
 #   Like that a same UBI partition can be used for severals NAND/NOR providers
 MULTIUBI_BUILD += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', 'nand_4_256', '', d)}"
+MULTIUBI_BUILD += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', 'spinand_2_128', '', d)}"
 
 # UBI Args for NAND by default on MB1262 (Micron MT29F8G16ABACAH4)
 # LEB = BLOCK_SIZE - (2 * page size): 256*1024 - (2*4096)
@@ -290,12 +332,35 @@ MKUBIFS_ARGS_nand_4_256 = "--min-io-size 4096 --leb-size 253952 --max-leb-cnt 40
 UBINIZE_ARGS_nand_4_256 = "--min-io-size 4096 --peb-size 256KiB"
 # Set extra size required for UBIFS volume size (KiB)
 EXTRA_UBIFS_SIZE_nand_4_256 = "2304"
+# UBI Args for SPI NAND by default on MB1262 (Micron MT29F2G01ABA)
+# LEB = BLOCK_SIZE - (2 * page size): 128*1024 - (2*2048)
+MKUBIFS_ARGS_spinand_2_128 = "--min-io-size 2048 --leb-size 126976 --max-leb-cnt 2048 --space-fixup"
+UBINIZE_ARGS_spinand_2_128 = "--min-io-size 2048 --peb-size 128KiB"
+# Set extra size required for UBIFS volume size (KiB)
+EXTRA_UBIFS_SIZE_spinand_2_128 = "1408"
+
+# Define two empty volumes to manage U-Boot config beginning of multivolume UBIFS
+STM32MP_MULTIUBI_UENV1_LABEL = "uboot_config"
+STM32MP_MULTIUBI_UENV1_SIZE ?= "256"
+STM32MP_MULTIUBI_UENV2_LABEL = "uboot_config_r"
+STM32MP_MULTIUBI_UENV2_SIZE ?= "${STM32MP_MULTIUBI_UENV1_SIZE}"
+
+STM32MP_UBI_VOLUME_nand_4_256_prepend = "\
+    ${STM32MP_MULTIUBI_UENV1_LABEL}:${STM32MP_MULTIUBI_UENV1_SIZE}:empty \
+    ${STM32MP_MULTIUBI_UENV2_LABEL}:${STM32MP_MULTIUBI_UENV2_SIZE}:empty \
+    "
+STM32MP_UBI_VOLUME_spinand_2_128_prepend = "\
+    ${STM32MP_MULTIUBI_UENV1_LABEL}:${STM32MP_MULTIUBI_UENV1_SIZE}:empty \
+    ${STM32MP_MULTIUBI_UENV2_LABEL}:${STM32MP_MULTIUBI_UENV2_SIZE}:empty \
+    "
 
 # Default FSTYPES requested
 WKS_IMAGE_FSTYPES ?= ""
-IMAGE_FSTYPES ?= "${WKS_IMAGE_FSTYPES} tar.xz ext4"
+IMAGE_FSTYPES ?= "${WKS_IMAGE_FSTYPES} tar.xz"
+# Append ext4 FSTYPES to default ones for emmc and sdcard volumes
+IMAGE_FSTYPES += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'emmc nor-sdcard sdcard', 'ext4', '', d)}"
 # Append ubi FSTYPES to default ones for nand volumes
-IMAGE_FSTYPES += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', 'stmultiubi', '', d)}"
+IMAGE_FSTYPES += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256 spinand-2-128', 'stmultiubi', '', d)}"
 
 # Define specific EXT4 command line:
 #   - Create minimal inode number (as it is done by default in image_types.bbclass)

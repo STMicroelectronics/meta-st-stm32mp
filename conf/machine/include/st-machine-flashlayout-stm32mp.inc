@@ -134,70 +134,70 @@ FLASHLAYOUT_PARTITION_LABELS_optee_emmc = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'emmc').split()])} \
     ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', ' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'emmc').split()]), d)} \
-    ${FLASHLAYOUT_PARTITION_IMAGES} \
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'emmc').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS_optee_nand-4-256 = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nand-4-256').split()])} \
     ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', ' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'nand-4-256').split()]), d)} \
-    ubifs \
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'nand-4-256').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS_optee_nor = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nor').split()])} \
     ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', ' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'nor').split()]), d)} \
-    ${FLASHLAYOUT_PARTITION_IMAGES} \
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'nor').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS_optee_nor-sdcard = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nor-sdcard').split()])} \
     ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', ' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'nor-sdcard').split()]), d)} \
     empty \
-    ${FLASHLAYOUT_PARTITION_IMAGES}\
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'nor-sdcard').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS_optee_sdcard  = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'sdcard').split()])} \
     ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', ' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'sdcard').split()]), d)} \
-    ${FLASHLAYOUT_PARTITION_IMAGES} \
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'sdcard').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS_optee_spinand-2-128 = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'spinand-2-128').split()])} \
     ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', ' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'spinand-2-128').split()]), d)} \
-    ubifs\
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'spinand-2-128').split()])} \
     "
 
 FLASHLAYOUT_PARTITION_LABELS_trusted_emmc = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'emmc').split()])} \
-    ${FLASHLAYOUT_PARTITION_IMAGES} \
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'emmc').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS_trusted_nand-4-256 = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nand-4-256').split()])} \
-    ubifs \
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'nand-4-256').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS_trusted_nor = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nor').split()])} \
-    ${FLASHLAYOUT_PARTITION_IMAGES} \
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'nor').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS_trusted_nor-sdcard = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nor-sdcard').split()])} \
     empty \
-    ${FLASHLAYOUT_PARTITION_IMAGES} \
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'nor-sdcard').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS_trusted_sdcard = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'sdcard').split()])} \
-    ${FLASHLAYOUT_PARTITION_IMAGES} \
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'sdcard').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS_trusted_spinand-2-128 = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'spinand-2-128').split()])} \
-    ubifs \
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'spinand-2-128').split()])} \
     "
 
 # -----------------------------------------------------------------------------
@@ -242,7 +242,7 @@ FLASHLAYOUT_PARTITION_COPY = "1"
 FLASHLAYOUT_PARTITION_DEVICE_emmc           = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE_EMMC}:default"
 FLASHLAYOUT_PARTITION_DEVICE_nand-4-256     = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE_NAND}:default"
 FLASHLAYOUT_PARTITION_DEVICE_nor            = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE_NOR}:default"
-FLASHLAYOUT_PARTITION_DEVICE_nor-sdcard     = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE_NOR}:default,${DEVICE_SDCARD}:${FLASHLAYOUT_PARTITION_IMAGES}"
+FLASHLAYOUT_PARTITION_DEVICE_nor-sdcard     = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE_NOR}:default,${DEVICE_SDCARD}:${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'nor-sdcard').split()])}"
 FLASHLAYOUT_PARTITION_DEVICE_sdcard         = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE_SDCARD}:default"
 FLASHLAYOUT_PARTITION_DEVICE_spinand-2-128  = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE_SPINAND}:default"
 
@@ -266,7 +266,6 @@ FLASHLAYOUT_PARTITION_SIZE_empty = "0"
 # -----------------------------------------------------------------------------
 FLASHLAYOUT_PARTITION_BIN2LOAD_${STM32MP_FSBL1_NAME}-boot = "${@bb.utils.contains('MACHINE_FEATURES', 'fip', 'arm-trusted-firmware/tf-a-<TYPE>-usb.stm32', 'arm-trusted-firmware/tf-a-<TYPE>-serialboot.stm32', d)}"
 FLASHLAYOUT_PARTITION_BIN2LOAD_${STM32MP_SSBL1_NAME}-boot = "${STM32MP_SSBL1_DATA}"
-FLASHLAYOUT_PARTITION_BIN2LOAD_ubifs = "${IMAGE_LINK_NAME}_<CONFIG>_multivolume.ubi"
 
 # -----------------------------------------------------------------------------
 # Use the 'FLASHLAYOUT_PARTITION_REPLACE_PATTERNS' var to allow dynamic binary
