@@ -1,0 +1,2251 @@
+From 547f5ef88ac962218f2cb8cb90bc4cab1b99f7f9 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Thu, 28 Oct 2021 15:54:46 +0200
+Subject: [PATCH] 3.12.0-stm32mp-r2
+
+---
+ core/arch/arm/dts/stm32mp15xx-dkx.dtsi        |   2 +-
+ core/arch/arm/dts/stm32mp15xx-edx.dtsi        |   2 +-
+ core/arch/arm/plat-stm32mp1/conf.mk           |   6 +
+ core/arch/arm/plat-stm32mp1/main.c            |  77 ++
+ .../arch/arm/plat-stm32mp1/shared_resources.c |   2 +-
+ core/drivers/clk/clk-stm32mp15.c              | 126 ++-
+ .../crypto/caam/hal/common/hal_cfg_dt.c       |   4 +-
+ core/drivers/gic.c                            |  29 +
+ core/drivers/stm32_i2c.c                      |  33 +
+ core/drivers/stm32_rtc.c                      |   2 +-
+ core/drivers/stm32_tamp.c                     | 965 ++++++++++++++++++
+ core/drivers/sub.mk                           |   1 +
+ core/include/drivers/stm32_tamp.h             | 378 +++++++
+ core/include/kernel/dt.h                      |  15 +-
+ core/include/kernel/interrupt.h               |  25 +
+ core/kernel/dt.c                              |  28 +-
+ core/kernel/interrupt.c                       |  30 +
+ mk/config.mk                                  |   2 +-
+ 18 files changed, 1632 insertions(+), 95 deletions(-)
+ create mode 100644 core/drivers/stm32_tamp.c
+ create mode 100644 core/include/drivers/stm32_tamp.h
+
+diff --git a/core/arch/arm/dts/stm32mp15xx-dkx.dtsi b/core/arch/arm/dts/stm32mp15xx-dkx.dtsi
+index 236cff932..1334b705a 100644
+--- a/core/arch/arm/dts/stm32mp15xx-dkx.dtsi
++++ b/core/arch/arm/dts/stm32mp15xx-dkx.dtsi
+@@ -253,7 +253,7 @@
+ 		CLK_CKPER_HSE
+ 		CLK_FMC_ACLK
+ 		CLK_QSPI_ACLK
+-		CLK_ETH_DISABLED
++		CLK_ETH_PLL4P
+ 		CLK_SDMMC12_PLL4P
+ 		CLK_DSI_DSIPLL
+ 		CLK_STGEN_HSE
+diff --git a/core/arch/arm/dts/stm32mp15xx-edx.dtsi b/core/arch/arm/dts/stm32mp15xx-edx.dtsi
+index ef51b00af..d74d37c4e 100644
+--- a/core/arch/arm/dts/stm32mp15xx-edx.dtsi
++++ b/core/arch/arm/dts/stm32mp15xx-edx.dtsi
+@@ -255,7 +255,7 @@
+ 		CLK_CKPER_HSE
+ 		CLK_FMC_ACLK
+ 		CLK_QSPI_ACLK
+-		CLK_ETH_DISABLED
++		CLK_ETH_PLL4P
+ 		CLK_SDMMC12_PLL4P
+ 		CLK_DSI_DSIPLL
+ 		CLK_STGEN_HSE
+diff --git a/core/arch/arm/plat-stm32mp1/conf.mk b/core/arch/arm/plat-stm32mp1/conf.mk
+index b1d41c92a..d01a430d9 100644
+--- a/core/arch/arm/plat-stm32mp1/conf.mk
++++ b/core/arch/arm/plat-stm32mp1/conf.mk
+@@ -110,7 +110,12 @@ $(call force,CFG_STM32_TIM,n)
+ $(call force,CFG_STPMIC1,n)
+ endif
+ 
++# Remoteproc early TA for coprocessor firmware management
+ CFG_RPROC_PTA ?= n
++ifeq ($(CFG_RPROC_PTA),y)
++CFG_IN_TREE_EARLY_TAS += remoteproc/80a4c275-0a47-4905-8285-1486a9771a08
++endif
++
+ CFG_STM32_BSEC ?= y
+ CFG_STM32_CLKCALIB ?= y
+ CFG_STM32_CRYP ?= y
+@@ -121,6 +126,7 @@ CFG_STM32_IWDG ?= y
+ CFG_STM32_RNG ?= y
+ CFG_STM32_RTC ?= y
+ CFG_STM32_TIM ?= y
++CFG_STM32_TAMP ?= y
+ CFG_STM32_UART ?= y
+ CFG_STM32MP15_CLK ?= y
+ CFG_STPMIC1 ?= y
+diff --git a/core/arch/arm/plat-stm32mp1/main.c b/core/arch/arm/plat-stm32mp1/main.c
+index bf2e394fb..13460c6b9 100644
+--- a/core/arch/arm/plat-stm32mp1/main.c
++++ b/core/arch/arm/plat-stm32mp1/main.c
+@@ -11,6 +11,8 @@
+ #include <drivers/gic.h>
+ #include <drivers/stm32_etzpc.h>
+ #include <drivers/stm32_iwdg.h>
++#include <drivers/stm32_rtc.h>
++#include <drivers/stm32_tamp.h>
+ #include <drivers/stm32_uart.h>
+ #include <drivers/stm32mp1_pmic.h>
+ #include <drivers/stm32mp1_rcc.h>
+@@ -666,3 +668,78 @@ bool stm32_rtc_get_read_twice(void)
+ 	return apb1_freq < (rtc_freq * 7U);
+ }
+ #endif
++
++#ifdef CFG_STM32_TAMP
++
++static const char * const itamper_name[] = {
++	[INT_TAMP1] = "RTC power domain",
++	[INT_TAMP2] = "Temperature monitoring",
++	[INT_TAMP3] = "LSE monitoring",
++	[INT_TAMP4] = "HSE monitoring",
++};
++
++DECLARE_KEEP_PAGER(itamper_name);
++
++static int stm32mp1_itamper_action(int id)
++{
++	const char *tamp_name = NULL;
++
++	if (id >= 0 && ((size_t)id < ARRAY_SIZE(itamper_name)))
++		tamp_name = itamper_name[id];
++
++	MSG("Internal tamper %u (%s) occurs\n", id + 1, tamp_name);
++
++	return 1; /* Ack TAMPER and reset system */
++}
++DECLARE_KEEP_PAGER(stm32mp1_itamper_action);
++
++static int __unused stm32mp1_etamper_action(int id)
++{
++	MSG("External tamper %u occurs\n", id + 1);
++
++	return 1; /* Ack TAMPER and reset system */
++}
++DECLARE_KEEP_PAGER(stm32mp1_etamper_action);
++
++static TEE_Result stm32_configure_tamp(void)
++{
++	struct stm32_bkpregs_conf bkpregs_conf = {
++		.nb_zone1_regs = 10, /* 10 registers in zone 1 */
++		.nb_zone2_regs = 0   /* No register in zone 2 */
++				     /* Zone3 all remaining */
++	};
++
++	/* Enable BKP Register protection */
++	if (stm32_tamp_set_secure_bkpregs(&bkpregs_conf) != TEE_SUCCESS)
++		panic();
++
++	/*
++	 * Configure TAMP to accept only secure access,
++	 * and use secure Interrupt.
++	 */
++	stm32_tamp_configure_secure_access(TAMP_REGS_IT_SECURE);
++
++	stm32_tamp_configure_internal(INT_TAMP1, TAMP_ENABLE,
++				      stm32mp1_itamper_action);
++	stm32_tamp_configure_internal(INT_TAMP2, TAMP_ENABLE,
++				      stm32mp1_itamper_action);
++	stm32_tamp_configure_internal(INT_TAMP3, TAMP_ENABLE,
++				      stm32mp1_itamper_action);
++	stm32_tamp_configure_internal(INT_TAMP4, TAMP_ENABLE,
++				      stm32mp1_itamper_action);
++
++	stm32_tamp_configure_active(TAMP_ACTIVE_FILTER_OFF);
++
++	stm32_tamp_configure_passive(0);
++
++	if (stm32_tamp_set_config() != TEE_SUCCESS)
++		panic();
++
++	/* Enable timestamp for tamper */
++	stm32_rtc_set_tamper_timestamp();
++
++	return TEE_SUCCESS;
++}
++
++boot_final(stm32_configure_tamp);
++#endif
+diff --git a/core/arch/arm/plat-stm32mp1/shared_resources.c b/core/arch/arm/plat-stm32mp1/shared_resources.c
+index 7ad3d7b9c..7d2bcacba 100644
+--- a/core/arch/arm/plat-stm32mp1/shared_resources.c
++++ b/core/arch/arm/plat-stm32mp1/shared_resources.c
+@@ -159,7 +159,7 @@ static const char *shres2str_state_tbl[4] __maybe_unused = {
+ 	[SHRES_SECURE] = "secure",
+ };
+ 
+-static __maybe_unused const char *shres2str_state(enum stm32mp_shres id)
++static __maybe_unused const char *shres2str_state(enum shres_state id)
+ {
+ 	return shres2str_state_tbl[id];
+ }
+diff --git a/core/drivers/clk/clk-stm32mp15.c b/core/drivers/clk/clk-stm32mp15.c
+index 6bbab8902..31d9ab6d6 100644
+--- a/core/drivers/clk/clk-stm32mp15.c
++++ b/core/drivers/clk/clk-stm32mp15.c
+@@ -44,27 +44,30 @@
+ 
+ /* Identifiers for root oscillators */
+ enum stm32mp_osc_id {
+-	_HSI = 0,
+-	_HSE,
+-	_CSI,
+-	_LSI,
+-	_LSE,
+-	_I2S_CKIN,
+-	_USB_PHY_48,
++	OSC_HSI,
++	OSC_HSE,
++	OSC_CSI,
++	OSC_LSI,
++	OSC_LSE,
++	OSC_I2S_CKIN,
++	OSC_USB_PHY_48,
+ 	NB_OSC,
+ 	_UNKNOWN_OSC_ID = 0xffU
+ };
+ 
+ /* Identifiers for parent clocks */
+ enum stm32mp1_parent_id {
+-/*
+- * Oscillators are valid IDs for parent clock and are already
+- * defined in enum stm32mp_osc_id, ending at NB_OSC - 1.
+- * This enum defines IDs are the other possible clock parents.
+- */
+-	_HSI_KER = NB_OSC,
++	_HSI,
++	_HSE,
++	_CSI,
++	_LSI,
++	_LSE,
++	_I2S_CKIN,
++	_USB_PHY_48,
++	_HSI_KER,
+ 	_HSE_KER,
+ 	_HSE_KER_DIV2,
++	_HSE_RTC,
+ 	_CSI_KER,
+ 	_PLL1_P,
+ 	_PLL1_Q,
+@@ -84,6 +87,7 @@ enum stm32mp1_parent_id {
+ 	_PCLK3,
+ 	_PCLK4,
+ 	_PCLK5,
++	_HCLK5,
+ 	_HCLK6,
+ 	_HCLK2,
+ 	_CK_PER,
+@@ -130,6 +134,7 @@ static const uint8_t parent_id_clock_id[_PARENT_NB] = {
+ 	[_HSI_KER] = CK_HSI,
+ 	[_HSE_KER] = CK_HSE,
+ 	[_HSE_KER_DIV2] = CK_HSE_DIV2,
++	[_HSE_RTC] = _UNKNOWN_ID,
+ 	[_CSI_KER] = CK_CSI,
+ 	[_PLL1_P] = PLL1_P,
+ 	[_PLL1_Q] = PLL1_Q,
+@@ -149,6 +154,7 @@ static const uint8_t parent_id_clock_id[_PARENT_NB] = {
+ 	[_PCLK3] = CK_AXI,
+ 	[_PCLK4] = CK_AXI,
+ 	[_PCLK5] = CK_AXI,
++	[_HCLK5] = CK_AXI,
+ 	[_HCLK6] = CK_AXI,
+ 	[_HCLK2] = CK_AXI,
+ 	[_CK_PER] = CK_PER,
+@@ -390,13 +396,13 @@ static const struct stm32mp1_clk_gate stm32mp1_clk_gate[] = {
+ 	_CLK_SC2_FIXED(SEC, RCC_MP_APB5ENSETR, BSECEN, BSEC, _PCLK5),
+ 	_CLK_SC2_SELEC(SEC, RCC_MP_APB5ENSETR, STGENEN, STGEN_K, _STGEN_SEL),
+ 
+-	_CLK_SC2_FIXED(SEC, RCC_MP_AHB5ENSETR, GPIOZEN, GPIOZ, _PCLK5),
+-	_CLK_SC2_FIXED(SEC, RCC_MP_AHB5ENSETR, CRYP1EN, CRYP1, _PCLK5),
+-	_CLK_SC2_FIXED(SEC, RCC_MP_AHB5ENSETR, HASH1EN, HASH1, _PCLK5),
++	_CLK_SC2_FIXED(SEC, RCC_MP_AHB5ENSETR, GPIOZEN, GPIOZ, _HCLK5),
++	_CLK_SC2_FIXED(SEC, RCC_MP_AHB5ENSETR, CRYP1EN, CRYP1, _HCLK5),
++	_CLK_SC2_FIXED(SEC, RCC_MP_AHB5ENSETR, HASH1EN, HASH1, _HCLK5),
+ 	_CLK_SC2_SELEC(SEC, RCC_MP_AHB5ENSETR, RNG1EN, RNG1_K, _RNG1_SEL),
+-	_CLK_SC2_FIXED(SEC, RCC_MP_AHB5ENSETR, BKPSRAMEN, BKPSRAM, _PCLK5),
++	_CLK_SC2_FIXED(SEC, RCC_MP_AHB5ENSETR, BKPSRAMEN, BKPSRAM, _HCLK5),
+ 
+-	_CLK_SC2_FIXED(SEC, RCC_MP_TZAHB6ENSETR, MDMA, MDMA, _PCLK5),
++	_CLK_SC2_FIXED(SEC, RCC_MP_TZAHB6ENSETR, MDMA, MDMA, _HCLK6),
+ 
+ 	_CLK_SELEC(SEC, RCC_BDCR, RCC_BDCR_RTCCKEN_POS, RTC, _RTC_SEL),
+ 
+@@ -492,7 +498,7 @@ static const uint8_t mcuss_parents[] = {
+ };
+ 
+ static const uint8_t rtc_parents[] = {
+-	_UNKNOWN_ID, _LSE, _LSI, _HSE
++	_UNKNOWN_ID, _LSE, _LSI, _HSE_RTC
+ };
+ 
+ #ifdef STM32MP1_USE_MPU0_RESET
+@@ -520,7 +526,7 @@ static const struct stm32mp1_clk_sel stm32mp1_clk_sel[_PARENT_SEL_NB] = {
+ 	_CLK_PARENT(_SPI6_SEL, RCC_SPI6CKSELR, 0, 0x7, spi6_parents),
+ 	_CLK_PARENT(_USART1_SEL, RCC_UART1CKSELR, 0, 0x7, usart1_parents),
+ 	_CLK_PARENT(_RNG1_SEL, RCC_RNG1CKSELR, 0, 0x3, rng1_parents),
+-	_CLK_PARENT(_RTC_SEL, RCC_BDCR, 0, 0x3, rtc_parents),
++	_CLK_PARENT(_RTC_SEL, RCC_BDCR, 16, 0x3, rtc_parents),
+ 	_CLK_PARENT(_MPU_SEL, RCC_MPCKSELR, 0, 0x3, mpu_parents),
+ 	_CLK_PARENT(_AXISS_SEL, RCC_ASSCKSELR, 0, 0x3, axiss_parents),
+ 	_CLK_PARENT(_MCUSS_SEL, RCC_MSSCKSELR, 0, 0x3, mcuss_parents),
+@@ -564,19 +570,19 @@ static const struct stm32mp1_clk_pll stm32mp1_clk_pll[_PLL_NB] = {
+ 	_CLK_PLL(_PLL1, PLL_1600,
+ 		 RCC_RCK12SELR, RCC_PLL1CFGR1, RCC_PLL1CFGR2,
+ 		 RCC_PLL1FRACR, RCC_PLL1CR, RCC_PLL1CSGR,
+-		 _HSI, _HSE, _UNKNOWN_OSC_ID, _UNKNOWN_OSC_ID),
++		 OSC_HSI, OSC_HSE, _UNKNOWN_OSC_ID, _UNKNOWN_OSC_ID),
+ 	_CLK_PLL(_PLL2, PLL_1600,
+ 		 RCC_RCK12SELR, RCC_PLL2CFGR1, RCC_PLL2CFGR2,
+ 		 RCC_PLL2FRACR, RCC_PLL2CR, RCC_PLL2CSGR,
+-		 _HSI, _HSE, _UNKNOWN_OSC_ID, _UNKNOWN_OSC_ID),
++		 OSC_HSI, OSC_HSE, _UNKNOWN_OSC_ID, _UNKNOWN_OSC_ID),
+ 	_CLK_PLL(_PLL3, PLL_800,
+ 		 RCC_RCK3SELR, RCC_PLL3CFGR1, RCC_PLL3CFGR2,
+ 		 RCC_PLL3FRACR, RCC_PLL3CR, RCC_PLL3CSGR,
+-		 _HSI, _HSE, _CSI, _UNKNOWN_OSC_ID),
++		 OSC_HSI, OSC_HSE, OSC_CSI, _UNKNOWN_OSC_ID),
+ 	_CLK_PLL(_PLL4, PLL_800,
+ 		 RCC_RCK4SELR, RCC_PLL4CFGR1, RCC_PLL4CFGR2,
+ 		 RCC_PLL4FRACR, RCC_PLL4CR, RCC_PLL4CSGR,
+-		 _HSI, _HSE, _CSI, _I2S_CKIN),
++		 OSC_HSI, OSC_HSE, OSC_CSI, OSC_I2S_CKIN),
+ };
+ 
+ /* Prescaler table lookups for clock computation */
+@@ -607,6 +613,7 @@ static const char __maybe_unused *const stm32mp1_clk_parent_name[_PARENT_NB] = {
+ 	[_HSI_KER] = "HSI_KER",
+ 	[_HSE_KER] = "HSE_KER",
+ 	[_HSE_KER_DIV2] = "HSE_KER_DIV2",
++	[_HSE_RTC] = "HSE_RTC",
+ 	[_CSI_KER] = "CSI_KER",
+ 	[_PLL1_P] = "PLL1_P",
+ 	[_PLL1_Q] = "PLL1_Q",
+@@ -626,8 +633,9 @@ static const char __maybe_unused *const stm32mp1_clk_parent_name[_PARENT_NB] = {
+ 	[_PCLK3] = "PCLK3",
+ 	[_PCLK4] = "PCLK4",
+ 	[_PCLK5] = "PCLK5",
+-	[_HCLK6] = "KCLK6",
+ 	[_HCLK2] = "HCLK2",
++	[_HCLK5] = "HCLK5",
++	[_HCLK6] = "HCLK6",
+ 	[_CK_PER] = "CK_PER",
+ 	[_CK_MPU] = "CK_MPU",
+ 	[_CK_MCU] = "CK_MCU",
+@@ -968,10 +976,10 @@ static unsigned long __clk_get_parent_rate(enum stm32mp1_parent_id p)
+ 		reg = io_read32(rcc_base + RCC_MPCKSELR);
+ 		switch (reg & RCC_SELR_SRC_MASK) {
+ 		case RCC_MPCKSELR_HSI:
+-			clock = osc_frequency(_HSI);
++			clock = osc_frequency(OSC_HSI);
+ 			break;
+ 		case RCC_MPCKSELR_HSE:
+-			clock = osc_frequency(_HSE);
++			clock = osc_frequency(OSC_HSE);
+ 			break;
+ 		case RCC_MPCKSELR_PLL:
+ 			clock = stm32mp1_read_pll_freq(_PLL1, _DIV_P);
+@@ -991,16 +999,17 @@ static unsigned long __clk_get_parent_rate(enum stm32mp1_parent_id p)
+ 	/* AXI sub system */
+ 	case _ACLK:
+ 	case _HCLK2:
++	case _HCLK5:
+ 	case _HCLK6:
+ 	case _PCLK4:
+ 	case _PCLK5:
+ 		reg = io_read32(rcc_base + RCC_ASSCKSELR);
+ 		switch (reg & RCC_SELR_SRC_MASK) {
+ 		case RCC_ASSCKSELR_HSI:
+-			clock = osc_frequency(_HSI);
++			clock = osc_frequency(OSC_HSI);
+ 			break;
+ 		case RCC_ASSCKSELR_HSE:
+-			clock = osc_frequency(_HSE);
++			clock = osc_frequency(OSC_HSE);
+ 			break;
+ 		case RCC_ASSCKSELR_PLL:
+ 			clock = stm32mp1_read_pll_freq(_PLL2, _DIV_P);
+@@ -1034,13 +1043,13 @@ static unsigned long __clk_get_parent_rate(enum stm32mp1_parent_id p)
+ 		reg = io_read32(rcc_base + RCC_MSSCKSELR);
+ 		switch (reg & RCC_SELR_SRC_MASK) {
+ 		case RCC_MSSCKSELR_HSI:
+-			clock = osc_frequency(_HSI);
++			clock = osc_frequency(OSC_HSI);
+ 			break;
+ 		case RCC_MSSCKSELR_HSE:
+-			clock = osc_frequency(_HSE);
++			clock = osc_frequency(OSC_HSE);
+ 			break;
+ 		case RCC_MSSCKSELR_CSI:
+-			clock = osc_frequency(_CSI);
++			clock = osc_frequency(OSC_CSI);
+ 			break;
+ 		case RCC_MSSCKSELR_PLL:
+ 			clock = stm32mp1_read_pll_freq(_PLL3, _DIV_P);
+@@ -1075,13 +1084,13 @@ static unsigned long __clk_get_parent_rate(enum stm32mp1_parent_id p)
+ 		reg = io_read32(rcc_base + RCC_CPERCKSELR);
+ 		switch (reg & RCC_SELR_SRC_MASK) {
+ 		case RCC_CPERCKSELR_HSI:
+-			clock = osc_frequency(_HSI);
++			clock = osc_frequency(OSC_HSI);
+ 			break;
+ 		case RCC_CPERCKSELR_HSE:
+-			clock = osc_frequency(_HSE);
++			clock = osc_frequency(OSC_HSE);
+ 			break;
+ 		case RCC_CPERCKSELR_CSI:
+-			clock = osc_frequency(_CSI);
++			clock = osc_frequency(OSC_CSI);
+ 			break;
+ 		default:
+ 			break;
+@@ -1089,24 +1098,28 @@ static unsigned long __clk_get_parent_rate(enum stm32mp1_parent_id p)
+ 		break;
+ 	case _HSI:
+ 	case _HSI_KER:
+-		clock = osc_frequency(_HSI);
++		clock = osc_frequency(OSC_HSI);
+ 		break;
+ 	case _CSI:
+ 	case _CSI_KER:
+-		clock = osc_frequency(_CSI);
++		clock = osc_frequency(OSC_CSI);
+ 		break;
+ 	case _HSE:
+ 	case _HSE_KER:
+-		clock = osc_frequency(_HSE);
++		clock = osc_frequency(OSC_HSE);
+ 		break;
+ 	case _HSE_KER_DIV2:
+-		clock = osc_frequency(_HSE) >> 1;
++		clock = osc_frequency(OSC_HSE) >> 1;
++		break;
++	case _HSE_RTC:
++		clock = osc_frequency(OSC_HSE);
++		clock /= (io_read32(rcc_base + RCC_RTCDIVR) & RCC_DIVR_DIV_MASK) + 1U;
+ 		break;
+ 	case _LSI:
+-		clock = osc_frequency(_LSI);
++		clock = osc_frequency(OSC_LSI);
+ 		break;
+ 	case _LSE:
+-		clock = osc_frequency(_LSE);
++		clock = osc_frequency(OSC_LSE);
+ 		break;
+ 	/* PLL */
+ 	case _PLL1_P:
+@@ -1147,7 +1160,7 @@ static unsigned long __clk_get_parent_rate(enum stm32mp1_parent_id p)
+ 		break;
+ 	/* Other */
+ 	case _USB_PHY_48:
+-		clock = osc_frequency(_USB_PHY_48);
++		clock = osc_frequency(OSC_USB_PHY_48);
+ 		break;
+ 	default:
+ 		break;
+@@ -1347,7 +1360,7 @@ static unsigned long clk_stm32_get_rate(unsigned long id)
+ /*
+  * Get the parent ID of the target parent clock, or -1 if no parent found.
+  */
+-static int get_parent_id_parent(unsigned int parent_id)
++static int get_parent_id_parent(enum stm32mp1_parent_id parent_id)
+ {
+ 	enum stm32mp1_parent_sel s = _UNKNOWN_SEL;
+ 	enum stm32mp1_pll_id pll_id = _PLL_NB;
+@@ -1355,6 +1368,8 @@ static int get_parent_id_parent(unsigned int parent_id)
+ 
+ 	switch (parent_id) {
+ 	case _ACLK:
++	case _HCLK5:
++	case _HCLK6:
+ 	case _PCLK4:
+ 	case _PCLK5:
+ 		s = _AXISS_SEL;
+@@ -1382,7 +1397,6 @@ static int get_parent_id_parent(unsigned int parent_id)
+ 	case _PCLK1:
+ 	case _PCLK2:
+ 	case _HCLK2:
+-	case _HCLK6:
+ 	case _CK_PER:
+ 	case _CK_MPU:
+ 	case _CK_MCU:
+@@ -1419,13 +1433,14 @@ static int get_parent_id_parent(unsigned int parent_id)
+ }
+ 
+ /* We are only interested in knowing if PLL3 shall be secure or not */
+-static void secure_parent_clocks(unsigned long parent_id)
++static void secure_parent_clocks(enum stm32mp1_parent_id parent_id)
+ {
+-	int grandparent_id = 0;
++	enum stm32mp1_parent_id grandparent_id = 0;
+ 
+ 	switch (parent_id) {
+ 	case _ACLK:
+ 	case _HCLK2:
++	case _HCLK5:
+ 	case _HCLK6:
+ 	case _PCLK4:
+ 	case _PCLK5:
+@@ -1439,6 +1454,7 @@ static void secure_parent_clocks(unsigned long parent_id)
+ 	case _HSE:
+ 	case _HSE_KER:
+ 	case _HSE_KER_DIV2:
++	case _HSE_RTC:
+ 	case _LSE:
+ 	case _PLL1_P:
+ 	case _PLL1_Q:
+@@ -1487,13 +1503,13 @@ DECLARE_KEEP_PAGER(stm32mp_clk_ops);
+ 
+ #ifdef CFG_EMBED_DTB
+ static const char *stm32mp_osc_node_label[NB_OSC] = {
+-	[_LSI] = "clk-lsi",
+-	[_LSE] = "clk-lse",
+-	[_HSI] = "clk-hsi",
+-	[_HSE] = "clk-hse",
+-	[_CSI] = "clk-csi",
+-	[_I2S_CKIN] = "i2s_ckin",
+-	[_USB_PHY_48] = "ck_usbo_48m"
++	[OSC_LSI] = "clk-lsi",
++	[OSC_LSE] = "clk-lse",
++	[OSC_HSI] = "clk-hsi",
++	[OSC_HSE] = "clk-hse",
++	[OSC_CSI] = "clk-csi",
++	[OSC_I2S_CKIN] = "i2s_ckin",
++	[OSC_USB_PHY_48] = "ck_usbo_48m"
+ };
+ 
+ static unsigned int clk_freq_prop(void *fdt, int node)
+@@ -1520,8 +1536,8 @@ static void get_osc_freq_from_dt(void *fdt)
+ 	if (clk_node < 0)
+ 		panic();
+ 
+-	COMPILE_TIME_ASSERT((int)_HSI == 0);
+-	for (idx = _HSI; idx < NB_OSC; idx++) {
++	COMPILE_TIME_ASSERT((int)OSC_HSI == 0);
++	for (idx = OSC_HSI; idx < NB_OSC; idx++) {
+ 		const char *name = stm32mp_osc_node_label[idx];
+ 		int subnode = 0;
+ 
+diff --git a/core/drivers/crypto/caam/hal/common/hal_cfg_dt.c b/core/drivers/crypto/caam/hal/common/hal_cfg_dt.c
+index f03a7d54a..0133a0696 100644
+--- a/core/drivers/crypto/caam/hal/common/hal_cfg_dt.c
++++ b/core/drivers/crypto/caam/hal/common/hal_cfg_dt.c
+@@ -9,6 +9,7 @@
+ #include <caam_hal_jr.h>
+ #include <caam_jr.h>
+ #include <kernel/dt.h>
++#include <kernel/interrupt.h>
+ #include <libfdt.h>
+ #include <mm/core_memprot.h>
+ #include <mm/core_mmu.h>
+@@ -113,8 +114,7 @@ void caam_hal_cfg_get_jobring_dt(void *fdt, struct caam_jrcfg *jrcfg)
+ 		}
+ 
+ 		jrcfg->offset = jr_offset;
+-		/* Add index of the first SPI interrupt */
+-		jrcfg->it_num = jr_it_num + 32;
++		jrcfg->it_num = jr_it_num;
+ 	}
+ }
+ 
+diff --git a/core/drivers/gic.c b/core/drivers/gic.c
+index 3f1a606ed..3efce7ab8 100644
+--- a/core/drivers/gic.c
++++ b/core/drivers/gic.c
+@@ -6,12 +6,15 @@
+ 
+ #include <arm.h>
+ #include <assert.h>
++#include <config.h>
+ #include <drivers/gic.h>
+ #include <io.h>
+ #include <keep.h>
++#include <kernel/dt.h>
+ #include <kernel/interrupt.h>
+ #include <kernel/panic.h>
+ #include <kernel/pm.h>
++#include <libfdt.h>
+ #include <malloc.h>
+ #include <util.h>
+ #include <trace.h>
+@@ -230,6 +233,29 @@ void gic_init_setup(struct gic_data *gd)
+ #endif
+ }
+ 
++static int gic_dt_get_irq(const uint32_t *properties, int len)
++{
++	int it_num = DT_INFO_INVALID_INTERRUPT;
++
++	if (!properties || len < 2)
++		return DT_INFO_INVALID_INTERRUPT;
++
++	it_num = fdt32_to_cpu(properties[1]);
++
++	switch (fdt32_to_cpu(properties[0])) {
++	case 1:
++		it_num += 16;
++		break;
++	case 0:
++		it_num += 32;
++		break;
++	default:
++		it_num = DT_INFO_INVALID_INTERRUPT;
++	}
++
++	return it_num;
++}
++
+ void gic_init_base_addr(struct gic_data *gd, vaddr_t gicc_base __maybe_unused,
+ 			vaddr_t gicd_base)
+ {
+@@ -244,6 +270,9 @@ void gic_init_base_addr(struct gic_data *gd, vaddr_t gicc_base __maybe_unused,
+ void gic_init(struct gic_data *gd, vaddr_t gicc_base, vaddr_t gicd_base)
+ {
+ 	gic_init_base_addr(gd, gicc_base, gicd_base);
++	if (IS_ENABLED(CFG_DT))
++		gd->chip.dt_get_irq = gic_dt_get_irq;
++
+ 	gic_init_setup(gd);
+ }
+ 
+diff --git a/core/drivers/stm32_i2c.c b/core/drivers/stm32_i2c.c
+index 2807cc42a..bc10960dc 100644
+--- a/core/drivers/stm32_i2c.c
++++ b/core/drivers/stm32_i2c.c
+@@ -870,6 +870,33 @@ static int wait_isr_event(struct i2c_handle_s *hi2c, uint32_t bit_mask,
+ 	return -1;
+ }
+ 
++static int wait_isr_event_nack(struct i2c_handle_s *hi2c, uint32_t bit_mask,
++			       unsigned int awaited_value, uint64_t timeout_ref)
++{
++	vaddr_t isr = get_base(hi2c) + I2C_ISR;
++	uint32_t val;
++
++	assert(IS_POWER_OF_TWO(bit_mask) && !(awaited_value & ~1U));
++
++	/* May timeout while TEE thread is suspended */
++	while (!timeout_elapsed(timeout_ref)) {
++		val = io_read32(isr);
++		if (val & I2C_ISR_NACKF)
++			return -1;
++		if (!!(val & bit_mask) == awaited_value)
++			break;
++	}
++
++	val = io_read32(isr);
++	if (val & I2C_ISR_NACKF)
++		return -1;
++	if (!!(val & bit_mask) == awaited_value)
++		return 0;
++
++	notif_i2c_timeout(hi2c);
++	return -1;
++}
++
+ /* Handle Acknowledge-Failed sequence detection during an I2C Communication */
+ static int i2c_ack_failed(struct i2c_handle_s *hi2c, uint64_t timeout_ref)
+ {
+@@ -1329,6 +1356,12 @@ static int i2c_read(struct i2c_handle_s *hi2c, struct i2c_request *request,
+ 				    I2C_AUTOEND_MODE, I2C_GENERATE_START_READ);
+ 	}
+ 
++	 /* Start polling for data but return if NACK indicates we should poll later */
++	if (wait_isr_event_nack(hi2c, I2C_ISR_RXNE, 1, timeout_ref)) {
++		i2c_ack_failed(hi2c, timeout_ref);
++		goto bail;
++	}
++
+ 	do {
+ 		if (wait_isr_event(hi2c, I2C_ISR_RXNE, 1, timeout_ref))
+ 			goto bail;
+diff --git a/core/drivers/stm32_rtc.c b/core/drivers/stm32_rtc.c
+index 79ab627e6..58bf69f2d 100644
+--- a/core/drivers/stm32_rtc.c
++++ b/core/drivers/stm32_rtc.c
+@@ -71,7 +71,7 @@
+ 
+ #define RTC_ICSR_RSF		BIT(5)
+ 
+-#define RTC_PRER_PREDIV_S_MASK	GENMASK_32(15, 0)
++#define RTC_PRER_PREDIV_S_MASK	GENMASK_32(14, 0)
+ 
+ #define RTC_CR_BYPSHAD		BIT(5)
+ #define RTC_CR_BYPSHAD_SHIFT	5
+diff --git a/core/drivers/stm32_tamp.c b/core/drivers/stm32_tamp.c
+new file mode 100644
+index 000000000..317ca7801
+--- /dev/null
++++ b/core/drivers/stm32_tamp.c
+@@ -0,0 +1,965 @@
++// SPDX-License-Identifier: BSD-3-Clause
++/*
++ * Copyright (c) 2021, STMicroelectronics
++ */
++
++#include <assert.h>
++#include <config.h>
++#include <crypto/crypto.h>
++#include <drivers/clk.h>
++#include <drivers/stm32_gpio.h>
++#include <drivers/stm32_rtc.h>
++#include <drivers/stm32_tamp.h>
++#include <io.h>
++#include <kernel/boot.h>
++#include <kernel/delay.h>
++#include <kernel/dt.h>
++#include <kernel/interrupt.h>
++#include <mm/core_memprot.h>
++#include <sm/psci.h>  /* If psci_reset */
++#include <stdbool.h>
++#include <stm32_util.h>
++#include <stm32mp_pm.h> /* If stm32_cores_reset() */
++
++#include <libfdt.h>
++
++/* STM32 Registers */
++#define _TAMP_CR1			0x00U
++#define _TAMP_CR2			0x04U
++#define _TAMP_CR3			0x08U
++#define _TAMP_FLTCR			0x0CU
++#define _TAMP_ATCR1			0x10U
++#define _TAMP_ATSEEDR			0x14U
++#define _TAMP_ATOR			0x18U
++#define _TAMP_ATCR2			0x1CU
++#define _TAMP_SECCFGR			0x20U
++#define _TAMP_SMCR			0x20U
++#define _TAMP_PRIVCFGR			0x24U
++#define _TAMP_IER			0x2CU
++#define _TAMP_SR			0x30U
++#define _TAMP_MISR			0x34U
++#define _TAMP_SMISR			0x38U
++#define _TAMP_SCR			0x3CU
++#define _TAMP_COUNTR			0x40U
++#define _TAMP_COUNT2R			0x44U
++#define _TAMP_OR			0x50U
++#define _TAMP_ERCFGR			0X54U
++#define _TAMP_HWCFGR2			0x3ECU
++#define _TAMP_HWCFGR1			0x3F0U
++#define _TAMP_VERR			0x3F4U
++#define _TAMP_IPIDR			0x3F8U
++#define _TAMP_SIDR			0x3FCU
++
++/* _TAMP_CR1 bit filds */
++#define _TAMP_CR1_ITAMP(id)		BIT((id) + 16U)
++#define _TAMP_CR1_ETAMP(id)		BIT((id))
++
++/* _TAMP_CR2 bit filds */
++#define _TAMP_CR2_ETAMPTRG(id)		BIT((id) + 24U)
++#define _TAMP_CR2_BKERASE		BIT(23)
++#define _TAMP_CR2_BKBLOCK		BIT(22)
++#define _TAMP_CR2_ETAMPMSK_MAX_ID	3U
++#define _TAMP_CR2_ETAMPMSK(id)		BIT((id) + 16U)
++#define _TAMP_CR2_ETAMPNOER(id)		BIT((id))
++
++/* _TAMP_CR3 bit filds */
++#define _TAMP_CR3_ITAMPNOER_ALL		GENMASK_32(12, 0)
++#define _TAMP_CR3_ITAMPNOER(id)		BIT((id))
++
++/* _TAMP_FLTCR bit fields */
++#define _TAMP_FLTCR_TAMPFREQ		GENMASK_32(2, 0)
++#define _TAMP_FLTCR_TAMPFLT		GENMASK_32(4, 3)
++#define _TAMP_FLTCR_TAMPPRCH		GENMASK_32(6, 5)
++#define _TAMP_FLTCR_TAMPPUDIS		BIT(7)
++
++/* _TAMP_ATCR bit fields */
++#define _TAMP_ATCR1_ATCKSEL		GENMASK_32(18, 16)
++#define _TAMP_ATCR1_ATPER		GENMASK_32(26, 24)
++#define _TAMP_ATCR1_COMMON_MASK		GENMASK_32(31, 16)
++#define _TAMP_ATCR1_ETAMPAM(id)		BIT((id))
++#define _TAMP_ATCR1_ATOSEL_MASK(i)	GENMASK_32(((i) + 1) * 2U + 7U, \
++						   (i) * 2U + 8U)
++#define _TAMP_ATCR1_ATOSEL(i, o)	(((o) - 1U) << ((i) * 2U + 8U))
++
++/* _TAMP_ATOR bit fields */
++#define _TAMP_PRNG			GENMASK_32(7, 0)
++#define _TAMP_SEEDF			BIT(14)
++#define _TAMP_INITS			BIT(15)
++
++/* _TAMP_IER bit fields */
++#define _TAMP_IER_ITAMP(id)		BIT((id) + 16U)
++#define _TAMP_IER_ETAMP(id)		BIT((id))
++
++/* _TAMP_SR bit fields */
++#define _TAMP_SR_ETAMPXF_MASK		GENMASK_32(7, 0)
++#define _TAMP_SR_ITAMPXF_MASK		GENMASK_32(31, 16)
++#define _TAMP_SR_ITAMP(id)		BIT((id) + 16U)
++#define _TAMP_SR_ETAMP(id)		BIT((id))
++
++/* _TAMP_SCR bit fields */
++#define _TAMP_SCR_ITAMP(id)		BIT((id) + 16U)
++#define _TAMP_SCR_ETAMP(id)		BIT((id))
++
++/* _TAMP_SECCFGR bit fields */
++#define _TAMP_SECCFGR_BKPRWSEC_MASK	GENMASK_32(7, 0)
++#define _TAMP_SECCFGR_BKPRWSEC_SHIFT	0U
++#define _TAMP_SECCFGR_CNT2SEC		BIT(14)
++#define _TAMP_SECCFGR_CNT1SEC		BIT(15)
++#define _TAMP_SECCFGR_BKPWSEC_MASK	GENMASK_32(23, 16)
++#define _TAMP_SECCFGR_BKPWSEC_SHIFT	16U
++#define _TAMP_SECCFGR_BHKLOCK		BIT(30)
++#define _TAMP_SECCFGR_TAMPSEC		BIT(31)
++
++/* _TAMP_SMCR bit fields */
++#define _TAMP_SMCR_BKPRWDPROT_MASK	GENMASK_32(7, 0)
++#define _TAMP_SMCR_BKPRWDPROT_SHIFT	0U
++#define _TAMP_SMCR_BKPWDPROT_MASK	GENMASK_32(23, 16)
++#define _TAMP_SMCR_BKPWDPROT_SHIFT	16U
++#define _TAMP_SMCR_DPROT		BIT(31)
++
++/*
++ * _TAMP_PRIVCFGR bit fields defined in stm32_tamp.h
++ * See TAMP_.*PRIVILEGED
++ */
++#define _TAMP_PRIVCFGR_MASK		(GENMASK_32(31, 29) | \
++					 GENMASK_32(15, 14))
++
++/* _TAMP_ATCR2 bit fields */
++#define _TAMP_ATCR2_ATOSEL_MASK(i)	GENMASK_32(((i) + 1) * 3U + 7U, \
++						   (i) * 3U + 8U)
++#define _TAMP_ATCR2_ATOSEL(i, o)	((o) << ((i) * 3U + 8U))
++
++/* _TAMP_OR bit fields */
++#define _TAMP_OR_IN1RMP_PF10		0U
++#define _TAMP_OR_IN1RMP_PC13		BIT(0)
++#define _TAMP_OR_IN2RMP_PA6		0U
++#define _TAMP_OR_IN2RMP_PI1		BIT(1)
++#define _TAMP_OR_IN3RMP_PC0		0U
++#define _TAMP_OR_IN3RMP_PI2		BIT(2)
++#define _TAMP_OR_IN4RMP_PG8		0U
++#define _TAMP_OR_IN4RMP_PI3		BIT(3)
++
++#define _TAMP_OR_OUT3RMP_PI8		0U
++#define _TAMP_OR_OUT3RMP_PC13		BIT(0)
++
++/* _TAMP_ERCFGR bit fields */
++#define _TAMP_ERCFGR_ERCFG0		BIT(0)
++
++/* _TAMP_HWCFGR2 bit fields */
++#define _TAMP_HWCFGR2_TZ		GENMASK_32(11, 8)
++#define _TAMP_HWCFGR2_OR		GENMASK_32(7, 0)
++
++/* _TAMP_HWCFGR1 bit fields */
++#define _TAMP_HWCFGR1_BKPREG		GENMASK_32(7, 0)
++#define _TAMP_HWCFGR1_TAMPER		GENMASK_32(11, 8)
++#define _TAMP_HWCFGR1_ACTIVE		GENMASK_32(15, 12)
++#define _TAMP_HWCFGR1_INTERN		GENMASK_32(31, 16)
++#define _TAMP_HWCFGR1_ITAMP_MAX_ID	16U
++#define _TAMP_HWCFGR1_ITAMP(id)		BIT((id) + 16U)
++
++/* _TAMP_VERR bit fields */
++#define _TAMP_VERR_MINREV		GENMASK_32(3, 0)
++#define _TAMP_VERR_MAJREV		GENMASK_32(7, 4)
++
++#define SEED_TIMEOUT_US			1000
++
++struct stm32_tamp_int {
++	const uint32_t id;
++	uint32_t mode;
++	int (*func)(int id);
++};
++
++struct stm32_tamp_ext {
++	const uint32_t id;
++	uint32_t mode;
++	uint8_t out_pin;
++	int (*func)(int id);
++};
++
++struct stm32_tamp_instance {
++	struct stm32_tamp_platdata pdata;
++	uint32_t hwconf1;
++	uint32_t hwconf2;
++	uint32_t secret_list_conf;
++	uint32_t privilege_conf;
++	uint32_t secure_conf;
++	uint32_t passive_conf;
++	uint32_t active_conf;
++};
++
++struct stm32_tamp_int int_tamp_mp15[] = {
++	{ .id = INT_TAMP1 }, { .id = INT_TAMP2 }, { .id = INT_TAMP3 },
++	{ .id = INT_TAMP4 }, { .id = INT_TAMP5 }, { .id = INT_TAMP8 },
++};
++
++struct stm32_tamp_ext ext_tamp_mp15[] = {
++	{ .id = EXT_TAMP1 }, { .id = EXT_TAMP2 }, { .id = EXT_TAMP3 },
++};
++
++/*
++ * Only 1 instance of TAMP is expected per platform
++ *
++ * 0 is the expected initial values for all fields but .id
++ */
++static struct stm32_tamp_instance stm32_tamp = { };
++DECLARE_KEEP_PAGER(stm32_tamp);
++
++struct my_dt_device_match {
++	const char *compatible;
++	void *data;
++};
++
++static struct stm32_tamp_compat mp15_compat = {
++		.nb_monotonic_counter = 1,
++		.tags = 0,
++		.int_tamp = int_tamp_mp15,
++		.int_tamp_size = ARRAY_SIZE(int_tamp_mp15),
++		.ext_tamp = ext_tamp_mp15,
++		.ext_tamp_size = ARRAY_SIZE(ext_tamp_mp15),
++};
++
++static const struct my_dt_device_match tamp_match_table[] = {
++	{ .compatible = "st,stm32-tamp", .data = &mp15_compat},
++	{ 0 }
++};
++
++static void stm32_tamp_set_secret_list(struct stm32_tamp_instance *tamp)
++{
++	vaddr_t base = io_pa_or_va(&tamp->pdata.base);
++
++	if (tamp->pdata.compat &&
++	    (tamp->pdata.compat->tags & TAMP_HAS_CONF_SECRET_IPS)) {
++		if (tamp->secret_list_conf & TAMP_CONF_SECRET_BACKUP_SRAM)
++			io_setbits32(base + _TAMP_ERCFGR, _TAMP_ERCFGR_ERCFG0);
++		else
++			io_clrbits32(base + _TAMP_ERCFGR, _TAMP_ERCFGR_ERCFG0);
++	}
++}
++
++static void stm32_tamp_set_secure(struct stm32_tamp_instance *tamp)
++{
++	vaddr_t base = io_pa_or_va(&tamp->pdata.base);
++	uint32_t mode = 0;
++
++	/* Force secure mode: within OP-TEE we only access TAMP from secure */
++	tamp->secure_conf |= TAMP_REGS_IT_SECURE;
++	mode = tamp->secure_conf;
++
++	if (tamp->pdata.compat &&
++	    (tamp->pdata.compat->tags & TAMP_HAS_CONF_SECURE)) {
++		if (mode & TAMP_REGS_IT_SECURE)
++			io_setbits32(base + _TAMP_SECCFGR,
++				     _TAMP_SECCFGR_TAMPSEC);
++		else
++			io_clrbits32(base + _TAMP_SECCFGR,
++				     _TAMP_SECCFGR_TAMPSEC);
++
++		if (mode & TAMP_CNT1_SECURE)
++			io_setbits32(base + _TAMP_SECCFGR,
++				     _TAMP_SECCFGR_CNT1SEC);
++		else
++			io_clrbits32(base + _TAMP_SECCFGR,
++				     _TAMP_SECCFGR_CNT1SEC);
++
++		if (mode & TAMP_CNT2_SECURE)
++			io_setbits32(base + _TAMP_SECCFGR,
++				     _TAMP_SECCFGR_CNT2SEC);
++		else
++			io_clrbits32(base + _TAMP_SECCFGR,
++				     _TAMP_SECCFGR_CNT2SEC);
++	} else {
++		/* Note: MP15 doesn't use SECCFG register
++		 * and inverts the secure bit
++		 */
++		if (mode & TAMP_REGS_IT_SECURE)
++			io_clrbits32(base + _TAMP_SMCR, _TAMP_SMCR_DPROT);
++		else
++			io_setbits32(base + _TAMP_SMCR, _TAMP_SMCR_DPROT);
++	}
++}
++
++static void stm32_tamp_set_privilege(struct stm32_tamp_instance *tamp)
++{
++	vaddr_t base = io_pa_or_va(&tamp->pdata.base);
++	uint32_t mode = tamp->privilege_conf;
++
++	if (tamp->pdata.compat &&
++	    (tamp->pdata.compat->tags & TAMP_HAS_CONF_PRIVILEGE))
++		io_clrsetbits32(base + _TAMP_PRIVCFGR, _TAMP_PRIVCFGR_MASK,
++				mode & _TAMP_PRIVCFGR_MASK);
++}
++
++static void stm32_tamp_set_pins(vaddr_t base, uint32_t mode)
++{
++	io_setbits32(base + _TAMP_OR, mode);
++}
++
++static TEE_Result stm32_tamp_set_seed(vaddr_t base)
++{
++	/* Need RNG access. */
++	uint64_t timeout_ref = timeout_init_us(SEED_TIMEOUT_US);
++	uint8_t idx = 0;
++
++	for (idx = 0; idx < 4U; idx++) {
++		uint32_t rnd = 0;
++
++		if (crypto_rng_read((uint8_t *)&rnd, sizeof(uint32_t)) != 0)
++			return TEE_ERROR_BAD_STATE;
++
++		io_write32(base + _TAMP_ATSEEDR, rnd);
++	}
++
++	while ((io_read32(base + _TAMP_ATOR) & _TAMP_SEEDF) != 0U) {
++		if (timeout_elapsed(timeout_ref))
++			return TEE_ERROR_BAD_STATE;
++	}
++
++	return TEE_SUCCESS;
++}
++
++static bool is_int_tamp_id_valid(uint32_t id)
++{
++	return (id <= _TAMP_HWCFGR1_ITAMP_MAX_ID) &&
++	       (stm32_tamp.hwconf1 & _TAMP_HWCFGR1_ITAMP(id));
++}
++
++static bool is_ext_tamp_id_valid(uint32_t id)
++{
++	return (stm32_tamp.pdata.compat) &&
++	       (id <= stm32_tamp.pdata.compat->ext_tamp_size);
++}
++
++static TEE_Result stm32_tamp_set_int_config(struct stm32_tamp_compat *tcompat,
++					    uint32_t itamp_index, uint32_t *cr1,
++					    uint32_t *cr3, uint32_t *ier)
++{
++	uint32_t id = 0;
++	struct stm32_tamp_int *tamp_int = NULL;
++
++	if (!tcompat)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	tamp_int = &tcompat->int_tamp[itamp_index];
++	id = tamp_int->id;
++
++	if (!is_int_tamp_id_valid(id))
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	/* If this internal tamper is disabled, reset its configuration. */
++	if ((tamp_int->mode & TAMP_ENABLE) != TAMP_ENABLE) {
++		*cr1 &= ~_TAMP_CR1_ITAMP(id);
++		*ier &= ~_TAMP_IER_ITAMP(id);
++		if (tcompat->tags & TAMP_HAS_CR3)
++			*cr3 &= ~_TAMP_CR3_ITAMPNOER(id);
++
++		return TEE_SUCCESS;
++	}
++
++	*cr1 |= _TAMP_CR1_ITAMP(id);
++	*ier |= _TAMP_IER_ITAMP(id);
++
++	if (tcompat->tags & TAMP_HAS_CR3) {
++		if ((tamp_int->mode & TAMP_NOERASE) == TAMP_NOERASE)
++			*cr3 |= _TAMP_CR3_ITAMPNOER(id);
++		else
++			*cr3 &= ~_TAMP_CR3_ITAMPNOER(id);
++	}
++
++	return TEE_SUCCESS;
++}
++
++static TEE_Result stm32_tamp_set_ext_config(struct stm32_tamp_compat *tcompat,
++					    uint32_t etamp_index,
++					    uint32_t *cr1, uint32_t *cr2,
++					    uint32_t *atcr1, uint32_t *atcr2,
++					    uint32_t *ier)
++{
++	uint32_t id = 0;
++	struct stm32_tamp_ext *tamp_ext = NULL;
++
++	if (!tcompat)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	tamp_ext = &tcompat->ext_tamp[etamp_index];
++	id = tamp_ext->id;
++
++	/* Exit if not a valid TAMP_ID */
++	if (!is_ext_tamp_id_valid(id))
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	/* If this external tamper is disabled, reset its configuration. */
++	if ((tamp_ext->mode & TAMP_ENABLE) != TAMP_ENABLE) {
++		*cr1 &= ~_TAMP_CR1_ETAMP(id);
++		*cr2 &= ~_TAMP_CR2_ETAMPMSK(id);
++		*cr2 &= ~_TAMP_CR2_ETAMPTRG(id);
++		*cr2 &= ~_TAMP_CR2_ETAMPNOER(id);
++		*ier &= ~_TAMP_IER_ETAMP(id);
++		return TEE_SUCCESS;
++	}
++
++	*cr1 |= _TAMP_CR1_ETAMP(id);
++
++	if ((tamp_ext->mode & TAMP_TRIG_ON) == TAMP_TRIG_ON)
++		*cr2 |= _TAMP_CR2_ETAMPTRG(id);
++	else
++		*cr2 &= ~_TAMP_CR2_ETAMPTRG(id);
++
++	if ((tamp_ext->mode & TAMP_ACTIVE) == TAMP_ACTIVE) {
++		*atcr1 |= _TAMP_ATCR1_ETAMPAM(id);
++		/* Configure output pin:
++		 * For the case out_pin = 0, we select same output pin than the
++		 * input one.
++		 */
++		if (tamp_ext->out_pin == TAMPOUTSEL_SAME_AS_INPUT)
++			tamp_ext->out_pin = id + 1;
++
++		if (tamp_ext->out_pin <= tcompat->ext_tamp_size) {
++			if (tcompat->tags & TAMP_HAS_ATCR2)
++				*atcr2 = (*atcr2 &
++					  ~_TAMP_ATCR2_ATOSEL_MASK(id)) |
++					_TAMP_ATCR2_ATOSEL(id,
++							   tamp_ext->out_pin);
++			else
++				*atcr1 = (*atcr1 &
++					  ~_TAMP_ATCR1_ATOSEL_MASK(id)) |
++					_TAMP_ATCR1_ATOSEL(id,
++							   tamp_ext->out_pin);
++		}
++	} else {
++		*atcr1 &= ~_TAMP_ATCR1_ETAMPAM(id);
++	}
++
++	if ((tamp_ext->mode & TAMP_NOERASE) == TAMP_NOERASE)
++		*cr2 |= _TAMP_CR2_ETAMPNOER(id);
++	else
++		*cr2 &= ~_TAMP_CR2_ETAMPNOER(id);
++
++	if (id < _TAMP_CR2_ETAMPMSK_MAX_ID) {
++		/*
++		 * Only external TAMP 1, 2 and 3 can be masked
++		 */
++		if ((tamp_ext->mode & TAMP_EVT_MASK) == TAMP_EVT_MASK) {
++			/*
++			 * ETAMP(id) event generates a trigger event. This
++			 * ETAMP(id) is masked and internally cleared by
++			 * hardware.
++			 * The secrets are not erased.
++			 */
++			*ier &= ~_TAMP_IER_ETAMP(id);
++			*cr2 |= _TAMP_CR2_ETAMPMSK(id);
++		} else {
++			/*
++			 * normal ETAMP interrupt:
++			 * ETAMP(id) event generates a trigger event and
++			 * TAMP(id) must be cleared by software to allow
++			 * next tamper event detection.
++			 */
++			*cr2 &= ~_TAMP_CR2_ETAMPMSK(id);
++			*ier |= _TAMP_IER_ETAMP(id);
++		}
++	} else {
++		/* Other than 1,2,3 external TAMP, we want its interruption */
++		*ier |= _TAMP_IER_ETAMP(id);
++	}
++
++	return TEE_SUCCESS;
++}
++
++TEE_Result stm32_tamp_set_secure_bkpregs(struct stm32_bkpregs_conf *bkr_conf)
++{
++	uint32_t first_z2 = 0;
++	uint32_t first_z3 = 0;
++	vaddr_t base = io_pa_or_va(&stm32_tamp.pdata.base);
++
++	if (!bkr_conf)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	first_z2 = bkr_conf->nb_zone1_regs;
++	first_z3 = bkr_conf->nb_zone1_regs + bkr_conf->nb_zone2_regs;
++
++	if ((first_z2 > (stm32_tamp.hwconf1 & _TAMP_HWCFGR1_BKPREG)) ||
++	    (first_z3 > (stm32_tamp.hwconf1 & _TAMP_HWCFGR1_BKPREG)))
++		return TEE_ERROR_NOT_SUPPORTED;
++
++	if (stm32_tamp.pdata.compat &&
++	    (stm32_tamp.pdata.compat->tags & TAMP_HAS_CONF_SECURE)) {
++		io_clrsetbits32(base + _TAMP_SECCFGR,
++				_TAMP_SECCFGR_BKPRWSEC_MASK,
++				(first_z2 << _TAMP_SECCFGR_BKPRWSEC_SHIFT) &
++				_TAMP_SECCFGR_BKPRWSEC_MASK);
++
++		io_clrsetbits32(base + _TAMP_SECCFGR,
++				_TAMP_SECCFGR_BKPWSEC_MASK,
++				(first_z3 << _TAMP_SECCFGR_BKPWSEC_SHIFT) &
++				_TAMP_SECCFGR_BKPWSEC_MASK);
++	} else {
++		io_clrsetbits32(base + _TAMP_SMCR,
++				_TAMP_SMCR_BKPRWDPROT_MASK,
++				(first_z2 << _TAMP_SMCR_BKPRWDPROT_SHIFT) &
++				_TAMP_SMCR_BKPRWDPROT_MASK);
++
++		io_clrsetbits32(base + _TAMP_SMCR,
++				_TAMP_SMCR_BKPWDPROT_MASK,
++				(first_z3 << _TAMP_SMCR_BKPWDPROT_SHIFT) &
++				_TAMP_SMCR_BKPWDPROT_MASK);
++	}
++
++	return TEE_SUCCESS;
++}
++
++TEE_Result stm32_tamp_set_config(void)
++{
++	int ret = TEE_SUCCESS;
++	uint32_t i = 0;
++	uint32_t cr1 = 0;
++	uint32_t cr2 = 0;
++	uint32_t cr3 = 0;
++	uint32_t atcr1 = 0;
++	uint32_t atcr2 = 0;
++	uint32_t fltcr = 0;
++	uint32_t ier = 0;
++
++	vaddr_t base = io_pa_or_va(&stm32_tamp.pdata.base);
++
++	if (!stm32_tamp.pdata.compat ||
++	    !stm32_tamp.pdata.compat->int_tamp ||
++	    !stm32_tamp.pdata.compat->ext_tamp)
++		return TEE_ERROR_BAD_STATE;
++
++	/* Select extra IP to add in the deleted/blocked IP in case of
++	 * tamper event
++	 */
++	stm32_tamp_set_secret_list(&stm32_tamp);
++
++	/* Select access in secure or unsecure */
++	stm32_tamp_set_secure(&stm32_tamp);
++
++	/* Select access in privileged mode or unprivileged mode */
++	stm32_tamp_set_privilege(&stm32_tamp);
++
++	/* Set passive filter configuration */
++	if (stm32_tamp.passive_conf != 0U)
++		fltcr = stm32_tamp.passive_conf;
++
++	/* Set active mode configuration */
++	if (stm32_tamp.active_conf != 0U)
++		atcr1 = (atcr1 &  ~_TAMP_ATCR1_COMMON_MASK) |
++			   (stm32_tamp.active_conf & _TAMP_ATCR1_COMMON_MASK);
++
++	for (i = 0U; i < stm32_tamp.pdata.compat->int_tamp_size; i++) {
++		ret = stm32_tamp_set_int_config(stm32_tamp.pdata.compat, i,
++						&cr1, &cr3, &ier);
++		if (ret != 0)
++			return ret;
++	}
++
++	for (i = 0U; i < stm32_tamp.pdata.compat->ext_tamp_size; i++) {
++		ret = stm32_tamp_set_ext_config(stm32_tamp.pdata.compat, i,
++						&cr1, &cr2, &atcr1, &atcr2,
++						&ier);
++		if (ret != 0)
++			return ret;
++	}
++
++	/*
++	 * We apply configuration all in a row:
++	 * As for active ext tamper "all the needed tampers must be enabled in
++	 * the same write access".
++	 */
++	io_write32(base + _TAMP_FLTCR, fltcr);
++	/* Active filter configuration applied only if not already done. */
++	if (((io_read32(base + _TAMP_ATOR) & _TAMP_INITS) != _TAMP_INITS)) {
++		io_write32(base + _TAMP_ATCR1, atcr1);
++		if (stm32_tamp.pdata.compat->tags & TAMP_HAS_ATCR2)
++			io_write32(base + _TAMP_ATCR2, atcr2);
++	}
++
++	io_write32(base + _TAMP_CR1, cr1);
++	io_write32(base + _TAMP_CR2, cr2);
++	if (stm32_tamp.pdata.compat->tags & TAMP_HAS_CR3)
++		io_write32(base + _TAMP_CR3, cr3);
++
++	/* If active tamper we reinit the seed. */
++	if (stm32_tamp.active_conf != 0U) {
++		if (stm32_tamp_set_seed(base) != TEE_SUCCESS) {
++			EMSG("Active tamper: SEED not initialized");
++			return TEE_ERROR_BAD_STATE;
++		}
++	}
++
++	/* Enable interrupts. */
++	io_write32(base + _TAMP_IER, ier);
++
++	return TEE_SUCCESS;
++}
++
++TEE_Result stm32_tamp_write_mcounter(int cnt_idx)
++{
++	vaddr_t base = io_pa_or_va(&stm32_tamp.pdata.base);
++
++	if (cnt_idx < 0 || !stm32_tamp.pdata.compat ||
++	    cnt_idx > stm32_tamp.pdata.compat->nb_monotonic_counter)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	io_write32(base + _TAMP_COUNTR + cnt_idx * sizeof(uint32_t), 1U);
++
++	return TEE_SUCCESS;
++}
++
++uint32_t stm32_tamp_read_mcounter(int cnt_idx)
++{
++	vaddr_t base = io_pa_or_va(&stm32_tamp.pdata.base);
++
++	if (cnt_idx < 0 || !stm32_tamp.pdata.compat ||
++	    cnt_idx > stm32_tamp.pdata.compat->nb_monotonic_counter)
++		return 0U;
++
++	return io_read32(base + _TAMP_COUNTR + cnt_idx * sizeof(uint32_t));
++}
++
++void stm32_tamp_configure_secret_list(uint32_t secret_list_conf)
++{
++	stm32_tamp.secret_list_conf = secret_list_conf;
++}
++
++void stm32_tamp_configure_privilege_access(uint32_t privilege_conf)
++{
++	stm32_tamp.privilege_conf = privilege_conf;
++}
++
++void stm32_tamp_configure_secure_access(uint32_t secure_conf)
++{
++	stm32_tamp.secure_conf = secure_conf;
++}
++
++void stm32_tamp_configure_passive(uint32_t passive_conf)
++{
++	stm32_tamp.passive_conf = passive_conf;
++}
++
++void stm32_tamp_configure_active(uint32_t active_conf)
++{
++	stm32_tamp.active_conf = active_conf;
++}
++
++TEE_Result stm32_tamp_configure_internal(enum stm32_tamp_int_id id,
++					 uint32_t mode,
++					 int (*callback)(int id))
++{
++	uint32_t i = 0;
++	uint32_t itamp_id = id;
++	struct stm32_tamp_int *tamp_int = NULL;
++
++	if (!stm32_tamp.pdata.compat)
++		return TEE_ERROR_BAD_STATE;
++
++	/* Find internal Tamp struct*/
++	for (i = 0U; i < stm32_tamp.pdata.compat->int_tamp_size; i++) {
++		if (stm32_tamp.pdata.compat->int_tamp[i].id == itamp_id) {
++			tamp_int = &stm32_tamp.pdata.compat->int_tamp[i];
++			break;
++		}
++	}
++
++	if (!tamp_int)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	tamp_int->mode = mode;
++	tamp_int->func = callback;
++
++	return TEE_SUCCESS;
++}
++
++TEE_Result stm32_tamp_configure_external(enum stm32_tamp_ext_id id,
++					 uint32_t mode,
++					 enum stm32_tamp_ext_out_id out_pin,
++					 int (*callback)(int id))
++{
++	uint32_t i = 0;
++	uint32_t etamp_id = id;
++	struct stm32_tamp_ext *tamp_ext = NULL;
++
++	if (!stm32_tamp.pdata.compat)
++		return TEE_ERROR_BAD_STATE;
++
++	/* Find external Tamp struct */
++	for (i = 0U; i < stm32_tamp.pdata.compat->ext_tamp_size; i++) {
++		if (stm32_tamp.pdata.compat->ext_tamp[i].id == etamp_id) {
++			tamp_ext = &stm32_tamp.pdata.compat->ext_tamp[i];
++			break;
++		}
++	}
++
++	if (!tamp_ext)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	tamp_ext->mode = mode;
++	tamp_ext->out_pin = out_pin;
++	tamp_ext->func = callback;
++
++	return TEE_SUCCESS;
++}
++
++bool stm32_tamp_are_secrets_blocked(void)
++{
++	if (stm32_tamp.pdata.compat &&
++	    (stm32_tamp.pdata.compat->tags & TAMP_HAS_SECRET_STATUS)) {
++		vaddr_t base = io_pa_or_va(&stm32_tamp.pdata.base);
++
++		return (((io_read32(base + _TAMP_CR2) &
++			  _TAMP_CR2_BKBLOCK) == _TAMP_CR2_BKBLOCK) ||
++			(io_read32(base + _TAMP_SR) != 0));
++	} else {
++		return false;
++	}
++}
++
++void stm32_tamp_block_secrets(void)
++{
++	vaddr_t base = io_pa_or_va(&stm32_tamp.pdata.base);
++
++	if (stm32_tamp.pdata.compat &&
++	    (stm32_tamp.pdata.compat->tags & TAMP_HAS_SECRET_STATUS))
++		io_setbits32(base + _TAMP_CR2, _TAMP_CR2_BKBLOCK);
++}
++
++void stm32_tamp_unblock_secrets(void)
++{
++	vaddr_t base = io_pa_or_va(&stm32_tamp.pdata.base);
++
++	if (stm32_tamp.pdata.compat &&
++	    (stm32_tamp.pdata.compat->tags & TAMP_HAS_SECRET_STATUS))
++		io_clrbits32(base + _TAMP_CR2, _TAMP_CR2_BKBLOCK);
++}
++
++void stm32_tamp_erase_secrets(void)
++{
++	vaddr_t base = io_pa_or_va(&stm32_tamp.pdata.base);
++
++	if (stm32_tamp.pdata.compat &&
++	    (stm32_tamp.pdata.compat->tags & TAMP_HAS_SECRET_STATUS))
++		io_setbits32(base + _TAMP_CR2, _TAMP_CR2_BKERASE);
++}
++
++void stm32_tamp_lock_boot_hardware_key(void)
++{
++	vaddr_t base = io_pa_or_va(&stm32_tamp.pdata.base);
++
++	if (stm32_tamp.pdata.compat &&
++	    (stm32_tamp.pdata.compat->tags & TAMP_HAS_LOCK_KEY))
++		io_setbits32(base + _TAMP_SECCFGR, _TAMP_SECCFGR_BHKLOCK);
++}
++
++static enum itr_return stm32_tamp_it_handler(struct itr_handler *h)
++{
++	struct stm32_tamp_instance *tamp = h->data;
++	vaddr_t base = io_pa_or_va(&tamp->pdata.base);
++	uint32_t it = io_read32(base + _TAMP_SR);
++	uint32_t int_it = it & _TAMP_SR_ITAMPXF_MASK;
++	uint32_t ext_it = it & _TAMP_SR_ETAMPXF_MASK;
++	uint8_t i = 0;
++	struct stm32_rtc_time tamp_ts = { };
++
++	if (stm32_rtc_is_timestamp_enable()) {
++		stm32_rtc_get_timestamp(&tamp_ts);
++		FMSG("Tamper Event Occurred");
++		FMSG("Date : %u/%u\n \t Time : %u:%u:%u",
++		     tamp_ts.day, tamp_ts.month, tamp_ts.hour,
++		     tamp_ts.min, tamp_ts.sec);
++	}
++
++	while ((int_it != 0U) && (i < stm32_tamp.pdata.compat->int_tamp_size)) {
++		int ret = -1;
++		uint32_t id = tamp->pdata.compat->int_tamp[i].id;
++
++		if ((it & _TAMP_SR_ITAMP(id)) != 0U) {
++			if (tamp->pdata.compat->int_tamp[i].func)
++				ret = tamp->pdata.compat->int_tamp[i].func(id);
++
++			if (ret >= 0) {
++				io_setbits32(base + _TAMP_SCR,
++					     _TAMP_SR_ITAMP(id));
++				ext_it &= ~_TAMP_SR_ITAMP(id);
++
++				if (ret > 0) {
++#ifdef CFG_PM
++					stm32_cores_reset();
++#else
++					psci_system_reset();
++#endif
++				}
++			}
++		}
++		i++;
++	}
++
++	i = 0;
++	/* External tamper interrupt */
++	while ((ext_it != 0U) && (i < stm32_tamp.pdata.compat->ext_tamp_size)) {
++		int ret = -1;
++		uint32_t id = tamp->pdata.compat->ext_tamp[i].id;
++
++		if ((ext_it & _TAMP_SR_ETAMP(id)) != 0U) {
++			if (tamp->pdata.compat->ext_tamp[i].func)
++				ret = tamp->pdata.compat->ext_tamp[i].func(id);
++
++			if (ret >= 0) {
++				io_setbits32(base + _TAMP_SCR,
++					     _TAMP_SCR_ETAMP(id));
++				ext_it &= ~_TAMP_SR_ETAMP(id);
++
++				if (ret > 0) {
++#ifdef CFG_PM
++					stm32_cores_reset();
++#else
++					psci_system_reset();
++#endif
++				}
++			}
++		}
++		i++;
++	}
++
++	return ITRR_HANDLED;
++}
++
++#ifdef CFG_DT
++static int get_node_from_multiple_compatible(const void *fdt,
++					     struct stm32_tamp_platdata *pdata)
++{
++	const struct my_dt_device_match *cur = tamp_match_table;
++
++	while (cur->compatible) {
++		int node = -1;
++
++		node = fdt_node_offset_by_compatible(fdt, node,
++						     cur->compatible);
++		if (node >= 0) {
++			pdata->compat = (struct stm32_tamp_compat *)cur->data;
++			return node;
++		}
++
++		cur++;
++	}
++
++	/* Compatible string not found */
++	return -1;
++}
++
++static int stm32_tamp_parse_fdt(struct stm32_tamp_platdata *pdata)
++{
++	int node = -1;
++	struct dt_node_info dt_tamp = { };
++	void *fdt = NULL;
++
++	fdt = get_embedded_dt();
++	if (!fdt)
++		return -1;
++
++	node = get_node_from_multiple_compatible(fdt, pdata);
++	if (node < 0)
++		return -1;
++
++	_fdt_fill_device_info(fdt, &dt_tamp, node);
++
++	if (dt_tamp.status == DT_STATUS_DISABLED ||
++	    dt_tamp.clock == DT_INFO_INVALID_CLOCK ||
++	    dt_tamp.reg == DT_INFO_INVALID_REG ||
++	    dt_tamp.interrupt == DT_INFO_INVALID_INTERRUPT) {
++		return -1;
++	}
++
++	pdata->it = dt_tamp.interrupt;
++	pdata->base.pa = dt_tamp.reg;
++	pdata->base.va = (vaddr_t)phys_to_virt(dt_tamp.reg, MEM_AREA_IO_SEC);
++
++	pdata->clock = dt_tamp.clock;
++
++	pdata->pins_conf = 0;
++	if (stm32_pinctrl_fdt_get_pinctrl(fdt, node, NULL, 0) > 0) {
++		if (pdata->compat == &mp15_compat) {
++			if (fdt_getprop(fdt, node, "st,out3-pc13", NULL))
++				pdata->pins_conf |= _TAMP_OR_OUT3RMP_PC13;
++		}
++	}
++
++	if (fdt_getprop(fdt, node, "wakeup-source", NULL))
++		pdata->is_wakeup_source = true;
++
++	return 0;
++}
++
++__weak
++int stm32_tamp_get_platdata(struct stm32_tamp_platdata *pdata __unused)
++{
++	/* In DT config, the platform data are filled by DT file */
++	return 0;
++}
++#else /* CFG_DT */
++static int stm32_tamp_parse_fdt(struct stm32_tamp_platdata *pdata)
++{
++	/* Do nothing, there is no fdt to parse in this case */
++	return 0;
++}
++
++/* This function can be overridden by platform to define pdata of tamp driver */
++__weak
++int stm32_tamp_get_platdata(struct stm32_tamp_platdata *pdata __unused)
++{
++	return -1;
++}
++#endif /* CFG_DT */
++
++static struct itr_handler stm32_tamp_itr_handler = {
++	.handler =  stm32_tamp_it_handler,
++};
++DECLARE_KEEP_PAGER(stm32_tamp_itr_handler);
++
++static TEE_Result stm32_tamp_init(void)
++{
++	int ret = TEE_SUCCESS;
++	vaddr_t base = 0;
++	uint32_t __unused rev = 0;
++
++	ret = stm32_tamp_get_platdata(&stm32_tamp.pdata);
++	if (ret)
++		return TEE_ERROR_NOT_SUPPORTED;
++
++	ret = stm32_tamp_parse_fdt(&stm32_tamp.pdata);
++	if (ret)
++		return TEE_ERROR_NOT_SUPPORTED;
++
++	/* Init Tamp clock */
++	clk_enable(stm32_tamp.pdata.clock);
++
++	base = io_pa_or_va(&stm32_tamp.pdata.base);
++
++	stm32_tamp.hwconf1 = io_read32(base + _TAMP_HWCFGR1);
++	stm32_tamp.hwconf2 = io_read32(base + _TAMP_HWCFGR2);
++
++#if TRACE_LEVEL >= TRACE_FLOW
++	rev = io_read32(base + _TAMP_VERR);
++	FMSG("STM32 TAMPER V%u.%u", (rev & _TAMP_VERR_MAJREV) >> 4,
++	     rev & _TAMP_VERR_MINREV);
++#endif
++
++	if ((stm32_tamp.hwconf2 & _TAMP_HWCFGR2_TZ) == 0U) {
++		EMSG("Tamper IP doesn't support trustzone");
++		return TEE_ERROR_NOT_SUPPORTED;
++	}
++
++	stm32_tamp_set_pins(base, stm32_tamp.pdata.pins_conf);
++
++	stm32_tamp_itr_handler.it = stm32_tamp.pdata.it;
++	stm32_tamp_itr_handler.data = &stm32_tamp;
++	itr_add(&stm32_tamp_itr_handler);
++	itr_enable(stm32_tamp_itr_handler.it);
++
++	/* Need a new API */
++	if (stm32_tamp.pdata.is_wakeup_source)
++		IMSG("TAMP event are not configured as wakeup source");
++
++	return TEE_SUCCESS;
++}
++
++driver_init(stm32_tamp_init);
+diff --git a/core/drivers/sub.mk b/core/drivers/sub.mk
+index 0d3b81e21..10a641b9d 100644
+--- a/core/drivers/sub.mk
++++ b/core/drivers/sub.mk
+@@ -30,6 +30,7 @@ srcs-$(CFG_STM32_IWDG) += stm32_iwdg.c
+ srcs-$(CFG_STM32_RNG) += stm32_rng.c
+ srcs-$(CFG_STM32_RTC) += stm32_rtc.c
+ srcs-$(CFG_STM32_TIM) += stm32_tim.c
++srcs-$(CFG_STM32_TAMP) += stm32_tamp.c
+ srcs-$(CFG_STM32_UART) += stm32_uart.c
+ srcs-$(CFG_STPMIC1) += stpmic1.c
+ srcs-$(CFG_BCM_HWRNG) += bcm_hwrng.c
+diff --git a/core/include/drivers/stm32_tamp.h b/core/include/drivers/stm32_tamp.h
+new file mode 100644
+index 000000000..556cd136d
+--- /dev/null
++++ b/core/include/drivers/stm32_tamp.h
+@@ -0,0 +1,378 @@
++/* SPDX-License-Identifier: BSD-3-Clause */
++/*
++ * Copyright (c) 2021, STMicroelectronics
++ */
++
++#ifndef __STM32_TAMP_H__
++#define __STM32_TAMP_H__
++
++#include <mm/core_memprot.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <tee_api_types.h>
++#include <types_ext.h>
++
++/* Internal Tamper */
++enum stm32_tamp_int_id {
++	INT_TAMP1 = 0,
++	INT_TAMP2,
++	INT_TAMP3,
++	INT_TAMP4,
++	INT_TAMP5,
++	INT_TAMP6,
++	INT_TAMP7,
++	INT_TAMP8,
++	INT_TAMP9,
++	INT_TAMP10,
++	INT_TAMP11,
++	INT_TAMP12,
++	INT_TAMP13,
++	INT_TAMP14,
++	INT_TAMP15,
++	INT_TAMP16
++};
++
++/* External Tamper */
++enum stm32_tamp_ext_id {
++	EXT_TAMP1 = 0,
++	EXT_TAMP2,
++	EXT_TAMP3,
++	EXT_TAMP4,
++	EXT_TAMP5,
++	EXT_TAMP6,
++	EXT_TAMP7,
++	EXT_TAMP8
++};
++
++/* Out pin to compare for external Tamper */
++enum stm32_tamp_ext_out_id {
++	TAMPOUTSEL_SAME_AS_INPUT = 0,
++	TAMPOUTSEL1,
++	TAMPOUTSEL2,
++	TAMPOUTSEL3,
++	TAMPOUTSEL4,
++	TAMPOUTSEL5,
++	TAMPOUTSEL6,
++	TAMPOUTSEL7,
++	TAMPOUTSEL8,
++};
++
++/*
++ * Define number of backup registers in zone 1 and zone 2 (remaining are in
++ * zone 3)
++ *
++ * backup registers in zone 1 : read/write only in secure mode
++ *                     zone 2 : write only in secure mode, read in secure
++ *                              and non-secure mode
++ *                     zone 3 : read/write in secure and non-secure mode
++ *
++ * Protection zone 1 if nb_zone1_regs == 0 no backup register are in zone 1
++ *                   else backup registers from TAMP_BKP0R to TAMP_BKPxR
++ *                   with x = nb_zone1_regs - 1 are in zone 1.
++ * Protection zone 2 if nb_zone2_regs == 0 no backup register are in zone 2
++ *                   else backup registers from
++ *                   TAMP_BKPyR with y = nb_zone1_regs
++ *                   to
++ *                   TAMP_BKPzR with z = (nb_zone1_regs1 + nb_zone2_regs - 1)
++ *                   are in zone 2.
++ * Protection zone 3 backup registers from TAMP_BKPtR
++ *                   with t = nb_zone1_regs1 + nb_zone2_regs to last backup
++ *                   register are in zone 3.
++ */
++struct stm32_bkpregs_conf {
++	uint32_t nb_zone1_regs;
++	uint32_t nb_zone2_regs;
++};
++
++/* Define TAMPER modes */
++#define TAMP_DISABLE		0x0U
++#define TAMP_ENABLE		0x1U
++#define TAMP_TRIG_OFF		0x0U
++#define TAMP_TRIG_ON		0x2U
++#define TAMP_PASSIVE		0x0U
++#define TAMP_ACTIVE		0x4U
++#define TAMP_ERASE		0x0U
++#define TAMP_NOERASE		0x8U
++#define TAMP_NO_EVT_MASK	0x0U
++#define TAMP_EVT_MASK		0x10U
++
++/* Define Passive FILTER mode */
++#define TAMP_FILTER_TAMPPUDIS_OFFSET	7U
++#define TAMP_FILTER_PRECHARGE		(0x0U << TAMP_FILTER_TAMPPUDIS_OFFSET)
++#define TAMP_FILTER_PULL_UP_DISABLE	(0x1U << TAMP_FILTER_TAMPPUDIS_OFFSET)
++#define TAMP_FILTER_TAMPPRCH_OFFSET	5U
++#define TAMP_FILTER_PRECHARGE_1_CYCLE	(0x0U << TAMP_FILTER_TAMPPRCH_OFFSET)
++#define TAMP_FILTER_PRECHARGE_2_CYCLES	(0x1U << TAMP_FILTER_TAMPPRCH_OFFSET)
++#define TAMP_FILTER_PRECHARGE_4_CYCLES	(0x2U << TAMP_FILTER_TAMPPRCH_OFFSET)
++#define TAMP_FILTER_PRECHARGE_8_CYCLES	(0x3U << TAMP_FILTER_TAMPPRCH_OFFSET)
++#define TAMP_FILTER_TAMPFLT_OFFSET	3U
++#define TAMP_FILTER_EDGE		(0x0U << TAMP_FILTER_TAMPFLT_OFFSET)
++#define TAMP_FILTER_2_SAMPLE		(0x1U << TAMP_FILTER_TAMPFLT_OFFSET)
++#define TAMP_FILTER_4_SAMPLE		(0x2U << TAMP_FILTER_TAMPFLT_OFFSET)
++#define TAMP_FILTER_8_SAMPLE		(0x3U << TAMP_FILTER_TAMPFLT_OFFSET)
++#define TAMP_FILTER_TAMPFREQ_OFFSET	0U
++#define TAMP_FILTER_SAMPLING_32768	(0x0U << TAMP_FILTER_TAMPFREQ_OFFSET)
++#define TAMP_FILTER_SAMPLING_16384	(0x1U << TAMP_FILTER_TAMPFREQ_OFFSET)
++#define TAMP_FILTER_SAMPLING_8192	(0x2U << TAMP_FILTER_TAMPFREQ_OFFSET)
++#define TAMP_FILTER_SAMPLING_4096	(0x3U << TAMP_FILTER_TAMPFREQ_OFFSET)
++#define TAMP_FILTER_SAMPLING_2048	(0x4U << TAMP_FILTER_TAMPFREQ_OFFSET)
++#define TAMP_FILTER_SAMPLING_1024	(0x5U << TAMP_FILTER_TAMPFREQ_OFFSET)
++#define TAMP_FILTER_SAMPLING_512	(0x6U << TAMP_FILTER_TAMPFREQ_OFFSET)
++#define TAMP_FILTER_SAMPLING_256	(0x7U << TAMP_FILTER_TAMPFREQ_OFFSET)
++
++/*  Define active filter */
++#define TAMP_ACTIVE_FLTEN_OFFSET	31U
++#define TAMP_ACTIVE_FILTER_OFF		(0x0U << TAMP_ACTIVE_FLTEN_OFFSET)
++#define TAMP_ACTIVE_FILTER_ON		(0x1U << TAMP_ACTIVE_FLTEN_OFFSET)
++#define TAMP_ACTIVE_ATOSHARE_OFFSET	30U
++#define TAMP_ACTIVE_USE_DEDICATED_OUT	(0x0U << \
++					 TAMP_ACTIVE_FILTER_ATOSHARE_OFFSET)
++#define TAMP_ACTIVE_SELECT_OUT		(0x1U << \
++					 TAMP_ACTIVE_FILTER_ATOSHARE_OFFSET)
++#define TAMP_ACTIVE_ATPER_OFFSET	24U
++#define TAMP_ACTIVE_ATPER_1_OUTPUT	(0x0U << TAMP_ACTIVE_ATPER_OFFSET)
++#define TAMP_ACTIVE_ATPER_2_OUTPUTS	(0x1U << TAMP_ACTIVE_ATPER_OFFSET)
++#define TAMP_ACTIVE_ATPER_3_4_OUTPUTS	(0x2U << TAMP_ACTIVE_ATPER_OFFSET)
++#define TAMP_ACTIVE_ATPER_5_OUTPUTS	(0x3U << TAMP_ACTIVE_ATPER_OFFSET)
++#define TAMP_ACTIVE_ATCKSEL_OFFSET	16U
++#define TAMP_ACTIVE_CKSEL_DIV_0		(0x0U << TAMP_ACTIVE_ATCKSEL_OFFSET)
++#define TAMP_ACTIVE_CKSEL_DIV_2		(0x1U << TAMP_ACTIVE_ATCKSEL_OFFSET)
++#define TAMP_ACTIVE_CKSEL_DIV_4		(0x2U << TAMP_ACTIVE_ATCKSEL_OFFSET)
++#define TAMP_ACTIVE_CKSEL_DIV_8		(0x3U << TAMP_ACTIVE_ATCKSEL_OFFSET)
++#define TAMP_ACTIVE_CKSEL_DIV_16	(0x4U << TAMP_ACTIVE_ATCKSEL_OFFSET)
++#define TAMP_ACTIVE_CKSEL_DIV_32	(0x5U << TAMP_ACTIVE_ATCKSEL_OFFSET)
++#define TAMP_ACTIVE_CKSEL_DIV_64	(0x6U << TAMP_ACTIVE_ATCKSEL_OFFSET)
++#define TAMP_ACTIVE_CKSEL_DIV_128	(0x7U << TAMP_ACTIVE_ATCKSEL_OFFSET)
++
++/* Define device secret list */
++#define TAMP_NON_CONFIGURABLE_SECRETS	0x0U
++#define TAMP_CONF_SECRET_BACKUP_SRAM	0x1U
++
++/* Define secure mode access */
++/*
++ * Tamper configuration and interrupt can be written when the APB access is
++ * secure or nonsecure.
++ */
++#define TAMP_REGS_IT_UNSECURE		0U
++/*
++ * Tamper configuration and interrupt can be written only when the APB access
++ * is secure.
++ */
++#define TAMP_REGS_IT_SECURE		BIT(31)
++/*
++ * Tamper monotonic counter 1 can be written when the APB access is secure or
++ * nonsecure.
++ */
++#define TAMP_CNT1_UNSECURE		0U
++/*
++ * Tamper monotonic counter 3 can be written only when the APB access is
++ * secure.
++ */
++#define TAMP_CNT1_SECURE		BIT(15)
++/*
++ * Tamper monotonic counter 2 can be written when the APB access is secure or
++ * nonsecure.
++ */
++#define TAMP_CNT2_UNSECURE		0U
++/*
++ * Tamper monotonic counter 3 can be written only when the APB access is
++ * secure.
++ */
++#define TAMP_CNT2_SECURE		BIT(14)
++
++/* Define privilege mode access */
++/*
++ * Tamper registers (but backup and cnt) can be written with privileged or
++ * unprivileged access.
++ */
++#define TAMP_REGS_UNPRIVILEGE		0U
++/*
++ * Tamper registers (but backupand cnt) can be written only with privileged
++ * access.
++ */
++#define TAMP_REGS_PRIVILEGE		BIT(31)
++/*
++ * Backup registers zone 2 can be written with privileged or unprivileged
++ * access.
++ */
++#define TAMP_BKP2W_UNPRIVILEGE		0U
++/* Backup registers zone 2 can be written only with privileged access. */
++#define TAMP_BKP2W_PRIVILEGE		BIT(30)
++/*
++ * Backup registers zone 1 can be read and written with privileged or
++ * unprivileged access.
++ */
++#define TAMP_BKP1RW_UNPRIVILEGE	0U
++/*
++ * Backup registers zone 1 can be read and written only with privileged
++ * access.
++ */
++#define TAMP_BKP1RW_PRIVILEGE		BIT(29)
++/*
++ * Monotonic counter 1 can be read and written with privileged or unprivileged
++ * access.
++ */
++#define TAMP_CNT1_UNPRIVILEGE		0U
++/* Monotonic counter 1 can be read and written only with privileged access. */
++#define TAMP_CNT1_PRIVILEGE		BIT(15)
++/*
++ * Monotonic counter 2 can be read and written with privileged or unprivileged
++ * access.
++ */
++#define TAMP_CNT2_UNPRIVILEGE		0U
++/* Monotonic counter 2 can be read and written only with privileged access. */
++#define TAMP_CNT2_PRIVILEGE		BIT(14)
++
++/*
++ * stm32_tamp_write_mcounter : Increase monotonic counter[counter_idx].
++ */
++TEE_Result stm32_tamp_write_mcounter(int counter_idx);
++uint32_t stm32_tamp_read_mcounter(int counter_idx);
++
++bool stm32_tamp_are_secrets_blocked(void);
++void stm32_tamp_block_secrets(void);
++void stm32_tamp_unblock_secrets(void);
++void stm32_tamp_erase_secrets(void);
++void stm32_tamp_lock_boot_hardware_key(void);
++
++/*
++ * stm32_tamp_configure_secret_list: Configure which extra IPs
++ * are blocked/erased in case of tamper event.
++ *
++ * secret_list_conf is a bit field from TAMP_CONF_SECRET_.*
++ */
++void stm32_tamp_configure_secret_list(uint32_t secret_list_conf);
++
++/*
++ * stm32_tamp_configure_secure_access: Configure which registers can be
++ * read/write from unsecure world.
++ * secure_conf is a bit field from TAMP_.*_{UN,}SECURE define
++ */
++void stm32_tamp_configure_secure_access(uint32_t secure_conf);
++
++/*
++ * stm32_tamp_configure_privilege_access: Configure which registers can be
++ * read/write from unpriviliged world.
++ * privilege_conf is a bit field from TAMP_.*_{UN,}PRIVILEGE define
++ */
++void stm32_tamp_configure_privilege_access(uint32_t privilege_conf);
++
++/*
++ * stm32_tamp_configure_passive: Configure passive mode
++ * passive_conf is a bit field from TAMP_FILTER_* define
++ */
++void stm32_tamp_configure_passive(uint32_t passive_conf);
++
++/*
++ * stm32_tamp_configure_ctive: Configure active mode
++ * passive_conf is a bit field from TAMP_ACTIVE_* define
++ */
++void stm32_tamp_configure_active(uint32_t active_conf);
++
++/*
++ * stm32_tamp_configure_internal: Configure one internal tamper.
++ * id: internal tamper id
++ * mode: bitmask from TAMPER modes define
++ * callback: function to call when tamper is raised (can be NULL),
++ *           called in interrupt context,
++ *           if callback returns negative value, blocked secrets stay blocked
++ *           (driver doesn't release this specific tamper).
++ *           if callback returns 0 this specific tamp is ack (in case of
++ *           no-erase tamper, blocked secret are unblocked)
++ *           if callback returns positive value, this specific tamp is ack (in
++ *           case of no-erase tamper, blocked secret are unblocked) and system
++ *           is rebooted).
++ *
++ * return: TEE_BAD_PARAMETERS if 'id' is not a valid internal tamp id,
++ *         else TEE_SUCCESS.
++ */
++TEE_Result stm32_tamp_configure_internal(enum stm32_tamp_int_id id,
++					 uint32_t mode,
++					 int (*callback)(int id));
++
++/*
++ * stm32_tamp_configure_external: Configure one external tamper.
++ * id: external tamper id
++ * mode: bitmask from TAMPER modes define
++ * pin_out; output pin connected to input pin (linekd with selected ext tamp id)
++ * callback: function to call when tamper is raised (can be NULL),
++ *           called in interrupt context,
++ *           if callback returns negative value, blocked secrets stay blocked
++ *           (driver doesn't release this specific tamper).
++ *           if callback returns 0 this specific tamp is ack (in case of
++ *           no-erase tamper, blocked secret are unblocked)
++ *           if callback returns positive value, this specific tamp is ack (in
++ *           case of no-erase tamper, blocked secret are unblocked) and system
++ *           is rebooted).
++ *
++ * return: TEE_BAD_PARAMETERS if 'id' is not a valid external tamp id,
++ *         else TEE_SUCCESS.
++ */
++TEE_Result stm32_tamp_configure_external(enum stm32_tamp_ext_id id,
++					 uint32_t mode,
++					 enum stm32_tamp_ext_out_id out_pin,
++					 int (*callback)(int id));
++
++/*
++ * stm32_tamp_set_secure_bkprwregs : Configure backup registers zone.
++ * registers in zone 1 : read/write only in secure mode
++ *              zone 2 : write only in secure mode, read in secure and
++ *                       non-secure mode
++ *              zone 3 : read/write in secure and non-secure mode
++ *
++ * bkpregs_conf : a pointer to struct bkpregs_conf that define the number of
++ * registers in zone 1 and zone 2 (remaining backup registers will be in
++ * zone 3).
++ *
++ * return TEE_ERROR_NOT_SUPPORTED:  if zone 1 and/or zone 2 definition are out
++ *                                  of range.
++ *        TEE_ERROR_BAD_PARAMETERS: if bkpregs_cond is NULL.
++ *        TEE_SUCCESS             : if OK.
++ */
++TEE_Result stm32_tamp_set_secure_bkpregs(struct stm32_bkpregs_conf
++					 *bkpregs_conf);
++
++/*
++ * stm32_tamp_set_config: Apply configuration.
++ * Default one if no previous call to any of :
++ * stm32_tamp_configure_passive()
++ * stm32_tamp_configure_active()
++ * stm32_tamp_configure_internal()
++ * stm32_tamp_configure_external()
++ * stm32_tamp_configure_secret_list()
++ * stm32_tamp_configure_secure_access()
++ * stm32_tamp_configure_privilege_access()
++ *
++ */
++TEE_Result stm32_tamp_set_config(void);
++
++/* Compatibility tags */
++#define TAMP_HAS_CONF_SECURE		BIT(0)
++#define TAMP_HAS_CONF_PRIVILEGE		BIT(1)
++#define TAMP_HAS_CONF_SECRET_IPS	BIT(2)
++#define TAMP_HAS_ATCR2			BIT(3)
++#define TAMP_HAS_CR3			BIT(4)
++#define TAMP_HAS_SECRET_STATUS		BIT(5)
++#define TAMP_HAS_LOCK_KEY		BIT(6)
++
++struct stm32_tamp_compat {
++	int nb_monotonic_counter;
++	uint32_t tags;
++	struct stm32_tamp_int *int_tamp;
++	uint32_t int_tamp_size;
++	struct stm32_tamp_ext *ext_tamp;
++	uint32_t ext_tamp_size;
++};
++
++struct stm32_tamp_platdata {
++	struct io_pa_va base;
++	uint32_t clock;
++	int it;
++	uint32_t pins_conf;
++	bool is_wakeup_source;
++	struct stm32_tamp_compat *compat;
++};
++
++int stm32_tamp_get_platdata(struct stm32_tamp_platdata *pdata);
++
++#endif /* __STM32_TAMP_H__ */
+diff --git a/core/include/kernel/dt.h b/core/include/kernel/dt.h
+index 3044989c7..e9f816488 100644
+--- a/core/include/kernel/dt.h
++++ b/core/include/kernel/dt.h
+@@ -31,12 +31,15 @@
+  * @reg: Device register physical base address or DT_INFO_INVALID_REG
+  * @clock: Device identifier (positive value) or DT_INFO_INVALID_CLOCK
+  * @reset: Device reset identifier (positive value) or DT_INFO_INVALID_CLOCK
++ * @interrupt: Device interrupt identifier (positive value) or
++ * DT_INFO_INVALID_INTERRUPT
+  */
+ struct dt_node_info {
+ 	unsigned int status;
+ 	paddr_t reg;
+ 	int clock;
+ 	int reset;
++	int interrupt;
+ };
+ 
+ #if defined(CFG_DT)
+@@ -96,18 +99,6 @@ int dt_map_dev(const void *fdt, int offs, vaddr_t *base, size_t *size);
+  */
+ bool dt_have_prop(const void *fdt, int offs, const char *propname);
+ 
+-/*
+- * Get the DT interrupt property of the @node. In the DT an interrupt
+- * is defined with at least 2x32 bits detailling the interrupt number and type.
+- *
+- * @fdt reference to the Device Tree
+- * @node is the node offset to read
+- *
+- * Returns the interrupt number if value >= 0
+- * otherwise DT_INFO_INVALID_INTERRUPT
+- */
+-int dt_get_irq(void *fdt, int node);
+-
+ /*
+  * Modify or add "status" property to "disabled"
+  *
+diff --git a/core/include/kernel/interrupt.h b/core/include/kernel/interrupt.h
+index 796eded29..4a0b4474b 100644
+--- a/core/include/kernel/interrupt.h
++++ b/core/include/kernel/interrupt.h
+@@ -14,6 +14,7 @@
+ 
+ struct itr_chip {
+ 	const struct itr_ops *ops;
++	int (*dt_get_irq)(const uint32_t *properties, int len);
+ };
+ 
+ struct itr_ops {
+@@ -48,6 +49,30 @@ struct itr_handler {
+ void itr_init(struct itr_chip *data);
+ void itr_handle(size_t it);
+ 
++#ifdef CFG_DT
++/*
++ * Get the DT interrupt property at @node. In the DT an interrupt
++ *
++ * @fdt reference to the Device Tree
++ * @node is the node offset to read
++ *
++ * Returns the interrupt number if value >= 0
++ * otherwise DT_INFO_INVALID_INTERRUPT
++ */
++int dt_get_irq(const void *fdt, int node);
++
++/*
++ * Get the DT secure-interrupt property at @node.
++ *
++ * @fdt reference to the Device Tree
++ * @node is the node offset to read
++ *
++ * Returns the interrupt number if value >= 0
++ * otherwise DT_INFO_INVALID_INTERRUPT
++ */
++int dt_get_irq_secure(const void *fdt, int node);
++#endif
++
+ void itr_add(struct itr_handler *handler);
+ void itr_enable(size_t it);
+ void itr_disable(size_t it);
+diff --git a/core/kernel/dt.c b/core/kernel/dt.c
+index fcfa26929..4410bf52b 100644
+--- a/core/kernel/dt.c
++++ b/core/kernel/dt.c
+@@ -5,6 +5,7 @@
+ 
+ #include <assert.h>
+ #include <kernel/dt.h>
++#include <kernel/interrupt.h>
+ #include <kernel/linker.h>
+ #include <libfdt.h>
+ #include <mm/core_memprot.h>
+@@ -51,27 +52,6 @@ bool dt_have_prop(const void *fdt, int offs, const char *propname)
+ 	return prop;
+ }
+ 
+-int dt_get_irq(void *fdt, int node)
+-{
+-	const uint32_t *int_prop = NULL;
+-	int len_prop = 0;
+-	int it_num = DT_INFO_INVALID_INTERRUPT;
+-
+-	/*
+-	 * Interrupt property can be defined with at least 2x32 bits word
+-	 *  - Type of interrupt
+-	 *  - Interrupt Number
+-	 */
+-	int_prop = fdt_getprop(fdt, node, "interrupts", &len_prop);
+-
+-	if (!int_prop || len_prop < 2)
+-		return it_num;
+-
+-	it_num = fdt32_to_cpu(int_prop[1]);
+-
+-	return it_num;
+-}
+-
+ int dt_disable_status(void *fdt, int node)
+ {
+ 	const char *prop = NULL;
+@@ -288,6 +268,7 @@ void _fdt_fill_device_info(void *fdt, struct dt_node_info *info, int offs)
+ 		.reg = DT_INFO_INVALID_REG,
+ 		.clock = DT_INFO_INVALID_CLOCK,
+ 		.reset = DT_INFO_INVALID_RESET,
++		.interrupt = DT_INFO_INVALID_INTERRUPT,
+ 	};
+ 	const fdt32_t *cuint;
+ 
+@@ -305,6 +286,11 @@ void _fdt_fill_device_info(void *fdt, struct dt_node_info *info, int offs)
+ 		dinfo.reset = (int)fdt32_to_cpu(*cuint);
+ 	}
+ 
++	/* We first look for the secure interrupt, if not found the interrupt */
++	dinfo.interrupt = dt_get_irq_secure(fdt, offs);
++	if (dinfo.interrupt == DT_INFO_INVALID_INTERRUPT)
++		dinfo.interrupt = dt_get_irq(fdt, offs);
++
+ 	dinfo.status = _fdt_get_status(fdt, offs);
+ 
+ 	*info = dinfo;
+diff --git a/core/kernel/interrupt.c b/core/kernel/interrupt.c
+index 376012556..61c299745 100644
+--- a/core/kernel/interrupt.c
++++ b/core/kernel/interrupt.c
+@@ -3,8 +3,10 @@
+  * Copyright (c) 2016-2019, Linaro Limited
+  */
+ 
++#include <kernel/dt.h>
+ #include <kernel/interrupt.h>
+ #include <kernel/panic.h>
++#include <libfdt.h>
+ #include <trace.h>
+ #include <assert.h>
+ 
+@@ -25,6 +27,34 @@ void itr_init(struct itr_chip *chip)
+ 	itr_chip = chip;
+ }
+ 
++#ifdef CFG_DT
++static int _dt_get_irq(const void *fdt, int node,  const char *prop_name)
++{
++	const uint32_t *prop = NULL;
++	int len = 0;
++	int it_num = DT_INFO_INVALID_INTERRUPT;
++
++	if (!itr_chip || !itr_chip->dt_get_irq)
++		return it_num;
++
++	prop = fdt_getprop(fdt, node, prop_name, &len);
++	if (!prop)
++		return it_num;
++
++	return itr_chip->dt_get_irq(prop, len);
++}
++
++int dt_get_irq(const void *fdt, int node)
++{
++	return _dt_get_irq(fdt, node, "interrupts");
++}
++
++int dt_get_irq_secure(const void *fdt, int node)
++{
++	return _dt_get_irq(fdt, node, "secure-interrupts");
++}
++#endif
++
+ void itr_handle(size_t it)
+ {
+ 	struct itr_handler *h = NULL;
+diff --git a/mk/config.mk b/mk/config.mk
+index a14c4f832..c92a0edce 100644
+--- a/mk/config.mk
++++ b/mk/config.mk
+@@ -111,7 +111,7 @@ CFG_TEE_IMPL_DESCR ?= OPTEE
+ CFG_OS_REV_REPORTS_GIT_SHA1 ?= y
+ 
+ # Trusted OS implementation version
+-TEE_IMPL_VERSION ?= $(shell git describe --always --dirty=-dev 2>/dev/null || echo Unknown)
++TEE_IMPL_VERSION ?= $(shell git describe --always --tags --dirty=-dev 2>/dev/null || echo Unknown)
+ ifeq ($(CFG_OS_REV_REPORTS_GIT_SHA1),y)
+ TEE_IMPL_GIT_SHA1 := 0x$(shell git rev-parse --short=8 HEAD 2>/dev/null || echo 0)
+ else
+-- 
+2.17.1
+

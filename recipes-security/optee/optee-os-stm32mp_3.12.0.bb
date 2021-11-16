@@ -7,11 +7,13 @@ SRCREV = "3d47a131bca1d9ed511bfd516aa5e70269e12c1d"
 
 SRC_URI += " \
     file://0001-3.12.0-stm32mp-r1.patch \
+    file://0002-3.12.0-stm32mp-r1.1-rc1.patch \
+    file://0003-3.12.0-stm32mp-r2.patch \
     "
 
 OPTEE_VERSION = "3.12.0"
 OPTEE_SUBVERSION = "stm32mp"
-OPTEE_RELEASE = "r1"
+OPTEE_RELEASE = "r2"
 
 PV = "${OPTEE_VERSION}-${OPTEE_SUBVERSION}-${OPTEE_RELEASE}"
 
@@ -30,7 +32,6 @@ OPTEEMACHINE_stm32mp1common = "stm32mp1"
 OPTEEOUTPUTMACHINE ?= "stm32mp1"
 OPTEEOUTPUTMACHINE_stm32mp1common = "stm32mp1"
 
-
 # The package is empty but must be generated to avoid apt-get installation issue
 ALLOW_EMPTY_${PN} = "1"
 
@@ -47,7 +48,7 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'optee-os-stm3
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/optee_os.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV_class-devupstream = "0bd33404e9581d00514034b7b05a2cbe8649c1fd"
+SRCREV_class-devupstream = "639a8566de8fa720d2cb7ab7231e8de105e7859d"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github
