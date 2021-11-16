@@ -29,7 +29,7 @@ LDFLAGS =
 CFLAGS =
 CPPFLAGS =
 # Define default make options
-EXTRA_OEMAKE = $(echo "${EXTRA_OEMAKE}" | sed "s|LIBGCC_LOCATE_CFLAGS=[^ ]* |LIBGCC_LOCATE_CFLAGS=\$(KCFLAGS) |;s|comp-cflagscore='[^']*'|comp-cflagscore='\$(KCFLAGS)'|")
+EXTRA_OEMAKE = $(echo "${EXTRA_OEMAKE}" | sed "s|LIBGCC_LOCATE_CFLAGS=[^ ]* |LIBGCC_LOCATE_CFLAGS=\$(KCFLAGS) |")
 ifeq (\$(ENABLE_FIP), 0)
 EXTRA_OEMAKE += CFG_STM32MP15x_STM32IMAGE=y
 endif

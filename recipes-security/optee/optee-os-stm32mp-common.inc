@@ -26,7 +26,6 @@ EXTRA_OEMAKE += "${@bb.utils.contains('TUNE_FEATURES', 'aarch64', 'CFG_ARM64_cor
 EXTRA_OEMAKE += "NOWERROR=1"
 EXTRA_OEMAKE += "LDFLAGS="
 EXTRA_OEMAKE += "LIBGCC_LOCATE_CFLAGS=--sysroot=${STAGING_DIR_TARGET}"
-EXTRA_OEMAKE += "comp-cflagscore='--sysroot=${STAGING_DIR_TARGET}'"
 EXTRA_OEMAKE += "${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', 'CFG_STM32MP15x_STM32IMAGE=y', d)}"
 
 # debug and trace
@@ -44,7 +43,13 @@ do_compile() {
     unset -v CFLAGS CPPFLAGS LDFLAGS LDADD
     if [ -n "${OPTEE_CONF}" ]; then
         for conf in ${OPTEE_CONF}; do
-            oe_runmake -C ${S} O=${B}/${conf} CFG_EMBED_DTB_SOURCE_FILE=${conf}.dts
+            for soc in ${STM32MP_SOC_NAME}; do
+                if [ "$(echo ${conf} | grep -c ${soc})" -eq 1 ]; then
+                    soc_extra="$(echo CFG_${soc} | awk '{print toupper($0)}')=y"
+                fi
+            done
+
+            oe_runmake -C ${S} O=${B}/${conf} CFG_EMBED_DTB_SOURCE_FILE=${conf}.dts ${soc_extra}
         done
     else
         oe_runmake -C ${S} O=${B}/out
