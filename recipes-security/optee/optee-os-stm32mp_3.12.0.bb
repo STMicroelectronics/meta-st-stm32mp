@@ -10,7 +10,15 @@ SRC_URI += " \
     "
 
 OPTEE_VERSION = "3.12.0"
-PV = "${OPTEE_VERSION}.r1"
+OPTEE_SUBVERSION = "stm32mp"
+OPTEE_RELEASE = "r1"
+
+PV = "${OPTEE_VERSION}-${OPTEE_SUBVERSION}-${OPTEE_RELEASE}"
+
+ARCHIVER_ST_BRANCH = "${OPTEE_VERSION}-${OPTEE_SUBVERSION}"
+ARCHIVER_ST_REVISION = "${PV}"
+ARCHIVER_COMMUNITY_BRANCH = "master"
+ARCHIVER_COMMUNITY_REVISION = "${OPTEE_VERSION}"
 
 S = "${WORKDIR}/git"
 
@@ -38,7 +46,7 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'optee-os-stm3
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
-SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/optee_os.git;protocol=https;branch=${OPTEE_VERSION}-stm32mp"
+SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/optee_os.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
 SRCREV_class-devupstream = "0bd33404e9581d00514034b7b05a2cbe8649c1fd"
 
 # ---------------------------------

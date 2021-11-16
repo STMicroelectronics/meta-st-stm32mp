@@ -24,8 +24,15 @@ SRC_URI += "\
     file://0099-Add-external-var-to-allow-build-of-new-devicetree-fi.patch \
 "
 
-U_BOOT_VERSION = "2020.10"
-PV = "${U_BOOT_VERSION}.r1"
+U_BOOT_VERSION = "v2020.10"
+U_BOOT_SUBVERSION = "stm32mp"
+U_BOOT_RELEASE = "r1"
+PV = "${U_BOOT_VERSION}-${U_BOOT_SUBVERSION}-${U_BOOT_RELEASE}"
+
+ARCHIVER_ST_BRANCH = "${U_BOOT_VERSION}-${U_BOOT_SUBVERSION}"
+ARCHIVER_ST_REVISION = "${PV}"
+ARCHIVER_COMMUNITY_BRANCH = "master"
+ARCHIVER_COMMUNITY_REVISION = "${U_BOOT_VERSION}"
 
 S = "${WORKDIR}/git"
 
@@ -34,7 +41,7 @@ S = "${WORKDIR}/git"
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
-SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/u-boot.git;protocol=https;branch=v${U_BOOT_VERSION}-stm32mp"
+SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/u-boot.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
 SRCREV_class-devupstream = "d2c99cb7e5b7dc74236f67fcced156956155cd71"
 
 # ---------------------------------

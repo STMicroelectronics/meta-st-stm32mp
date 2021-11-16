@@ -30,10 +30,22 @@ CFLAGS =
 CPPFLAGS =
 # Define default make options
 EXTRA_OEMAKE = $(echo "${EXTRA_OEMAKE}" | sed "s|LIBGCC_LOCATE_CFLAGS=[^ ]* |LIBGCC_LOCATE_CFLAGS=\$(KCFLAGS) |;s|comp-cflagscore='[^']*'|comp-cflagscore='\$(KCFLAGS)'|")
-EXTRA_OEMAKE += \$(if \$(ENABLE_FIP),,CFG_STM32MP15x_STM32IMAGE=y)
+ifeq (\$(ENABLE_FIP), 0)
+EXTRA_OEMAKE += CFG_STM32MP15x_STM32IMAGE=y
+endif
 
 # Configure default optee-os features
-OPTEE_SUFFIX ?= \$(if \$(ENABLE_FIP),bin,stm32)
+ifeq (\$(ENABLE_FIP), 1)
+OPTEE_SUFFIX ?= bin
+else
+OPTEE_SUFFIX ?= stm32
+endif
+
+# Set dependencies list for building all
+DEPS = optee
+ifeq (\$(ENABLE_FIP), 1)
+DEPS += fip
+endif
 
 help:
 	@echo
@@ -56,7 +68,7 @@ endif
 	@echo "  clean : clean build directories from generated files"
 	@echo
 
-all: optee \$(if \$(ENABLE_FIP),fip)
+all: \$(DEPS)
 
 optee:
 	@mkdir -p \$(DEPLOYDIR)

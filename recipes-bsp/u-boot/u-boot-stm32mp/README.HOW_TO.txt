@@ -63,11 +63,11 @@ you have 3 solutions to use git
 4.1 Get STMicroelectronics U-Boot source from GitHub
 
     URL: https://github.com/STMicroelectronics/u-boot.git
-    Branch: v##PV##-stm32mp
-    Revision: v##PV##-stm32mp-##PR##
+    Branch: ##ARCHIVER_ST_BRANCH##
+    Revision: ##ARCHIVER_ST_REVISION##
 
     $ git clone https://github.com/STMicroelectronics/u-boot.git
-    $ git checkout -b WORKING v##PV##-stm32mp-##PR##
+    $ git checkout -b WORKING ##ARCHIVER_ST_REVISION##
 
 4.2 Create Git from tarball
 
@@ -80,15 +80,15 @@ you have 3 solutions to use git
 4.3 Get Git from community and apply STMicroelectronics patches
 
     URL: git://git.denx.de/u-boot.git
-    Branch: master
-    Revision: v##PV##
+    Branch: ##ARCHIVER_COMMUNITY_BRANCH##
+    Revision: ##ARCHIVER_COMMUNITY_REVISION##
 
     $ git clone git://git.denx.de/u-boot.git
 or
     $ git clone http://git.denx.de/u-boot.git
 
     $ cd u-boot
-    $ git checkout -b WORKING v##PV##
+    $ git checkout -b WORKING ##ARCHIVER_COMMUNITY_REVISION##
     $ for p in `ls -1 ../*.patch`; do git am $p; done
 
 5. Compilation U-Boot source code:
@@ -141,7 +141,7 @@ The generated FIP images are available in $FIP_DEPLOYDIR_ROOT/fip
 
 You can override the default U-Boot configuration if you specify these variables:
   - Compile default U-Boot configuration but applying specific devicetree(s):
-    $ make -f $PWD/../Makefile.sdk all UBOOT_DEVICETREE="<devicetree1> <devicetree2>"
+    $ make -f $PWD/../Makefile.sdk all DEVICETREE="<devicetree1> <devicetree2>"
   - Compile for a specific U-Boot configuration:
     $ make -f $PWD/../Makefile.sdk all UBOOT_CONFIG=trusted UBOOT_DEFCONFIG=stm32mp15_trusted_defconfig UBOOT_BINARY=u-boot.dtb DEVICETREE=stm32mp157f-dk2
 

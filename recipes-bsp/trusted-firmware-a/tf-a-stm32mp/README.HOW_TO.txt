@@ -47,20 +47,32 @@ git management on the code see section 4 [Management of tf-a source code]
 4. Management of tf-a source code:
 -----------------------------------
 If you like to have a better management of change made on tf-a source, you
-can use git:
+have 3 solutions to use git:
+
+4.1 Get STMicroelectronics TF-A source from GitHub
+
+    URL: https://github.com/STMicroelectronics/arm-trusted-firmware.git
+    Branch: ##ARCHIVER_ST_BRANCH##
+    Revision: ##ARCHIVER_ST_REVISION##
+
+    $ git clone https://github.com/STMicroelectronics/arm-trusted-firmware.git
+    $ git checkout -b WORKING ##ARCHIVER_ST_REVISION##
+
+4.2 Create Git from tarball
     $ cd <directory to tf-a source code>
     $ test -d .git || git init . && git add . && git commit -m "tf-a source code" && git gc
     $ git checkout -b WORKING
     $ for p in `ls -1 <path to patch>/*.patch`; do git am $p; done
 
-NB: you can use directly the source from the community:
-    URL: git://github.com/ARM-software/arm-trusted-firmware.git
-    Branch: ##GIT_BRANCH##
-    Revision: ##GIT_SRCREV##
+4.3 Get Git from community and apply STMicroelectronics patches
 
-    $ git clone git://github.com/ARM-software/arm-trusted-firmware.git -b ##GIT_BRANCH##
+    URL: git://github.com/ARM-software/arm-trusted-firmware.git
+    Branch: ##ARCHIVER_COMMUNITY_BRANCH##
+    Revision: ##ARCHIVER_COMMUNITY_REVISION##
+
+    $ git clone git://github.com/ARM-software/arm-trusted-firmware.git
     $ cd <directory to tf-a source code>
-    $ git checkout -b WORKING ##GIT_SRCREV##
+    $ git checkout -b WORKING ##ARCHIVER_COMMUNITY_REVISION##
     $ for p in `ls -1 <path to patch>/*.patch`; do git am $p; done
 
 5. Build tf-a source code:
@@ -72,9 +84,9 @@ Since OpenSTLinux has activated FIP by default, so the FIP_artifacts should be s
 To compile tf-a source code
     $> make -f $PWD/../Makefile.sdk all
 or for a specific config :
-    $ make -f $PWD/../Makefile.sdk TFA_DEVICETREE=stm32mp157c-ev1 TF_A_CONFIG=trusted ELF_DEBUG_ENABLE='1' all
+    $ make -f $PWD/../Makefile.sdk TF_A_DEVICETREE=stm32mp157c-ev1 TF_A_CONFIG=trusted ELF_DEBUG_ENABLE='1' all
 
-NB: TFA_DEVICETREE flag must be set to switch to correct board configuration.
+NB: TF_A_DEVICETREE flag must be set to switch to correct board configuration.
 
 The generated FIP images are available in $FIP_DEPLOYDIR_ROOT/fip
 

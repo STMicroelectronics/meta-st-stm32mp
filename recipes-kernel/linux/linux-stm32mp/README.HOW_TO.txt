@@ -49,9 +49,9 @@ sourced the SDK environment.
 -------------------------
 If you have the tarball and the list of patches, then you must extract the
 tarball and apply the patches.
-    $> tar xfJ linux-##PV##.tar.xz
+    $> tar xfJ ##LINUX_TARNAME##.tar.xz
 A new directory containing kernel standard source code will be created, go into it:
-    $> cd linux-##PV##
+    $> cd ##LINUX_TARNAME##
 
 NB: if you like to have a git management of the code, see section 4 [Manage the
 kernel source code]
@@ -60,10 +60,20 @@ kernel source code]
 
 4. Manage the kernel source code:
 ---------------------------------
-4.1 Setup kernel source code under git
---------------------------------------
-If you like to have a better management of change made on kernel source, you can
-use git.
+If you like to have a better management of change made on kernel source, you
+have 3 solutions to use git.
+
+4.1 Get STMicroelectronics kernel source code from GitHub
+
+
+    URL: https://github.com/STMicroelectronics/linux.git
+    Branch: ##ARCHIVER_ST_BRANCH##
+    Revision: ##ARCHIVER_ST_REVISION##
+
+    $ git clone https://github.com/STMicroelectronics/linux.git
+    $ git checkout -b WORKING ##ARCHIVER_ST_REVISION##
+
+4.2 Create Git from tarball
 
 * With the kernel source code extracted in the section 3 [Prepare kernel source]
     $ cd <directory to kernel source code>
@@ -73,16 +83,16 @@ use git.
     $ for p in `ls -1 <path to patch>/*.patch`; do git am $p; done
   NB: this is the fastest way to get your kernel source code ready for development
 
-Or
+4.3 Get Git from community and apply STMicroelectronics patches
 
 * With the kernel source code from the Linux kernel git repositories:
     URL: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
-    Branch: ##GIT_BRANCH##
-    Revision: ##GIT_SRCREV##
+    Branch: ##ARCHIVER_COMMUNITY_BRANCH##
+    Revision: ##ARCHIVER_COMMUNITY_REVISION##
 
     $ git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
     $ cd <kernel source>
-    $ git checkout -b WORKING ##GIT_SRCREV##
+    $ git checkout -b WORKING ##ARCHIVER_COMMUNITY_REVISION##
     $ for p in `ls -1 <path to patch>/*.patch`; do git am $p; done
   NB: this way is slightly slower than the tarball extraction but you get
       advantage of all git history.

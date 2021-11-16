@@ -41,10 +41,20 @@ on the code see section 4 [Management of optee-os source code]
 
 4. Management of optee-os source code:
 -----------------------------------
-If you like to have a better management of change made on optee-os source, you
-can use git:
+If you like to have a better management of change made on optee-os source,
+you have 3 solutions to use git
+
+4.1 Get STMicroelectronics optee-os source from GitHub
+    URL: https://github.com/STMicroelectronics/optee_os.git
+    Branch: ##ARCHIVER_ST_BRANCH##
+    Revision: ##ARCHIVER_ST_REVISION##
+
+    $ git clone https://github.com/STMicroelectronics/optee_os.git
+    $ git checkout -b WORKING ##ARCHIVER_ST_REVISION##
+
+4.2 Create Git from tarball
     $ cd <optee-os source>
-    $ test -d .git || git init . && git add . && git commit -m "optee-ossource code" && git gc
+    $ test -d .git || git init . && git add . && git commit -m "optee-os source code" && git gc
     $ git checkout -b WORKING
     $ for p in `ls -1 <path to patch>/*.patch`; do git am $p; done
 
@@ -52,14 +62,14 @@ MANDATORY: You must update sources
     $ cd <directory to optee-os source code>
     $ chmod 755 scripts/bin_to_c.py
 
-NB: you can use directly the source from the community:
+4.3 Get Git from community and apply STMicroelectronics patches
     URL: git://github.com/OP-TEE/optee_os.git
-    Branch: ##GIT_BRANCH##
-    Revision: ##GIT_SRCREV##
+    Branch: ##ARCHIVER_COMMUNITY_BRANCH##
+    Revision: ##ARCHIVER_COMMUNITY_REVISION##
 
     $ git clone git://github.com/OP-TEE/optee_os.git
     $ cd <optee-os source>
-    $ git checkout -b WORKING ##GIT_SRCREV##
+    $ git checkout -b WORKING ##ARCHIVER_COMMUNITY_REVISION##
     $ for p in `ls -1 <path to patch>/*.patch`; do git am $p; done
 
 MANDATORY: You must update sources
