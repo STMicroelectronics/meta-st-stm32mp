@@ -35,8 +35,11 @@ DEPENDS_append = " ${@bb.utils.contains('TF_A_ENABLE_DEBUG_WRAPPER', '1', 'stm32
 # Default log level
 ST_TF_A_DEBUG_LOG_LEVEL ??= "40"
 
-# Extra make settings
-EXTRA_OEMAKE = 'CROSS_COMPILE=${TARGET_PREFIX}'
+# Configure make settings
+EXTRA_OEMAKE += 'PLAT=${TFA_PLATFORM}'
+EXTRA_OEMAKE += 'ARCH=${TFA_ARM_ARCH}'
+EXTRA_OEMAKE += 'ARM_ARCH_MAJOR=${TFA_ARM_MAJOR}'
+EXTRA_OEMAKE += 'CROSS_COMPILE=${TARGET_PREFIX}'
 # Debug support
 EXTRA_OEMAKE += '${@bb.utils.contains('ST_TF_A_DEBUG_TRACE', '1', 'DEBUG=1', '', d)}'
 EXTRA_OEMAKE += '${@bb.utils.contains('ST_TF_A_DEBUG_TRACE', '1', 'LOG_LEVEL=${ST_TF_A_DEBUG_LOG_LEVEL}', '', d)}'
