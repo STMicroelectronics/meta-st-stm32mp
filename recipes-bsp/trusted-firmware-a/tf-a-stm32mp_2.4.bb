@@ -14,11 +14,13 @@ SRCREV = "e2c509a39c6cc4dda8734e6509cdbe6e3603cdfc"
 
 SRC_URI += " \
     file://0001-st-update-v2.4-r1.0.0.patch \
+    file://0002-v2.4-stm32mp-r1.1-rc1.patch \
+    file://0003-v2.4-stm32mp-r2.patch \
     "
 
 TF_A_VERSION = "v2.4"
 TF_A_SUBVERSION = "stm32mp"
-TF_A_RELEASE = "r1"
+TF_A_RELEASE = "r2"
 PV = "${TF_A_VERSION}-${TF_A_SUBVERSION}-${TF_A_RELEASE}"
 
 ARCHIVER_ST_BRANCH = "${TF_A_VERSION}-${TF_A_SUBVERSION}"
@@ -28,10 +30,10 @@ ARCHIVER_COMMUNITY_REVISION = "${TF_A_VERSION}"
 
 S = "${WORKDIR}/git"
 
-# Configure stm32mp1 make settings
-EXTRA_OEMAKE += "PLAT=stm32mp1"
-EXTRA_OEMAKE += "ARCH=aarch32"
-EXTRA_OEMAKE += "ARM_ARCH_MAJOR=7"
+# Configure settings
+TFA_PLATFORM  = "stm32mp1"
+TFA_ARM_MAJOR = "7"
+TFA_ARM_ARCH  = "aarch32"
 
 # Enable the wrapper for debug
 TF_A_ENABLE_DEBUG_WRAPPER ?= "1"
@@ -47,7 +49,7 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'tf-a-stm32mp-
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/arm-trusted-firmware.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV_class-devupstream = "40572e4067f205691a4dca3b5fdabe3a40c69594"
+SRCREV_class-devupstream = "3e1e3f0a6149d04946ff5debcd871173e782111c"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github
