@@ -8,7 +8,8 @@ include linux-stm32mp.inc
 
 LINUX_VERSION = "5.10"
 LINUX_SUBVERSION = "10"
-SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-${LINUX_VERSION}.${LINUX_SUBVERSION}.tar.xz;name=kernel"
+LINUX_TARNAME = "linux-${LINUX_VERSION}.${LINUX_SUBVERSION}"
+SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v5.x/${LINUX_TARNAME}.tar.xz;name=kernel"
 #SRC_URI = "https://git.kernel.org/torvalds/t/linux-${LINUX_VERSION}-${LINUX_SUBVERSION}.tar.gz;name=kernel"
 
 SRC_URI[kernel.sha256sum] = "60ed866fa951522a5255ea37ec3ac2006d3f3427d4783a13ef478464f37cdb19"
@@ -38,18 +39,24 @@ SRC_URI += " \
     file://${LINUX_VERSION}/${LINUX_VERSION}.${LINUX_SUBVERSION}/0022-ARM-5.10.10-stm32mp1-r1-CONFIG.patch \
     "
 
-PV = "${LINUX_VERSION}.${LINUX_SUBVERSION}"
+LINUX_TARGET = "stm32mp"
+LINUX_RELEASE = "r1"
+
+PV = "${LINUX_VERSION}.${LINUX_SUBVERSION}-${LINUX_TARGET}-${LINUX_RELEASE}"
+
+ARCHIVER_ST_BRANCH = "v${LINUX_VERSION}-${LINUX_TARGET}"
+ARCHIVER_ST_REVISION = "v${LINUX_VERSION}-${LINUX_TARGET}-${LINUX_RELEASE}"
+ARCHIVER_COMMUNITY_BRANCH = "linux-${LINUX_VERSION}.y"
+ARCHIVER_COMMUNITY_REVISION = "v${LINUX_VERSION}.${LINUX_SUBVERSION}"
 
 S = "${WORKDIR}/linux-${LINUX_VERSION}.${LINUX_SUBVERSION}"
-#S = "${WORKDIR}/linux-${LINUX_VERSION}-${LINUX_SUBVERSION}"
-#S = "${WORKDIR}/linux-${LINUX_VERSION}"
 
 # ---------------------------------
 # Configure devupstream class usage
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
-SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/linux.git;protocol=https;branch=v${LINUX_VERSION}-stm32mp"
+SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/linux.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
 SRCREV_class-devupstream = "ce6891abb1c895d4849e6f784615687341b3dbde"
 
 # ---------------------------------

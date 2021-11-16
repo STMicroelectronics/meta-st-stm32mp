@@ -27,13 +27,19 @@ TF_A_ENABLE_DEBUG_WRAPPER ?= ${TF_A_ENABLE_DEBUG_WRAPPER}
 ENABLE_FIP ?= ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '1', '', d)}
 
 # Set default TF-A config
+ifeq (\$(ENABLE_FIP), 1)
 TF_A_CONFIG ?= ${TF_A_CONFIG}
+else
+TF_A_CONFIG ?= ${BOOTSCHEME_LABELS} ${TF_A_CONFIG_4LEGACY}
+endif
 
 # Default TF-A overall settings to null
 TF_A_BINARY ?=
 TF_A_DEVICETREE ?=
 TF_A_MAKE_TARGET ?=
 TF_A_EXTRA_OPTFLAGS ?=
+
+ifeq (\$(ENABLE_FIP), 1)
 
 EOF
     unset i
@@ -49,6 +55,46 @@ TF_A_MAKE_TARGET_$config ?= $(echo ${TF_A_MAKE_TARGET} | cut -d',' -f${i})
 EOF
     done
     cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+else
+
+EOF
+    for bootscheme in ${BOOTSCHEME_LABELS}; do
+        unset i
+        for config in ${TF_A_CONFIG}; do
+            i=$(expr $i + 1)
+            if [ "$bootscheme" = "$config" ]; then
+                cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+# Init default config settings
+TF_A_DEVICETREE_$config ?= $(echo ${TF_A_DEVICETREE} | cut -d',' -f${i})
+TF_A_EXTRA_OPTFLAGS_$config ?= $(echo ${TF_A_EXTRA_OPTFLAGS} | cut -d',' -f${i}) ${TF_A_EXTRACONF_LEGACY}
+TF_A_BINARY_$config ?= $(echo ${TF_A_BINARIES} | cut -d',' -f${i})
+TF_A_MAKE_TARGET_$config ?=
+
+EOF
+            fi
+        done
+    done
+
+    cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk
+TF_A_DEVICETREE_$(echo ${TF_A_CONFIG_4LEGACY} | xargs) ?=
+TF_A_EXTRA_OPTFLAGS_$(echo ${TF_A_CONFIG_4LEGACY} | xargs) ?=
+TF_A_BINARY_$(echo ${TF_A_CONFIG_4LEGACY} | xargs) ?=
+TF_A_MAKE_TARGET_$(echo ${TF_A_CONFIG_4LEGACY} | xargs) ?=
+
+ifeq (\$(TF_A_DEVICETREE_$(echo ${TF_A_CONFIG_4LEGACY} | xargs)),)
+\$(error "Please, define the variable TF_A_DEVICETREE_$(echo ${TF_A_CONFIG_4LEGACY} | xargs)")
+endif
+
+ifeq (\$(TF_A_EXTRA_OPTFLAGS_$(echo ${TF_A_CONFIG_4LEGACY} | xargs)),)
+\$(error "Please, define the variable TF_A_EXTRA_OPTFLAGS_$(echo ${TF_A_CONFIG_4LEGACY} | xargs)")
+endif
+
+ifeq (\$(TF_A_BINARY_$(echo ${TF_A_CONFIG_4LEGACY} | xargs)),)
+\$(error "Please, define the variable TF_A_BINARY_$(echo ${TF_A_CONFIG_4LEGACY} | xargs)")
+endif
+
+endif
+
 # Reset default variables
 LDFLAGS =
 CFLAGS =
@@ -84,7 +130,7 @@ tf-\$(1): \$2
 			DTB_FILE_NAME=\$(dt).dtb \\
 			\$(if \$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS_\$(1))) \\
 			\$(if \$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET_\$(1))) \\
-			\$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(shell echo \$(dt) | grep -c \$(soc)),\$(shell echo \$(soc) | tr a-z A-Z)=1,)) ; \\
+			\$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),\$(shell echo \$(soc) | tr a-z A-Z)=1,)) ; \\
 	)
 endef
 
@@ -102,13 +148,13 @@ deploy-\$(1): tf-\$(1)
 		fi ; \\
 		if [ -f \$(BLD_PATH)/\$(1)/${BL32_BASENAME}.${BL32_SUFFIX} ] ; then \\
 			mkdir -p \$(BL32_DEPLOYDIR) ; \\
-			cp -f \$(BLD_PATH)/\$(1)/${BL32_BASENAME}.${BL32_SUFFIX} \$(BL32_DEPLOYDIR)/\$(2)-${BL32_BASENAME}\$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(shell echo \$(dt) | grep -c \$(soc)),-\$(soc),)).${BL32_SUFFIX} ; \\
+			cp -f \$(BLD_PATH)/\$(1)/${BL32_BASENAME}.${BL32_SUFFIX} \$(BL32_DEPLOYDIR)/\$(2)-${BL32_BASENAME}\$(strip \$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),-\$(soc),))).${BL32_SUFFIX} ; \\
 			if [ -f \$(BLD_PATH)/\$(1)/fdts/\$(dt)-${BL32_BASENAME}.${DT_SUFFIX} ]; then \\
 				cp -f \$(BLD_PATH)/\$(1)/fdts/\$(dt)-${BL32_BASENAME}.${DT_SUFFIX} \$(BL32_DEPLOYDIR)/ ; \\
 			fi ; \\
 			if [ -f \$(BLD_PATH)/\$(1)/${BL32_ELF} ]; then \\
 				mkdir -p \$(BL32_DEPLOYDIR)/debug ; \\
-				mv -f \$(BLD_PATH)/\$(1)/${BL32_ELF} \$(BL32_DEPLOYDIR)/debug/\$(2)-${BL32_BASENAME}\$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(shell echo \$(dt) | grep -c \$(soc)),-\$(soc),)).${TF_A_ELF_SUFFIX} ; \\
+				mv -f \$(BLD_PATH)/\$(1)/${BL32_ELF} \$(BL32_DEPLOYDIR)/debug/\$(2)-${BL32_BASENAME}\$(strip \$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),-\$(soc),))).${TF_A_ELF_SUFFIX} ; \\
 			fi ; \\
 		fi ; \\
 		if [ -f \$(BLD_PATH)/\$(1)/fdts/\$(dt)-${FWCONFIG_NAME}.${DT_SUFFIX} ]; then \\
@@ -123,6 +169,12 @@ deploy-\$(1): tf-\$(1)
 		fi ; \\
 	)
 endef
+
+# Set dependencies list for building all
+DEPS = \$(addprefix deploy-,\$(TF_A_CONFIG))
+ifeq (\$(ENABLE_FIP), 1)
+DEPS += fip
+endif
 
 help:
 	@echo
@@ -160,7 +212,7 @@ endif
 	@echo "  clean : clean build directories from generated files"
 	@echo
 
-all: \$(addprefix deploy-,\$(TF_A_CONFIG)) \$(if \$(ENABLE_FIP),fip)
+all: \$(DEPS)
 
 host_tools:
 	@\$(MAKE) --no-print-directory -C \$(SRC_PATH)/tools/stm32image

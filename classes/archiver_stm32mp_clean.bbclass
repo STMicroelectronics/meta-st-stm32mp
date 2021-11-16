@@ -27,6 +27,7 @@ python archiver_clean_tarball() {
 do_ar_original[postfuncs] =+ "archiver_clean_tarball"
 
 ARCHIVER_README = "README.HOW_TO.txt"
+
 archiver_git_uri() {
     ret=`echo "${SRC_URI}" | grep branch | wc -l`
     if [ $ret -gt 0 ]; then
@@ -35,7 +36,14 @@ archiver_git_uri() {
         BRANCH=master
     fi
 
-    sed -i -e "s|##GIT_BRANCH##|$BRANCH|g" -e "s|##GIT_SRCREV##|${SRCREV}|g" -e "s|##BP##|${BP}|g" -e "s|##PV##|${PV}|g" -e "s|##PR##|${PR}|g" ${ARCHIVER_OUTDIR}/${ARCHIVER_README}
+    if [ -z "${ARCHIVER_ST_BRANCH}" ]; then
+        ARCHIVER_ST_BRANCH="${BRANCH}"
+    fi
+    if [ -z "${ARCHIVER_ST_REVISION}" ]; then
+        ARCHIVER_ST_REVISION="${SRCREV}"
+    fi
+
+    sed -i -e "s|##LINUX_TARNAME##|${LINUX_TARNAME}|g" -e "s|##ARCHIVER_COMMUNITY_BRANCH##|${ARCHIVER_COMMUNITY_BRANCH}|g" -e "s|##ARCHIVER_COMMUNITY_REVISION##|${ARCHIVER_COMMUNITY_REVISION}|g" -e "s|##ARCHIVER_ST_BRANCH##|${ARCHIVER_ST_BRANCH}|g" -e "s|##ARCHIVER_ST_REVISION##|${ARCHIVER_ST_REVISION}|g" -e "s|##BP##|${BP}|g" -e "s|##PV##|${PV}|g" -e "s|##PR##|${PR}|g" ${ARCHIVER_OUTDIR}/${ARCHIVER_README}
 }
 do_ar_original[postfuncs] =+ "archiver_git_uri"
 

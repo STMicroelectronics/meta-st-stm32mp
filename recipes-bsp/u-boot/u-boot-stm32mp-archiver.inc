@@ -70,7 +70,7 @@ CPPFLAGS =
 UBOOT_LOCALVERSION = ${UBOOT_LOCALVERSION}
 
 # Configure default fip feature
-ENABLE_FIP ?= "${@bb.utils.contains('MACHINE_FEATURES','fip','1','',d)}"
+ENABLE_FIP ?= ${@bb.utils.contains('MACHINE_FEATURES','fip','1','',d)}
 
 # Display U-Boot config details
 define uboot-configs
@@ -85,7 +85,7 @@ endef
 # Configure U-Boot configure rules (configure-DEFCONFIG-CONFIG)
 define configure-rules
 configure-\$(1)-\$(2): version
-ifeq (\$(ENABLE_FIP),)
+ifeq (\$(ENABLE_FIP),0)
 	@if ! grep -q 'CONFIG_STM32MP15x_STM32IMAGE=y' \$(SRC_PATH)/configs/\$(1); then \\
 		echo "CONFIG_STM32MP15x_STM32IMAGE=y" >> \$(SRC_PATH)/configs/\$(1) ; \\
 	fi
@@ -98,11 +98,19 @@ endef
 # Configure U-Boot make rules (uboot-DEFCONFIG-CONFIG)
 define uboot-rules
 uboot-\$(1)-\$(2): configure-\$(1)-\$(2)
+	@mkdir -p \$(DEPLOYDIR)
 	@\$(foreach dt, \$(if \$(DEVICETREE),\$(DEVICETREE),\$(UBOOT_DEVICETREE_\$(1))), \\
 		\$(MAKE) -C \$(SRC_PATH) ${UBOOT_MAKE_TARGET} \\
 			O=\$(BLD_PATH)/\$(1) \\
 			DEVICE_TREE=\$(dt) \\
 			DEVICE_TREE_EXT=\$(dt).dtb ; \\
+		cp -f \$(BLD_PATH)/\$(1)/\$(3) \$(DEPLOYDIR)/u-boot-\$(dt)-\$(2).\$(shell echo \$(3) | cut -d'.' -f2) ; \\
+		if [ -f \$(BLD_PATH)/\$(1)/\$(shell echo \$(3) | cut -d'.' -f1).stm32 ]; then \\
+			cp -f \$(BLD_PATH)/\$(1)/\$(shell echo \$(3) | cut -d'.' -f1).stm32 \$(DEPLOYDIR)/u-boot-\$(dt)-\$(2).stm32 ; \\
+		fi ; \\
+		if [ -f \$(BLD_PATH)/\$(1)/${SPL_BINARY_STM32} ]; then \\
+			cp -f \$(BLD_PATH)/\$(1)/${SPL_BINARY_STM32} \$(DEPLOYDIR)/${SPL_BINARYNAME}-\$(dt)-\$(2) ; \\
+		fi ; \\
 	)
 endef
 
@@ -112,18 +120,14 @@ deploy-\$(1)-\$(2): uboot-\$(1)-\$(2)
 	@mkdir -p \$(DEPLOYDIR)
 	@mkdir -p \$(DEPLOYDIR)/debug
 	@\$(foreach dt, \$(if \$(DEVICETREE),\$(DEVICETREE),\$(UBOOT_DEVICETREE_\$(1))), \\
-		cp -f \$(BLD_PATH)/\$(1)/\$(3) \$(DEPLOYDIR)/u-boot-\$(dt)-\$(2).\$(shell echo \$(3) | cut -d'.' -f2) ; \\
-		if [ -f \$(BLD_PATH)/\$(1)/${SPL_BINARY_STM32} ]; then \\
-			cp -f \$(BLD_PATH)/\$(1)/${SPL_BINARY_STM32} \$(DEPLOYDIR)/${SPL_BINARYNAME}-\$(dt)-\$(2) ; \\
-		fi ; \\
 		if [ "\$(shell echo \$(3) | cut -d'.' -f2)" = "dtb" ]; then \\
-			cp -f \$(BLD_PATH)/\$(1)/u-boot-nodtb.bin \$(DEPLOYDIR)/u-boot-nodtb\$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(shell echo \$(dt) | grep -c \$(soc)),-\$(soc),)).bin ; \\
+			cp -f \$(BLD_PATH)/\$(1)/u-boot-nodtb.bin \$(DEPLOYDIR)/u-boot-nodtb\$(strip \$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),-\$(soc),))).bin ; \\
 		fi ; \\
 		if [ -f \$(BLD_PATH)/\$(1)/${UBOOT_ELF} ]; then \\
-			cp -f \$(BLD_PATH)/\$(1)/${UBOOT_ELF} \$(DEPLOYDIR)/debug/u-boot\$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(shell echo \$(dt) | grep -c \$(soc)),-\$(soc),))-\$(2).${UBOOT_ELF_SUFFIX} ; \\
+			cp -f \$(BLD_PATH)/\$(1)/${UBOOT_ELF} \$(DEPLOYDIR)/debug/u-boot\$(strip \$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),-\$(soc),)))-\$(2).${UBOOT_ELF_SUFFIX} ; \\
 		fi ; \\
 		if [ -f \$(BLD_PATH)/\$(1)/${SPL_ELF} ]; then \\
-			cp -f \$(BLD_PATH)/\$(1)/${SPL_ELF} \$(DEPLOYDIR)/debug/${SPL_ELF_NAME}\$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(shell echo \$(dt) | grep -c \$(soc)),-\$(soc),))-\$(2) ; \\
+			cp -f \$(BLD_PATH)/\$(1)/${SPL_ELF} \$(DEPLOYDIR)/debug/${SPL_ELF_NAME}\$(strip \$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),-\$(soc),)))-\$(2) ; \\
 		fi ; \\
 	)
 endef
@@ -132,6 +136,12 @@ endef
 deploy-targets := \$(foreach config, \$(if \$(UBOOT_CONFIG),\$(UBOOT_CONFIG),\$(UBOOT_CONFIGS)), \\
 					\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(config))), deploy-\$(defconfig)-\$(config)) \\
 					)
+
+# Set dependencies list for building all
+DEPS = \$(deploy-targets)
+ifeq (\$(ENABLE_FIP), 1)
+DEPS += fip
+endif
 
 help:
 	@echo
@@ -161,7 +171,7 @@ endif
 	@echo "  fip   : build FIP binaries"
 	@echo "  clean : clean build directories from generated files"
 
-all: \$(deploy-targets) \$(if \$(ENABLE_FIP),fip)
+all: \$(DEPS)
 
 clean:
 	@for config in \$(UBOOT_CONFIGS); do \\
@@ -174,7 +184,7 @@ clean:
 	@echo
 
 fip: \$(deploy-targets)
-	FIP_DEPLOYDIR_UBOOT=\$(DEPLOYDIR) FIP_DEVICETREE="\$(DEVICE_TREE)" fiptool-stm32mp
+	FIP_DEPLOYDIR_UBOOT=\$(DEPLOYDIR) FIP_DEVICETREE="\$(DEVICETREE)" fiptool-stm32mp
 
 version:
 	@if test ! -e \$(SRC_PATH)/.scmversion ; then echo \$(UBOOT_LOCALVERSION) > \$(SRC_PATH)/.scmversion; fi
@@ -184,7 +194,8 @@ version:
 	\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(config))), \$(eval \$(call configure-rules,\$(defconfig),\$(config)))))
 # Set U-Boot make rules
 \$(foreach config, \$(if \$(UBOOT_CONFIG),\$(UBOOT_CONFIG),\$(UBOOT_CONFIGS)), \\
-	\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(config))), \$(eval \$(call uboot-rules,\$(defconfig),\$(config)))))
+	\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(config))), \\
+		\$(eval \$(call uboot-rules,\$(defconfig),\$(config),\$(if \$(UBOOT_BINARY),\$(UBOOT_BINARY),\$(UBOOT_BINARY_\$(defconfig)))))))
 # Set U-Boot deploy rules
 \$(foreach config, \$(if \$(UBOOT_CONFIG),\$(UBOOT_CONFIG),\$(UBOOT_CONFIGS)), \\
 	\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(config))), \\

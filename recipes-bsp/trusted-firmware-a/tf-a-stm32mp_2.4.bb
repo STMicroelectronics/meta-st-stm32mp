@@ -16,8 +16,15 @@ SRC_URI += " \
     file://0001-st-update-v2.4-r1.0.0.patch \
     "
 
-TF_VERSION = "2.4"
-PV = "${TF_VERSION}.r1"
+TF_A_VERSION = "v2.4"
+TF_A_SUBVERSION = "stm32mp"
+TF_A_RELEASE = "r1"
+PV = "${TF_A_VERSION}-${TF_A_SUBVERSION}-${TF_A_RELEASE}"
+
+ARCHIVER_ST_BRANCH = "${TF_A_VERSION}-${TF_A_SUBVERSION}"
+ARCHIVER_ST_REVISION = "${PV}"
+ARCHIVER_COMMUNITY_BRANCH = "master"
+ARCHIVER_COMMUNITY_REVISION = "${TF_A_VERSION}"
 
 S = "${WORKDIR}/git"
 
@@ -39,7 +46,7 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'tf-a-stm32mp-
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
-SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/arm-trusted-firmware.git;protocol=https;branch=v${TF_VERSION}-stm32mp"
+SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/arm-trusted-firmware.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
 SRCREV_class-devupstream = "40572e4067f205691a4dca3b5fdabe3a40c69594"
 
 # ---------------------------------
