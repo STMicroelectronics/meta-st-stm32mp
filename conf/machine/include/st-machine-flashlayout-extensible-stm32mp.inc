@@ -23,7 +23,7 @@ FLASHLAYOUT_TYPE_LABELS_extensible = "${@d.getVar('STM32MP_DT_FILES_DK') or 'non
 FLASHLAYOUT_PARTITION_LABELS_extensible = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'sdcard').split()])} \
-    ${FLASHLAYOUT_PARTITION_IMAGES} \
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'sdcard').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS_extensible_remove = "userfs"
 
