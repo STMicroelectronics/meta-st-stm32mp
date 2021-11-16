@@ -24,6 +24,9 @@ SRC_URI += "\
     file://0099-Add-external-var-to-allow-build-of-new-devicetree-fi.patch \
 "
 
+# debug and trace
+SRC_URI += "${@bb.utils.contains('ST_UBOOT_DEBUG_TRACE', '1', '', 'file://0098-silent_mode.patch', d)}"
+
 U_BOOT_VERSION = "v2020.10"
 U_BOOT_SUBVERSION = "stm32mp"
 U_BOOT_RELEASE = "r1"
