@@ -32,11 +32,14 @@ EXTERNALSRC_BUILD_pn-${PN} = "${WORKDIR}/build"
 DEPENDS += "dtc-native"
 DEPENDS_append = " ${@bb.utils.contains('TF_A_ENABLE_DEBUG_WRAPPER', '1', 'stm32wrapper4dbg-native', '', d)}"
 
+# Default log level
+ST_TF_A_DEBUG_LOG_LEVEL ??= "40"
+
 # Extra make settings
 EXTRA_OEMAKE = 'CROSS_COMPILE=${TARGET_PREFIX}'
 # Debug support
-EXTRA_OEMAKE += 'DEBUG=1'
-EXTRA_OEMAKE += 'LOG_LEVEL=40'
+EXTRA_OEMAKE += '${@bb.utils.contains('ST_TF_A_DEBUG_TRACE', '1', 'DEBUG=1', '', d)}'
+EXTRA_OEMAKE += '${@bb.utils.contains('ST_TF_A_DEBUG_TRACE', '1', 'LOG_LEVEL=${ST_TF_A_DEBUG_LOG_LEVEL}', '', d)}'
 
 # Define default TF-A namings
 TF_A_BASENAME ?= "tf-a"

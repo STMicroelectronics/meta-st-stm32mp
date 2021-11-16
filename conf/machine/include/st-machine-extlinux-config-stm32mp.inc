@@ -12,6 +12,9 @@ UBOOT_EXTLINUX_DEFAULT_LABEL ?= "OpenSTLinux"
 INITRD_SHORTNAME ??= ""
 UBOOT_EXTLINUX_INITRD ?= "${@bb.utils.contains('COMBINED_FEATURES', 'autoresize', '/${INITRD_SHORTNAME}', '', d)}"
 
+UBOOT_EXTLINUX_KERNEL_ARGS ?= "rootwait rw"
+UBOOT_EXTLINUX_KERNEL_ARGS_append += " ${@bb.utils.contains('ST_DEBUG_TRACE', '1', '', '${ST_CMD_LINE_DEBUG_TRACE}', d)} "
+
 # -----------------------------------------------------------------------------
 # Configurations
 # -----------------------------------------------------------------------------

@@ -382,6 +382,12 @@ TOOLCHAIN_TARGET_TASK += " bash-dev libgomp-dev"
 TOOLCHAIN_TARGET_TASK_remove_pn-buildtools-tarball = " bash-dev libgomp-dev"
 
 # =========================================================================
+# Debug trace
+# =========================================================================
+# acitvate/desactive the debug and trace on boot stage: tf-a, optee, u-boot and kernel
+ST_DEBUG_TRACE ?= "1"
+
+# =========================================================================
 # Kernel
 # =========================================================================
 # Kernel image type
@@ -412,6 +418,7 @@ ST_KERNEL_LOADADDR ?= "0xC2000040"
 # Define the devicetree for Linux A7 examples
 LINUX_A7_EXAMPLES_DT ?= ""
 
+ST_CMD_LINE_DEBUG_TRACE ?= "loglevel=1 quiet"
 # =========================================================================
 # u-boot
 # =========================================================================
@@ -465,6 +472,7 @@ MACHINE_EXTRA_RRECOMMENDS_append_stm32mp1common = " \
     u-boot-fw-config-stm32mp \
 "
 
+ST_UBOOT_DEBUG_TRACE ?= "${@bb.utils.contains('ST_DEBUG_TRACE', '1', '1', '0', d)}"
 # =========================================================================
 # trusted-firmware-a
 # =========================================================================
@@ -497,12 +505,14 @@ TF_A_MTD_START_OFFSET_NAND    ?= "0x00200000"
 TF_A_MTD_START_OFFSET_NOR     ?= "0x00080000"
 TF_A_MTD_START_OFFSET_SPINAND ?= "0x00200000"
 
+ST_TF_A_DEBUG_TRACE ?= "${@bb.utils.contains('ST_DEBUG_TRACE', '1', '1', '0', d)}"
 # =========================================================================
 # optee
 # =========================================================================
 # Map OPTEE configuration to device tree list
 OPTEE_CONF = "${STM32MP_DEVICETREE}"
 
+ST_OPTEE_DEBUG_TRACE ?= "${@bb.utils.contains('ST_DEBUG_TRACE', '1', '1', '0', d)}"
 # =========================================================================
 # fip
 # =========================================================================
