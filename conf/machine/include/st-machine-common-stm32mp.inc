@@ -47,9 +47,6 @@ DISTRO_EXTRA_RRECOMMENDS_remove = " ${@bb.utils.contains('COMBINED_FEATURES', 'i
 # Configure autoresize for any of the 'ext4' storage devices (through InitRD image)
 MACHINE_FEATURES_append = " ${@bb.utils.contains_any('BOOTDEVICE_LABELS',  ['emmc', 'sdcard'], 'autoresize', '', d)} "
 
-# Use Little Kernel loader to program storage device
-MACHINE_FEATURES += "kloader"
-
 # Use FIP image for boot loaders
 MACHINE_FEATURES += "fip"
 
