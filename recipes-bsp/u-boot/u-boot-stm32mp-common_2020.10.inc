@@ -11,7 +11,7 @@ DEPENDS += "flex-native bison-native"
 
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 
-SRC_URI = "git://github.com/u-boot/u-boot.git;protocol=https"
+SRC_URI = "git://github.com/u-boot/u-boot.git;protocol=https;branch=master"
 SRCREV  = "050acee119b3757fee3bd128f55d720fdd9bb890"
 
 SRC_URI += "\
