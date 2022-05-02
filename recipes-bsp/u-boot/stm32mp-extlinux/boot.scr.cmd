@@ -23,9 +23,7 @@ env set boot_m4fw 'rproc init; rproc load 0 ${m4fw_addr} ${filesize}; rproc star
 env set scan_m4fw 'if test -e ${devtype} ${devnum}:${distro_bootpart} ${m4fw_name};then echo Found M4 FW $m4fw_name; if load ${devtype} ${devnum}:${distro_bootpart} ${m4fw_addr} ${m4fw_name}; then run boot_m4fw; fi; fi;'
 
 # management of overlay
-env set ov_init 'load ${devtype} ${devnum}:${distro_bootpart} ${fdt_addr_r} ${fdtfile} && env set fdt_addr ${fdt_addr_r} && fdt addr ${fdt_addr} && setexpr fdtovaddr ${fdt_addr} + C0000'
-env set ov_apply 'test -n ${fdtovaddr} && test -n ${overlay} && for ov in ${overlay}; do echo overlaying ${ov}...; load ${devtype} ${devnum}:${distro_bootpart} ${fdtovaddr} /overlays/${ov}.dtbo && fdt resize ${filesize} && fdt apply ${fdtovaddr}; done'
-env set scan_overlays 'if test -e ${devtype} ${devnum}:${distro_bootpart} /overlays/overlays.txt && load ${devtype} ${devnum}:${distro_bootpart} ${loadaddr} /overlays/overlays.txt && env import -t ${loadaddr} ${filesize}; then echo loaded overlay.txt: ${overlay}; run ov_init; run ov_apply; fi'
+env set scan_overlays 'if test -e ${devtype} ${devnum}:${distro_bootpart} /overlays/overlays.txt; then env set fdt_addr ${fdt_addr_r}; if load ${devtype} ${devnum}:${distro_bootpart} ${fdt_addr} ${fdtfile}; then fdt addr ${fdt_addr}; fdt resize; setexpr fdtovaddr ${fdt_addr} + C0000; if load ${devtype} ${devnum}:${distro_bootpart} ${fdtovaddr} /overlays/overlays.txt && env import -t ${fdtovaddr} ${filesize} && test -n ${overlay}; then echo loaded overlay.txt: ${overlay}; for ov in ${overlay}; do echo overlaying ${ov}...; load ${devtype} ${devnum}:${distro_bootpart} ${fdtovaddr} /overlays/${ov}.dtbo && fdt apply ${fdtovaddr}; done; fi; fi; fi;'
 
 # Update the DISTRO command to search in sub-directory and load M4 firmware
 env set boot_prefixes "/${boot_device}${boot_instance}_"
