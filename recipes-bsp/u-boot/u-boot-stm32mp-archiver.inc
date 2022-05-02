@@ -1,7 +1,7 @@
 #
 # Archiver Configuration
 #
-SRC_URI_append = " file://README.HOW_TO.txt "
+SRC_URI:append = " file://README.HOW_TO.txt "
 
 inherit archiver
 ARCHIVER_MODE[src] = "original"

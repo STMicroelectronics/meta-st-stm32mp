@@ -51,8 +51,8 @@ S = "${WORKDIR}/git"
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
-SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/u-boot.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV_class-devupstream = "6fde82adf71ebad4b16d99f76ed69abfd9cfaf42"
+SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/u-boot.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
+SRCREV:class-devupstream = "6fde82adf71ebad4b16d99f76ed69abfd9cfaf42"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

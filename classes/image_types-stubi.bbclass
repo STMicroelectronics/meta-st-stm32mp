@@ -30,7 +30,7 @@ python stmultiub_environment () {
 
 IMAGE_PREPROCESS_COMMAND += "stmultiub_environment;"
 
-IMAGE_CMD_stmultiubi () {
+IMAGE_CMD:stmultiubi () {
     . ${T}/stmultiubi_environment
 
     # Split MKUBIFS_ARGS_<name> and UBINIZE_ARGS_<name>

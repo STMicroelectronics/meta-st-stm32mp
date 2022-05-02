@@ -50,7 +50,7 @@ CMSIS_SVD_DATA ?= "\
     "
 
 # Empty cmsis-svd packages to use it as a meta package for dependencies install
-FILES_${PN}_class-target = ""
+FILES:${PN}:class-target = ""
 
 do_configure[noexec] = "1"
 do_compile[noexec] = "1"
@@ -84,122 +84,122 @@ do_install () {
 }
 
 # For parser and ARM_SAMPLE svd file example
-LICENSE_${PN}-parser = "Apache-2.0"
-LICENSE_${PN}-apache-license = "Apache-2.0"
+LICENSE:${PN}-parser = "Apache-2.0"
+LICENSE:${PN}-apache-license = "Apache-2.0"
 
-FILES_${PN}-apache-license = "${INSTALL_PATH}/LICENSE-APACHE"
-FILES_${PN}-parser = "${INSTALL_PATH}/*.py ${INSTALL_PATH}/examples ${INSTALL_PATH}/tests ${INSTALL_PATH}/data/ARM_SAMPLE/*.svd"
+FILES:${PN}-apache-license = "${INSTALL_PATH}/LICENSE-APACHE"
+FILES:${PN}-parser = "${INSTALL_PATH}/*.py ${INSTALL_PATH}/examples ${INSTALL_PATH}/tests ${INSTALL_PATH}/data/ARM_SAMPLE/*.svd"
 
-RDEPENDS_${PN}-parser += "${PN}-apache-license"
+RDEPENDS:${PN}-parser += "${PN}-apache-license"
 # For python dependencies
-RDEPENDS_${PN}-parser += "python3-json"
-RDEPENDS_${PN}-parser += "python3-setuptools"
-RDEPENDS_${PN}-parser += "python3-six"
-RDEPENDS_${PN}-parser += "python3-xml"
+RDEPENDS:${PN}-parser += "python3-json"
+RDEPENDS:${PN}-parser += "python3-setuptools"
+RDEPENDS:${PN}-parser += "python3-six"
+RDEPENDS:${PN}-parser += "python3-xml"
 
 # For Atmel
-LICENSE_${PN}-data-atmel = "svd-Atmel"
-LICENSE_${PN}-atmel-license = "svd-Atmel"
+LICENSE:${PN}-data-atmel = "svd-Atmel"
+LICENSE:${PN}-atmel-license = "svd-Atmel"
 
-FILES_${PN}-atmel-license = "${INSTALL_PATH}/data/Atmel/License.html"
-FILES_${PN}-data-atmel = "${INSTALL_PATH}/data/Atmel/*.svd"
+FILES:${PN}-atmel-license = "${INSTALL_PATH}/data/Atmel/License.html"
+FILES:${PN}-data-atmel = "${INSTALL_PATH}/data/Atmel/*.svd"
 
-RDEPENDS_${PN}-data-atmel += "${PN}-atmel-license"
+RDEPENDS:${PN}-data-atmel += "${PN}-atmel-license"
 
 # For Freescale
-LICENSE_${PN}-data-freescale = "svd-Freescale"
-LICENSE_${PN}-freescale-license = "svd-Freescale"
+LICENSE:${PN}-data-freescale = "svd-Freescale"
+LICENSE:${PN}-freescale-license = "svd-Freescale"
 
-FILES_${PN}-freescale-license = "${INSTALL_PATH}/data/Freescale/Freescale*CMSIS-SVD*License*Agreement.pdf"
-FILES_${PN}-data-freescale = "${INSTALL_PATH}/data/Freescale/*.svd"
+FILES:${PN}-freescale-license = "${INSTALL_PATH}/data/Freescale/Freescale*CMSIS-SVD*License*Agreement.pdf"
+FILES:${PN}-data-freescale = "${INSTALL_PATH}/data/Freescale/*.svd"
 
-RDEPENDS_${PN}-data-freescale += "${PN}-freescale-license"
+RDEPENDS:${PN}-data-freescale += "${PN}-freescale-license"
 
 # For Fujitsu
-LICENSE_${PN}-data-fujitsu = "svd-Fujitsu"
-LICENSE_${PN}-fujitsu-license = "svd-Fujitsu"
+LICENSE:${PN}-data-fujitsu = "svd-Fujitsu"
+LICENSE:${PN}-fujitsu-license = "svd-Fujitsu"
 
-FILES_${PN}-fujitsu-license = "${INSTALL_PATH}/data/Fujitsu/License.html"
-FILES_${PN}-data-fujitsu = "${INSTALL_PATH}/data/Fujitsu/*.svd"
+FILES:${PN}-fujitsu-license = "${INSTALL_PATH}/data/Fujitsu/License.html"
+FILES:${PN}-data-fujitsu = "${INSTALL_PATH}/data/Fujitsu/*.svd"
 
-RDEPENDS_${PN}-data-fujitsu += "${PN}-fujitsu-license"
+RDEPENDS:${PN}-data-fujitsu += "${PN}-fujitsu-license"
 
 # For Holtek
-LICENSE_${PN}-data-holtek = "Apache-2.0"
+LICENSE:${PN}-data-holtek = "Apache-2.0"
 
-FILES_${PN}-data-holtek = "${INSTALL_PATH}/data/Holtek/*.svd"
+FILES:${PN}-data-holtek = "${INSTALL_PATH}/data/Holtek/*.svd"
 
-RDEPENDS_${PN}-data-holtek += "${PN}-apache-license"
+RDEPENDS:${PN}-data-holtek += "${PN}-apache-license"
 
 # For Nordic
-LICENSE_${PN}-data-nordic = "Apache-2.0"
+LICENSE:${PN}-data-nordic = "Apache-2.0"
 
-FILES_${PN}-data-nordic = "${INSTALL_PATH}/data/Nordic/*.svd"
+FILES:${PN}-data-nordic = "${INSTALL_PATH}/data/Nordic/*.svd"
 
-RDEPENDS_${PN}-data-nordic += "${PN}-apache-license"
+RDEPENDS:${PN}-data-nordic += "${PN}-apache-license"
 
 # For Nuvoton
-LICENSE_${PN}-data-nuvoton = "Apache-2.0"
+LICENSE:${PN}-data-nuvoton = "Apache-2.0"
 
-FILES_${PN}-data-nuvoton = "${INSTALL_PATH}/data/Nuvoton/*.svd"
+FILES:${PN}-data-nuvoton = "${INSTALL_PATH}/data/Nuvoton/*.svd"
 
-RDEPENDS_${PN}-data-nuvoton += "${PN}-apache-license"
+RDEPENDS:${PN}-data-nuvoton += "${PN}-apache-license"
 
 # For NXP
-LICENSE_${PN}-data-nxp = "Apache-2.0"
+LICENSE:${PN}-data-nxp = "Apache-2.0"
 
-FILES_${PN}-data-nxp = "${INSTALL_PATH}/data/NXP/*.svd"
+FILES:${PN}-data-nxp = "${INSTALL_PATH}/data/NXP/*.svd"
 
-RDEPENDS_${PN}-data-nxp += "${PN}-apache-license"
+RDEPENDS:${PN}-data-nxp += "${PN}-apache-license"
 
 # For SiliconLabs
-LICENSE_${PN}-data-siliconlabs = "Apache-2.0"
+LICENSE:${PN}-data-siliconlabs = "Apache-2.0"
 
-FILES_${PN}-data-siliconlabs = "${INSTALL_PATH}/data/SiliconLabs/*.svd"
+FILES:${PN}-data-siliconlabs = "${INSTALL_PATH}/data/SiliconLabs/*.svd"
 
-RDEPENDS_${PN}-data-siliconlabs += "${PN}-apache-license"
+RDEPENDS:${PN}-data-siliconlabs += "${PN}-apache-license"
 
 # For Spansion
-LICENSE_${PN}-data-spansion = "Apache-2.0"
+LICENSE:${PN}-data-spansion = "Apache-2.0"
 
-FILES_${PN}-data-spansion = "${INSTALL_PATH}/data/Spansion/*.svd"
+FILES:${PN}-data-spansion = "${INSTALL_PATH}/data/Spansion/*.svd"
 
-RDEPENDS_${PN}-data-spansion += "${PN}-apache-license"
+RDEPENDS:${PN}-data-spansion += "${PN}-apache-license"
 
 # For STMicro
-LICENSE_${PN}-data-stmicro = "svd-STMicro"
-LICENSE_${PN}-stmicro-license = "svd-STMicro"
+LICENSE:${PN}-data-stmicro = "svd-STMicro"
+LICENSE:${PN}-stmicro-license = "svd-STMicro"
 
-FILES_${PN}-stmicro-license = "${INSTALL_PATH}/data/STMicro/License.html"
-FILES_${PN}-data-stmicro = "${INSTALL_PATH}/data/STMicro/*.svd"
+FILES:${PN}-stmicro-license = "${INSTALL_PATH}/data/STMicro/License.html"
+FILES:${PN}-data-stmicro = "${INSTALL_PATH}/data/STMicro/*.svd"
 
-RDEPENDS_${PN}-data-stmicro += "${PN}-stmicro-license"
+RDEPENDS:${PN}-data-stmicro += "${PN}-stmicro-license"
 
 # For TexasInstruments
-LICENSE_${PN}-data-texasinstruments = "Apache-2.0"
+LICENSE:${PN}-data-texasinstruments = "Apache-2.0"
 
-FILES_${PN}-data-texasinstruments = "${INSTALL_PATH}/data/TexasInstruments/*.svd"
+FILES:${PN}-data-texasinstruments = "${INSTALL_PATH}/data/TexasInstruments/*.svd"
 
-RDEPENDS_${PN}-data-texasinstruments += "${PN}-apache-license"
+RDEPENDS:${PN}-data-texasinstruments += "${PN}-apache-license"
 
 # For Toshiba
-LICENSE_${PN}-data-toshiba = "Apache-2.0"
+LICENSE:${PN}-data-toshiba = "Apache-2.0"
 
-FILES_${PN}-data-toshiba = "${INSTALL_PATH}/data/Toshiba/*.svd"
+FILES:${PN}-data-toshiba = "${INSTALL_PATH}/data/Toshiba/*.svd"
 
-RDEPENDS_${PN}-data-toshiba += "${PN}-apache-license"
+RDEPENDS:${PN}-data-toshiba += "${PN}-apache-license"
 
 # Make cmsis-svd package depend on all of the split-out packages
-python populate_packages_prepend () {
+python populate_packages:prepend () {
     firmware_pkgs = oe.utils.packages_filter_out_system(d)
-    d.appendVar('RDEPENDS_cmsis-svd', ' ' + ' '.join(firmware_pkgs))
-    d.appendVar('RRECOMMENDS_cmsis-svd_append_class-nativesdk', ' ' + ' '.join(firmware_pkgs))
+    d.appendVar('RDEPENDS:cmsis-svd', ' ' + ' '.join(firmware_pkgs))
+    d.appendVar('RRECOMMENDS:cmsis-svd:append:class-nativesdk', ' ' + ' '.join(firmware_pkgs))
 }
 # Make sure also to add python dependencies
-RRECOMMENDS_${PN}_append_class-nativesdk = " nativesdk-python3-json "
-RRECOMMENDS_${PN}_append_class-nativesdk = " nativesdk-python3-setuptools "
-RRECOMMENDS_${PN}_append_class-nativesdk = " nativesdk-python3-six "
-RRECOMMENDS_${PN}_append_class-nativesdk = " nativesdk-python3-xml "
+RRECOMMENDS:${PN}:append:class-nativesdk = " nativesdk-python3-json "
+RRECOMMENDS:${PN}:append:class-nativesdk = " nativesdk-python3-setuptools "
+RRECOMMENDS:${PN}:append:class-nativesdk = " nativesdk-python3-six "
+RRECOMMENDS:${PN}:append:class-nativesdk = " nativesdk-python3-xml "
 
 # Make sure to create the cmsis-svd package
-ALLOW_EMPTY_${PN} = "1"
+ALLOW_EMPTY:${PN} = "1"

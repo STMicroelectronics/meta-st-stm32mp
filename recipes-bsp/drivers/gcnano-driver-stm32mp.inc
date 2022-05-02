@@ -1,7 +1,7 @@
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 
 # To share stm32mp1 patches between layers
-FILESEXTRAPATHS_prepend := "${THISDIR}/gcnano-driver-stm32mp:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/gcnano-driver-stm32mp:"
 
 inherit module
 

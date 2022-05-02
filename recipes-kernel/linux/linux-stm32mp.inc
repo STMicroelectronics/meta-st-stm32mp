@@ -7,10 +7,10 @@ DEPENDS += "openssl-native util-linux-native libyaml-native"
 
 B = "${WORKDIR}/build"
 # Configure build dir for externalsrc class usage through devtool
-EXTERNALSRC_BUILD_pn-${PN} = "${WORKDIR}/build"
+EXTERNALSRC_BUILD:pn-${PN} = "${WORKDIR}/build"
 
 # To share config fragments between layers
-FILESEXTRAPATHS_prepend := "${THISDIR}:"
+FILESEXTRAPATHS:prepend := "${THISDIR}:"
 
 do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/kernel"
 
@@ -39,7 +39,7 @@ python () {
 #
 #If the defconfig is contained on the kernel tree (arch/${ARCH}/configs)
 #you must use the following line
-do_configure_append() {
+do_configure:append() {
     unset CFLAGS CPPFLAGS CXXFLAGS LDFLAGS MACHINE
     if [ ! -z ${KERNEL_DEFCONFIG} ];
     then
@@ -81,7 +81,7 @@ do_configure_append() {
 }
 
 # ---------------------------------------------------------------------
-do_compile_kernelmodules_append() {
+do_compile_kernelmodules:append() {
     if (grep -q -i -e '^CONFIG_MODULES=y$' ${B}/.config); then
         # 5.10+ kernels have module.lds that we need to copy for external module builds
         if [ -e "${B}/scripts/module.lds" ]; then
@@ -90,7 +90,7 @@ do_compile_kernelmodules_append() {
     fi
 }
 # ---------------------------------------------------------------------
-do_install_append() {
+do_install:append() {
     # Install KERNEL_IMAGETYPE for kernel-imagebootfs package
     install -m 0644 ${KERNEL_OUTPUT_DIR}/${KERNEL_IMAGETYPE} ${D}/${KERNEL_IMAGEDEST}
 
@@ -103,7 +103,7 @@ do_install_append() {
     echo "softdep snd-soc-cs42l51 pre: snd-soc-cs42l51-i2c" > ${D}/${sysconfdir}/modprobe.d/stm32mp1-snd.conf
 }
 # ---------------------------------------------------------------------
-do_deploy_append() {
+do_deploy:append() {
     if [ ${MODULE_TARBALL_DEPLOY} = "1" ] && (grep -q -i -e '^CONFIG_MODULES=y$' .config); then
         mkdir -p ${D}${root_prefix}/lib
         tar -cvzf $deployDir/modules-stripped-${MODULE_TARBALL_NAME}.tgz -C ${WORKDIR}/package/${root_prefix} lib
@@ -123,7 +123,7 @@ python do_loadaddrcheck() {
 }
 
 PACKAGES =+ "${KERNEL_PACKAGE_NAME}-headers ${KERNEL_PACKAGE_NAME}-imagebootfs"
-FILES_${KERNEL_PACKAGE_NAME}-headers = "${exec_prefix}/src/linux*"
-FILES_${KERNEL_PACKAGE_NAME}-image  += "boot/ ${KERNEL_IMAGEDEST}"
-FILES_${KERNEL_PACKAGE_NAME}-imagebootfs = "boot/*.dtb boot/${KERNEL_IMAGETYPE}"
-FILES_${KERNEL_PACKAGE_NAME}-modules += "${sysconfdir}/modprobe.d"
+FILES:${KERNEL_PACKAGE_NAME}-headers = "${exec_prefix}/src/linux*"
+FILES:${KERNEL_PACKAGE_NAME}-image  += "boot/ ${KERNEL_IMAGEDEST}"
+FILES:${KERNEL_PACKAGE_NAME}-imagebootfs = "boot/*.dtb boot/${KERNEL_IMAGETYPE}"
+FILES:${KERNEL_PACKAGE_NAME}-modules += "${sysconfdir}/modprobe.d"

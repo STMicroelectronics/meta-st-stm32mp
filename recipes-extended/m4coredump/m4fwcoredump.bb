@@ -34,4 +34,4 @@ do_install() {
         install -m 755 ${WORKDIR}/stm32mp-coredump-sysfs.sh ${D}${base_sbindir}/
     fi
 }
-FILES_${PN} += "${systemd_unitdir}/system"
+FILES:${PN} += "${systemd_unitdir}/system"

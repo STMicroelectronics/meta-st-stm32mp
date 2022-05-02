@@ -1,13 +1,13 @@
-FILESEXTRAPATHS_prepend_stm32mpcommon := "${THISDIR}/${PN}:"
+FILESEXTRAPATHS:prepend:stm32mpcommon := "${THISDIR}/${PN}:"
 
 # Pulse audio configuration files
-SRC_URI_append_stm32mpcommon = " \
+SRC_URI:append:stm32mpcommon = " \
         file://default.pa \
         file://system.pa \
         "
 
 # Pulse audio configuration files installation
-do_install_append_stm32mpcommon() {
+do_install:append:stm32mpcommon() {
     if [ -e "${WORKDIR}/default.pa" ]; then
         install -m 0644 ${WORKDIR}/default.pa ${D}/${sysconfdir}/pulse/default.pa
     fi

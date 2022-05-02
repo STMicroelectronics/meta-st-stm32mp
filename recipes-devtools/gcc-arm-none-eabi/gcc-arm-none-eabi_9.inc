@@ -16,6 +16,6 @@ do_install() {
     cp -r ${S}/. ${D}/${datadir}/gcc-arm-none-eabi
 }
 
-INSANE_SKIP_${PN} = "already-stripped file-rdeps"
+INSANE_SKIP:${PN} = "already-stripped file-rdeps"
 INHIBIT_PACKAGE_STRIP = "1"
 INHIBIT_SYSROOT_STRIP = "1"

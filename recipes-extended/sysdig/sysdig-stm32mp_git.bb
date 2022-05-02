@@ -6,7 +6,7 @@ HOMEPAGE = "http://www.sysdig.org/"
 LICENSE = "GPLv2"
 LIC_FILES_CHKSUM = "file://COPYING;md5=f8fee3d59797546cffab04f3b88b2d44"
 
-PROVIDES_append_stm32mpcommon += " sysdig "
+PROVIDES:append:stm32mpcommon = " sysdig "
 
 inherit cmake pkgconfig
 
@@ -17,7 +17,7 @@ DEPENDS += "jsoncpp openssl curl jq"
 DEPENDS += "tbb elfutils"
 DEPENDS += "libb64"
 
-RDEPENDS_${PN} = "bash"
+RDEPENDS:${PN} = "bash"
 
 SRC_URI = "git://github.com/draios/sysdig.git;protocol=https"
 SRCREV = "aa82b2fb329ea97a8ade31590954ddaa675e1728"
@@ -45,11 +45,11 @@ EXTRA_OECMAKE += ' \
     -DUSE_BUNDLED_TBB="OFF" \
     '
 
-FILES_${PN} += " \
+FILES:${PN} += " \
     ${DIR_ETC}/* \
     ${datadir}/zsh/* \
 "
-FILES_${PN}-dev = " ${prefix}/src/* "
+FILES:${PN}-dev = " ${prefix}/src/* "
 
 # luajit not supported on Aarch64
 COMPATIBLE_HOST = "^(?!aarch64).*"

@@ -20,5 +20,5 @@ do_install () {
     fi
 }
 
-FILES_${PN} += "${sysconfdir}/"
-RDEPENDS_${PN} += "u-boot-fw-utils"
+FILES:${PN} += "${sysconfdir}/"
+RDEPENDS:${PN} += "u-boot-fw-utils"

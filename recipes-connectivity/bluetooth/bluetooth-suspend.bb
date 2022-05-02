@@ -11,7 +11,7 @@ SRC_URI = " \
 
 inherit systemd
 SYSTEMD_PACKAGES += "${PN}"
-SYSTEMD_SERVICE_${PN} = "bluetooth-brcmfmac-sleep.service"
+SYSTEMD_SERVICE:${PN} = "bluetooth-brcmfmac-sleep.service"
 
 do_install() {
     install -d ${D}${bindir}
@@ -24,5 +24,5 @@ do_install() {
     fi
 }
 
-ALLOW_EMPTY_${PN} = "1"
+ALLOW_EMPTY:${PN} = "1"
 

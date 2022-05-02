@@ -46,25 +46,25 @@ python __anonymous () {
                     # Update IMAGE vars for each partition image
                     if items[1] != '':
                         bb.debug(1, "Set UBI_VOLNAME to %s for %s partition image." % (items[1], items[0]))
-                        d.setVar('UBI_VOLNAME_pn-%s' % d.expand(items[0]), items[1])
+                        d.setVar('UBI_VOLNAME:pn-%s' % d.expand(items[0]), items[1])
                         if d.expand(items[1])[-2:] != 'fs':
                             bb.debug(1, "Set IMAGE_NAME_SUFFIX to '.%sfs' for %s partition image." % (items[1], items[0]))
-                            d.setVar('IMAGE_NAME_SUFFIX_pn-%s' % d.expand(items[0]), '.' + items[1] + 'fs')
+                            d.setVar('IMAGE_NAME_SUFFIX:pn-%s' % d.expand(items[0]), '.' + items[1] + 'fs')
                         else:
                             bb.debug(1, "Set IMAGE_NAME_SUFFIX to '.%s' for %s partition image." % (items[1], items[0]))
-                            d.setVar('IMAGE_NAME_SUFFIX_pn-%s' % d.expand(items[0]), '.' + items[1])
+                            d.setVar('IMAGE_NAME_SUFFIX:pn-%s' % d.expand(items[0]), '.' + items[1])
                     else:
                         bb.fatal('[PARTITIONS_IMAGES] Missing label setting for %s image' % items[0])
                     # Make sure that we're dealing with partition image and not rootfs image
                     if items[2] != '':
                         # Mount point is available, so we're dealing with partition image
                         bb.debug(1, "Set IMAGE_PARTITION_MOUNTPOINT to %s for %s partition image." % (items[2], items[0]))
-                        d.setVar('IMAGE_PARTITION_MOUNTPOINT_pn-%s' % d.expand(items[0]), items[2])
+                        d.setVar('IMAGE_PARTITION_MOUNTPOINT:pn-%s' % d.expand(items[0]), items[2])
                         # Append image to image_partitions list
                         image_partitions.append(d.expand(items[0]))
                         if items[3] != '':
                             bb.debug(1, "Set IMAGE_ROOTFS_SIZE to %s for %s partition image." % (items[3], items[0]))
-                            d.setVar('IMAGE_ROOTFS_SIZE_pn-%s' % d.expand(items[0]), items[3])
+                            d.setVar('IMAGE_ROOTFS_SIZE:pn-%s' % d.expand(items[0]), items[3])
                         else:
                             bb.fatal('[PARTITIONS_IMAGES] Missing size setting for %s image' % items[0])
 
@@ -83,7 +83,7 @@ python __anonymous () {
                         if len(ubiconfigs) > 0:
                             for ubi_config in ubiconfigs:
                                 bb.debug(1, "Appending '%s' image with %s size to STM32MP_UBI_VOLUME." % (items[0], items[3]))
-                                d.appendVar('STM32MP_UBI_VOLUME_%s' % ubi_config, ' ' + items[0] + ':' + items[3])
+                                d.appendVar('STM32MP_UBI_VOLUME:%s' % ubi_config, ' ' + items[0] + ':' + items[3])
                     break
 
     # Reset IMAGE_LIST_SUMMARY with computed partition configuration
@@ -200,7 +200,7 @@ python image_rootfs_image_clean_task(){
                     package = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode("utf-8").rstrip('\n')
                     package = re.sub(r":.*", "", package)
                 except subprocess.CalledProcessError as e:
-                    bb.fatal("Cannot check package for file %s" % (os.path.join(root, f)))
+                    bb.note("Cannot check package for file %s" % (os.path.join(root, f)))
 
                 if package:
                     # Use oe-pkgdata-util to list all files provided by a package
@@ -239,7 +239,7 @@ python image_rootfs_image_clean_task(){
 # -----------------------------------------------------------------------------
 DEPLOY_BUILDINFO_FILE ??= "0"
 
-buildinfo_append() {
+buildinfo:append() {
     if d.getVar('DEPLOY_BUILDINFO_FILE') != '1':
         return
     # Export build information to deploy dir
