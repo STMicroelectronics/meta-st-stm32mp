@@ -1,5 +1,5 @@
 SUMMARY = "GCNano kernel drivers"
-LICENSE = "GPLv1 & MIT"
+LICENSE = "GPL-1.0-only & MIT"
 # Note get md5sum with: $ head -n 53 Makefile | md5sum
 LIC_FILES_CHKSUM = "file://Makefile;endline=53;md5=3ad4e99418a2e0f339ecdc29ac648351"
 
