@@ -5,7 +5,7 @@ SUMMARY = "Universal Boot Loader for embedded devices for stm32mp"
 LICENSE = "GPLv2+"
 
 PROVIDES += "u-boot"
-RPROVIDES_${PN} += "u-boot"
+RPROVIDES:${PN} += "u-boot"
 
 # ---------------------------------
 # Configure archiver use

@@ -1,13 +1,13 @@
 DEPENDS = "hidapi-stm32mp"
 
-RDEPENDS_${PN} += "libusb1 hidapi-stm32mp"
+RDEPENDS:${PN} += "libusb1 hidapi-stm32mp"
 
 inherit pkgconfig autotools-brokensep gettext
 
 SRC_URI = " \
-    git://repo.or.cz/git2cl.git;destsuffix=git/tools/git2cl;name=git2cl                         \
-    git://github.com/msteveb/jimtcl;protocol=https;destsuffix=git/jimtcl;name=jimtcl            \
-    git://repo.or.cz/libjaylink.git;destsuffix=git/src/jtag/drivers/libjaylink;name=libjaylink  \
+    git://repo.or.cz/git2cl.git;destsuffix=git/tools/git2cl;name=git2cl;branch=master           \
+    git://github.com/msteveb/jimtcl;protocol=https;destsuffix=git/jimtcl;name=jimtcl;branch=master            \
+    git://repo.or.cz/libjaylink.git;destsuffix=git/src/jtag/drivers/libjaylink;name=libjaylink;branch=master  \
     "
 
 SRCREV_git2cl = "8373c9f74993e218a08819cbcdbab3f3564bbeba"
@@ -19,10 +19,10 @@ S = "${WORKDIR}/git"
 BBCLASSEXTEND += "native nativesdk"
 
 DEPENDS += "hidapi-stm32mp"
-DEPENDS_class-native = "hidapi-stm32mp-native"
-DEPENDS_class-nativesdk = "nativesdk-hidapi-stm32mp"
+DEPENDS:class-native = "hidapi-stm32mp-native"
+DEPENDS:class-nativesdk = "nativesdk-hidapi-stm32mp"
 
-RDEPENDS_${PN} += "libusb1 hidapi-stm32mp"
+RDEPENDS:${PN} += "libusb1 hidapi-stm32mp"
 
 EXTRA_OECONF = " \
     --disable-doxygen-html \
@@ -39,6 +39,7 @@ EXTRA_OECONF = " \
 CCACHE_DISABLE = "1"
 
 do_configure() {
+    export RANLIB="ranlib"
     ./bootstrap nosubmodule
     oe_runconf ${EXTRA_OECONF}
 }
@@ -56,7 +57,7 @@ do_install() {
     fi
 }
 
-FILES_${PN} = " \
+FILES:${PN} = " \
   ${datadir}/openocd/* \
   ${bindir}/openocd \
   "

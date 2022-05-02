@@ -13,11 +13,11 @@ S = "${WORKDIR}/git"
 
 BBCLASSEXTEND = "native nativesdk"
 
-RDEPENDS_${PN} += "cmsis-svd"
-RRECOMMENDS_${PN}_append_class-nativesdk = " nativesdk-cmsis-svd "
+RDEPENDS:${PN} += "cmsis-svd"
+RRECOMMENDS:${PN}:append:class-nativesdk = " nativesdk-cmsis-svd "
 # For python dependencies
-RDEPENDS_${PN} += "python3-terminaltables"
-RRECOMMENDS_${PN}_append_class-nativesdk = " nativesdk-python3-terminaltables "
+RDEPENDS:${PN} += "python3-terminaltables"
+RRECOMMENDS:${PN}:append:class-nativesdk = " nativesdk-python3-terminaltables "
 
 do_configure[noexec] = "1"
 do_compile[noexec] = "1"
@@ -30,4 +30,4 @@ do_install () {
     install -m 0755 ${S}/gdb-svd.py ${D}${INSTALL_PATH}
 }
 
-FILES_${PN} = "${INSTALL_PATH}/*"
+FILES:${PN} = "${INSTALL_PATH}/*"

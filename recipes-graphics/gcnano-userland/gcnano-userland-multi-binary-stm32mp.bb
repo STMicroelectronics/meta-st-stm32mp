@@ -8,7 +8,7 @@ DEPENDS += " libdrm wayland "
 
 GCNANO_TYPE = "release"
 
-do_install_append() {
+do_install:append() {
     clean_debug_file
 }
 

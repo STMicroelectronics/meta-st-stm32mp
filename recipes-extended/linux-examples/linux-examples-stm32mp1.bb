@@ -16,10 +16,10 @@ S = "${WORKDIR}/git"
 PACKAGES += "${PN}-userfs"
 
 # Package -dev and -dbg are empty so don't generate them
-ALLOW_EMPTY_${PN}-dev = "0"
-ALLOW_EMPTY_${PN}-dbg = "0"
+ALLOW_EMPTY:${PN}-dev = "0"
+ALLOW_EMPTY:${PN}-dbg = "0"
 
-FILES_${PN}-userfs = "${prefix}/local/Linux-A7-examples"
+FILES:${PN}-userfs = "${prefix}/local/Linux-A7-examples"
 
 do_install() {
     # Install scripts and README in userfs:

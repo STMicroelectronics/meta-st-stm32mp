@@ -7,7 +7,7 @@ LIC_FILES_CHKSUM = "file://license.rst;md5=1dd070c98a281d18d9eefd938729b031"
 
 PROVIDES += "virtual/trusted-firmware-a"
 
-FILESEXTRAPATHS_prepend_stm32mpcommon := "${THISDIR}/tf-a-stm32mp:"
+FILESEXTRAPATHS:prepend_stm32mpcommon := "${THISDIR}/tf-a-stm32mp:"
 
 SRC_URI = "git://github.com/ARM-software/arm-trusted-firmware.git;protocol=https;nobranch=1"
 SRCREV = "e2c509a39c6cc4dda8734e6509cdbe6e3603cdfc"
@@ -48,8 +48,8 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'tf-a-stm32mp-
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
-SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/arm-trusted-firmware.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV_class-devupstream = "3e1e3f0a6149d04946ff5debcd871173e782111c"
+SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/arm-trusted-firmware.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
+SRCREV:class-devupstream = "3e1e3f0a6149d04946ff5debcd871173e782111c"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

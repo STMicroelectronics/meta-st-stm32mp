@@ -27,13 +27,13 @@ S = "${WORKDIR}/git"
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 
 OPTEEMACHINE ?= "stm32mp1"
-OPTEEMACHINE_stm32mp1common = "stm32mp1"
+OPTEEMACHINE:stm32mp1common = "stm32mp1"
 
 OPTEEOUTPUTMACHINE ?= "stm32mp1"
-OPTEEOUTPUTMACHINE_stm32mp1common = "stm32mp1"
+OPTEEOUTPUTMACHINE:stm32mp1common = "stm32mp1"
 
 # The package is empty but must be generated to avoid apt-get installation issue
-ALLOW_EMPTY_${PN} = "1"
+ALLOW_EMPTY:${PN} = "1"
 
 require optee-os-stm32mp-common.inc
 
@@ -47,8 +47,8 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'optee-os-stm3
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
-SRC_URI_class-devupstream = "git://github.com/STMicroelectronics/optee_os.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV_class-devupstream = "639a8566de8fa720d2cb7ab7231e8de105e7859d"
+SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/optee_os.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
+SRCREV:class-devupstream = "639a8566de8fa720d2cb7ab7231e8de105e7859d"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

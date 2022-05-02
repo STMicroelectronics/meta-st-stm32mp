@@ -1,11 +1,11 @@
 #
 # Archiver Configuration
 #
-SRC_URI_append = " file://README.HOW_TO.txt "
+SRC_URI:append = " file://README.HOW_TO.txt "
 
 inherit archiver
 ARCHIVER_MODE[src] = "original"
-COPYLEFT_LICENSE_INCLUDE_append = " BSD-3* "
+COPYLEFT_LICENSE_INCLUDE:append = " BSD-3* "
 
 inherit archiver_stm32mp_clean
 

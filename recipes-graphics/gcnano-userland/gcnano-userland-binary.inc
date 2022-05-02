@@ -139,41 +139,41 @@ INHIBIT_PACKAGE_STRIP = "1"
 INHIBIT_SYSROOT_STRIP = "1"
 
 # Avoid QA Issue: No GNU_HASH in the elf binary
-INSANE_SKIP_${PN} += "ldflags"
+INSANE_SKIP:${PN} += "ldflags"
 
 # Avoid QA Issue: non -dev/-dbg/nativesdk- package contains symlink .so
-INSANE_SKIP_${PN} += "dev-so"
+INSANE_SKIP:${PN} += "dev-so"
 # Avoid QA Issue: file-rdeps
-INSANE_SKIP_${PN} += "file-rdeps"
+INSANE_SKIP:${PN} += "file-rdeps"
 # Avoid QA Issue: debug-deps
-INSANE_SKIP_${PN} += "debug-deps"
+INSANE_SKIP:${PN} += "debug-deps"
 
-INSANE_SKIP_${PN}-dev += "dev-elf dev-so ldflags file-rdeps"
+INSANE_SKIP:${PN}-dev += "dev-elf dev-so ldflags file-rdeps"
 
 # Monolitic configuration
-RPROVIDES_${PN} = "libegl libegl1 libgles1 libglesv1-cm1 libgles2 libglesv2-2 libvg libgbm gbm_viv"
-RREPLACES_${PN} = "libegl libegl1 libgles1 libglesv1-cm1 libgles2 libglesv2-2 libvg libgbm gbm_viv"
-RCONFLICTS_${PN} = "libegl libegl1 libgles1 libglesv1-cm1 libgles2 libglesv2-2 libvg libgbm gbm_viv"
+RPROVIDES:${PN} = "libegl libegl1 libgles1 libglesv1-cm1 libgles2 libglesv2-2 libvg libgbm gbm_viv"
+RREPLACES:${PN} = "libegl libegl1 libgles1 libglesv1-cm1 libgles2 libglesv2-2 libvg libgbm gbm_viv"
+RCONFLICTS:${PN} = "libegl libegl1 libgles1 libglesv1-cm1 libgles2 libglesv2-2 libvg libgbm gbm_viv"
 
 PACKAGES = "${PN} ${PN}-dev "
 
-SUMMARY_${PN} = "${SUMMARY}"
-FILES_${PN}  = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libEGL.so* ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libEGL.*.${GCNANO_TYPE}.so"
-FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv1_CM.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv1_CM.*.${GCNANO_TYPE}.so"
-FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv2.so* ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv2.*.${GCNANO_TYPE}.so"
-FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libOpenVG.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libOpenVG.*.${GCNANO_TYPE}.so"
-FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGAL.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGAL.*.${GCNANO_TYPE}.so"
-FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libVSC.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libVSC.*.${GCNANO_TYPE}.so"
-FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLSLC.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLSLC.*.${GCNANO_TYPE}.so"
-FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm.so* ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm.*.${GCNANO_TYPE}.so*"
-FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libwayland-viv*.so*"
-FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/gbm_viv.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/gbm_viv.*.${GCNANO_TYPE}.so"
-FILES_${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm_viv.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm_viv.*.${GCNANO_TYPE}.so"
+SUMMARY:${PN} = "${SUMMARY}"
+FILES:${PN}  = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libEGL.so* ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libEGL.*.${GCNANO_TYPE}.so"
+FILES:${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv1_CM.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv1_CM.*.${GCNANO_TYPE}.so"
+FILES:${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv2.so* ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv2.*.${GCNANO_TYPE}.so"
+FILES:${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libOpenVG.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libOpenVG.*.${GCNANO_TYPE}.so"
+FILES:${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGAL.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGAL.*.${GCNANO_TYPE}.so"
+FILES:${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libVSC.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libVSC.*.${GCNANO_TYPE}.so"
+FILES:${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLSLC.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLSLC.*.${GCNANO_TYPE}.so"
+FILES:${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm.so* ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm.*.${GCNANO_TYPE}.so*"
+FILES:${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libwayland-viv*.so*"
+FILES:${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/gbm_viv.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/gbm_viv.*.${GCNANO_TYPE}.so"
+FILES:${PN} += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm_viv.so ${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm_viv.*.${GCNANO_TYPE}.so"
 
-FILES_${PN} += "${libdir}/lib*.so ${libdir}/lib*${SOLIBS} ${libdir}/gbm*"
+FILES:${PN} += "${libdir}/lib*.so ${libdir}/lib*${SOLIBS} ${libdir}/gbm*"
 
-SUMMARY_${PN}-dev = "${SUMMARY_${PN}} - Development files"
-FILES_${PN}-dev   = "${includedir} ${libdir}/pkgconfig/ ${libdir}/"
+SUMMARY:${PN}-dev = "${SUMMARY_${PN}} - Development files"
+FILES:${PN}-dev   = "${includedir} ${libdir}/pkgconfig/ ${libdir}/"
 
 gcnano_sysroot() {
     if [ ${GCNANO_USERLAND_USE_VENDOR_DIR} -eq 1 ];
