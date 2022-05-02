@@ -11,7 +11,7 @@ IMAGE_ROOTFS_EXTRA_SPACE = "0"
 # Add specific package for our image:
 PACKAGE_INSTALL += " \
     kernel-imagebootfs \
-    u-boot-stm32mp-extlinux \
+    stm32mp-extlinux \
     ${@bb.utils.contains('MACHINE_FEATURES', 'splashscreen', 'u-boot-stm32mp-splash', '', d)} \
 "
 
