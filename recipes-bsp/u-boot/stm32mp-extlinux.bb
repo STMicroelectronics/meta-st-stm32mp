@@ -8,7 +8,7 @@ PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 SRC_URI = "file://boot.scr.cmd"
 
-PV = "3.1.1"
+PV = "3.1"
 
 inherit kernel-arch extlinuxconf-stm32mp
 
@@ -57,4 +57,4 @@ do_install() {
         cp -r ${B}/* ${D}/${UBOOT_EXTLINUX_INSTALL_DIR}
     fi
 }
-FILES_${PN} = "${UBOOT_EXTLINUX_INSTALL_DIR}"
+FILES:${PN} = "${UBOOT_EXTLINUX_INSTALL_DIR}"
