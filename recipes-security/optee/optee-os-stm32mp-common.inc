@@ -43,7 +43,8 @@ do_configure:prepend(){
 }
 
 do_compile() {
-    unset -v CFLAGS CPPFLAGS LDFLAGS LDADD
+    export CFLAGS="${CFLAGS} --sysroot=${STAGING_DIR_HOST}"
+    export OPENSSL_MODULES=${STAGING_LIBDIR_NATIVE}/ossl-modules/
     if [ -n "${OPTEE_CONF}" ]; then
         for conf in ${OPTEE_CONF}; do
             for soc in ${STM32MP_SOC_NAME}; do
