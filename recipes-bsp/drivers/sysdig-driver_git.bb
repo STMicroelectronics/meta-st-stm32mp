@@ -6,7 +6,7 @@ HOMEPAGE = "http://www.sysdig.org/"
 LICENSE = "GPL-2.0-only"
 LIC_FILES_CHKSUM = "file://COPYING;md5=f8fee3d59797546cffab04f3b88b2d44"
 
-SRC_URI = "git://github.com/draios/sysdig.git;protocol=https"
+SRC_URI = "git://github.com/draios/sysdig.git;protocol=https;branch=master"
 SRCREV = "aa82b2fb329ea97a8ade31590954ddaa675e1728"
 
 PV = "0.24.2+git${SRCPV}"

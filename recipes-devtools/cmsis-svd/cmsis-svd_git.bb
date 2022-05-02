@@ -17,7 +17,7 @@ NO_GENERIC_LICENSE[svd-STMicro] = "data/STMicro/License.html"
 
 inherit pkgconfig autotools-brokensep gettext
 
-SRC_URI = "git://github.com/posborne/cmsis-svd.git;protocol=https"
+SRC_URI = "git://github.com/posborne/cmsis-svd.git;protocol=https;branch=master"
 SRCREV = "2ab163c2aea83eb9b39c163856450089255ce4f2"
 
 PV = "0.4+git${SRCPV}"

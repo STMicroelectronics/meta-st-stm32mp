@@ -19,7 +19,7 @@ DEPENDS += "libb64"
 
 RDEPENDS:${PN} = "bash"
 
-SRC_URI = "git://github.com/draios/sysdig.git;protocol=https"
+SRC_URI = "git://github.com/draios/sysdig.git;protocol=https;branch=master"
 SRCREV = "aa82b2fb329ea97a8ade31590954ddaa675e1728"
 
 PV = "0.24.2+git${SRCPV}"
