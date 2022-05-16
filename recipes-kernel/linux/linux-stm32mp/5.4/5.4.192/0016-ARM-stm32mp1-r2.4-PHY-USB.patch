@@ -1,7 +1,7 @@
-From 85df96391f5c60574535073b2acaca79d36c2394 Mon Sep 17 00:00:00 2001
+From c719fd9bafe9374bcc625813f1ef1b5e648e77f0 Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Thu, 25 Nov 2021 13:10:06 +0100
-Subject: [PATCH 16/22] ARM-stm32mp1-r2.3-PHY-USB
+Date: Mon, 16 May 2022 09:46:53 +0200
+Subject: [PATCH 16/22] ARM-stm32mp1-r2.4-PHY-USB
 
 ---
  .../bindings/connector/usb-connector.txt      |   2 +
@@ -19,7 +19,7 @@ Subject: [PATCH 16/22] ARM-stm32mp1-r2.3-PHY-USB
  drivers/usb/dwc2/core.c                       | 123 ++-
  drivers/usb/dwc2/core.h                       |  24 +
  drivers/usb/dwc2/drd.c                        | 210 ++++
- drivers/usb/dwc2/gadget.c                     |   7 +-
+ drivers/usb/dwc2/gadget.c                     |   5 +-
  drivers/usb/dwc2/hcd.c                        |   6 +-
  drivers/usb/dwc2/hw.h                         |   8 +
  drivers/usb/dwc2/params.c                     |  43 +
@@ -37,7 +37,7 @@ Subject: [PATCH 16/22] ARM-stm32mp1-r2.3-PHY-USB
  drivers/usb/typec/typec_stusb.c               | 910 ++++++++++++++++++
  include/linux/phy/phy.h                       |   9 +-
  include/linux/usb/typec.h                     |   1 +
- 33 files changed, 2149 insertions(+), 164 deletions(-)
+ 33 files changed, 2148 insertions(+), 163 deletions(-)
  create mode 100644 Documentation/devicetree/bindings/usb/st,typec-stusb.txt
  create mode 100644 drivers/usb/dwc2/drd.c
  create mode 100644 drivers/usb/typec/typec_stusb.c
@@ -1070,10 +1070,10 @@ index 56bdea4b0..fcf78ed31 100644
  };
  module_platform_driver(stm32_usbphyc_driver);
 diff --git a/drivers/usb/core/hcd.c b/drivers/usb/core/hcd.c
-index d0f45600b..4c5970c81 100644
+index 39203f2ce..42497f739 100644
 --- a/drivers/usb/core/hcd.c
 +++ b/drivers/usb/core/hcd.c
-@@ -2134,7 +2134,8 @@ int hcd_bus_suspend(struct usb_device *rhdev, pm_message_t msg)
+@@ -2155,7 +2155,8 @@ int hcd_bus_suspend(struct usb_device *rhdev, pm_message_t msg)
  
  		if (!PMSG_IS_AUTO(msg))
  			usb_phy_roothub_suspend(hcd->self.sysdev,
@@ -1083,7 +1083,7 @@ index d0f45600b..4c5970c81 100644
  
  		/* Did we race with a root-hub wakeup event? */
  		if (rhdev->do_remote_wakeup) {
-@@ -2175,7 +2176,8 @@ int hcd_bus_resume(struct usb_device *rhdev, pm_message_t msg)
+@@ -2196,7 +2197,8 @@ int hcd_bus_resume(struct usb_device *rhdev, pm_message_t msg)
  
  	if (!PMSG_IS_AUTO(msg)) {
  		status = usb_phy_roothub_resume(hcd->self.sysdev,
@@ -1093,7 +1093,7 @@ index d0f45600b..4c5970c81 100644
  		if (status)
  			return status;
  	}
-@@ -2220,7 +2222,8 @@ int hcd_bus_resume(struct usb_device *rhdev, pm_message_t msg)
+@@ -2241,7 +2243,8 @@ int hcd_bus_resume(struct usb_device *rhdev, pm_message_t msg)
  		}
  	} else {
  		hcd->state = old_state;
@@ -1713,10 +1713,10 @@ index 000000000..3c51466cf
 +		usb_role_switch_unregister(hsotg->role_sw);
 +}
 diff --git a/drivers/usb/dwc2/gadget.c b/drivers/usb/dwc2/gadget.c
-index e8b25dae0..5aa382965 100644
+index 379bbf27c..579671526 100644
 --- a/drivers/usb/dwc2/gadget.c
 +++ b/drivers/usb/dwc2/gadget.c
-@@ -3574,7 +3574,7 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
+@@ -3585,7 +3585,7 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
  		dwc2_readl(hsotg, DOEPCTL0));
  }
  
@@ -1725,7 +1725,7 @@ index e8b25dae0..5aa382965 100644
  {
  	/* set the soft-disconnect bit */
  	dwc2_set_bit(hsotg, DCTL, DCTL_SFTDISCON);
-@@ -3583,7 +3583,8 @@ static void dwc2_hsotg_core_disconnect(struct dwc2_hsotg *hsotg)
+@@ -3594,7 +3594,8 @@ static void dwc2_hsotg_core_disconnect(struct dwc2_hsotg *hsotg)
  void dwc2_hsotg_core_connect(struct dwc2_hsotg *hsotg)
  {
  	/* remove the soft-disconnect and let's go */
@@ -1735,15 +1735,6 @@ index e8b25dae0..5aa382965 100644
  }
  
  /**
-@@ -4968,7 +4969,7 @@ int dwc2_hsotg_suspend(struct dwc2_hsotg *hsotg)
- 		hsotg->gadget.speed = USB_SPEED_UNKNOWN;
- 		spin_unlock_irqrestore(&hsotg->lock, flags);
- 
--		for (ep = 0; ep < hsotg->num_of_eps; ep++) {
-+		for (ep = 1; ep < hsotg->num_of_eps; ep++) {
- 			if (hsotg->eps_in[ep])
- 				dwc2_hsotg_ep_disable_lock(&hsotg->eps_in[ep]->ep);
- 			if (hsotg->eps_out[ep])
 diff --git a/drivers/usb/dwc2/hcd.c b/drivers/usb/dwc2/hcd.c
 index 78329d0e9..1bcee6d50 100644
 --- a/drivers/usb/dwc2/hcd.c

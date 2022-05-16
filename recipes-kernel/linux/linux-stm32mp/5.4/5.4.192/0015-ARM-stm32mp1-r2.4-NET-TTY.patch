@@ -1,7 +1,7 @@
-From 52284ef1c0db7ba47aa56d7c434e57ae629edb2b Mon Sep 17 00:00:00 2001
+From ff4d26f5ac1e93873445f3161d4dd26be6740aa4 Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Thu, 25 Nov 2021 13:10:05 +0100
-Subject: [PATCH 15/22] ARM-stm32mp1-r2.3-NET-TTY
+Date: Mon, 16 May 2022 09:46:52 +0200
+Subject: [PATCH 15/22] ARM-stm32mp1-r2.4-NET-TTY
 
 ---
  .../net/ethernet/stmicro/stmmac/dwmac-stm32.c |   98 +-
@@ -15,9 +15,9 @@ Subject: [PATCH 15/22] ARM-stm32mp1-r2.3-NET-TTY
  drivers/tty/serial/serial_core.c              |   10 +
  drivers/tty/serial/serial_mctrl_gpio.c        |   38 +
  drivers/tty/serial/serial_mctrl_gpio.h        |   18 +
- drivers/tty/serial/stm32-usart.c              | 1288 +++++++++++------
+ drivers/tty/serial/stm32-usart.c              | 1286 +++++++++++------
  drivers/tty/serial/stm32-usart.h              |   28 +-
- include/uapi/linux/serial.h                   |    2 +
+ include/uapi/linux/serial.h                   |    4 +-
  14 files changed, 1116 insertions(+), 480 deletions(-)
 
 diff --git a/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c b/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
@@ -227,10 +227,10 @@ index afdea015f..53a84d459 100644
  		if (!(readl(ioaddr + DMA_BUS_MODE) & DMA_BUS_MODE_SFT_RESET))
  			break;
 diff --git a/drivers/net/ethernet/stmicro/stmmac/stmmac_ethtool.c b/drivers/net/ethernet/stmicro/stmmac/stmmac_ethtool.c
-index ce1346c14..6d12f20f7 100644
+index 30b9393ae..b7f559b67 100644
 --- a/drivers/net/ethernet/stmicro/stmmac/stmmac_ethtool.c
 +++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_ethtool.c
-@@ -699,7 +699,7 @@ static u32 stmmac_riwt2usec(u32 riwt, struct stmmac_priv *priv)
+@@ -714,7 +714,7 @@ static u32 stmmac_riwt2usec(u32 riwt, struct stmmac_priv *priv)
  			return 0;
  	}
  
@@ -240,7 +240,7 @@ index ce1346c14..6d12f20f7 100644
  
  static int stmmac_get_coalesce(struct net_device *dev,
 diff --git a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
-index 94c652b9a..9e69cf9a3 100644
+index 9cbc0179d..bbe0f9f3c 100644
 --- a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
 +++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
 @@ -1441,10 +1441,11 @@ static void dma_free_tx_skbufs(struct stmmac_priv *priv, u32 queue)
@@ -317,10 +317,10 @@ index 94c652b9a..9e69cf9a3 100644
  EXPORT_SYMBOL_GPL(stmmac_resume);
  
 diff --git a/drivers/net/ethernet/stmicro/stmmac/stmmac_platform.c b/drivers/net/ethernet/stmicro/stmmac/stmmac_platform.c
-index a46fea472..50845526b 100644
+index 70cbf48c2..859df3de0 100644
 --- a/drivers/net/ethernet/stmicro/stmmac/stmmac_platform.c
 +++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_platform.c
-@@ -596,7 +596,7 @@ stmmac_probe_config_dt(struct platform_device *pdev, const char **mac)
+@@ -595,7 +595,7 @@ stmmac_probe_config_dt(struct platform_device *pdev, const char **mac)
  	if (IS_ERR(plat->clk_ptp_ref)) {
  		plat->clk_ptp_rate = clk_get_rate(plat->stmmac_clk);
  		plat->clk_ptp_ref = NULL;
@@ -486,10 +486,10 @@ index a9751a83d..59d01540a 100644
  	  This driver is for the on-chip Serial Controller on
  	  STMicroelectronics STM32 MCUs.
 diff --git a/drivers/tty/serial/serial_core.c b/drivers/tty/serial/serial_core.c
-index 38ee13bbc..75548f4cc 100644
+index 7cc7bd8ac..5e5ead73d 100644
 --- a/drivers/tty/serial/serial_core.c
 +++ b/drivers/tty/serial/serial_core.c
-@@ -3120,6 +3120,16 @@ void uart_get_rs485_mode(struct device *dev, struct serial_rs485 *rs485conf)
+@@ -3132,6 +3132,16 @@ void uart_get_rs485_mode(struct device *dev, struct serial_rs485 *rs485conf)
  	u32 rs485_delay[2];
  	int ret;
  
@@ -590,7 +590,7 @@ index 1b2ff503b..f2e4760ac 100644
  
  #endif
 diff --git a/drivers/tty/serial/stm32-usart.c b/drivers/tty/serial/stm32-usart.c
-index 23b7bdae1..f99dea055 100644
+index d517b911c..f99dea055 100644
 --- a/drivers/tty/serial/stm32-usart.c
 +++ b/drivers/tty/serial/stm32-usart.c
 @@ -4,6 +4,7 @@
@@ -1381,8 +1381,7 @@ index 23b7bdae1..f99dea055 100644
  {
  	struct circ_buf *xmit = &port->state->xmit;
  
--	if (uart_circ_empty(xmit))
-+	if (uart_circ_empty(xmit) && !port->x_char)
+ 	if (uart_circ_empty(xmit) && !port->x_char)
  		return;
  
 -	stm32_transmit_chars(port);
@@ -1481,13 +1480,14 @@ index 23b7bdae1..f99dea055 100644
  /* Handle breaks - ignored by us */
 -static void stm32_break_ctl(struct uart_port *port, int break_state)
 +static void stm32_usart_break_ctl(struct uart_port *port, int break_state)
-+{
-+}
-+
+ {
+ }
+ 
+-static int stm32_startup(struct uart_port *port)
 +static int stm32_usart_start_rx_dma_cyclic(struct uart_port *port)
  {
-+	struct stm32_port *stm32_port = to_stm32_port(port);
-+	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+ 	struct stm32_port *stm32_port = to_stm32_port(port);
+ 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
 +	struct dma_async_tx_descriptor *desc;
 +	int ret;
 +
@@ -1524,13 +1524,12 @@ index 23b7bdae1..f99dea055 100644
 +		stm32_usart_set_bits(port, ofs->cr3, USART_CR3_DMAR);
 +
 +	return 0;
- }
- 
--static int stm32_startup(struct uart_port *port)
++}
++
 +static int stm32_usart_startup(struct uart_port *port)
- {
- 	struct stm32_port *stm32_port = to_stm32_port(port);
- 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
++{
++	struct stm32_port *stm32_port = to_stm32_port(port);
++	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
 +	struct stm32_usart_config *cfg = &stm32_port->info->cfg;
  	const char *name = to_platform_device(port->dev)->name;
  	u32 val;
@@ -1605,12 +1604,12 @@ index 23b7bdae1..f99dea055 100644
  	if (ret)
 -		dev_err(port->dev, "transmission complete not set\n");
 +		dev_err(port->dev, "Transmission is not complete\n");
-+
+ 
+-	stm32_clr_bits(port, ofs->cr1, val);
 +	/* Disable RX DMA. */
 +	if (stm32_port->rx_ch)
 +		dmaengine_terminate_async(stm32_port->rx_ch);
- 
--	stm32_clr_bits(port, ofs->cr1, val);
++
 +	/* flush RX & TX FIFO */
 +	if (ofs->rqr != UNDEF_REG)
 +		writel_relaxed(USART_RQR_TXFRQ | USART_RQR_RXFRQ,
@@ -2676,18 +2675,20 @@ index a0b816e0e..f4708007e 100644
  
  static struct stm32_port stm32_ports[STM32_MAX_PORTS];
 diff --git a/include/uapi/linux/serial.h b/include/uapi/linux/serial.h
-index 93eb3c496..2d98e65d2 100644
+index 93eb3c496..c94d778d8 100644
 --- a/include/uapi/linux/serial.h
 +++ b/include/uapi/linux/serial.h
-@@ -128,6 +128,8 @@ struct serial_rs485 {
+@@ -128,7 +128,9 @@ struct serial_rs485 {
  							   (if supported) */
  	__u32	delay_rts_before_send;	/* Delay before send (milliseconds) */
  	__u32	delay_rts_after_send;	/* Delay after send (milliseconds) */
+-	__u32	padding[5];		/* Memory is cheap, new structs
 +	__u32	delay_rts_before_send_ns;	/* Delay (nanoseconds) */
 +	__u32	delay_rts_after_send_ns;	/* Delay (nanoseconds) */
- 	__u32	padding[5];		/* Memory is cheap, new structs
++	__u32	padding[3];		/* Memory is cheap, new structs
  					   are a royal PITA .. */
  };
+ 
 -- 
 2.17.1
 

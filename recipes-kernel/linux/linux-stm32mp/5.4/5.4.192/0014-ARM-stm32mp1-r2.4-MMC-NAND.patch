@@ -1,7 +1,7 @@
-From 2dcf665b314972d63f7856c46dc1c8693e5dc599 Mon Sep 17 00:00:00 2001
+From d9ce7c61e45a2d49e3ec8c4962672757cfa9557a Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Thu, 25 Nov 2021 13:10:04 +0100
-Subject: [PATCH 14/22] ARM-stm32mp1-r2.3-MMC-NAND
+Date: Mon, 16 May 2022 09:46:51 +0200
+Subject: [PATCH 14/22] ARM-stm32mp1-r2.4-MMC-NAND
 
 ---
  .../devicetree/bindings/mmc/mmci.txt          |    2 +
@@ -11,12 +11,12 @@ Subject: [PATCH 14/22] ARM-stm32mp1-r2.3-MMC-NAND
  drivers/mmc/core/regulator.c                  |   19 +-
  drivers/mmc/host/mmci.c                       |  309 +++--
  drivers/mmc/host/mmci.h                       |   17 +-
- drivers/mmc/host/mmci_stm32_sdmmc.c           |  257 +++-
+ drivers/mmc/host/mmci_stm32_sdmmc.c           |  251 +++-
  drivers/mtd/nand/raw/Kconfig                  |    1 +
  drivers/mtd/nand/raw/stm32_fmc2_nand.c        | 1185 ++++++++---------
  include/linux/mmc/core.h                      |    1 +
  include/linux/mmc/host.h                      |    6 +
- 12 files changed, 1111 insertions(+), 789 deletions(-)
+ 12 files changed, 1108 insertions(+), 786 deletions(-)
  delete mode 100644 Documentation/devicetree/bindings/mtd/stm32-fmc2-nand.txt
 
 diff --git a/Documentation/devicetree/bindings/mmc/mmci.txt b/Documentation/devicetree/bindings/mmc/mmci.txt
@@ -100,7 +100,7 @@ index e55895e8d..000000000
 -		};
 -	};
 diff --git a/drivers/mmc/core/block.c b/drivers/mmc/core/block.c
-index e92f9373e..6f5381b5e 100644
+index 362ad361d..0d990367a 100644
 --- a/drivers/mmc/core/block.c
 +++ b/drivers/mmc/core/block.c
 @@ -1782,6 +1782,17 @@ static void mmc_blk_mq_rw_recovery(struct mmc_queue *mq, struct request *req)
@@ -122,7 +122,7 @@ index e92f9373e..6f5381b5e 100644
  	 * Some errors the host driver might not have seen. Set the number of
  	 * bytes transferred to zero in that case.
 diff --git a/drivers/mmc/core/core.c b/drivers/mmc/core/core.c
-index 8f94c2539..4232e4eb2 100644
+index d7bda1fa0..095a4bcb2 100644
 --- a/drivers/mmc/core/core.c
 +++ b/drivers/mmc/core/core.c
 @@ -397,6 +397,7 @@ static int __mmc_start_req(struct mmc_host *host, struct mmc_request *mrq)
@@ -825,7 +825,7 @@ index 89ab73343..a94f384bb 100644
  	struct pinctrl_state	*pins_default;
  	struct pinctrl_state	*pins_opendrain;
 diff --git a/drivers/mmc/host/mmci_stm32_sdmmc.c b/drivers/mmc/host/mmci_stm32_sdmmc.c
-index 0953bd8a4..c955c2941 100644
+index 3bb59d670..007fe68fc 100644
 --- a/drivers/mmc/host/mmci_stm32_sdmmc.c
 +++ b/drivers/mmc/host/mmci_stm32_sdmmc.c
 @@ -3,10 +3,13 @@
@@ -880,26 +880,6 @@ index 0953bd8a4..c955c2941 100644
  int sdmmc_idma_validate_data(struct mmci_host *host,
  			     struct mmc_data *data)
  {
-@@ -36,8 +58,8 @@ int sdmmc_idma_validate_data(struct mmci_host *host,
- 	 * excepted the last element which has no constraint on idmasize
- 	 */
- 	for_each_sg(data->sg, sg, data->sg_len - 1, i) {
--		if (!IS_ALIGNED(sg_dma_address(data->sg), sizeof(u32)) ||
--		    !IS_ALIGNED(sg_dma_len(data->sg), SDMMC_IDMA_BURST)) {
-+		if (!IS_ALIGNED(data->sg->offset, sizeof(u32)) ||
-+		    !IS_ALIGNED(data->sg->length, SDMMC_IDMA_BURST)) {
- 			dev_err(mmc_dev(host->mmc),
- 				"unaligned scatterlist: ofst:%x length:%d\n",
- 				data->sg->offset, data->sg->length);
-@@ -45,7 +67,7 @@ int sdmmc_idma_validate_data(struct mmci_host *host,
- 		}
- 	}
- 
--	if (!IS_ALIGNED(sg_dma_address(data->sg), sizeof(u32))) {
-+	if (!IS_ALIGNED(data->sg->offset, sizeof(u32))) {
- 		dev_err(mmc_dev(host->mmc),
- 			"unaligned last scatterlist: ofst:%x length:%d\n",
- 			data->sg->offset, data->sg->length);
 @@ -92,21 +114,21 @@ static void sdmmc_idma_unprep_data(struct mmci_host *host,
  
  static int sdmmc_idma_setup(struct mmci_host *host)

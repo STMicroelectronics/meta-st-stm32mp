@@ -1,17 +1,17 @@
-From 42e2fc19221812175eb5d812e8d246cd7de3e068 Mon Sep 17 00:00:00 2001
+From 847de55b5640b9a773af9ef79f6709df0d0f0637 Mon Sep 17 00:00:00 2001
 From: Lionel VITTE <lionel.vitte@st.com>
-Date: Thu, 25 Nov 2021 13:10:02 +0100
-Subject: [PATCH 11/22] ARM-stm32mp1-r2.3-RESET-RTC-WATCHDOG
+Date: Mon, 16 May 2022 09:46:49 +0200
+Subject: [PATCH 11/22] ARM-stm32mp1-r2.4-RESET-RTC-WATCHDOG
 
 ---
  .../devicetree/bindings/rtc/st,stm32-rtc.txt  |  10 +-
- drivers/reset/reset-stm32mp1.c                |  83 ++++---
+ drivers/reset/reset-stm32mp1.c                |  83 ++++--
  drivers/rtc/Kconfig                           |   1 +
- drivers/rtc/rtc-stm32.c                       | 203 ++++++++++++++----
+ drivers/rtc/rtc-stm32.c                       | 264 +++++++++++++-----
  drivers/watchdog/stm32_iwdg.c                 |   6 +-
- include/dt-bindings/reset/stm32mp1-resets.h   |  15 ++
- include/dt-bindings/rtc/rtc-stm32.h           |  13 ++
- 7 files changed, 263 insertions(+), 68 deletions(-)
+ include/dt-bindings/reset/stm32mp1-resets.h   |  15 +
+ include/dt-bindings/rtc/rtc-stm32.h           |  13 +
+ 7 files changed, 296 insertions(+), 96 deletions(-)
  create mode 100644 include/dt-bindings/rtc/rtc-stm32.h
 
 diff --git a/Documentation/devicetree/bindings/rtc/st,stm32-rtc.txt b/Documentation/devicetree/bindings/rtc/st,stm32-rtc.txt
@@ -167,7 +167,7 @@ index 0ad8d84ae..be314cedd 100644
  	help
  	   If you say yes here you get support for the STM32 On-Chip
 diff --git a/drivers/rtc/rtc-stm32.c b/drivers/rtc/rtc-stm32.c
-index d28e7597d..4e3824df4 100644
+index d28e7597d..9f8acd38a 100644
 --- a/drivers/rtc/rtc-stm32.c
 +++ b/drivers/rtc/rtc-stm32.c
 @@ -6,6 +6,8 @@
@@ -213,7 +213,17 @@ index d28e7597d..4e3824df4 100644
  /* STM32_RTC_VERR bit fields */
  #define STM32_RTC_VERR_MINREV_SHIFT	0
  #define STM32_RTC_VERR_MINREV		GENMASK(3, 0)
-@@ -101,6 +116,7 @@ struct stm32_rtc_registers {
+@@ -89,6 +104,9 @@
+ /* Max STM32 RTC register offset is 0x3FC */
+ #define UNDEF_REG			0xFFFF
+ 
++/* STM32 RTC driver time helpers */
++#define SEC_PER_DAY		(24 * 60 * 60)
++
+ struct stm32_rtc;
+ 
+ struct stm32_rtc_registers {
+@@ -101,6 +119,7 @@ struct stm32_rtc_registers {
  	u16 wpr;
  	u16 sr;
  	u16 scr;
@@ -221,7 +231,7 @@ index d28e7597d..4e3824df4 100644
  	u16 verr;
  };
  
-@@ -114,7 +130,8 @@ struct stm32_rtc_data {
+@@ -114,7 +133,8 @@ struct stm32_rtc_data {
  	void (*clear_events)(struct stm32_rtc *rtc, unsigned int flags);
  	bool has_pclk;
  	bool need_dbp;
@@ -231,7 +241,7 @@ index d28e7597d..4e3824df4 100644
  };
  
  struct stm32_rtc {
-@@ -127,9 +144,87 @@ struct stm32_rtc {
+@@ -127,9 +147,87 @@ struct stm32_rtc {
  	struct clk *rtc_ck;
  	const struct stm32_rtc_data *data;
  	int irq_alarm;
@@ -320,7 +330,96 @@ index d28e7597d..4e3824df4 100644
  static void stm32_rtc_wpr_unlock(struct stm32_rtc *rtc)
  {
  	const struct stm32_rtc_registers *regs = &rtc->data->regs;
-@@ -547,7 +642,8 @@ static void stm32_rtc_clear_events(struct stm32_rtc *rtc,
+@@ -427,40 +525,42 @@ static int stm32_rtc_alarm_irq_enable(struct device *dev, unsigned int enabled)
+ 	return 0;
+ }
+ 
+-static int stm32_rtc_valid_alrm(struct stm32_rtc *rtc, struct rtc_time *tm)
++static int stm32_rtc_valid_alrm(struct device *dev, struct rtc_time *tm)
+ {
+-	const struct stm32_rtc_registers *regs = &rtc->data->regs;
+-	int cur_day, cur_mon, cur_year, cur_hour, cur_min, cur_sec;
+-	unsigned int dr = readl_relaxed(rtc->base + regs->dr);
+-	unsigned int tr = readl_relaxed(rtc->base + regs->tr);
+-
+-	cur_day = (dr & STM32_RTC_DR_DATE) >> STM32_RTC_DR_DATE_SHIFT;
+-	cur_mon = (dr & STM32_RTC_DR_MONTH) >> STM32_RTC_DR_MONTH_SHIFT;
+-	cur_year = (dr & STM32_RTC_DR_YEAR) >> STM32_RTC_DR_YEAR_SHIFT;
+-	cur_sec = (tr & STM32_RTC_TR_SEC) >> STM32_RTC_TR_SEC_SHIFT;
+-	cur_min = (tr & STM32_RTC_TR_MIN) >> STM32_RTC_TR_MIN_SHIFT;
+-	cur_hour = (tr & STM32_RTC_TR_HOUR) >> STM32_RTC_TR_HOUR_SHIFT;
++	static struct rtc_time now;
++	time64_t max_alarm_time64;
++	int max_day_forward;
++	int next_month;
++	int next_year;
+ 
+ 	/*
+ 	 * Assuming current date is M-D-Y H:M:S.
+ 	 * RTC alarm can't be set on a specific month and year.
+ 	 * So the valid alarm range is:
+ 	 *	M-D-Y H:M:S < alarm <= (M+1)-D-Y H:M:S
+-	 * with a specific case for December...
+ 	 */
+-	if ((((tm->tm_year > cur_year) &&
+-	      (tm->tm_mon == 0x1) && (cur_mon == 0x12)) ||
+-	     ((tm->tm_year == cur_year) &&
+-	      (tm->tm_mon <= cur_mon + 1))) &&
+-	    ((tm->tm_mday > cur_day) ||
+-	     ((tm->tm_mday == cur_day) &&
+-	     ((tm->tm_hour > cur_hour) ||
+-	      ((tm->tm_hour == cur_hour) && (tm->tm_min > cur_min)) ||
+-	      ((tm->tm_hour == cur_hour) && (tm->tm_min == cur_min) &&
+-	       (tm->tm_sec >= cur_sec))))))
+-		return 0;
++	stm32_rtc_read_time(dev, &now);
++
++	/*
++	 * Find the next month and the year of the next month.
++	 * Note: tm_mon and next_month are from 0 to 11
++	 */
++	next_month = now.tm_mon + 1;
++	if (next_month == 12) {
++		next_month = 0;
++		next_year = now.tm_year + 1;
++	} else {
++		next_year = now.tm_year;
++	}
++
++	/* Find the maximum limit of alarm in days. */
++	max_day_forward = rtc_month_days(now.tm_mon, now.tm_year)
++			 - now.tm_mday
++			 + min(rtc_month_days(next_month, next_year), now.tm_mday);
+ 
+-	return -EINVAL;
++	/* Convert to timestamp and compare the alarm time and its upper limit */
++	max_alarm_time64 = rtc_tm_to_time64(&now) + max_day_forward * SEC_PER_DAY;
++	return rtc_tm_to_time64(tm) <= max_alarm_time64 ? 0 : -EINVAL;
+ }
+ 
+ static int stm32_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
+@@ -471,17 +571,17 @@ static int stm32_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
+ 	unsigned int cr, isr, alrmar;
+ 	int ret = 0;
+ 
+-	tm2bcd(tm);
+-
+ 	/*
+ 	 * RTC alarm can't be set on a specific date, unless this date is
+ 	 * up to the same day of month next month.
+ 	 */
+-	if (stm32_rtc_valid_alrm(rtc, tm) < 0) {
++	if (stm32_rtc_valid_alrm(dev, tm) < 0) {
+ 		dev_err(dev, "Alarm can be set only on upcoming month.\n");
+ 		return -EINVAL;
+ 	}
+ 
++	tm2bcd(tm);
++
+ 	alrmar = 0;
+ 	/* tm_year and tm_mon are not used because not supported by RTC */
+ 	alrmar |= (tm->tm_mday << STM32_RTC_ALRMXR_DATE_SHIFT) &
+@@ -547,7 +647,8 @@ static void stm32_rtc_clear_events(struct stm32_rtc *rtc,
  static const struct stm32_rtc_data stm32_rtc_data = {
  	.has_pclk = false,
  	.need_dbp = true,
@@ -330,7 +429,7 @@ index d28e7597d..4e3824df4 100644
  	.regs = {
  		.tr = 0x00,
  		.dr = 0x04,
-@@ -558,6 +654,7 @@ static const struct stm32_rtc_data stm32_rtc_data = {
+@@ -558,6 +659,7 @@ static const struct stm32_rtc_data stm32_rtc_data = {
  		.wpr = 0x24,
  		.sr = 0x0C, /* set to ISR offset to ease alarm management */
  		.scr = UNDEF_REG,
@@ -338,7 +437,7 @@ index d28e7597d..4e3824df4 100644
  		.verr = UNDEF_REG,
  	},
  	.events = {
-@@ -569,7 +666,8 @@ static const struct stm32_rtc_data stm32_rtc_data = {
+@@ -569,7 +671,8 @@ static const struct stm32_rtc_data stm32_rtc_data = {
  static const struct stm32_rtc_data stm32h7_rtc_data = {
  	.has_pclk = true,
  	.need_dbp = true,
@@ -348,7 +447,7 @@ index d28e7597d..4e3824df4 100644
  	.regs = {
  		.tr = 0x00,
  		.dr = 0x04,
-@@ -580,6 +678,7 @@ static const struct stm32_rtc_data stm32h7_rtc_data = {
+@@ -580,6 +683,7 @@ static const struct stm32_rtc_data stm32h7_rtc_data = {
  		.wpr = 0x24,
  		.sr = 0x0C, /* set to ISR offset to ease alarm management */
  		.scr = UNDEF_REG,
@@ -356,7 +455,7 @@ index d28e7597d..4e3824df4 100644
  		.verr = UNDEF_REG,
  	},
  	.events = {
-@@ -600,7 +699,8 @@ static void stm32mp1_rtc_clear_events(struct stm32_rtc *rtc,
+@@ -600,7 +704,8 @@ static void stm32mp1_rtc_clear_events(struct stm32_rtc *rtc,
  static const struct stm32_rtc_data stm32mp1_data = {
  	.has_pclk = true,
  	.need_dbp = false,
@@ -366,7 +465,7 @@ index d28e7597d..4e3824df4 100644
  	.regs = {
  		.tr = 0x00,
  		.dr = 0x04,
-@@ -611,6 +711,7 @@ static const struct stm32_rtc_data stm32mp1_data = {
+@@ -611,6 +716,7 @@ static const struct stm32_rtc_data stm32mp1_data = {
  		.wpr = 0x24,
  		.sr = 0x50,
  		.scr = 0x5C,
@@ -374,7 +473,7 @@ index d28e7597d..4e3824df4 100644
  		.verr = 0x3F4,
  	},
  	.events = {
-@@ -633,7 +734,7 @@ static int stm32_rtc_init(struct platform_device *pdev,
+@@ -633,7 +739,7 @@ static int stm32_rtc_init(struct platform_device *pdev,
  	const struct stm32_rtc_registers *regs = &rtc->data->regs;
  	unsigned int prer, pred_a, pred_s, pred_a_max, pred_s_max, cr;
  	unsigned int rate;
@@ -383,7 +482,7 @@ index d28e7597d..4e3824df4 100644
  
  	rate = clk_get_rate(rtc->rtc_ck);
  
-@@ -641,11 +742,20 @@ static int stm32_rtc_init(struct platform_device *pdev,
+@@ -641,11 +747,20 @@ static int stm32_rtc_init(struct platform_device *pdev,
  	pred_a_max = STM32_RTC_PRER_PRED_A >> STM32_RTC_PRER_PRED_A_SHIFT;
  	pred_s_max = STM32_RTC_PRER_PRED_S >> STM32_RTC_PRER_PRED_S_SHIFT;
  
@@ -408,7 +507,7 @@ index d28e7597d..4e3824df4 100644
  	}
  
  	/*
-@@ -661,6 +771,20 @@ static int stm32_rtc_init(struct platform_device *pdev,
+@@ -661,6 +776,20 @@ static int stm32_rtc_init(struct platform_device *pdev,
  			 "fast" : "slow");
  	}
  
@@ -429,7 +528,7 @@ index d28e7597d..4e3824df4 100644
  	stm32_rtc_wpr_unlock(rtc);
  
  	ret = stm32_rtc_enter_init_mode(rtc);
-@@ -670,13 +794,10 @@ static int stm32_rtc_init(struct platform_device *pdev,
+@@ -670,13 +799,10 @@ static int stm32_rtc_init(struct platform_device *pdev,
  		goto end;
  	}
  
@@ -445,7 +544,7 @@ index d28e7597d..4e3824df4 100644
  	cr &= ~STM32_RTC_CR_FMT;
  	writel_relaxed(cr, rtc->base + regs->cr);
  
-@@ -738,13 +859,15 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+@@ -738,13 +864,15 @@ static int stm32_rtc_probe(struct platform_device *pdev)
  	} else {
  		rtc->pclk = devm_clk_get(&pdev->dev, "pclk");
  		if (IS_ERR(rtc->pclk)) {
@@ -463,7 +562,7 @@ index d28e7597d..4e3824df4 100644
  		return PTR_ERR(rtc->rtc_ck);
  	}
  
-@@ -781,19 +904,12 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+@@ -781,19 +909,12 @@ static int stm32_rtc_probe(struct platform_device *pdev)
  	}
  
  	ret = device_init_wakeup(&pdev->dev, true);
@@ -488,7 +587,7 @@ index d28e7597d..4e3824df4 100644
  
  	platform_set_drvdata(pdev, rtc);
  
-@@ -816,6 +932,21 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+@@ -816,6 +937,21 @@ static int stm32_rtc_probe(struct platform_device *pdev)
  		goto err;
  	}
  
@@ -510,7 +609,7 @@ index d28e7597d..4e3824df4 100644
  	/*
  	 * If INITS flag is reset (calendar year field set to 0x00), calendar
  	 * must be initialized
-@@ -854,6 +985,9 @@ static int stm32_rtc_remove(struct platform_device *pdev)
+@@ -854,6 +990,9 @@ static int stm32_rtc_remove(struct platform_device *pdev)
  	const struct stm32_rtc_registers *regs = &rtc->data->regs;
  	unsigned int cr;
  
@@ -520,7 +619,7 @@ index d28e7597d..4e3824df4 100644
  	/* Disable interrupts */
  	stm32_rtc_wpr_unlock(rtc);
  	cr = readl_relaxed(rtc->base + regs->cr);
-@@ -883,9 +1017,6 @@ static int stm32_rtc_suspend(struct device *dev)
+@@ -883,9 +1022,6 @@ static int stm32_rtc_suspend(struct device *dev)
  	if (rtc->data->has_pclk)
  		clk_disable_unprepare(rtc->pclk);
  
@@ -530,7 +629,7 @@ index d28e7597d..4e3824df4 100644
  	return 0;
  }
  
-@@ -904,15 +1035,13 @@ static int stm32_rtc_resume(struct device *dev)
+@@ -904,15 +1040,13 @@ static int stm32_rtc_resume(struct device *dev)
  	if (ret < 0)
  		return ret;
  
