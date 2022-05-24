@@ -13,7 +13,7 @@ ENABLE_PARTITIONS_IMAGE ??= "1"
 ENABLE_IMAGE_LICENSE_SUMMARY ??= "0"
 ENABLE_MULTIVOLUME_UBI ??= "0"
 
-PARTITIONS_IMAGE ??= ""
+PARTITIONS_IMAGES ??= ""
 
 python __anonymous () {
     # We check first if it is requested to generate any partition images
@@ -133,8 +133,8 @@ python image_rootfs_image_clean_task(){
     machine = d.expand("${MACHINE}")
     distro = d.expand("${DISTRO}")
     img_rootfs = d.getVar('IMAGE_ROOTFS')
-    partitionsconfigflags = d.getVarFlags('PARTITIONS_IMAGE')
-    partitionsconfig = (d.getVar('PARTITIONS_IMAGE') or "").split()
+    partitionsconfigflags = d.getVarFlags('PARTITIONS_IMAGES')
+    partitionsconfig = (d.getVar('PARTITIONS_IMAGES') or "").split()
 
     if len(partitionsconfig) == 0:
         bb.note('No partition image: nothing more to do...')
@@ -235,19 +235,22 @@ python image_rootfs_image_clean_task(){
 }
 
 # -----------------------------------------------------------------------------
-# Append buildinfo() to allow to export to DEPLOYDIR the buildinfo file itself
+# Manage to export to DEPLOYDIR the buildinfo file itself
 # -----------------------------------------------------------------------------
 DEPLOY_BUILDINFO_FILE ??= "0"
 
-buildinfo_append() {
-    if d.getVar('DEPLOY_BUILDINFO_FILE') != '1':
-        return
-    # Export build information to deploy dir
-    import shutil
-    buildinfo_srcfile=d.expand('${IMAGE_ROOTFS}${IMAGE_BUILDINFO_FILE}')
-    buildinfo_dstfile=os.path.join(d.getVar('IMGDEPLOYDIR'), os.path.basename(d.getVar('IMAGE_BUILDINFO_FILE')) + '-' + d.getVar('IMAGE_LINK_NAME'))
-    if os.path.isfile(buildinfo_srcfile):
-        shutil.copy2(buildinfo_srcfile, buildinfo_dstfile)
-    else:
-        bb.warn('Not able to locate %s file in image rootfs %s' % (d.getVar('IMAGE_BUILDINFO_FILE'), d.getVar('IMAGE_ROOTFS')))
+python extract_buildinfo() {
+    if d.getVar('DEPLOY_BUILDINFO_FILE') == '1' and d.getVar('IMAGE_BUILDINFO_FILE'):
+        # Export build information to deploy dir
+        import shutil
+        buildinfo_origin = d.getVar('IMAGE_BUILDINFO_FILE')
+        rootfs_path = d.getVar('IMAGE_ROOTFS')
+        buildinfo_srcfile = os.path.normpath(rootfs_path + '/' + buildinfo_origin)
+        if os.path.isfile(buildinfo_srcfile):
+            buildinfo_deploy = os.path.basename(d.getVar('IMAGE_BUILDINFO_FILE')) + '-' + d.getVar('IMAGE_LINK_NAME')
+            buildinfo_dstfile = os.path.join(d.getVar('IMGDEPLOYDIR'), buildinfo_deploy)
+            shutil.copy2(buildinfo_srcfile, buildinfo_dstfile)
+        else:
+            bb.warn('Not able to locate %s file in image rootfs %s' % (buildinfo_origin, rootfs_path))
 }
+IMAGE_PREPROCESS_COMMAND += "extract_buildinfo;"
