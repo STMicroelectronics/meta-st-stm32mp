@@ -1,0 +1,420 @@
+From 5c8b3291bbdae58c0c49b3097e7771584acd5937 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Tue, 7 Jun 2022 10:44:13 +0200
+Subject: [PATCH] v2.4-stm32mp-r2.1-rc3
+
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
+---
+ drivers/regulator/regulator_core.c      | 21 ++++++-
+ drivers/st/clk/stm32mp1_clk.c           | 74 ++++++++++++++++++++++++-
+ drivers/st/tamper/stm32_tamp.c          | 10 ++--
+ drivers/st/uart/aarch32/stm32_console.S |  4 +-
+ fdts/stm32mp15-ssp-bl2.dtsi             |  2 +
+ include/drivers/st/stm32mp1_clk.h       |  2 +-
+ plat/st/common/stm32mp_crypto_lib.c     | 42 +++++++++++---
+ plat/st/stm32mp1/platform.mk            |  2 +-
+ plat/st/stm32mp1/services/rcc_svc.c     |  2 +-
+ plat/st/stm32mp1/stm32mp1_scmi.c        |  2 +-
+ plat/st/stm32mp1/stm32mp1_ssp.mk        |  6 +-
+ 11 files changed, 142 insertions(+), 25 deletions(-)
+
+diff --git a/drivers/regulator/regulator_core.c b/drivers/regulator/regulator_core.c
+index 67da7d2920..b60e57fd93 100644
+--- a/drivers/regulator/regulator_core.c
++++ b/drivers/regulator/regulator_core.c
+@@ -321,6 +321,10 @@ int regulator_disable(struct rdev *rdev)
+ 
+ 	assert(rdev != NULL);
+ 
++	if (rdev->flags & REGUL_ALWAYS_ON) {
++		return 0;
++	}
++
+ 	ret = __regulator_set_state(rdev, STATE_DISABLE);
+ 
+ 	udelay(rdev->enable_ramp_delay);
+@@ -711,6 +715,21 @@ static void parse_low_power_modes(const void *fdt, struct rdev *rdev, int node)
+ 		}
+ 	}
+ }
++#else
++static int parse_properties(const void *fdt, struct rdev *rdev, int node)
++{
++	int ret;
++
++	if (fdt_getprop(fdt, node, "regulator-always-on", NULL) != NULL) {
++		VERBOSE("%s: set regulator-always-on\n", rdev->desc->node_name);
++		ret = regulator_set_flag(rdev, REGUL_ALWAYS_ON);
++		if (ret != 0) {
++			return ret;
++		}
++	}
++
++	return 0;
++}
+ #endif
+ 
+ /*
+@@ -777,12 +796,12 @@ static int parse_dt(struct rdev *rdev, int node)
+ 		return ret;
+ 	}
+ 
+-#if defined(IMAGE_BL32)
+ 	ret = parse_properties(fdt, rdev, node);
+ 	if (ret != 0) {
+ 		return ret;
+ 	}
+ 
++#if defined(IMAGE_BL32)
+ 	parse_supply(fdt, rdev, node);
+ 
+ 	parse_low_power_modes(fdt, rdev, node);
+diff --git a/drivers/st/clk/stm32mp1_clk.c b/drivers/st/clk/stm32mp1_clk.c
+index 73c9b147b7..9bdefe8712 100644
+--- a/drivers/st/clk/stm32mp1_clk.c
++++ b/drivers/st/clk/stm32mp1_clk.c
+@@ -20,6 +20,7 @@
+ #include <common/fdt_wrappers.h>
+ #include <drivers/clk.h>
+ #include <drivers/delay_timer.h>
++#include <drivers/regulator.h>
+ #include <drivers/st/stm32_timer.h>
+ #include <drivers/st/stm32mp_clkfunc.h>
+ #include <drivers/st/stm32mp1_clk.h>
+@@ -1176,6 +1177,7 @@ static bool clock_is_always_on(unsigned long id)
+ 	case CK_AXI:
+ 	case CK_MPU:
+ 	case CK_MCU:
++	case RTC:
+ 		return true;
+ 	default:
+ 		return false;
+@@ -2103,7 +2105,7 @@ static int stm32mp1_pll1_config_from_opp_khz(uint32_t freq_khz)
+ 	return 0;
+ }
+ 
+-int stm32mp1_set_opp_khz(uint32_t freq_khz)
++int stm32mp1_set_mpu_freq(uint32_t freq_khz)
+ {
+ 	uintptr_t rcc_base = stm32mp_rcc_base();
+ 	uint32_t mpu_src;
+@@ -2144,6 +2146,68 @@ int stm32mp1_set_opp_khz(uint32_t freq_khz)
+ 	return 0;
+ }
+ 
++static int stm32mp1_clk_get_volt_from_freq(uint32_t freq, uint32_t *volt)
++{
++	unsigned int i;
++
++	for (i = 0; i < PLAT_MAX_OPP_NB; i++) {
++		if (pll1_settings.freq[i] == freq) {
++			*volt = pll1_settings.volt[i];
++			return 0;
++		}
++	}
++
++	return -EINVAL;
++}
++
++static int stm32mp1_set_opp_from_khz(uint32_t freq_khz)
++{
++	struct rdev *regul;
++	uint32_t voltage_mv;
++	uint32_t current_freq = current_opp_khz;
++	int ret;
++
++	if (freq_khz == current_freq) {
++		/* OPP already set, nothing to do */
++		return 0;
++	}
++
++	if (!clk_pll1_settings_are_valid()) {
++		return -EACCES;
++	}
++
++	regul = dt_get_cpu_regulator();
++	if (regul == NULL) {
++		return -ENODEV;
++	}
++
++	ret = stm32mp1_clk_get_volt_from_freq(freq_khz, &voltage_mv);
++	if (ret != 0) {
++		return ret;
++	}
++
++	if (freq_khz > current_freq) {
++		ret = regulator_set_voltage(regul, (uint16_t)voltage_mv);
++		if (ret != 0) {
++			return ret;
++		}
++	}
++
++	ret = stm32mp1_set_mpu_freq(freq_khz);
++	if (ret != 0) {
++		return ret;
++	}
++
++	if (freq_khz < current_freq) {
++		ret = regulator_set_voltage(regul, (uint16_t)voltage_mv);
++		if (ret != 0) {
++			return ret;
++		}
++	}
++
++	return 0;
++}
++
+ static int clk_get_pll_settings_from_dt(int plloff, unsigned int *pllcfg,
+ 					uint32_t *fracv, uint32_t *csg,
+ 					bool *csg_set)
+@@ -3285,7 +3349,9 @@ void restore_clock_pm_context(void)
+ 				      (uint8_t *)&save_current_opp_khz,
+ 				      sizeof(save_current_opp_khz));
+ 
+-	stm32mp1_set_opp_khz(save_current_opp_khz);
++	if (stm32mp1_set_opp_from_khz(save_current_opp_khz)) {
++		ERROR("%s: failed to set opp\n", __func__);
++	}
+ }
+ 
+ void stm32mp1_clock_suspend(void)
+@@ -3308,6 +3374,10 @@ void stm32mp1_clock_resume(void)
+ 	for (idx = 0U; idx < NB_GATES; idx++) {
+ 		struct stm32mp1_clk_gate const *gate = gate_ref(idx);
+ 
++		if (clock_is_always_on(gate->index)) {
++			continue;
++		}
++
+ 		if (gate_is_non_secure(gate)) {
+ 			continue;
+ 		}
+diff --git a/drivers/st/tamper/stm32_tamp.c b/drivers/st/tamper/stm32_tamp.c
+index 5a4dde38cd..211d976999 100644
+--- a/drivers/st/tamper/stm32_tamp.c
++++ b/drivers/st/tamper/stm32_tamp.c
+@@ -315,9 +315,9 @@ static int stm32_tamp_set_ext_config(struct stm32_tamp_ext *tamp_ext,
+ 	}
+ 
+ 	if ((tamp_ext->mode & TAMP_ACTIVE) == TAMP_ACTIVE) {
+-		SETBITS(*cr1, _TAMP_ATCR1_ETAMPAM(id));
++		SETBITS(*atcr1, _TAMP_ATCR1_ETAMPAM(id));
+ 	} else {
+-		CLRBITS(*cr1, _TAMP_ATCR1_ETAMPAM(id));
++		CLRBITS(*atcr1, _TAMP_ATCR1_ETAMPAM(id));
+ 	}
+ 
+ 	if ((tamp_ext->mode & TAMP_NOERASE) == TAMP_NOERASE) {
+@@ -348,7 +348,7 @@ static int stm32_tamp_set_ext_config(struct stm32_tamp_ext *tamp_ext,
+ 			 * and internally cleared by hardware. The backup registers are not erased.
+ 			 */
+ 			CLRBITS(*ier, _TAMP_IER_ETAMP(id));
+-			CLRBITS(*cr2, _TAMP_CR2_ETAMPMSK(id));
++			SETBITS(*cr2, _TAMP_CR2_ETAMPMSK(id));
+ 		} else {
+ 			/*
+ 			 * normal ETAMP interrupt:
+@@ -356,11 +356,11 @@ static int stm32_tamp_set_ext_config(struct stm32_tamp_ext *tamp_ext,
+ 			 * by software to * allow next tamper event detection.
+ 			 */
+ 			CLRBITS(*cr2, _TAMP_CR2_ETAMPMSK(id));
+-			CLRBITS(*ier, _TAMP_IER_ETAMP(id));
++			SETBITS(*ier, _TAMP_IER_ETAMP(id));
+ 		}
+ 	} else {
+ 		/* other than 1,2,3 external TAMP, we want its interruption */
+-		CLRBITS(*ier, _TAMP_IER_ETAMP(id));
++		SETBITS(*ier, _TAMP_IER_ETAMP(id));
+ 	}
+ 
+ 	return 0;
+diff --git a/drivers/st/uart/aarch32/stm32_console.S b/drivers/st/uart/aarch32/stm32_console.S
+index 5872157323..c92cbcb923 100644
+--- a/drivers/st/uart/aarch32/stm32_console.S
++++ b/drivers/st/uart/aarch32/stm32_console.S
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2018-2021, ARM Limited and Contributors. All rights reserved.
++ * Copyright (c) 2018-2022, ARM Limited and Contributors. All rights reserved.
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -67,7 +67,7 @@ func console_stm32_core_init
+ 	bic	r3, r3, #USART_CR2_STOP
+ 	str	r3, [r0, #USART_CR2]
+ 	/* Divisor =  (Uart clock + (baudrate / 2)) / baudrate */
+-	lsl	r3, r2, #1
++	lsr	r3, r2, #1
+ 	add	r3, r1, r3
+ 	udiv	r3, r3, r2
+ 	str	r3, [r0, #USART_BRR]
+diff --git a/fdts/stm32mp15-ssp-bl2.dtsi b/fdts/stm32mp15-ssp-bl2.dtsi
+index 107f6e2166..40dd6fcb1c 100644
+--- a/fdts/stm32mp15-ssp-bl2.dtsi
++++ b/fdts/stm32mp15-ssp-bl2.dtsi
+@@ -11,6 +11,8 @@
+ #if STM32MP_USB_PROGRAMMER
+ 	aliases {
+ 		/delete-property/ serial1;
++		/delete-property/ serial2;
++		/delete-property/ serial3;
+ 	};
+ #endif
+ 
+diff --git a/include/drivers/st/stm32mp1_clk.h b/include/drivers/st/stm32mp1_clk.h
+index c62fb20784..5b389b6b65 100644
+--- a/include/drivers/st/stm32mp1_clk.h
++++ b/include/drivers/st/stm32mp1_clk.h
+@@ -46,7 +46,7 @@ void stm32mp1_clk_rcc_regs_lock(void);
+ void stm32mp1_clk_rcc_regs_unlock(void);
+ 
+ int stm32mp1_round_opp_khz(uint32_t *freq_khz);
+-int stm32mp1_set_opp_khz(uint32_t freq_khz);
++int stm32mp1_set_mpu_freq(uint32_t freq_khz);
+ 
+ void stm32mp1_clock_suspend(void);
+ void stm32mp1_clock_resume(void);
+diff --git a/plat/st/common/stm32mp_crypto_lib.c b/plat/st/common/stm32mp_crypto_lib.c
+index 9582162813..dbb1169de9 100644
+--- a/plat/st/common/stm32mp_crypto_lib.c
++++ b/plat/st/common/stm32mp_crypto_lib.c
+@@ -288,11 +288,14 @@ static int crypto_verify_signature(void *data_ptr, unsigned int data_len,
+ 	int ret;
+ 	size_t len;
+ 	mbedtls_asn1_sequence seq;
++	mbedtls_asn1_sequence *cur;
+ 	unsigned char *p, *end;
+ 	int curve_id;
+ 	mbedtls_asn1_buf sig_oid, sig_params;
+ 	mbedtls_md_type_t md_alg;
+ 	mbedtls_pk_type_t pk_alg;
++	size_t bignum_len = sizeof(sig) / 2U;
++	unsigned int seq_num = 0U;
+ 
+ 	/* Get pointers to signature OID and parameters */
+ 	p = (unsigned char *)sig_alg;
+@@ -350,7 +353,7 @@ static int crypto_verify_signature(void *data_ptr, unsigned int data_len,
+ 
+ 	/* We expect only 2 integers (r and s) from the sequence */
+ 	if (seq.next->next != NULL) {
+-		mbedtls_asn1_sequence *cur = seq.next;
++		cur = seq.next;
+ 		mbedtls_asn1_sequence *next;
+ 
+ 		VERBOSE("%s: nb seq != 2\n", __func__);
+@@ -364,14 +367,37 @@ static int crypto_verify_signature(void *data_ptr, unsigned int data_len,
+ 		return CRYPTO_ERR_SIGNATURE;
+ 	}
+ 
+-	/* Integer sequence may (sometime) start with 0x00 as MSB, but we can only
+-	 * manage exactly 2*32 bytes, we remove this higher byte
+-	 * if there are not 00, we will fail either.
++	/*
++	 * ECDSA signatures are composed of a tuple (R,S) where R and S are between 0 and n.
++	 * This means that the R and S can have a maximum of 32 each, but can also be smaller.
++	 * Also seen the integer sequence may (sometime) start with 0x00 as MSB, but we can only
++	 * manage exactly 2*32 bytes, we remove this higher byte if there are not 00,
++	 * we will fail either.
+ 	 */
+-	memcpy(sig, seq.buf.p + seq.buf.len - sizeof(sig) / 2U, sizeof(sig) / 2U);
+-	memcpy(sig +  sizeof(sig) / 2U,
+-	       seq.next->buf.p + seq.next->buf.len - sizeof(sig) / 2U,
+-	       sizeof(sig) / 2U);
++	cur = &seq;
++	memset(sig, 0U, sizeof(sig));
++
++	while (cur != NULL) {
++		size_t skip = 0U;
++		size_t seek = seq_num * bignum_len;
++
++		if (cur->buf.len > bignum_len) {
++			/* Remove extra 0x00 bytes */
++			skip = cur->buf.len - bignum_len;
++		} else if (cur->buf.len < bignum_len) {
++			/* Add padding to match HW required size */
++			seek += (bignum_len % cur->buf.len);
++		}
++
++		if (seek + cur->buf.len > sizeof(sig) + skip) {
++			panic();
++		}
++
++		memcpy(sig + seek, cur->buf.p + skip, cur->buf.len - skip);
++		cur = cur->next;
++		seq_num++;
++	}
++
+ 	/* Need to free allocated 'next' in mbedtls_asn1_get_sequence_of */
+ 	mbedtls_free(seq.next);
+ 
+diff --git a/plat/st/stm32mp1/platform.mk b/plat/st/stm32mp1/platform.mk
+index 55acd67422..17a089c1af 100644
+--- a/plat/st/stm32mp1/platform.mk
++++ b/plat/st/stm32mp1/platform.mk
+@@ -15,7 +15,7 @@ USE_COHERENT_MEM	:=	0
+ STM32MP_USE_STM32IMAGE	?=	0
+ 
+ # Add specific ST version
+-ST_VERSION 		:=	r2.0
++ST_VERSION 		:=	r2.1
+ ifeq ($(STM32MP_USE_STM32IMAGE),1)
+ ST_VERSION 		:=	${ST_VERSION}-nofip
+ endif
+diff --git a/plat/st/stm32mp1/services/rcc_svc.c b/plat/st/stm32mp1/services/rcc_svc.c
+index 0be76bbda4..e68ba31d5d 100644
+--- a/plat/st/stm32mp1/services/rcc_svc.c
++++ b/plat/st/stm32mp1/services/rcc_svc.c
+@@ -144,7 +144,7 @@ uint32_t rcc_opp_scv_handler(uint32_t x1, uint32_t x2, uint32_t *res)
+ 
+ 	switch (cmd) {
+ 	case STM32_SMC_RCC_OPP_SET:
+-		if (stm32mp1_set_opp_khz(opp) != 0) {
++		if (stm32mp1_set_mpu_freq(opp) != 0) {
+ 			return STM32_SMC_FAILED;
+ 		}
+ 		break;
+diff --git a/plat/st/stm32mp1/stm32mp1_scmi.c b/plat/st/stm32mp1/stm32mp1_scmi.c
+index a6086f93fd..eb99f3b8c5 100644
+--- a/plat/st/stm32mp1/stm32mp1_scmi.c
++++ b/plat/st/stm32mp1/stm32mp1_scmi.c
+@@ -320,7 +320,7 @@ int32_t plat_scmi_clock_set_rate(unsigned int agent_id,
+ 
+ 	switch (scmi_id) {
+ 	case CK_SCMI0_MPU:
+-		if (stm32mp1_set_opp_khz(rate / 1000UL) != 0) {
++		if (stm32mp1_set_mpu_freq(rate / 1000UL) != 0) {
+ 			return SCMI_INVALID_PARAMETERS;
+ 		}
+ 		break;
+diff --git a/plat/st/stm32mp1/stm32mp1_ssp.mk b/plat/st/stm32mp1/stm32mp1_ssp.mk
+index 9041e6a032..d38c6afa20 100644
+--- a/plat/st/stm32mp1/stm32mp1_ssp.mk
++++ b/plat/st/stm32mp1/stm32mp1_ssp.mk
+@@ -1,5 +1,5 @@
+ #
+-# Copyright (c) 2015-2021, ARM Limited and Contributors. All rights reserved.
++# Copyright (c) 2015-2022, ARM Limited and Contributors. All rights reserved.
+ #
+ # SPDX-License-Identifier: BSD-3-Clause
+ #
+@@ -25,6 +25,8 @@ PLAT_BL_COMMON_SOURCES	+=	${XLAT_TABLES_LIB_SRCS}
+ 
+ PLAT_BL_COMMON_SOURCES	+=	lib/cpus/aarch32/cortex_a7.S
+ 
++PLAT_BL_COMMON_SOURCES	+=	drivers/regulator/regulator_core.c
++
+ PLAT_BL_COMMON_SOURCES	+=	drivers/st/uart/aarch32/stm32_console.S
+ 
+ PLAT_BL_COMMON_SOURCES	+=	drivers/arm/tzc/tzc400.c				\
+@@ -38,8 +40,6 @@ PLAT_BL_COMMON_SOURCES	+=	drivers/arm/tzc/tzc400.c				\
+ 				drivers/st/iwdg/stm32_iwdg.c				\
+ 				drivers/st/pmic/stm32mp_pmic.c				\
+ 				drivers/st/pmic/stpmic1.c				\
+-				drivers/st/regulator/stm32mp_dummy_regulator.c		\
+-				drivers/st/regulator/stm32mp_regulator.c		\
+ 				drivers/st/reset/stm32mp1_reset.c			\
+ 				plat/st/common/stm32mp_dt.c				\
+ 				plat/st/common/stm32mp_shres_helpers.c			\
+-- 
+2.17.1
+
