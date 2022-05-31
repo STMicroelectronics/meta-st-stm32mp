@@ -1,0 +1,220 @@
+From 2c833d1b4fb82cc16a848137d7438fb2bbf9ea70 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Tue, 31 May 2022 18:09:32 +0200
+Subject: [PATCH] 3.12.0-stm32mp-r2.1-rc1
+
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
+---
+ core/arch/arm/kernel/thread_optee_smc.c    | 34 ++++++++++++----------
+ core/arch/arm/kernel/thread_spmc.c         |  6 ++++
+ core/arch/arm/plat-stm32mp1/pm/low_power.c |  4 ++-
+ core/arch/arm/plat-stm32mp1/pm/psci.c      |  9 +-----
+ core/drivers/clk/clk-stm32mp15.c           |  6 ++--
+ core/drivers/gic.c                         | 18 ++++++++----
+ core/include/drivers/gic.h                 |  3 ++
+ 7 files changed, 48 insertions(+), 32 deletions(-)
+
+diff --git a/core/arch/arm/kernel/thread_optee_smc.c b/core/arch/arm/kernel/thread_optee_smc.c
+index 7fe97b9c2..0e98bdeb9 100644
+--- a/core/arch/arm/kernel/thread_optee_smc.c
++++ b/core/arch/arm/kernel/thread_optee_smc.c
+@@ -519,29 +519,31 @@ static void thread_rpc_free(unsigned int bt, uint64_t cookie, struct mobj *mobj)
+ }
+ 
+ static struct mobj *get_rpc_alloc_res(struct optee_msg_arg *arg,
+-				      unsigned int bt)
++				      unsigned int bt, size_t size)
+ {
+ 	struct mobj *mobj = NULL;
+ 	uint64_t cookie = 0;
++	size_t sz = 0;
++	paddr_t p = 0;
+ 
+ 	if (arg->ret || arg->num_params != 1)
+ 		return NULL;
+ 
+-	if (arg->params[0].attr == OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT) {
+-		cookie = arg->params[0].u.tmem.shm_ref;
+-		mobj = mobj_shm_alloc(arg->params[0].u.tmem.buf_ptr,
+-				      arg->params[0].u.tmem.size,
+-				      cookie);
+-	} else if (arg->params[0].attr == (OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT |
+-					   OPTEE_MSG_ATTR_NONCONTIG)) {
+-		paddr_t p = arg->params[0].u.tmem.buf_ptr;
+-		size_t sz = arg->params[0].u.tmem.size;
+-
+-		cookie = arg->params[0].u.tmem.shm_ref;
+-		mobj = msg_param_mobj_from_noncontig(p, sz, cookie, true);
+-	} else {
++	if (arg->params[0].attr != OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT  &&
++	    arg->params[0].attr != (OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT |
++				    OPTEE_MSG_ATTR_NONCONTIG))
+ 		return NULL;
+-	}
++
++	p = arg->params[0].u.tmem.buf_ptr;
++	sz = READ_ONCE(arg->params[0].u.tmem.size);
++	cookie = arg->params[0].u.tmem.shm_ref;
++	if (sz < size)
++		return NULL;
++
++	if (arg->params[0].attr == OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT)
++		mobj = mobj_shm_alloc(p, sz, cookie);
++	else
++		mobj = msg_param_mobj_from_noncontig(p, sz, cookie, true);
+ 
+ 	if (!mobj) {
+ 		thread_rpc_free(bt, cookie, mobj);
+@@ -577,7 +579,7 @@ static struct mobj *thread_rpc_alloc(size_t size, size_t align, unsigned int bt)
+ 	reg_pair_from_64(carg, rpc_args + 1, rpc_args + 2);
+ 	thread_rpc(rpc_args);
+ 
+-	return get_rpc_alloc_res(arg, bt);
++	return get_rpc_alloc_res(arg, bt, size);
+ }
+ 
+ struct mobj *thread_rpc_alloc_payload(size_t size)
+diff --git a/core/arch/arm/kernel/thread_spmc.c b/core/arch/arm/kernel/thread_spmc.c
+index 81edf03a1..1a9e1534d 100644
+--- a/core/arch/arm/kernel/thread_spmc.c
++++ b/core/arch/arm/kernel/thread_spmc.c
+@@ -1027,6 +1027,12 @@ static struct mobj *thread_rpc_alloc(size_t size, uint32_t type)
+ 
+ 	assert(mobj_is_nonsec(mobj));
+ 
++	if (mobj->size < size) {
++		DMSG("Mobj %#"PRIx64": wrong size", cookie);
++		mobj_put(mobj);
++		return NULL;
++	}
++
+ 	if (mobj_inc_map(mobj)) {
+ 		DMSG("mobj_inc_map(%#"PRIx64"): failed", cookie);
+ 		mobj_put(mobj);
+diff --git a/core/arch/arm/plat-stm32mp1/pm/low_power.c b/core/arch/arm/plat-stm32mp1/pm/low_power.c
+index f06d8273d..03048cb8e 100644
+--- a/core/arch/arm/plat-stm32mp1/pm/low_power.c
++++ b/core/arch/arm/plat-stm32mp1/pm/low_power.c
+@@ -461,9 +461,11 @@ void __noreturn stm32_enter_cstop_shutdown(uint32_t mode)
+ 			stm32mp_get_pmic();
+ 			stpmic1_switch_off();
+ 			udelay(100);
++		} else {
++			for ( ; ; )
++				stm32_iwdg_refresh(IWDG2_INST);
+ 		}
+ 		break;
+-	case STM32_PM_CSTOP_ALLOW_STANDBY_DDR_SR:
+ 	case STM32_PM_CSTOP_ALLOW_STANDBY_DDR_OFF:
+ #ifdef STM32MP1_USE_MPU0_RESET
+ 		stm32mp_pm_shutdown_context();
+diff --git a/core/arch/arm/plat-stm32mp1/pm/psci.c b/core/arch/arm/plat-stm32mp1/pm/psci.c
+index 65f583d2e..7c8cbd3a8 100644
+--- a/core/arch/arm/plat-stm32mp1/pm/psci.c
++++ b/core/arch/arm/plat-stm32mp1/pm/psci.c
+@@ -335,17 +335,10 @@ int psci_system_suspend(uintptr_t entry, uint32_t context_id __unused,
+ 
+ 	soc_mode = stm32mp1_get_lp_soc_mode(PSCI_MODE_SYSTEM_SUSPEND);
+ 
+-	switch (soc_mode) {
+-	case STM32_PM_CSLEEP_RUN:
++	if (soc_mode == STM32_PM_CSLEEP_RUN) {
+ 		stm32_enter_csleep();
+ 		nsec->mon_lr = (uint32_t)entry;
+ 		return PSCI_RET_SUCCESS;
+-	case STM32_PM_SHUTDOWN:
+-		stm32_enter_cstop_shutdown(soc_mode);
+-		panic();
+-	default:
+-		/* Others are suspended mode: at least some context to backup */
+-		break;
+ 	}
+ 
+ 	assert(cpu_mmu_enabled() && core_state[pos] == CORE_ON);
+diff --git a/core/drivers/clk/clk-stm32mp15.c b/core/drivers/clk/clk-stm32mp15.c
+index 31d9ab6d6..8c4064a26 100644
+--- a/core/drivers/clk/clk-stm32mp15.c
++++ b/core/drivers/clk/clk-stm32mp15.c
+@@ -2623,10 +2623,12 @@ static void stm32_clock_resume(void)
+ static TEE_Result stm32_clock_pm(enum pm_op op, unsigned int pm_hint __unused,
+ 				 const struct pm_callback_handle *hdl __unused)
+ {
+-	if (op == PM_OP_SUSPEND)
++	if (op == PM_OP_SUSPEND) {
+ 		stm32_clock_suspend();
+-	else
++	} else {
++		pll1_config_from_opp_khz(current_opp_khz);
+ 		stm32_clock_resume();
++	}
+ 
+ 	return TEE_SUCCESS;
+ }
+diff --git a/core/drivers/gic.c b/core/drivers/gic.c
+index 3efce7ab8..86a945f61 100644
+--- a/core/drivers/gic.c
++++ b/core/drivers/gic.c
+@@ -191,9 +191,9 @@ void gic_cpu_init(struct gic_data *gd)
+ #endif
+ }
+ 
+-void gic_init_setup(struct gic_data *gd)
++void gic_setup_clear_it(struct gic_data *gd)
+ {
+-	size_t n;
++	size_t n = 0;
+ 
+ 	for (n = 0; n <= gd->max_it / NUM_INTS_PER_REG; n++) {
+ 		/* Disable interrupts */
+@@ -201,7 +201,14 @@ void gic_init_setup(struct gic_data *gd)
+ 
+ 		/* Make interrupts non-pending */
+ 		io_write32(gd->gicd_base + GICD_ICPENDR(n), 0xffffffff);
++	};
++}
++
++void gic_init_setup(struct gic_data *gd)
++{
++	size_t n = 0;
+ 
++	for (n = 0; n <= gd->max_it / NUM_INTS_PER_REG; n++) {
+ 		/* Mark interrupts non-secure */
+ 		if (n == 0) {
+ 			/* per-CPU inerrupts config:
+@@ -264,15 +271,16 @@ void gic_init_base_addr(struct gic_data *gd, vaddr_t gicc_base __maybe_unused,
+ 	gd->max_it = probe_max_it(gicc_base, gicd_base);
+ 	gd->chip.ops = &gic_ops;
+ 
++	if (IS_ENABLED(CFG_DT))
++		gd->chip.dt_get_irq = gic_dt_get_irq;
++
+ 	gic_pm_register(gd);
+ }
+ 
+ void gic_init(struct gic_data *gd, vaddr_t gicc_base, vaddr_t gicd_base)
+ {
+ 	gic_init_base_addr(gd, gicc_base, gicd_base);
+-	if (IS_ENABLED(CFG_DT))
+-		gd->chip.dt_get_irq = gic_dt_get_irq;
+-
++	gic_setup_clear_it(gd);
+ 	gic_init_setup(gd);
+ }
+ 
+diff --git a/core/include/drivers/gic.h b/core/include/drivers/gic.h
+index c8da6d849..078de9c2f 100644
+--- a/core/include/drivers/gic.h
++++ b/core/include/drivers/gic.h
+@@ -43,6 +43,9 @@ struct gic_data {
+ #endif
+ };
+ 
++/* Disable interrupts and make them non-pending */
++void gic_setup_clear_it(struct gic_data *gd);
++
+ /*
+  * The two gic_init_* functions initializes the struct gic_data which is
+  * then used by the other functions.
+-- 
+2.17.1
+
