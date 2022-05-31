@@ -1,0 +1,550 @@
+From 538f7a24b37d4273cc94c20b61989812ddb53e2c Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Tue, 31 May 2022 18:06:50 +0200
+Subject: [PATCH] v2020.10-stm32mp-r2.1
+
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
+---
+ Makefile                                |   2 +-
+ arch/arm/include/asm/arch-stm32/gpio.h  |   2 -
+ board/dhelectronics/dh_stm32mp1/board.c |   2 +-
+ board/st/stm32mp1/stm32mp1.c            | 123 +++++++++++++++---------
+ drivers/gpio/stm32_gpio.c               | 101 +++++++------------
+ drivers/net/dwc_eth_qos.c               |  18 ++--
+ drivers/pinctrl/pinctrl_stm32.c         |   7 +-
+ drivers/video/stm32/stm32_ltdc.c        |   2 +-
+ include/netdev.h                        |   2 +-
+ 9 files changed, 127 insertions(+), 132 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 25a42acc37a..8fbbeeb0aef 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3,7 +3,7 @@
+ VERSION = 2020
+ PATCHLEVEL = 10
+ SUBLEVEL =
+-EXTRAVERSION = -stm32mp-r2
++EXTRAVERSION = -stm32mp-r2.1
+ NAME =
+ 
+ # *DOCUMENTATION*
+diff --git a/arch/arm/include/asm/arch-stm32/gpio.h b/arch/arm/include/asm/arch-stm32/gpio.h
+index 570e80a6ba8..283b478af27 100644
+--- a/arch/arm/include/asm/arch-stm32/gpio.h
++++ b/arch/arm/include/asm/arch-stm32/gpio.h
+@@ -114,6 +114,4 @@ struct stm32_gpio_priv {
+ 	unsigned int gpio_range;
+ };
+ 
+-int stm32_offset_to_index(struct udevice *dev, unsigned int offset);
+-
+ #endif /* _GPIO_H_ */
+diff --git a/board/dhelectronics/dh_stm32mp1/board.c b/board/dhelectronics/dh_stm32mp1/board.c
+index 77f2730a3f2..08cdd468a1a 100644
+--- a/board/dhelectronics/dh_stm32mp1/board.c
++++ b/board/dhelectronics/dh_stm32mp1/board.c
+@@ -607,7 +607,7 @@ void board_quiesce_devices(void)
+ 
+ /* eth init function : weak called in eqos driver */
+ int board_interface_eth_init(struct udevice *dev,
+-			     phy_interface_t interface_type)
++			     phy_interface_t interface_type, ulong rate)
+ {
+ 	u8 *syscfg;
+ 	u32 value;
+diff --git a/board/st/stm32mp1/stm32mp1.c b/board/st/stm32mp1/stm32mp1.c
+index 42979d80f54..48591b2f1ef 100644
+--- a/board/st/stm32mp1/stm32mp1.c
++++ b/board/st/stm32mp1/stm32mp1.c
+@@ -16,6 +16,7 @@
+ #include <generic-phy.h>
+ #include <hang.h>
+ #include <i2c.h>
++#include <regmap.h>
+ #include <init.h>
+ #include <led.h>
+ #include <log.h>
+@@ -67,16 +68,6 @@
+ 
+ #define SYSCFG_CMPENSETR_MPU_EN		BIT(0)
+ 
+-#define SYSCFG_PMCSETR_ETH_CLK_SEL	BIT(16)
+-#define SYSCFG_PMCSETR_ETH_REF_CLK_SEL	BIT(17)
+-
+-#define SYSCFG_PMCSETR_ETH_SELMII	BIT(20)
+-
+-#define SYSCFG_PMCSETR_ETH_SEL_MASK	GENMASK(23, 21)
+-#define SYSCFG_PMCSETR_ETH_SEL_GMII_MII	0
+-#define SYSCFG_PMCSETR_ETH_SEL_RGMII	BIT(21)
+-#define SYSCFG_PMCSETR_ETH_SEL_RMII	BIT(23)
+-
+ /*
+  * Get a global data pointer
+  */
+@@ -729,74 +720,112 @@ void board_quiesce_devices(void)
+ 	setup_led(LEDST_OFF);
+ }
+ 
++/* CLOCK feed to PHY*/
++#define ETH_CK_F_25M	25000000
++#define ETH_CK_F_50M	50000000
++#define ETH_CK_F_125M	125000000
++
++struct stm32_syscfg_pmcsetr {
++	u32 syscfg_clr_off;
++	u32 eth1_clk_sel;
++	u32 eth1_ref_clk_sel;
++	u32 eth1_sel_mii;
++	u32 eth1_sel_rgmii;
++	u32 eth1_sel_rmii;
++	u32 eth2_clk_sel;
++	u32 eth2_ref_clk_sel;
++	u32 eth2_sel_rgmii;
++	u32 eth2_sel_rmii;
++};
++
++const struct stm32_syscfg_pmcsetr stm32mp15_syscfg_pmcsetr = {
++	.syscfg_clr_off		= 0x44,
++	.eth1_clk_sel		= BIT(16),
++	.eth1_ref_clk_sel	= BIT(17),
++	.eth1_sel_mii		= BIT(20),
++	.eth1_sel_rgmii		= BIT(21),
++	.eth1_sel_rmii		= BIT(23),
++	.eth2_clk_sel		= 0,
++	.eth2_ref_clk_sel	= 0,
++	.eth2_sel_rgmii		= 0,
++	.eth2_sel_rmii		= 0
++};
++
++#define SYSCFG_PMCSETR_ETH_MASK		GENMASK(23, 16)
++#define SYSCFG_PMCR_ETH_SEL_GMII	0
++
+ /* eth init function : weak called in eqos driver */
+ int board_interface_eth_init(struct udevice *dev,
+-			     phy_interface_t interface_type)
++			     phy_interface_t interface_type, ulong rate)
+ {
+-	u8 *syscfg;
++	struct regmap *regmap;
++	uint regmap_mask;
++	int ret;
+ 	u32 value;
+-	bool eth_clk_sel_reg = false;
+-	bool eth_ref_clk_sel_reg = false;
++	bool ext_phyclk, eth_clk_sel_reg, eth_ref_clk_sel_reg;
++	const struct stm32_syscfg_pmcsetr *pmcsetr;
++
++	/* Ethernet PHY have no crystal */
++	ext_phyclk = dev_read_bool(dev, "st,ext-phyclk");
+ 
+ 	/* Gigabit Ethernet 125MHz clock selection. */
+ 	eth_clk_sel_reg = dev_read_bool(dev, "st,eth-clk-sel");
+ 
+ 	/* Ethernet 50Mhz RMII clock selection */
+-	eth_ref_clk_sel_reg =
+-		dev_read_bool(dev, "st,eth-ref-clk-sel");
++	eth_ref_clk_sel_reg = dev_read_bool(dev, "st,eth-ref-clk-sel");
+ 
+-	syscfg = (u8 *)syscon_get_first_range(STM32MP_SYSCON_SYSCFG);
++	pmcsetr = &stm32mp15_syscfg_pmcsetr;
+ 
+-	if (!syscfg)
++	regmap = syscon_regmap_lookup_by_phandle(dev, "st,syscon");
++	if (!IS_ERR(regmap)) {
++		u32 fmp[3];
++
++		ret = dev_read_u32_array(dev, "st,syscon", fmp, 3);
++		if (ret)
++			/*  If no mask in DT, it is MP15 (backward compatibility) */
++			regmap_mask = SYSCFG_PMCSETR_ETH_MASK;
++		else
++			regmap_mask = fmp[2];
++	} else {
+ 		return -ENODEV;
++	}
+ 
+ 	switch (interface_type) {
+ 	case PHY_INTERFACE_MODE_MII:
+-		value = SYSCFG_PMCSETR_ETH_SEL_GMII_MII |
+-			SYSCFG_PMCSETR_ETH_REF_CLK_SEL;
+-		debug("%s: PHY_INTERFACE_MODE_MII\n", __func__);
++		value = pmcsetr->eth1_sel_mii;
++		log_debug("PHY_INTERFACE_MODE_MII\n");
+ 		break;
+ 	case PHY_INTERFACE_MODE_GMII:
+-		if (eth_clk_sel_reg)
+-			value = SYSCFG_PMCSETR_ETH_SEL_GMII_MII |
+-				SYSCFG_PMCSETR_ETH_CLK_SEL;
+-		else
+-			value = SYSCFG_PMCSETR_ETH_SEL_GMII_MII;
+-		debug("%s: PHY_INTERFACE_MODE_GMII\n", __func__);
++		value = SYSCFG_PMCR_ETH_SEL_GMII;
++		log_debug("PHY_INTERFACE_MODE_GMII\n");
+ 		break;
+ 	case PHY_INTERFACE_MODE_RMII:
+-		if (eth_ref_clk_sel_reg)
+-			value = SYSCFG_PMCSETR_ETH_SEL_RMII |
+-				SYSCFG_PMCSETR_ETH_REF_CLK_SEL;
+-		else
+-			value = SYSCFG_PMCSETR_ETH_SEL_RMII;
+-		debug("%s: PHY_INTERFACE_MODE_RMII\n", __func__);
++		value = pmcsetr->eth1_sel_rmii;
++		if (rate == ETH_CK_F_50M && (eth_clk_sel_reg || ext_phyclk))
++			value |= pmcsetr->eth1_ref_clk_sel;
++		log_debug("PHY_INTERFACE_MODE_RMII\n");
+ 		break;
+ 	case PHY_INTERFACE_MODE_RGMII:
+ 	case PHY_INTERFACE_MODE_RGMII_ID:
+ 	case PHY_INTERFACE_MODE_RGMII_RXID:
+ 	case PHY_INTERFACE_MODE_RGMII_TXID:
+-		if (eth_clk_sel_reg)
+-			value = SYSCFG_PMCSETR_ETH_SEL_RGMII |
+-				SYSCFG_PMCSETR_ETH_CLK_SEL;
+-		else
+-			value = SYSCFG_PMCSETR_ETH_SEL_RGMII;
+-		debug("%s: PHY_INTERFACE_MODE_RGMII\n", __func__);
++		value = pmcsetr->eth1_sel_rgmii;
++		if (rate == ETH_CK_F_125M && (eth_clk_sel_reg || ext_phyclk))
++			value |= pmcsetr->eth1_clk_sel;
++		log_debug("PHY_INTERFACE_MODE_RGMII\n");
+ 		break;
+ 	default:
+-		debug("%s: Do not manage %d interface\n",
+-		      __func__, interface_type);
++		log_debug("Do not manage %d interface\n", interface_type);
+ 		/* Do not manage others interfaces */
+ 		return -EINVAL;
+ 	}
+ 
+-	/* clear and set ETH configuration bits */
+-	writel(SYSCFG_PMCSETR_ETH_SEL_MASK | SYSCFG_PMCSETR_ETH_SELMII |
+-	       SYSCFG_PMCSETR_ETH_REF_CLK_SEL | SYSCFG_PMCSETR_ETH_CLK_SEL,
+-	       syscfg + SYSCFG_PMCCLRR);
+-	writel(value, syscfg + SYSCFG_PMCSETR);
++	/* Need to update PMCCLRR (clear register) */
++	regmap_write(regmap, pmcsetr->syscfg_clr_off, regmap_mask);
+ 
+-	return 0;
++	ret = regmap_update_bits(regmap, SYSCFG_PMCSETR, regmap_mask, value);
++
++	return ret;
+ }
+ 
+ enum env_location env_get_location(enum env_operation op, int prio)
+diff --git a/drivers/gpio/stm32_gpio.c b/drivers/gpio/stm32_gpio.c
+index 55972471643..b57e39637f5 100644
+--- a/drivers/gpio/stm32_gpio.c
++++ b/drivers/gpio/stm32_gpio.c
+@@ -78,38 +78,22 @@ static enum stm32_gpio_pupd stm32_gpio_get_pupd(struct stm32_gpio_regs *regs,
+ 	return (readl(&regs->pupdr) >> PUPD_BITS(idx)) & PUPD_MASK;
+ }
+ 
+-/*
+- * convert gpio offset to gpio index taking into account gpio holes
+- * into gpio bank
+- */
+-int stm32_offset_to_index(struct udevice *dev, unsigned int offset)
++static bool stm32_gpio_is_mapped(struct udevice *dev, int offset)
+ {
+ 	struct stm32_gpio_priv *priv = dev_get_priv(dev);
+-	unsigned int idx = 0;
+-	int i;
+ 
+-	for (i = 0; i < STM32_GPIOS_PER_BANK; i++) {
+-		if (priv->gpio_range & BIT(i)) {
+-			if (idx == offset)
+-				return idx;
+-			idx++;
+-		}
+-	}
+-	/* shouldn't happen */
+-	return -EINVAL;
++	return !!(priv->gpio_range & BIT(offset));
+ }
+ 
+ static int stm32_gpio_direction_input(struct udevice *dev, unsigned offset)
+ {
+ 	struct stm32_gpio_priv *priv = dev_get_priv(dev);
+ 	struct stm32_gpio_regs *regs = priv->regs;
+-	int idx;
+ 
+-	idx = stm32_offset_to_index(dev, offset);
+-	if (idx < 0)
+-		return idx;
++	if (!stm32_gpio_is_mapped(dev, offset))
++		return -ENXIO;
+ 
+-	stm32_gpio_set_moder(regs, idx, STM32_GPIO_MODE_IN);
++	stm32_gpio_set_moder(regs, offset, STM32_GPIO_MODE_IN);
+ 
+ 	return 0;
+ }
+@@ -119,15 +103,13 @@ static int stm32_gpio_direction_output(struct udevice *dev, unsigned offset,
+ {
+ 	struct stm32_gpio_priv *priv = dev_get_priv(dev);
+ 	struct stm32_gpio_regs *regs = priv->regs;
+-	int idx;
+ 
+-	idx = stm32_offset_to_index(dev, offset);
+-	if (idx < 0)
+-		return idx;
++	if (!stm32_gpio_is_mapped(dev, offset))
++		return -ENXIO;
+ 
+-	stm32_gpio_set_moder(regs, idx, STM32_GPIO_MODE_OUT);
++	stm32_gpio_set_moder(regs, offset, STM32_GPIO_MODE_OUT);
+ 
+-	writel(BSRR_BIT(idx, value), &regs->bsrr);
++	writel(BSRR_BIT(offset, value), &regs->bsrr);
+ 
+ 	return 0;
+ }
+@@ -136,26 +118,22 @@ static int stm32_gpio_get_value(struct udevice *dev, unsigned offset)
+ {
+ 	struct stm32_gpio_priv *priv = dev_get_priv(dev);
+ 	struct stm32_gpio_regs *regs = priv->regs;
+-	int idx;
+ 
+-	idx = stm32_offset_to_index(dev, offset);
+-	if (idx < 0)
+-		return idx;
++	if (!stm32_gpio_is_mapped(dev, offset))
++		return -ENXIO;
+ 
+-	return readl(&regs->idr) & BIT(idx) ? 1 : 0;
++	return readl(&regs->idr) & BIT(offset) ? 1 : 0;
+ }
+ 
+ static int stm32_gpio_set_value(struct udevice *dev, unsigned offset, int value)
+ {
+ 	struct stm32_gpio_priv *priv = dev_get_priv(dev);
+ 	struct stm32_gpio_regs *regs = priv->regs;
+-	int idx;
+ 
+-	idx = stm32_offset_to_index(dev, offset);
+-	if (idx < 0)
+-		return idx;
++	if (!stm32_gpio_is_mapped(dev, offset))
++		return -ENXIO;
+ 
+-	writel(BSRR_BIT(idx, value), &regs->bsrr);
++	writel(BSRR_BIT(offset, value), &regs->bsrr);
+ 
+ 	return 0;
+ }
+@@ -166,14 +144,12 @@ static int stm32_gpio_get_function(struct udevice *dev, unsigned int offset)
+ 	struct stm32_gpio_regs *regs = priv->regs;
+ 	int bits_index;
+ 	int mask;
+-	int idx;
+ 	u32 mode;
+ 
+-	idx = stm32_offset_to_index(dev, offset);
+-	if (idx < 0)
+-		return idx;
++	if (!stm32_gpio_is_mapped(dev, offset))
++		return GPIOF_UNKNOWN;
+ 
+-	bits_index = MODE_BITS(idx);
++	bits_index = MODE_BITS(offset);
+ 	mask = MODE_BITS_MASK << bits_index;
+ 
+ 	mode = (readl(&regs->moder) & mask) >> bits_index;
+@@ -192,29 +168,27 @@ static int stm32_gpio_set_dir_flags(struct udevice *dev, unsigned int offset,
+ {
+ 	struct stm32_gpio_priv *priv = dev_get_priv(dev);
+ 	struct stm32_gpio_regs *regs = priv->regs;
+-	int idx;
+ 
+-	idx = stm32_offset_to_index(dev, offset);
+-	if (idx < 0)
+-		return idx;
++	if (!stm32_gpio_is_mapped(dev, offset))
++		return -ENXIO;
+ 
+ 	if (flags & GPIOD_IS_OUT) {
+ 		int value = GPIOD_FLAGS_OUTPUT(flags);
+ 
+ 		if (flags & GPIOD_OPEN_DRAIN)
+-			stm32_gpio_set_otype(regs, idx, STM32_GPIO_OTYPE_OD);
++			stm32_gpio_set_otype(regs, offset, STM32_GPIO_OTYPE_OD);
+ 		else
+-			stm32_gpio_set_otype(regs, idx, STM32_GPIO_OTYPE_PP);
+-		stm32_gpio_set_moder(regs, idx, STM32_GPIO_MODE_OUT);
+-		writel(BSRR_BIT(idx, value), &regs->bsrr);
++			stm32_gpio_set_otype(regs, offset, STM32_GPIO_OTYPE_PP);
++		stm32_gpio_set_moder(regs, offset, STM32_GPIO_MODE_OUT);
++		writel(BSRR_BIT(offset, value), &regs->bsrr);
+ 
+ 	} else if (flags & GPIOD_IS_IN) {
+-		stm32_gpio_set_moder(regs, idx, STM32_GPIO_MODE_IN);
++		stm32_gpio_set_moder(regs, offset, STM32_GPIO_MODE_IN);
+ 	}
+ 	if (flags & GPIOD_PULL_UP)
+-		stm32_gpio_set_pupd(regs, idx, STM32_GPIO_PUPD_UP);
++		stm32_gpio_set_pupd(regs, offset, STM32_GPIO_PUPD_UP);
+ 	else if (flags & GPIOD_PULL_DOWN)
+-		stm32_gpio_set_pupd(regs, idx, STM32_GPIO_PUPD_DOWN);
++		stm32_gpio_set_pupd(regs, offset, STM32_GPIO_PUPD_DOWN);
+ 
+ 	return 0;
+ }
+@@ -224,19 +198,17 @@ static int stm32_gpio_get_dir_flags(struct udevice *dev, unsigned int offset,
+ {
+ 	struct stm32_gpio_priv *priv = dev_get_priv(dev);
+ 	struct stm32_gpio_regs *regs = priv->regs;
+-	int idx;
+ 	ulong dir_flags = 0;
+ 
+-	idx = stm32_offset_to_index(dev, offset);
+-	if (idx < 0)
+-		return idx;
++	if (!stm32_gpio_is_mapped(dev, offset))
++		return -ENXIO;
+ 
+-	switch (stm32_gpio_get_moder(regs, idx)) {
++	switch (stm32_gpio_get_moder(regs, offset)) {
+ 	case STM32_GPIO_MODE_OUT:
+ 		dir_flags |= GPIOD_IS_OUT;
+-		if (stm32_gpio_get_otype(regs, idx) == STM32_GPIO_OTYPE_OD)
++		if (stm32_gpio_get_otype(regs, offset) == STM32_GPIO_OTYPE_OD)
+ 			dir_flags |= GPIOD_OPEN_DRAIN;
+-		if (readl(&regs->idr) & BIT(idx))
++		if (readl(&regs->idr) & BIT(offset))
+ 			dir_flags |= GPIOD_IS_OUT_ACTIVE;
+ 		break;
+ 	case STM32_GPIO_MODE_IN:
+@@ -245,7 +217,7 @@ static int stm32_gpio_get_dir_flags(struct udevice *dev, unsigned int offset,
+ 	default:
+ 		break;
+ 	}
+-	switch (stm32_gpio_get_pupd(regs, idx)) {
++	switch (stm32_gpio_get_pupd(regs, offset)) {
+ 	case STM32_GPIO_PUPD_UP:
+ 		dir_flags |= GPIOD_PULL_UP;
+ 		break;
+@@ -297,17 +269,14 @@ static int gpio_stm32_probe(struct udevice *dev)
+ 	ret = dev_read_phandle_with_args(dev, "gpio-ranges",
+ 					 NULL, 3, i, &args);
+ 
+-	if (ret == -ENOENT) {
+-		uc_priv->gpio_count = STM32_GPIOS_PER_BANK;
++	uc_priv->gpio_count = STM32_GPIOS_PER_BANK;
++	if (ret == -ENOENT)
+ 		priv->gpio_range = GENMASK(STM32_GPIOS_PER_BANK - 1, 0);
+-	}
+ 
+ 	while (ret != -ENOENT) {
+ 		priv->gpio_range |= GENMASK(args.args[2] + args.args[0] - 1,
+ 				    args.args[0]);
+ 
+-		uc_priv->gpio_count += args.args[2];
+-
+ 		ret = dev_read_phandle_with_args(dev, "gpio-ranges", NULL, 3,
+ 						 ++i, &args);
+ 	}
+diff --git a/drivers/net/dwc_eth_qos.c b/drivers/net/dwc_eth_qos.c
+index 0f33c082531..64c57a6d690 100644
+--- a/drivers/net/dwc_eth_qos.c
++++ b/drivers/net/dwc_eth_qos.c
+@@ -1716,7 +1716,7 @@ err_free_reset_eqos:
+ 
+ /* board-specific Ethernet Interface initializations. */
+ __weak int board_interface_eth_init(struct udevice *dev,
+-				    phy_interface_t interface_type)
++				    phy_interface_t interface_type, ulong rate)
+ {
+ 	return 0;
+ }
+@@ -1726,6 +1726,7 @@ static int eqos_probe_resources_stm32(struct udevice *dev)
+ 	struct eqos_priv *eqos = dev_get_priv(dev);
+ 	int ret;
+ 	phy_interface_t interface;
++	ulong rate = 0;
+ 
+ 	debug("%s(dev=%p):\n", __func__, dev);
+ 
+@@ -1736,7 +1737,15 @@ static int eqos_probe_resources_stm32(struct udevice *dev)
+ 		return -EINVAL;
+ 	}
+ 
+-	ret = board_interface_eth_init(dev, interface);
++	/*  Get ETH_CLK clocks (optional) */
++	ret = clk_get_by_name(dev, "eth-ck", &eqos->clk_ck);
++	if (ret)
++		debug("No phy clock provided %d", ret);
++	else
++		rate = clk_get_rate(&eqos->clk_ck);
++
++	/*  Initialize the soc for the PHY configuration */
++	ret = board_interface_eth_init(dev, interface, rate);
+ 	if (ret)
+ 		return -EINVAL;
+ 
+@@ -1760,11 +1769,6 @@ static int eqos_probe_resources_stm32(struct udevice *dev)
+ 		goto err_free_clk_rx;
+ 	}
+ 
+-	/*  Get ETH_CLK clocks (optional) */
+-	ret = clk_get_by_name(dev, "eth-ck", &eqos->clk_ck);
+-	if (ret)
+-		pr_warn("No phy clock provided %d", ret);
+-
+ 	debug("%s: OK\n", __func__);
+ 	return 0;
+ 
+diff --git a/drivers/pinctrl/pinctrl_stm32.c b/drivers/pinctrl/pinctrl_stm32.c
+index 35a6acbe2ce..4743ef78288 100644
+--- a/drivers/pinctrl/pinctrl_stm32.c
++++ b/drivers/pinctrl/pinctrl_stm32.c
+@@ -152,10 +152,7 @@ static struct udevice *stm32_pinctrl_get_gpio_dev(struct udevice *dev,
+ 			 * we found the bank, convert pin selector to
+ 			 * gpio bank index
+ 			 */
+-			*idx = stm32_offset_to_index(gpio_bank->gpio_dev,
+-						     selector - pin_count);
+-			if (IS_ERR_VALUE(*idx))
+-				return NULL;
++			*idx = selector - pin_count;
+ 
+ 			return gpio_bank->gpio_dev;
+ 		}
+@@ -215,8 +212,6 @@ static int stm32_pinctrl_get_pin_muxing(struct udevice *dev,
+ 
+ 	switch (mode) {
+ 	case GPIOF_UNKNOWN:
+-		/* should never happen */
+-		return -EINVAL;
+ 	case GPIOF_UNUSED:
+ 		snprintf(buf, size, "%s", pinmux_mode[mode]);
+ 		break;
+diff --git a/drivers/video/stm32/stm32_ltdc.c b/drivers/video/stm32/stm32_ltdc.c
+index 2f3427a32ee..64e29a87be2 100644
+--- a/drivers/video/stm32/stm32_ltdc.c
++++ b/drivers/video/stm32/stm32_ltdc.c
+@@ -254,7 +254,7 @@ static void stm32_ltdc_set_mode(struct stm32_ltdc_priv *priv,
+ 		val |= GCR_HSPOL;
+ 	if (timings->flags & DISPLAY_FLAGS_VSYNC_HIGH)
+ 		val |= GCR_VSPOL;
+-	if (timings->flags & DISPLAY_FLAGS_DE_HIGH)
++	if (timings->flags & DISPLAY_FLAGS_DE_LOW)
+ 		val |= GCR_DEPOL;
+ 	if (timings->flags & DISPLAY_FLAGS_PIXDATA_NEGEDGE)
+ 		val |= GCR_PCPOL;
+diff --git a/include/netdev.h b/include/netdev.h
+index b1eb5fc1046..518f7a018d9 100644
+--- a/include/netdev.h
++++ b/include/netdev.h
+@@ -23,7 +23,7 @@
+ 
+ int board_eth_init(struct bd_info *bis);
+ int board_interface_eth_init(struct udevice *dev,
+-			     phy_interface_t interface_type);
++			     phy_interface_t interface_type, ulong rate);
+ int cpu_eth_init(struct bd_info *bis);
+ 
+ /* Driver initialization prototypes */
+-- 
+2.17.1
+
