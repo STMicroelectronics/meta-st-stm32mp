@@ -1,20 +1,20 @@
-From 000853359feed98e3d2f08d2fc1cc94e8e51fa2d Mon Sep 17 00:00:00 2001
-From: Lionel Vitte <lionel.vitte@st.com>
-Date: Thu, 14 Oct 2021 16:51:48 +0200
-Subject: [PATCH 14/23] ARM 5.10.61-stm32mp1-r2 PERF
+From bffe68965d7bb1779a57ba4f6e30dbd763e95710 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Wed, 1 Jun 2022 09:05:41 +0200
+Subject: [PATCH 14/23] ARM 5.10.116-stm32mp1-r2.1 PERF
 
 ---
  Documentation/admin-guide/perf/index.rst      |   1 +
  .../admin-guide/perf/stm32-ddr-pmu.rst        |  44 ++
  drivers/perf/Kconfig                          |   7 +
  drivers/perf/Makefile                         |   1 +
- drivers/perf/stm32_ddr_pmu.c                  | 429 ++++++++++++++++++
- 5 files changed, 482 insertions(+)
+ drivers/perf/stm32_ddr_pmu.c                  | 440 ++++++++++++++++++
+ 5 files changed, 493 insertions(+)
  create mode 100644 Documentation/admin-guide/perf/stm32-ddr-pmu.rst
  create mode 100644 drivers/perf/stm32_ddr_pmu.c
 
 diff --git a/Documentation/admin-guide/perf/index.rst b/Documentation/admin-guide/perf/index.rst
-index 5a8f2529a..9f68f68be 100644
+index 5a8f2529a033..9f68f68be161 100644
 --- a/Documentation/admin-guide/perf/index.rst
 +++ b/Documentation/admin-guide/perf/index.rst
 @@ -11,6 +11,7 @@ Performance monitor support
@@ -27,7 +27,7 @@ index 5a8f2529a..9f68f68be 100644
     xgene-pmu
 diff --git a/Documentation/admin-guide/perf/stm32-ddr-pmu.rst b/Documentation/admin-guide/perf/stm32-ddr-pmu.rst
 new file mode 100644
-index 000000000..db647fc1a
+index 000000000000..db647fc1acad
 --- /dev/null
 +++ b/Documentation/admin-guide/perf/stm32-ddr-pmu.rst
 @@ -0,0 +1,44 @@
@@ -76,7 +76,7 @@ index 000000000..db647fc1a
 +	      20.021068551 seconds time elapsed
 +
 diff --git a/drivers/perf/Kconfig b/drivers/perf/Kconfig
-index 130327ff0..a62a26fc5 100644
+index 130327ff0b0e..a62a26fc516a 100644
 --- a/drivers/perf/Kconfig
 +++ b/drivers/perf/Kconfig
 @@ -106,6 +106,13 @@ config QCOM_L3_PMU
@@ -94,7 +94,7 @@ index 130327ff0..a62a26fc5 100644
  	tristate "Cavium ThunderX2 SoC PMU UNCORE"
  	depends on ARCH_THUNDER2 && ARM64 && ACPI && NUMA
 diff --git a/drivers/perf/Makefile b/drivers/perf/Makefile
-index 5365fd56f..7f2b7c5f9 100644
+index 5365fd56f88f..7f2b7c5f9216 100644
 --- a/drivers/perf/Makefile
 +++ b/drivers/perf/Makefile
 @@ -10,6 +10,7 @@ obj-$(CONFIG_FSL_IMX8_DDR_PMU) += fsl_imx8_ddr_perf.o
@@ -107,10 +107,10 @@ index 5365fd56f..7f2b7c5f9 100644
  obj-$(CONFIG_ARM_SPE_PMU) += arm_spe_pmu.o
 diff --git a/drivers/perf/stm32_ddr_pmu.c b/drivers/perf/stm32_ddr_pmu.c
 new file mode 100644
-index 000000000..a6a2c5479
+index 000000000000..9191cbd492b4
 --- /dev/null
 +++ b/drivers/perf/stm32_ddr_pmu.c
-@@ -0,0 +1,429 @@
+@@ -0,0 +1,440 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * This file is the STM32 DDR performance monitor (DDRPERFM) driver
@@ -200,7 +200,7 @@ index 000000000..a6a2c5479
 +	}
 +}
 +
-+static void stm32_ddr_pmu_event_read(struct perf_event *event)
++static void stm32_ddr_pmu_event_update(struct perf_event *event)
 +{
 +	struct stm32_ddr_pmu *stm32_ddr_pmu = pmu_to_stm32_ddr_pmu(event->pmu);
 +	unsigned long config_base = event->hw.config_base;
@@ -231,6 +231,16 @@ index 000000000..a6a2c5479
 +
 +	mask = GENMASK_ULL(31, 0);
 +	local64_add(val & mask, &event->count);
++}
++
++static void stm32_ddr_pmu_event_read(struct perf_event *event)
++{
++	struct stm32_ddr_pmu *stm32_ddr_pmu = pmu_to_stm32_ddr_pmu(event->pmu);
++
++	hrtimer_start(&stm32_ddr_pmu->hrtimer, stm32_ddr_pmu->poll_period,
++		      HRTIMER_MODE_REL_PINNED);
++
++	stm32_ddr_pmu_event_update(event);
 +}
 +
 +static void stm32_ddr_pmu_event_start(struct perf_event *event, int flags)
@@ -278,7 +288,7 @@ index 000000000..a6a2c5479
 +	hw->state |= PERF_HES_STOPPED;
 +
 +	if (flags & PERF_EF_UPDATE) {
-+		stm32_ddr_pmu_event_read(event);
++		stm32_ddr_pmu_event_update(event);
 +		hw->state |= PERF_HES_UPTODATE;
 +	}
 +}
@@ -373,7 +383,7 @@ index 000000000..a6a2c5479
 +
 +	for (i = 0; i < PMU_NR_COUNTERS; i++)
 +		if (stm32_ddr_pmu->events[i])
-+			stm32_ddr_pmu_event_read(stm32_ddr_pmu->events[i]);
++			stm32_ddr_pmu_event_update(stm32_ddr_pmu->events[i]);
 +
 +	hrtimer_forward_now(hrtimer, stm32_ddr_pmu->poll_period);
 +
@@ -475,6 +485,7 @@ index 000000000..a6a2c5479
 +		.stop = stm32_ddr_pmu_event_stop,
 +		.add = stm32_ddr_pmu_event_add,
 +		.del = stm32_ddr_pmu_event_del,
++		.read = stm32_ddr_pmu_event_read,
 +		.event_init = stm32_ddr_pmu_event_init,
 +		.attr_groups = stm32_ddr_pmu_attr_groups,
 +	};

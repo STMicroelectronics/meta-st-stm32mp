@@ -1,22 +1,22 @@
-From fc843f64f154b843cd7834d6748b409ef1e1487f Mon Sep 17 00:00:00 2001
-From: Lionel Vitte <lionel.vitte@st.com>
-Date: Thu, 14 Oct 2021 16:51:44 +0200
-Subject: [PATCH 08/23] ARM 5.10.61-stm32mp1-r2 I2C-IIO-IRQCHIP
+From ccb36bac03eb5344e49ab1e5e29fead657579871 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Wed, 1 Jun 2022 09:00:22 +0200
+Subject: [PATCH 08/23] ARM 5.10.116-stm32mp1-r2.1 I2C-IIO-IRQCHIP
 
 ---
- drivers/i2c/busses/i2c-stm32f7.c   | 285 +++++++++++-------
+ drivers/i2c/busses/i2c-stm32f7.c   | 256 ++++++++++-------
  drivers/iio/adc/sd_adc_modulator.c |  89 +++++-
  drivers/iio/adc/stm32-adc-core.c   |  21 +-
  drivers/iio/adc/stm32-adc-core.h   |   8 +
- drivers/iio/adc/stm32-adc.c        | 445 ++++++++++++++++++++++++-----
+ drivers/iio/adc/stm32-adc.c        | 444 ++++++++++++++++++++++++-----
  drivers/iio/adc/stm32-dfsdm-adc.c  | 108 ++++++-
  drivers/iio/adc/stm32-dfsdm-core.c |  91 ++++--
  drivers/iio/adc/stm32-dfsdm.h      |  69 +++--
  drivers/irqchip/irq-stm32-exti.c   |  89 +++++-
- 9 files changed, 973 insertions(+), 232 deletions(-)
+ 9 files changed, 945 insertions(+), 230 deletions(-)
 
 diff --git a/drivers/i2c/busses/i2c-stm32f7.c b/drivers/i2c/busses/i2c-stm32f7.c
-index 1e800b65e..0bc9acef2 100644
+index 0f4c0282028b..0bc9acef2ee4 100644
 --- a/drivers/i2c/busses/i2c-stm32f7.c
 +++ b/drivers/i2c/busses/i2c-stm32f7.c
 @@ -51,6 +51,7 @@
@@ -247,44 +247,16 @@ index 1e800b65e..0bc9acef2 100644
  		/* Disable interrupts */
  		stm32f7_i2c_disable_irq(i2c_dev, STM32F7_I2C_XFER_IRQ_MASK);
  
-@@ -1472,6 +1493,7 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
- {
- 	struct stm32f7_i2c_dev *i2c_dev = data;
- 	struct stm32f7_i2c_msg *f7_msg = &i2c_dev->f7_msg;
-+	struct stm32_i2c_dma *dma = i2c_dev->dma;
- 	void __iomem *base = i2c_dev->base;
- 	u32 status, mask;
- 	int ret = IRQ_HANDLED;
-@@ -1497,6 +1519,10 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
- 		dev_dbg(i2c_dev->dev, "<%s>: Receive NACK (addr %x)\n",
- 			__func__, f7_msg->addr);
+@@ -1500,7 +1521,7 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
  		writel_relaxed(STM32F7_I2C_ICR_NACKCF, base + STM32F7_I2C_ICR);
-+		if (i2c_dev->use_dma) {
-+			stm32f7_i2c_disable_dma_req(i2c_dev);
+ 		if (i2c_dev->use_dma) {
+ 			stm32f7_i2c_disable_dma_req(i2c_dev);
+-			dmaengine_terminate_all(dma->chan_using);
 +			dmaengine_terminate_async(dma->chan_using);
-+		}
+ 		}
  		f7_msg->result = -ENXIO;
  	}
- 
-@@ -1512,7 +1538,7 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
- 		/* Clear STOP flag */
- 		writel_relaxed(STM32F7_I2C_ICR_STOPCF, base + STM32F7_I2C_ICR);
- 
--		if (i2c_dev->use_dma) {
-+		if (i2c_dev->use_dma && !f7_msg->result) {
- 			ret = IRQ_WAKE_THREAD;
- 		} else {
- 			i2c_dev->master_mode = false;
-@@ -1525,7 +1551,7 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
- 		if (f7_msg->stop) {
- 			mask = STM32F7_I2C_CR2_STOP;
- 			stm32f7_i2c_set_bits(base + STM32F7_I2C_CR2, mask);
--		} else if (i2c_dev->use_dma) {
-+		} else if (i2c_dev->use_dma && !f7_msg->result) {
- 			ret = IRQ_WAKE_THREAD;
- 		} else if (f7_msg->smbus) {
- 			stm32f7_i2c_smbus_rep_start(i2c_dev);
-@@ -1562,7 +1588,7 @@ static irqreturn_t stm32f7_i2c_isr_event_thread(int irq, void *data)
+@@ -1567,7 +1588,7 @@ static irqreturn_t stm32f7_i2c_isr_event_thread(int irq, void *data)
  	if (!ret) {
  		dev_dbg(i2c_dev->dev, "<%s>: Timed out\n", __func__);
  		stm32f7_i2c_disable_dma_req(i2c_dev);
@@ -293,7 +265,7 @@ index 1e800b65e..0bc9acef2 100644
  		f7_msg->result = -ETIMEDOUT;
  	}
  
-@@ -1597,7 +1623,8 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
+@@ -1602,7 +1623,8 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
  
  	/* Bus error */
  	if (status & STM32F7_I2C_ISR_BERR) {
@@ -303,7 +275,7 @@ index 1e800b65e..0bc9acef2 100644
  		writel_relaxed(STM32F7_I2C_ICR_BERRCF, base + STM32F7_I2C_ICR);
  		stm32f7_i2c_release_bus(&i2c_dev->adap);
  		f7_msg->result = -EIO;
-@@ -1605,17 +1632,26 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
+@@ -1610,17 +1632,26 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
  
  	/* Arbitration loss */
  	if (status & STM32F7_I2C_ISR_ARLO) {
@@ -332,7 +304,7 @@ index 1e800b65e..0bc9acef2 100644
  	if (!i2c_dev->slave_running) {
  		u32 mask;
  		/* Disable interrupts */
-@@ -1629,7 +1665,7 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
+@@ -1634,7 +1665,7 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
  	/* Disable dma */
  	if (i2c_dev->use_dma) {
  		stm32f7_i2c_disable_dma_req(i2c_dev);
@@ -341,63 +313,45 @@ index 1e800b65e..0bc9acef2 100644
  	}
  
  	i2c_dev->master_mode = false;
-@@ -1665,12 +1701,26 @@ static int stm32f7_i2c_xfer(struct i2c_adapter *i2c_adap,
- 	time_left = wait_for_completion_timeout(&i2c_dev->complete,
+@@ -1671,6 +1702,9 @@ static int stm32f7_i2c_xfer(struct i2c_adapter *i2c_adap,
  						i2c_dev->adap.timeout);
  	ret = f7_msg->result;
-+	if (ret) {
+ 	if (ret) {
 +		if (i2c_dev->use_dma)
 +			dmaengine_synchronize(dma->chan_using);
 +
-+		/*
-+		 * It is possible that some unsent data have already been
-+		 * written into TXDR. To avoid sending old data in a
-+		 * further transfer, flush TXDR in case of any error
-+		 */
-+		writel_relaxed(STM32F7_I2C_ISR_TXE,
-+			       i2c_dev->base + STM32F7_I2C_ISR);
-+		goto pm_free;
-+	}
- 
- 	if (!time_left) {
+ 		/*
+ 		 * It is possible that some unsent data have already been
+ 		 * written into TXDR. To avoid sending old data in a
+@@ -1685,7 +1719,7 @@ static int stm32f7_i2c_xfer(struct i2c_adapter *i2c_adap,
  		dev_dbg(i2c_dev->dev, "Access to slave 0x%x timed out\n",
  			i2c_dev->msg->addr);
  		if (i2c_dev->use_dma)
 -			dmaengine_terminate_all(dma->chan_using);
 +			dmaengine_terminate_sync(dma->chan_using);
-+		stm32f7_i2c_wait_free_bus(i2c_dev);
+ 		stm32f7_i2c_wait_free_bus(i2c_dev);
  		ret = -ETIMEDOUT;
  	}
- 
-@@ -1713,13 +1763,25 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
- 	timeout = wait_for_completion_timeout(&i2c_dev->complete,
+@@ -1730,6 +1764,9 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
  					      i2c_dev->adap.timeout);
  	ret = f7_msg->result;
--	if (ret)
-+	if (ret) {
+ 	if (ret) {
 +		if (i2c_dev->use_dma)
 +			dmaengine_synchronize(dma->chan_using);
 +
-+		/*
-+		 * It is possible that some unsent data have already been
-+		 * written into TXDR. To avoid sending old data in a
-+		 * further transfer, flush TXDR in case of any error
-+		 */
-+		writel_relaxed(STM32F7_I2C_ISR_TXE,
-+			       i2c_dev->base + STM32F7_I2C_ISR);
- 		goto pm_free;
-+	}
- 
+ 		/*
+ 		 * It is possible that some unsent data have already been
+ 		 * written into TXDR. To avoid sending old data in a
+@@ -1743,7 +1780,7 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
  	if (!timeout) {
  		dev_dbg(dev, "Access to slave 0x%x timed out\n", f7_msg->addr);
  		if (i2c_dev->use_dma)
 -			dmaengine_terminate_all(dma->chan_using);
 +			dmaengine_terminate_sync(dma->chan_using);
-+		stm32f7_i2c_wait_free_bus(i2c_dev);
+ 		stm32f7_i2c_wait_free_bus(i2c_dev);
  		ret = -ETIMEDOUT;
  		goto pm_free;
- 	}
-@@ -1982,6 +2044,42 @@ static void stm32f7_i2c_disable_smbus_host(struct stm32f7_i2c_dev *i2c_dev)
+@@ -2007,6 +2044,42 @@ static void stm32f7_i2c_disable_smbus_host(struct stm32f7_i2c_dev *i2c_dev)
  	}
  }
  
@@ -440,7 +394,7 @@ index 1e800b65e..0bc9acef2 100644
  static u32 stm32f7_i2c_func(struct i2c_adapter *adap)
  {
  	struct stm32f7_i2c_dev *i2c_dev = i2c_get_adapdata(adap);
-@@ -2173,6 +2271,16 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
+@@ -2198,6 +2271,16 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
  		}
  	}
  
@@ -457,7 +411,7 @@ index 1e800b65e..0bc9acef2 100644
  	dev_info(i2c_dev->dev, "STM32F7 I2C-%d bus adapter\n", adap->nr);
  
  	pm_runtime_mark_last_busy(i2c_dev->dev);
-@@ -2180,6 +2288,9 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
+@@ -2205,6 +2288,9 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
  
  	return 0;
  
@@ -467,7 +421,7 @@ index 1e800b65e..0bc9acef2 100644
  i2c_adapter_remove:
  	i2c_del_adapter(adap);
  
-@@ -2214,6 +2325,7 @@ static int stm32f7_i2c_remove(struct platform_device *pdev)
+@@ -2239,6 +2325,7 @@ static int stm32f7_i2c_remove(struct platform_device *pdev)
  {
  	struct stm32f7_i2c_dev *i2c_dev = platform_get_drvdata(pdev);
  
@@ -475,7 +429,7 @@ index 1e800b65e..0bc9acef2 100644
  	stm32f7_i2c_disable_smbus_host(i2c_dev);
  
  	i2c_del_adapter(&i2c_dev->adap);
-@@ -2245,64 +2357,25 @@ static int stm32f7_i2c_remove(struct platform_device *pdev)
+@@ -2270,64 +2357,25 @@ static int stm32f7_i2c_remove(struct platform_device *pdev)
  	return 0;
  }
  
@@ -544,7 +498,7 @@ index 1e800b65e..0bc9acef2 100644
  	cr1 = readl_relaxed(i2c_dev->base + STM32F7_I2C_CR1);
  	if (cr1 & STM32F7_I2C_CR1_PE)
  		stm32f7_i2c_clr_bits(i2c_dev->base + STM32F7_I2C_CR1,
-@@ -2318,54 +2391,68 @@ static int stm32f7_i2c_regs_restore(struct stm32f7_i2c_dev *i2c_dev)
+@@ -2343,54 +2391,68 @@ static int stm32f7_i2c_regs_restore(struct stm32f7_i2c_dev *i2c_dev)
  	writel_relaxed(backup_regs->oar1, i2c_dev->base + STM32F7_I2C_OAR1);
  	writel_relaxed(backup_regs->oar2, i2c_dev->base + STM32F7_I2C_OAR2);
  	stm32f7_i2c_write_fm_plus_bits(i2c_dev, true);
@@ -583,7 +537,7 @@ index 1e800b65e..0bc9acef2 100644
  			return ret;
  		}
 +	}
- 
++
 +	stm32f7_i2c_regs_restore(i2c_dev);
 +
 +	return 0;
@@ -592,7 +546,7 @@ index 1e800b65e..0bc9acef2 100644
 +static int __maybe_unused stm32f7_i2c_suspend(struct device *dev)
 +{
 +	struct stm32f7_i2c_dev *i2c_dev = dev_get_drvdata(dev);
-+
+ 
 +	i2c_mark_adapter_suspended(&i2c_dev->adap);
 +
 +	if (!device_may_wakeup(dev) && !device_wakeup_path(dev))
@@ -636,7 +590,7 @@ index 1e800b65e..0bc9acef2 100644
  static const struct dev_pm_ops stm32f7_i2c_pm_ops = {
  	SET_RUNTIME_PM_OPS(stm32f7_i2c_runtime_suspend,
 diff --git a/drivers/iio/adc/sd_adc_modulator.c b/drivers/iio/adc/sd_adc_modulator.c
-index 327cc2097..ceb150296 100644
+index 327cc2097f6c..ceb15029673c 100644
 --- a/drivers/iio/adc/sd_adc_modulator.c
 +++ b/drivers/iio/adc/sd_adc_modulator.c
 @@ -9,10 +9,8 @@
@@ -762,7 +716,7 @@ index 327cc2097..ceb150296 100644
  
  static struct platform_driver iio_sd_mod_adc = {
 diff --git a/drivers/iio/adc/stm32-adc-core.c b/drivers/iio/adc/stm32-adc-core.c
-index a83199b21..9d1ad6e38 100644
+index a83199b212a4..9d1ad6e38e85 100644
 --- a/drivers/iio/adc/stm32-adc-core.c
 +++ b/drivers/iio/adc/stm32-adc-core.c
 @@ -200,7 +200,7 @@ static int stm32h7_adc_clk_sel(struct platform_device *pdev,
@@ -822,7 +776,7 @@ index a83199b21..9d1ad6e38 100644
  			goto out;
  	}
 diff --git a/drivers/iio/adc/stm32-adc-core.h b/drivers/iio/adc/stm32-adc-core.h
-index 2322809bf..7c924f463 100644
+index 2322809bfd2f..7c924f463f67 100644
 --- a/drivers/iio/adc/stm32-adc-core.h
 +++ b/drivers/iio/adc/stm32-adc-core.h
 @@ -102,6 +102,9 @@
@@ -853,7 +807,7 @@ index 2322809bf..7c924f463 100644
   * struct stm32_adc_common - stm32 ADC driver common data (for all instances)
   * @base:		control registers base cpu addr
 diff --git a/drivers/iio/adc/stm32-adc.c b/drivers/iio/adc/stm32-adc.c
-index 16c02c30d..6e9744944 100644
+index 9939dee01743..6e9744944f80 100644
 --- a/drivers/iio/adc/stm32-adc.c
 +++ b/drivers/iio/adc/stm32-adc.c
 @@ -21,6 +21,7 @@
@@ -1097,17 +1051,15 @@ index 16c02c30d..6e9744944 100644
  pwr_dwn:
  	stm32h7_adc_enter_pwr_down(adc);
  
-@@ -979,7 +1107,9 @@ static void stm32h7_adc_unprepare(struct iio_dev *indio_dev)
- {
- 	struct stm32_adc *adc = iio_priv(indio_dev);
+@@ -981,6 +1109,7 @@ static void stm32h7_adc_unprepare(struct iio_dev *indio_dev)
  
-+	stm32_adc_writel(adc, STM32H7_ADC_PCSEL, 0);
+ 	stm32_adc_writel(adc, STM32H7_ADC_PCSEL, 0);
  	stm32h7_adc_disable(indio_dev);
 +	stm32_adc_int_ch_disable(adc);
  	stm32h7_adc_enter_pwr_down(adc);
  }
  
-@@ -1225,15 +1355,35 @@ static int stm32_adc_read_raw(struct iio_dev *indio_dev,
+@@ -1226,15 +1355,35 @@ static int stm32_adc_read_raw(struct iio_dev *indio_dev,
  			ret = stm32_adc_single_conv(indio_dev, chan, val);
  		else
  			ret = -EINVAL;
@@ -1145,7 +1097,7 @@ index 16c02c30d..6e9744944 100644
  			*val2 = chan->scan_type.realbits;
  		}
  		return IIO_VAL_FRACTIONAL_LOG2;
-@@ -1353,7 +1503,7 @@ static int stm32_adc_set_watermark(struct iio_dev *indio_dev, unsigned int val)
+@@ -1354,7 +1503,7 @@ static int stm32_adc_set_watermark(struct iio_dev *indio_dev, unsigned int val)
  	 * dma cyclic transfers are used, buffer is split into two periods.
  	 * There should be :
  	 * - always one buffer (period) dma is working on
@@ -1154,7 +1106,7 @@ index 16c02c30d..6e9744944 100644
  	 */
  	watermark = min(watermark, val * (unsigned)(sizeof(u16)));
  	adc->rx_buf_sz = min(rx_buf_sz, watermark * 2 * adc->num_conv);
-@@ -1616,31 +1766,14 @@ static irqreturn_t stm32_adc_trigger_handler(int irq, void *p)
+@@ -1617,31 +1766,14 @@ static irqreturn_t stm32_adc_trigger_handler(int irq, void *p)
  
  	dev_dbg(&indio_dev->dev, "%s bufi=%d\n", __func__, adc->bufi);
  
@@ -1191,7 +1143,7 @@ index 16c02c30d..6e9744944 100644
  
  	return IRQ_HANDLED;
  }
-@@ -1686,6 +1819,14 @@ static void stm32_adc_smpr_init(struct stm32_adc *adc, int channel, u32 smp_ns)
+@@ -1687,6 +1819,14 @@ static void stm32_adc_smpr_init(struct stm32_adc *adc, int channel, u32 smp_ns)
  	u32 period_ns, shift = smpr->shift, mask = smpr->mask;
  	unsigned int smp, r = smpr->reg;
  
@@ -1206,7 +1158,7 @@ index 16c02c30d..6e9744944 100644
  	/* Determine sampling time (ADC clock cycles) */
  	period_ns = NSEC_PER_SEC / adc->common->rate;
  	for (smp = 0; smp <= STM32_ADC_MAX_SMP; smp++)
-@@ -1735,17 +1876,11 @@ static void stm32_adc_chan_init_one(struct iio_dev *indio_dev,
+@@ -1736,17 +1876,11 @@ static void stm32_adc_chan_init_one(struct iio_dev *indio_dev,
  	}
  }
  
@@ -1226,7 +1178,7 @@ index 16c02c30d..6e9744944 100644
  
  	ret = of_property_count_u32_elems(node, "st,adc-channels");
  	if (ret > adc_info->max_channels) {
-@@ -1756,23 +1891,17 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
+@@ -1757,23 +1891,17 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
  	}
  
  	ret = of_property_count_elems_of_size(node, "st,adc-diff-channels",
@@ -1253,7 +1205,7 @@ index 16c02c30d..6e9744944 100644
  		return -ENODATA;
  	}
  
-@@ -1783,10 +1912,45 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
+@@ -1784,10 +1912,45 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
  		return -EINVAL;
  	}
  
@@ -1303,7 +1255,7 @@ index 16c02c30d..6e9744944 100644
  
  	of_property_for_each_u32(node, "st,adc-channels", prop, cur, val) {
  		if (val >= adc_info->max_channels) {
-@@ -1797,8 +1961,7 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
+@@ -1798,8 +1961,7 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
  		/* Channel can't be configured both as single-ended & diff */
  		for (i = 0; i < num_diff; i++) {
  			if (val == diff[i].vinp) {
@@ -1313,7 +1265,7 @@ index 16c02c30d..6e9744944 100644
  				return -EINVAL;
  			}
  		}
-@@ -1807,19 +1970,6 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
+@@ -1808,19 +1970,6 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
  		scan_index++;
  	}
  
@@ -1333,7 +1285,7 @@ index 16c02c30d..6e9744944 100644
  	for (i = 0; i < scan_index; i++) {
  		/*
  		 * Using of_property_read_u32_index(), smp value will only be
-@@ -1827,13 +1977,173 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
+@@ -1828,13 +1977,173 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
  		 * get either no value, 1 shared value for all indexes, or one
  		 * value per channel.
  		 */
@@ -1510,7 +1462,7 @@ index 16c02c30d..6e9744944 100644
  	indio_dev->channels = channels;
  
  	return 0;
-@@ -2105,7 +2415,7 @@ static const struct stm32_adc_cfg stm32h7_adc_cfg = {
+@@ -2106,7 +2415,7 @@ static const struct stm32_adc_cfg stm32h7_adc_cfg = {
  };
  
  static const struct stm32_adc_cfg stm32mp1_adc_cfg = {
@@ -1519,7 +1471,7 @@ index 16c02c30d..6e9744944 100644
  	.adc_info = &stm32h7_adc_info,
  	.trigs = stm32h7_adc_trigs,
  	.has_vregready = true,
-@@ -2115,6 +2425,7 @@ static const struct stm32_adc_cfg stm32mp1_adc_cfg = {
+@@ -2116,6 +2425,7 @@ static const struct stm32_adc_cfg stm32mp1_adc_cfg = {
  	.unprepare = stm32h7_adc_unprepare,
  	.smp_cycles = stm32h7_adc_smp_cycles,
  	.irq_clear = stm32h7_adc_irq_clear,
@@ -1528,7 +1480,7 @@ index 16c02c30d..6e9744944 100644
  
  static const struct of_device_id stm32_adc_of_match[] = {
 diff --git a/drivers/iio/adc/stm32-dfsdm-adc.c b/drivers/iio/adc/stm32-dfsdm-adc.c
-index 9234f1416..10e5a48cd 100644
+index 9234f14167b7..10e5a48cde44 100644
 --- a/drivers/iio/adc/stm32-dfsdm-adc.c
 +++ b/drivers/iio/adc/stm32-dfsdm-adc.c
 @@ -10,6 +10,7 @@
@@ -1718,7 +1670,7 @@ index 9234f1416..10e5a48cd 100644
  static int stm32_dfsdm_adc_probe(struct platform_device *pdev)
  {
 diff --git a/drivers/iio/adc/stm32-dfsdm-core.c b/drivers/iio/adc/stm32-dfsdm-core.c
-index 42a737770..627557d8e 100644
+index 42a7377704a4..627557d8efb0 100644
 --- a/drivers/iio/adc/stm32-dfsdm-core.c
 +++ b/drivers/iio/adc/stm32-dfsdm-core.c
 @@ -6,6 +6,7 @@
@@ -1862,7 +1814,7 @@ index 42a737770..627557d8e 100644
  
  	ret = stm32_dfsdm_clk_prepare_enable(dfsdm);
 diff --git a/drivers/iio/adc/stm32-dfsdm.h b/drivers/iio/adc/stm32-dfsdm.h
-index 4afc1f528..4f230e2a7 100644
+index 4afc1f528b78..4f230e2a7692 100644
 --- a/drivers/iio/adc/stm32-dfsdm.h
 +++ b/drivers/iio/adc/stm32-dfsdm.h
 @@ -13,25 +13,28 @@
@@ -1949,7 +1901,7 @@ index 4afc1f528..4f230e2a7 100644
  enum stm32_dfsdm_sinc_order {
  	DFSDM_FASTSINC_ORDER, /* FastSinc filter type */
 diff --git a/drivers/irqchip/irq-stm32-exti.c b/drivers/irqchip/irq-stm32-exti.c
-index 8662d7b7b..d38896125 100644
+index 8662d7b7b262..d38896125166 100644
 --- a/drivers/irqchip/irq-stm32-exti.c
 +++ b/drivers/irqchip/irq-stm32-exti.c
 @@ -132,7 +132,6 @@ static const struct stm32_exti_drv_data stm32h7xx_drv_data = {

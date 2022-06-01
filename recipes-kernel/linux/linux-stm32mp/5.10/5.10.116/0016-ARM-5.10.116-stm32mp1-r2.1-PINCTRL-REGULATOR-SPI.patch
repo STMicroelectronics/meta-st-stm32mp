@@ -1,7 +1,7 @@
-From b38c029ee9690c49ab2b225e9f83221f4c17254f Mon Sep 17 00:00:00 2001
-From: Lionel Vitte <lionel.vitte@st.com>
-Date: Thu, 14 Oct 2021 16:51:50 +0200
-Subject: [PATCH 16/23] ARM 5.10.61-stm32mp1-r2 PINCTRL-REGULATOR-SPI
+From 81dd9bfc6439efa4b289ea730ec62c27215afdbb Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Wed, 1 Jun 2022 09:24:32 +0200
+Subject: [PATCH 16/23] ARM 5.10.116-stm32mp1-r2.1 PINCTRL-REGULATOR-SPI
 
 ---
  drivers/mtd/nand/spi/core.c                 | 157 ++++++++----
@@ -14,15 +14,15 @@ Subject: [PATCH 16/23] ARM 5.10.61-stm32mp1-r2 PINCTRL-REGULATOR-SPI
  drivers/regulator/stpmic1_regulator.c       | 182 ++++++++++++-
  drivers/spi/Kconfig                         |   1 +
  drivers/spi/spi-mem.c                       |  86 +++++++
- drivers/spi/spi-stm32-qspi.c                | 176 +++++++++++--
+ drivers/spi/spi-stm32-qspi.c                | 187 +++++++++++---
  drivers/spi/spi-stm32.c                     | 267 +++++++++-----------
  include/dt-bindings/pinctrl/stm32-pinfunc.h |   1 +
  include/linux/mtd/spinand.h                 |  22 ++
  include/linux/spi/spi-mem.h                 |  16 ++
- 15 files changed, 840 insertions(+), 300 deletions(-)
+ 15 files changed, 842 insertions(+), 309 deletions(-)
 
 diff --git a/drivers/mtd/nand/spi/core.c b/drivers/mtd/nand/spi/core.c
-index 558d8a148..89ebb42a2 100644
+index 8794a1f6eacd..08ea50e4c648 100644
 --- a/drivers/mtd/nand/spi/core.c
 +++ b/drivers/mtd/nand/spi/core.c
 @@ -138,20 +138,12 @@ int spinand_select_target(struct spinand_device *spinand, unsigned int target)
@@ -278,7 +278,7 @@ index 558d8a148..89ebb42a2 100644
  	if (spinand->eccinfo.ooblayout)
  		mtd_set_ooblayout(mtd, spinand->eccinfo.ooblayout);
 diff --git a/drivers/pinctrl/stm32/pinctrl-stm32.c b/drivers/pinctrl/stm32/pinctrl-stm32.c
-index 3af443054..474b9debc 100644
+index b017dd400c46..e439f7820d7a 100644
 --- a/drivers/pinctrl/stm32/pinctrl-stm32.c
 +++ b/drivers/pinctrl/stm32/pinctrl-stm32.c
 @@ -73,6 +73,7 @@ static const char * const stm32_gpio_functions[] = {
@@ -297,7 +297,7 @@ index 3af443054..474b9debc 100644
  };
  
  static inline int stm32_gpio_pin(int gpio)
-@@ -414,57 +416,25 @@ static int stm32_gpio_domain_activate(struct irq_domain *d,
+@@ -433,57 +435,25 @@ static int stm32_gpio_domain_activate(struct irq_domain *d,
  {
  	struct stm32_gpio_bank *bank = d->host_data;
  	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
@@ -356,7 +356,7 @@ index 3af443054..474b9debc 100644
  static int stm32_gpio_domain_alloc(struct irq_domain *d,
  				   unsigned int virq,
  				   unsigned int nr_irqs, void *data)
-@@ -472,9 +442,28 @@ static int stm32_gpio_domain_alloc(struct irq_domain *d,
+@@ -491,9 +461,28 @@ static int stm32_gpio_domain_alloc(struct irq_domain *d,
  	struct stm32_gpio_bank *bank = d->host_data;
  	struct irq_fwspec *fwspec = data;
  	struct irq_fwspec parent_fwspec;
@@ -387,7 +387,7 @@ index 3af443054..474b9debc 100644
  	parent_fwspec.fwnode = d->parent->fwnode;
  	parent_fwspec.param_count = 2;
  	parent_fwspec.param[0] = fwspec->param[0];
-@@ -486,12 +475,26 @@ static int stm32_gpio_domain_alloc(struct irq_domain *d,
+@@ -505,12 +494,26 @@ static int stm32_gpio_domain_alloc(struct irq_domain *d,
  	return irq_domain_alloc_irqs_parent(d, virq, nr_irqs, &parent_fwspec);
  }
  
@@ -418,7 +418,7 @@ index 3af443054..474b9debc 100644
  };
  
  /* Pinctrl functions */
-@@ -513,7 +516,7 @@ stm32_pctrl_find_group_by_pin(struct stm32_pinctrl *pctl, u32 pin)
+@@ -532,7 +535,7 @@ stm32_pctrl_find_group_by_pin(struct stm32_pinctrl *pctl, u32 pin)
  static bool stm32_pctrl_is_function_valid(struct stm32_pinctrl *pctl,
  		u32 pin_num, u32 fnum)
  {
@@ -427,7 +427,7 @@ index 3af443054..474b9debc 100644
  
  	for (i = 0; i < pctl->npins; i++) {
  		const struct stm32_desc_pin *pin = pctl->pins + i;
-@@ -522,7 +525,10 @@ static bool stm32_pctrl_is_function_valid(struct stm32_pinctrl *pctl,
+@@ -541,7 +544,10 @@ static bool stm32_pctrl_is_function_valid(struct stm32_pinctrl *pctl,
  		if (pin->pin.number != pin_num)
  			continue;
  
@@ -439,7 +439,7 @@ index 3af443054..474b9debc 100644
  			if (func->num == fnum)
  				return true;
  			func++;
-@@ -833,6 +839,11 @@ static int stm32_pmx_set_mux(struct pinctrl_dev *pctldev,
+@@ -852,6 +858,11 @@ static int stm32_pmx_set_mux(struct pinctrl_dev *pctldev,
  		return -EINVAL;
  	}
  
@@ -451,7 +451,7 @@ index 3af443054..474b9debc 100644
  	bank = gpiochip_get_data(range->gc);
  	pin = stm32_gpio_pin(g->pin);
  
-@@ -1147,10 +1158,27 @@ static int stm32_pconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
+@@ -1166,10 +1177,27 @@ static int stm32_pconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
  	return 0;
  }
  
@@ -479,7 +479,7 @@ index 3af443054..474b9debc 100644
  	struct pinctrl_gpio_range *range;
  	struct stm32_gpio_bank *bank;
  	int offset;
-@@ -1200,7 +1228,12 @@ static void stm32_pconf_dbg_show(struct pinctrl_dev *pctldev,
+@@ -1219,7 +1247,12 @@ static void stm32_pconf_dbg_show(struct pinctrl_dev *pctldev,
  	case 2:
  		drive = stm32_pconf_get_driving(bank, offset);
  		speed = stm32_pconf_get_speed(bank, offset);
@@ -493,7 +493,7 @@ index 3af443054..474b9debc 100644
  			   drive ? "open drain" : "push pull",
  			   biasing[bias],
  			   speeds[speed], "speed");
-@@ -1409,7 +1442,8 @@ static int stm32_pctrl_create_pins_tab(struct stm32_pinctrl *pctl,
+@@ -1428,7 +1461,8 @@ static int stm32_pctrl_create_pins_tab(struct stm32_pinctrl *pctl,
  		if (pctl->pkg && !(pctl->pkg & p->pkg))
  			continue;
  		pins->pin = p->pin;
@@ -503,7 +503,7 @@ index 3af443054..474b9debc 100644
  		pins++;
  		nb_pins_available++;
  	}
-@@ -1518,6 +1552,7 @@ int stm32_pctl_probe(struct platform_device *pdev)
+@@ -1537,6 +1571,7 @@ int stm32_pctl_probe(struct platform_device *pdev)
  	pctl->pctl_desc.pctlops = &stm32_pctrl_ops;
  	pctl->pctl_desc.pmxops = &stm32_pmx_ops;
  	pctl->dev = &pdev->dev;
@@ -512,7 +512,7 @@ index 3af443054..474b9debc 100644
  	pctl->pctl_dev = devm_pinctrl_register(&pdev->dev, &pctl->pctl_desc,
  					       pctl);
 diff --git a/drivers/pinctrl/stm32/pinctrl-stm32.h b/drivers/pinctrl/stm32/pinctrl-stm32.h
-index b0882d120..a7137fbff 100644
+index b0882d120765..a7137fbff5d0 100644
 --- a/drivers/pinctrl/stm32/pinctrl-stm32.h
 +++ b/drivers/pinctrl/stm32/pinctrl-stm32.h
 @@ -17,6 +17,8 @@
@@ -575,7 +575,7 @@ index b0882d120..a7137fbff 100644
  
  struct stm32_gpio_bank;
 diff --git a/drivers/pinctrl/stm32/pinctrl-stm32mp157.c b/drivers/pinctrl/stm32/pinctrl-stm32mp157.c
-index 2ccb99d64..86fe6d5ac 100644
+index 2ccb99d64df8..86fe6d5ac54d 100644
 --- a/drivers/pinctrl/stm32/pinctrl-stm32mp157.c
 +++ b/drivers/pinctrl/stm32/pinctrl-stm32mp157.c
 @@ -2328,6 +2328,7 @@ static struct stm32_pinctrl_match_data stm32mp157_match_data = {
@@ -587,7 +587,7 @@ index 2ccb99d64..86fe6d5ac 100644
  
  static const struct of_device_id stm32mp157_pctrl_match[] = {
 diff --git a/drivers/pwm/pwm-stm32-lp.c b/drivers/pwm/pwm-stm32-lp.c
-index 134c14621..5967025e9 100644
+index 945a8b2b8564..bd4b4408c884 100644
 --- a/drivers/pwm/pwm-stm32-lp.c
 +++ b/drivers/pwm/pwm-stm32-lp.c
 @@ -58,7 +58,7 @@ static int stm32_pwm_lp_apply(struct pwm_chip *chip, struct pwm_device *pwm,
@@ -609,7 +609,7 @@ index 134c14621..5967025e9 100644
  	if (!cstate.enabled) {
  		/* enable clock to drive PWM counter */
 diff --git a/drivers/pwm/pwm-stm32.c b/drivers/pwm/pwm-stm32.c
-index d3be944f2..13f47e255 100644
+index d3be944f2ae9..13f47e25572e 100644
 --- a/drivers/pwm/pwm-stm32.c
 +++ b/drivers/pwm/pwm-stm32.c
 @@ -207,6 +207,10 @@ static int stm32_pwm_capture(struct pwm_chip *chip, struct pwm_device *pwm,
@@ -624,7 +624,7 @@ index d3be944f2..13f47e255 100644
  	regmap_update_bits(priv->regmap,
  			   pwm->hwpwm < 2 ? TIM_CCMR1 : TIM_CCMR2,
 diff --git a/drivers/regulator/stm32-pwr.c b/drivers/regulator/stm32-pwr.c
-index 2a42acb7c..2b328b970 100644
+index 2a42acb7c24e..2b328b970b46 100644
 --- a/drivers/regulator/stm32-pwr.c
 +++ b/drivers/regulator/stm32-pwr.c
 @@ -3,12 +3,15 @@
@@ -784,7 +784,7 @@ index 2a42acb7c..2b328b970 100644
  		priv->ready_mask = ready_mask_table[i];
  		config.driver_data = priv;
 diff --git a/drivers/regulator/stpmic1_regulator.c b/drivers/regulator/stpmic1_regulator.c
-index cf10fdb72..c5337a12a 100644
+index cf10fdb72e32..c5337a12a61a 100644
 --- a/drivers/regulator/stpmic1_regulator.c
 +++ b/drivers/regulator/stpmic1_regulator.c
 @@ -2,7 +2,9 @@
@@ -1046,7 +1046,7 @@ index cf10fdb72..c5337a12a 100644
  
  	dev_dbg(&pdev->dev, "stpmic1_regulator driver probed\n");
 diff --git a/drivers/spi/Kconfig b/drivers/spi/Kconfig
-index aadaea052..6bdeeea0d 100644
+index aadaea052f51..6bdeeea0d519 100644
 --- a/drivers/spi/Kconfig
 +++ b/drivers/spi/Kconfig
 @@ -795,6 +795,7 @@ config SPI_STM32_QSPI
@@ -1058,7 +1058,7 @@ index aadaea052..6bdeeea0d 100644
  	  This enables support for the Quad SPI controller in master mode.
  	  This driver does not support generic SPI. The implementation only
 diff --git a/drivers/spi/spi-mem.c b/drivers/spi/spi-mem.c
-index 4682f49dc..1325db7f5 100644
+index 4682f49dc733..1325db7f5314 100644
 --- a/drivers/spi/spi-mem.c
 +++ b/drivers/spi/spi-mem.c
 @@ -6,6 +6,7 @@
@@ -1162,7 +1162,7 @@ index 4682f49dc..1325db7f5 100644
  {
  	struct spi_mem_driver *memdrv = to_spi_mem_drv(spi->dev.driver);
 diff --git a/drivers/spi/spi-stm32-qspi.c b/drivers/spi/spi-stm32-qspi.c
-index 4f24f6392..39003e1f6 100644
+index 4f24f6392212..d895e1548790 100644
 --- a/drivers/spi/spi-stm32-qspi.c
 +++ b/drivers/spi/spi-stm32-qspi.c
 @@ -36,6 +36,7 @@
@@ -1239,7 +1239,27 @@ index 4f24f6392..39003e1f6 100644
  		if (!stm32_qspi_tx_dma(qspi, op))
  			return 0;
  
-@@ -321,6 +334,24 @@ static int stm32_qspi_wait_cmd(struct stm32_qspi *qspi,
+@@ -292,10 +305,8 @@ static int stm32_qspi_wait_cmd(struct stm32_qspi *qspi,
+ 	u32 cr, sr;
+ 	int err = 0;
+ 
+-	if (!op->data.nbytes)
+-		goto wait_nobusy;
+-
+-	if (readl_relaxed(qspi->io_base + QSPI_SR) & SR_TCF)
++	if ((readl_relaxed(qspi->io_base + QSPI_SR) & SR_TCF) ||
++	    qspi->fmode == CCR_FMODE_APM)
+ 		goto out;
+ 
+ 	reinit_completion(&qspi->data_completion);
+@@ -314,13 +325,30 @@ static int stm32_qspi_wait_cmd(struct stm32_qspi *qspi,
+ out:
+ 	/* clear flags */
+ 	writel_relaxed(FCR_CTCF | FCR_CTEF, qspi->io_base + QSPI_FCR);
+-wait_nobusy:
+ 	if (!err)
+ 		err = stm32_qspi_wait_nobusy(qspi);
+ 
  	return err;
  }
  
@@ -1264,7 +1284,7 @@ index 4f24f6392..39003e1f6 100644
  static int stm32_qspi_get_mode(struct stm32_qspi *qspi, u8 buswidth)
  {
  	if (buswidth == 4)
-@@ -333,8 +364,8 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
+@@ -333,30 +361,14 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
  {
  	struct stm32_qspi *qspi = spi_controller_get_devdata(mem->spi->master);
  	struct stm32_qspi_flash *flash = &qspi->flash[mem->spi->chip_select];
@@ -1275,10 +1295,13 @@ index 4f24f6392..39003e1f6 100644
  
  	dev_dbg(qspi->dev, "cmd:%#x mode:%d.%d.%d.%d addr:%#llx len:%#x\n",
  		op->cmd.opcode, op->cmd.buswidth, op->addr.buswidth,
-@@ -345,18 +376,6 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
- 	if (err)
- 		goto abort;
+ 		op->dummy.buswidth, op->data.buswidth,
+ 		op->addr.val, op->data.nbytes);
  
+-	err = stm32_qspi_wait_nobusy(qspi);
+-	if (err)
+-		goto abort;
+-
 -	addr_max = op->addr.val + op->data.nbytes + 1;
 -
 -	if (op->data.dir == SPI_MEM_DATA_IN) {
@@ -1294,7 +1317,7 @@ index 4f24f6392..39003e1f6 100644
  	cr = readl_relaxed(qspi->io_base + QSPI_CR);
  	cr &= ~CR_PRESC_MASK & ~CR_FSEL;
  	cr |= FIELD_PREP(CR_PRESC_MASK, flash->presc);
-@@ -366,8 +385,6 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
+@@ -366,8 +378,6 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
  	if (op->data.nbytes)
  		writel_relaxed(op->data.nbytes - 1,
  			       qspi->io_base + QSPI_DLR);
@@ -1303,7 +1326,7 @@ index 4f24f6392..39003e1f6 100644
  
  	ccr = qspi->fmode;
  	ccr |= FIELD_PREP(CCR_INST_MASK, op->cmd.opcode);
-@@ -394,6 +411,9 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
+@@ -394,6 +404,9 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
  	if (op->addr.nbytes && qspi->fmode != CCR_FMODE_MM)
  		writel_relaxed(op->addr.val, qspi->io_base + QSPI_AR);
  
@@ -1313,7 +1336,7 @@ index 4f24f6392..39003e1f6 100644
  	err = stm32_qspi_tx(qspi, op);
  
  	/*
-@@ -403,7 +423,7 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
+@@ -403,7 +416,7 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
  	 *  byte of device (device size - fifo size). like device size is not
  	 *  knows, the prefetching is always stop.
  	 */
@@ -1322,7 +1345,7 @@ index 4f24f6392..39003e1f6 100644
  		goto abort;
  
  	/* wait end of tx in indirect mode */
-@@ -422,15 +442,49 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
+@@ -422,15 +435,49 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
  						    cr, !(cr & CR_ABORT), 1,
  						    STM32_ABT_TIMEOUT_US);
  
@@ -1376,7 +1399,7 @@ index 4f24f6392..39003e1f6 100644
  static int stm32_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
  {
  	struct stm32_qspi *qspi = spi_controller_get_devdata(mem->spi->master);
-@@ -443,6 +497,11 @@ static int stm32_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
+@@ -443,6 +490,11 @@ static int stm32_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
  	}
  
  	mutex_lock(&qspi->lock);
@@ -1388,7 +1411,7 @@ index 4f24f6392..39003e1f6 100644
  	ret = stm32_qspi_send(mem, op);
  	mutex_unlock(&qspi->lock);
  
-@@ -452,6 +511,64 @@ static int stm32_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
+@@ -452,6 +504,64 @@ static int stm32_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
  	return ret;
  }
  
@@ -1453,7 +1476,7 @@ index 4f24f6392..39003e1f6 100644
  static int stm32_qspi_setup(struct spi_device *spi)
  {
  	struct spi_controller *ctrl = spi->master;
-@@ -475,12 +592,11 @@ static int stm32_qspi_setup(struct spi_device *spi)
+@@ -475,12 +585,11 @@ static int stm32_qspi_setup(struct spi_device *spi)
  	presc = DIV_ROUND_UP(qspi->clk_rate, spi->max_speed_hz) - 1;
  
  	flash = &qspi->flash[spi->chip_select];
@@ -1467,7 +1490,7 @@ index 4f24f6392..39003e1f6 100644
  	writel_relaxed(qspi->cr_reg, qspi->io_base + QSPI_CR);
  
  	/* set dcr fsize to max address */
-@@ -557,7 +673,10 @@ static void stm32_qspi_dma_free(struct stm32_qspi *qspi)
+@@ -557,7 +666,10 @@ static void stm32_qspi_dma_free(struct stm32_qspi *qspi)
   * to check supported mode.
   */
  static const struct spi_controller_mem_ops stm32_qspi_mem_ops = {
@@ -1479,7 +1502,7 @@ index 4f24f6392..39003e1f6 100644
  };
  
  static int stm32_qspi_probe(struct platform_device *pdev)
-@@ -612,6 +731,7 @@ static int stm32_qspi_probe(struct platform_device *pdev)
+@@ -612,6 +724,7 @@ static int stm32_qspi_probe(struct platform_device *pdev)
  	}
  
  	init_completion(&qspi->data_completion);
@@ -1488,7 +1511,7 @@ index 4f24f6392..39003e1f6 100644
  	qspi->clk = devm_clk_get(dev, NULL);
  	if (IS_ERR(qspi->clk)) {
 diff --git a/drivers/spi/spi-stm32.c b/drivers/spi/spi-stm32.c
-index a6dfc8fef..c42c0ae92 100644
+index a6dfc8fef20c..c42c0ae92c88 100644
 --- a/drivers/spi/spi-stm32.c
 +++ b/drivers/spi/spi-stm32.c
 @@ -5,6 +5,7 @@
@@ -2128,7 +2151,7 @@ index a6dfc8fef..c42c0ae92 100644
  static const struct dev_pm_ops stm32_spi_pm_ops = {
  	SET_SYSTEM_SLEEP_PM_OPS(stm32_spi_suspend, stm32_spi_resume)
 diff --git a/include/dt-bindings/pinctrl/stm32-pinfunc.h b/include/dt-bindings/pinctrl/stm32-pinfunc.h
-index e6fb8ada3..370a25a93 100644
+index e6fb8ada3f4d..370a25a9366c 100644
 --- a/include/dt-bindings/pinctrl/stm32-pinfunc.h
 +++ b/include/dt-bindings/pinctrl/stm32-pinfunc.h
 @@ -26,6 +26,7 @@
@@ -2140,7 +2163,7 @@ index e6fb8ada3..370a25a93 100644
  /* define Pins number*/
  #define PIN_NO(port, line)	(((port) - 'A') * 0x10 + (line))
 diff --git a/include/linux/mtd/spinand.h b/include/linux/mtd/spinand.h
-index 7b78c4ba9..74b5db35c 100644
+index 7b78c4ba9b3e..74b5db35c219 100644
 --- a/include/linux/mtd/spinand.h
 +++ b/include/linux/mtd/spinand.h
 @@ -170,6 +170,28 @@ struct spinand_op;
@@ -2173,7 +2196,7 @@ index 7b78c4ba9..74b5db35c 100644
  /**
   * struct spinand_id - SPI NAND id structure
 diff --git a/include/linux/spi/spi-mem.h b/include/linux/spi/spi-mem.h
-index 159463cc6..c24fa5c11 100644
+index 159463cc659c..c24fa5c11e25 100644
 --- a/include/linux/spi/spi-mem.h
 +++ b/include/linux/spi/spi-mem.h
 @@ -250,6 +250,9 @@ static inline void *spi_mem_get_drvdata(struct spi_mem *mem)
