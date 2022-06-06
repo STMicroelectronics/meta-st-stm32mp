@@ -80,6 +80,11 @@ do_configure:prepend() {
                                 echo "CONFIG_STM32MP15x_STM32IMAGE=y" >> "${S}/configs/${config}"
                             fi
                         fi
+                        if [ "${UBOOT_SIGN_ENABLE}" = "1" ]; then
+                            if ! grep -q 'CONFIG_FIT_SIGNATURE=y' "${S}/configs/${config}"; then
+                                echo "CONFIG_FIT_SIGNATURE=y" >> "${S}/configs/${config}"
+                            fi
+                        fi
                     fi
                 done
                 unset j
@@ -258,6 +263,30 @@ do_deploy:append() {
                                     if [ -n "${SPL_ELF}" ] && [ -f "${B}/${config}/${SPL_ELF}" ]; then
                                         install -m 644 ${B}/${config}/${SPL_ELF} ${DEPLOYDIR}${SUBFOLDER}/debug/${SPL_ELF_NAME}${soc_suffix}-${type_suffix}
                                     fi
+
+                                    if [ "${UBOOT_SIGN_ENABLE}" = "1" -a -n "${UBOOT_DTB_BINARY}" ] ; then
+                                        # rm previous installed binaries
+                                        if [ -e "${DEPLOYDIR}/${UBOOT_DTB_BINARY}" ]; then
+                                            rm ${DEPLOYDIR}/${UBOOT_DTB_BINARY}
+                                        fi
+                                        if [ -e "${DEPLOYDIR}/${UBOOT_DTB_SYMLINK}" ]; then
+                                            rm ${DEPLOYDIR}/${UBOOT_DTB_SYMLINK}
+                                        fi
+                                        if [ -e "${DEPLOYDIR}/${DEPLOYDIR}/${UBOOT_NODTB_SYMLINK}" ]; then
+                                            rm ${DEPLOYDIR}/${UBOOT_NODTB_SYMLINK} ${DEPLOYDIR}/${UBOOT_NODTB_BINARY}
+                                        fi
+                                        if [ -e "${UBOOT_DTB_BINARY}" ]; then
+                                            install u-boot-${MACHINE}-${devicetree}-${PV}-${PR}.dtb ${DEPLOYDIR}/
+                                            install u-boot-${MACHINE}-${devicetree}.dtb ${DEPLOYDIR}/
+                                        fi
+
+                                        if [ -f "${UBOOT_NODTB_BINARY}" ]; then
+                                            install u-boot-nodtb-${soc_suffix}-${PV}-${PR}.bin ${DEPLOYDIR}/
+                                        fi
+
+
+                                    fi
+
                                 done
                             fi
                         done
@@ -270,6 +299,20 @@ do_deploy:append() {
             bbfatal "Wrong u-boot-stm32mp configuration: please make sure to use UBOOT_CONFIG through BOOTSCHEME_LABELS config"
         fi
     fi
+
+    if [ "x${UBOOT_SIGN_ENABLE}" = "x1" ] ; then
+        #  work only there is only one devicetree
+        # get name of u-boot devicetree without signature
+        ubootdevicetree=`ls -1 ${DEPLOYDIR}/*.dtb | head -n 1`
+        namewithoutsignature=`echo $ubootdevicetree | sed "s/\.dtb/-without-signature.dtb/g"`
+        namewithsignature=`echo $ubootdevicetree | sed "s/\.dtb/-with-signature.dtb/g"`
+        mv $ubootdevicetree $namewithoutsignature
+        #get name of kernel uboot devicetree
+        nameonkernel=`ls -1 ${DEPLOY_DIR_IMAGE}/kernel/u-boot-${MACHINE}*.dtb | head -n 1`
+        cp $nameonkernel $namewithsignature
+        cp $nameonkernel $ubootdevicetree
+    fi
+
 }
 
 # ---------------------------------------------------------------------

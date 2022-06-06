@@ -69,9 +69,6 @@ CPPFLAGS =
 
 UBOOT_LOCALVERSION = ${UBOOT_LOCALVERSION}
 
-# Configure default fip feature
-ENABLE_FIP ?= ${@bb.utils.contains('MACHINE_FEATURES','fip','1','',d)}
-
 # Display U-Boot config details
 define uboot-configs
 	echo "  \$(1)" ; \\
@@ -85,11 +82,6 @@ endef
 # Configure U-Boot configure rules (configure-DEFCONFIG-CONFIG)
 define configure-rules
 configure-\$(1)-\$(2): version
-ifeq (\$(ENABLE_FIP),0)
-	@if ! grep -q 'CONFIG_STM32MP15x_STM32IMAGE=y' \$(SRC_PATH)/configs/\$(1); then \\
-		echo "CONFIG_STM32MP15x_STM32IMAGE=y" >> \$(SRC_PATH)/configs/\$(1) ; \\
-	fi
-endif
 	@mkdir -p \$(BLD_PATH)/\$(1)
 	@echo \$(UBOOT_LOCALVERSION) > \$(BLD_PATH)/\$(1)/.scmversion
 	\$(MAKE) -C \$(SRC_PATH) O=\$(BLD_PATH)/\$(1) \$(1)
@@ -139,9 +131,7 @@ deploy-targets := \$(foreach config, \$(if \$(UBOOT_CONFIG),\$(UBOOT_CONFIG),\$(
 
 # Set dependencies list for building all
 DEPS = \$(deploy-targets)
-ifeq (\$(ENABLE_FIP), 1)
 DEPS += fip
-endif
 
 help:
 	@echo
@@ -161,10 +151,7 @@ help:
 	@echo "  DEPLOYDIR = \$(DEPLOYDIR)"
 	@echo
 	@echo "FIP configuration:"
-	@echo "  ENABLE_FIP = \$(ENABLE_FIP) ('1' to generate fip binary)"
-ifeq (\$(ENABLE_FIP),1)
 	@echo "  Do not forget to set FIP deploydir folders (such as FIP_DEPLOYDIR_ROOT) to provide path to needed binaries"
-endif
 	@echo
 	@echo "Available targets:"
 	@echo "  all   : build U-Boot binaries for defined config(s)"
