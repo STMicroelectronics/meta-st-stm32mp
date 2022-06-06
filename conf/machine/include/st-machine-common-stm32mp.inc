@@ -60,7 +60,6 @@ MACHINE_FEATURES:append = " fw-update"
 
 # Default serial consoles (TTYs) to enable using getty
 # Before kernel 4.18, serial console are ttyS3 but after is ttySTM0
-SERIAL_CONSOLES = "115200;ttySTM0"
 SERIAL_CONSOLE = "115200 ttySTM0"
 
 # Don't include kernels in standard images

@@ -74,7 +74,7 @@ UBOOT_EXTLINUX_TARGETS ?= ""
 # Configure FIT kernel image for extlinux file creation
 UBOOT_EXTLINUX_FIT ??= "0"
 
-UBOOT_EXTLINUX_CONSOLE ??= "console=${console}"
+UBOOT_EXTLINUX_CONSOLE ??= "console=${console},${baudrate}"
 UBOOT_EXTLINUX_LABELS ??= "linux"
 UBOOT_EXTLINUX_FDT ??= ""
 UBOOT_EXTLINUX_FDTDIR ??= "../"
