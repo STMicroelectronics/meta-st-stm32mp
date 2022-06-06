@@ -1,0 +1,114 @@
+From 4ad9ff21f9950e378e159d614a4f3edb5cd187b6 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+Date: Tue, 31 May 2022 12:00:10 +0200
+Subject: [PATCH 12/22] ARM-5.15.24-stm32mp1-r1-MMC
+
+Signed-off-by: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+---
+ Documentation/devicetree/bindings/mmc/arm,pl18x.yaml |  6 ++++++
+ drivers/mmc/host/mmci.c                              | 12 ++++++++++--
+ drivers/mmc/host/mmci.h                              |  1 +
+ drivers/mmc/host/mmci_stm32_sdmmc.c                  |  5 +++--
+ 4 files changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/mmc/arm,pl18x.yaml b/Documentation/devicetree/bindings/mmc/arm,pl18x.yaml
+index 47595cb48..eed54bee7 100644
+--- a/Documentation/devicetree/bindings/mmc/arm,pl18x.yaml
++++ b/Documentation/devicetree/bindings/mmc/arm,pl18x.yaml
+@@ -53,6 +53,12 @@ properties:
+         items:
+           - const: arm,pl18x
+           - const: arm,primecell
++      - description: Entry for STMicroelectronics variant of PL18x.
++          This dedicated compatible is used by bootloaders.
++        items:
++          - const: st,stm32-sdmmc2
++          - const: arm,pl18x
++          - const: arm,primecell
+ 
+   clocks:
+     description: One or two clocks, the "apb_pclk" and the "MCLK"
+diff --git a/drivers/mmc/host/mmci.c b/drivers/mmc/host/mmci.c
+index 3765e2f4a..c15b9a2cd 100644
+--- a/drivers/mmc/host/mmci.c
++++ b/drivers/mmc/host/mmci.c
+@@ -274,13 +274,14 @@ static struct variant_data variant_stm32_sdmmc = {
+ 	.busy_detect		= true,
+ 	.busy_detect_flag	= MCI_STM32_BUSYD0,
+ 	.busy_detect_mask	= MCI_STM32_BUSYD0ENDMASK,
++	.disable_keep_power	= true,
+ 	.init			= sdmmc_variant_init,
+ };
+ 
+ static struct variant_data variant_stm32_sdmmcv2 = {
+ 	.fifosize		= 16 * 4,
+ 	.fifohalfsize		= 8 * 4,
+-	.f_max			= 208000000,
++	.f_max			= 267000000,
+ 	.stm32_clkdiv		= true,
+ 	.cmdreg_cpsm_enable	= MCI_CPSM_STM32_ENABLE,
+ 	.cmdreg_lrsp_crc	= MCI_CPSM_STM32_LRSP_CRC,
+@@ -301,6 +302,7 @@ static struct variant_data variant_stm32_sdmmcv2 = {
+ 	.busy_detect		= true,
+ 	.busy_detect_flag	= MCI_STM32_BUSYD0,
+ 	.busy_detect_mask	= MCI_STM32_BUSYD0ENDMASK,
++	.disable_keep_power	= true,
+ 	.init			= sdmmc_variant_init,
+ };
+ 
+@@ -2168,7 +2170,8 @@ static int mmci_probe(struct amba_device *dev,
+ 	host->stop_abort.flags = MMC_RSP_R1B | MMC_CMD_AC;
+ 
+ 	/* We support these PM capabilities. */
+-	mmc->pm_caps |= MMC_PM_KEEP_POWER;
++	if (!variant->disable_keep_power)
++		mmc->pm_caps |= MMC_PM_KEEP_POWER;
+ 
+ 	/*
+ 	 * We can do SGIO
+@@ -2431,6 +2434,11 @@ static const struct amba_id mmci_ids[] = {
+ 		.mask	= 0xf0ffffff,
+ 		.data	= &variant_stm32_sdmmcv2,
+ 	},
++	{
++		.id     = 0x20253180,
++		.mask	= 0xf0ffffff,
++		.data	= &variant_stm32_sdmmcv2,
++	},
+ 	/* Qualcomm variants */
+ 	{
+ 		.id     = 0x00051180,
+diff --git a/drivers/mmc/host/mmci.h b/drivers/mmc/host/mmci.h
+index e1a9b96a3..2cad1ef97 100644
+--- a/drivers/mmc/host/mmci.h
++++ b/drivers/mmc/host/mmci.h
+@@ -361,6 +361,7 @@ struct variant_data {
+ 	u32			opendrain;
+ 	u8			dma_lli:1;
+ 	u32			stm32_idmabsize_mask;
++	u8			disable_keep_power:1;
+ 	void (*init)(struct mmci_host *host);
+ };
+ 
+diff --git a/drivers/mmc/host/mmci_stm32_sdmmc.c b/drivers/mmc/host/mmci_stm32_sdmmc.c
+index a75d3dd34..9c13f2c31 100644
+--- a/drivers/mmc/host/mmci_stm32_sdmmc.c
++++ b/drivers/mmc/host/mmci_stm32_sdmmc.c
+@@ -241,11 +241,12 @@ static void mmci_sdmmc_set_clkreg(struct mmci_host *host, unsigned int desired)
+ 
+ 	/*
+ 	 * SDMMC_FBCK is selected when an external Delay Block is needed
+-	 * with SDR104.
++	 * with SDR104 or HS200.
+ 	 */
+ 	if (host->mmc->ios.timing >= MMC_TIMING_UHS_SDR50) {
+ 		clk |= MCI_STM32_CLK_BUSSPEED;
+-		if (host->mmc->ios.timing == MMC_TIMING_UHS_SDR104) {
++		if (host->mmc->ios.timing == MMC_TIMING_UHS_SDR104 ||
++		    host->mmc->ios.timing == MMC_TIMING_MMC_HS200) {
+ 			clk &= ~MCI_STM32_CLK_SEL_MSK;
+ 			clk |= MCI_STM32_CLK_SELFBCK;
+ 		}
+-- 
+2.25.1
+

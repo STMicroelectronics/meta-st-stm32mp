@@ -1,0 +1,5180 @@
+From 696e5d9592c88d2e0137dafa02cd293eb2776d15 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+Date: Tue, 31 May 2022 11:50:45 +0200
+Subject: [PATCH 02/22] ARM-5.15.24-stm32mp1-r1-CLOCK
+
+Signed-off-by: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+---
+ drivers/clk/Kconfig                        |    5 +
+ drivers/clk/Makefile                       |    1 +
+ drivers/clk/clk-composite.c                |   15 +
+ drivers/clk/clk-scmi.c                     |   36 +
+ drivers/clk/clk-stm32mp1.c                 |  471 ++++--
+ drivers/clk/clk.c                          |    7 +-
+ drivers/clk/stm32/Makefile                 |    1 +
+ drivers/clk/stm32/clk-stm32-core.c         |  722 ++++++++
+ drivers/clk/stm32/clk-stm32-core.h         |  243 +++
+ drivers/clk/stm32/clk-stm32mp13.c          | 1062 ++++++++++++
+ drivers/clk/stm32/reset-stm32.c            |  122 ++
+ drivers/clk/stm32/reset-stm32.h            |    7 +
+ drivers/clk/stm32/stm32mp13_rcc.h          | 1751 ++++++++++++++++++++
+ drivers/clocksource/timer-stm32-lp.c       |    4 +-
+ include/dt-bindings/clock/stm32mp1-clks.h  |   52 +-
+ include/dt-bindings/clock/stm32mp13-clks.h |  229 +++
+ 16 files changed, 4521 insertions(+), 207 deletions(-)
+ create mode 100644 drivers/clk/stm32/Makefile
+ create mode 100644 drivers/clk/stm32/clk-stm32-core.c
+ create mode 100644 drivers/clk/stm32/clk-stm32-core.h
+ create mode 100644 drivers/clk/stm32/clk-stm32mp13.c
+ create mode 100644 drivers/clk/stm32/reset-stm32.c
+ create mode 100644 drivers/clk/stm32/reset-stm32.h
+ create mode 100644 drivers/clk/stm32/stm32mp13_rcc.h
+ create mode 100644 include/dt-bindings/clock/stm32mp13-clks.h
+
+diff --git a/drivers/clk/Kconfig b/drivers/clk/Kconfig
+index c5b3dc973..c23287f7d 100644
+--- a/drivers/clk/Kconfig
++++ b/drivers/clk/Kconfig
+@@ -334,6 +334,11 @@ config COMMON_CLK_VC5
+ 	  This driver supports the IDT VersaClock 5 and VersaClock 6
+ 	  programmable clock generators.
+ 
++config COMMON_CLK_STM32MP135
++	def_bool COMMON_CLK && MACH_STM32MP13
++	help
++	  Support for stm32mp135 SoC family clocks
++
+ config COMMON_CLK_STM32MP157
+ 	def_bool COMMON_CLK && MACH_STM32MP157
+ 	help
+diff --git a/drivers/clk/Makefile b/drivers/clk/Makefile
+index e42312121..6172bc25b 100644
+--- a/drivers/clk/Makefile
++++ b/drivers/clk/Makefile
+@@ -109,6 +109,7 @@ obj-y					+= socfpga/
+ obj-$(CONFIG_PLAT_SPEAR)		+= spear/
+ obj-y					+= sprd/
+ obj-$(CONFIG_ARCH_STI)			+= st/
++obj-$(CONFIG_ARCH_STM32)		+= stm32/
+ obj-$(CONFIG_ARCH_SUNXI)		+= sunxi/
+ obj-$(CONFIG_SUNXI_CCU)			+= sunxi-ng/
+ obj-$(CONFIG_ARCH_TEGRA)		+= tegra/
+diff --git a/drivers/clk/clk-composite.c b/drivers/clk/clk-composite.c
+index 510a99656..8fcbb34de 100644
+--- a/drivers/clk/clk-composite.c
++++ b/drivers/clk/clk-composite.c
+@@ -42,6 +42,18 @@ static unsigned long clk_composite_recalc_rate(struct clk_hw *hw,
+ 	return rate_ops->recalc_rate(rate_hw, parent_rate);
+ }
+ 
++static int clk_composite_get_duty_cycle(struct clk_hw *hw,
++					struct clk_duty *duty)
++{
++	struct clk_composite *composite = to_clk_composite(hw);
++	const struct clk_ops *rate_ops = composite->rate_ops;
++	struct clk_hw *rate_hw = composite->rate_hw;
++
++	__clk_hw_set_clk(rate_hw, hw);
++
++	return rate_ops->get_duty_cycle(rate_hw, duty);
++}
++
+ static int clk_composite_determine_rate(struct clk_hw *hw,
+ 					struct clk_rate_request *req)
+ {
+@@ -251,6 +263,9 @@ static struct clk_hw *__clk_hw_register_composite(struct device *dev,
+ 		}
+ 		clk_composite_ops->recalc_rate = clk_composite_recalc_rate;
+ 
++		if (rate_ops->get_duty_cycle)
++			clk_composite_ops->get_duty_cycle = clk_composite_get_duty_cycle;
++
+ 		if (rate_ops->determine_rate)
+ 			clk_composite_ops->determine_rate =
+ 				clk_composite_determine_rate;
+diff --git a/drivers/clk/clk-scmi.c b/drivers/clk/clk-scmi.c
+index 1e357d364..3e87eefa8 100644
+--- a/drivers/clk/clk-scmi.c
++++ b/drivers/clk/clk-scmi.c
+@@ -9,6 +9,7 @@
+ #include <linux/device.h>
+ #include <linux/err.h>
+ #include <linux/of.h>
++#include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/scmi_protocol.h>
+ #include <asm/div64.h>
+@@ -37,6 +38,37 @@ static unsigned long scmi_clk_recalc_rate(struct clk_hw *hw,
+ 	return rate;
+ }
+ 
++static unsigned long scmi_clk_round_rate_get(struct clk_hw *hw,
++					     unsigned long rate,
++					     unsigned long *parent_rate)
++{
++	int ret;
++	u64 round_rate = rate;
++	struct scmi_clk *clk = to_scmi_clk(hw);
++
++	ret = scmi_proto_clk_ops->round_rate_get(clk->ph, clk->id, &round_rate);
++	if (ret)
++		return 0;
++
++	return round_rate;
++}
++
++static int scmi_clk_get_duty_cycle(struct clk_hw *hw, struct clk_duty *duty)
++{
++	struct scmi_clk *clk = to_scmi_clk(hw);
++	int ret;
++
++	ret = scmi_proto_clk_ops->get_duty_cycle(clk->ph, clk->id,
++						 &duty->num, &duty->den);
++	if (ret) {
++		/* Assume a default value of 50% */
++		duty->num = 1;
++		duty->den = 2;
++	}
++
++	return 0;
++}
++
+ static long scmi_clk_round_rate(struct clk_hw *hw, unsigned long rate,
+ 				unsigned long *parent_rate)
+ {
+@@ -59,6 +91,9 @@ static long scmi_clk_round_rate(struct clk_hw *hw, unsigned long rate,
+ 	else if (rate >= fmax)
+ 		return fmax;
+ 
++	if (clk->info->range.step_size == 0)
++		return scmi_clk_round_rate_get(hw, rate, parent_rate);
++
+ 	ftmp = rate - fmin;
+ 	ftmp += clk->info->range.step_size - 1; /* to round up */
+ 	do_div(ftmp, clk->info->range.step_size);
+@@ -100,6 +135,7 @@ static const struct clk_ops scmi_clk_ops = {
+ 	 */
+ 	.prepare = scmi_clk_enable,
+ 	.unprepare = scmi_clk_disable,
++	.get_duty_cycle = scmi_clk_get_duty_cycle,
+ };
+ 
+ static int scmi_clk_ops_init(struct device *dev, struct scmi_clk *sclk)
+diff --git a/drivers/clk/clk-stm32mp1.c b/drivers/clk/clk-stm32mp1.c
+index 4bd1fe7d8..c0b3dc0e8 100644
+--- a/drivers/clk/clk-stm32mp1.c
++++ b/drivers/clk/clk-stm32mp1.c
+@@ -116,7 +116,7 @@ static const char * const ref3_parents[] = {
+ };
+ 
+ static const char * const ref4_parents[] = {
+-	"ck_hsi", "ck_hse", "ck_csi"
++	"ck_hsi", "ck_hse", "ck_csi", "i2s_ckin"
+ };
+ 
+ static const char * const cpu_src[] = {
+@@ -294,6 +294,7 @@ static const struct clk_div_table ck_trace_div_table[] = {
+ struct stm32_mmux {
+ 	u8 nbr_clk;
+ 	struct clk_hw *hws[MAX_MUX_CLK];
++	u8 saved_parent;
+ };
+ 
+ struct stm32_clk_mmux {
+@@ -717,7 +718,7 @@ static int clk_mmux_set_parent(struct clk_hw *hw, u8 index)
+ 
+ 	for (n = 0; n < clk_mmux->mmux->nbr_clk; n++)
+ 		if (clk_mmux->mmux->hws[n] != hw)
+-			clk_hw_reparent(clk_mmux->mmux->hws[n], hwp);
++			clk_hw_set_parent(clk_mmux->mmux->hws[n], hwp);
+ 
+ 	return 0;
+ }
+@@ -728,156 +729,212 @@ static const struct clk_ops clk_mmux_ops = {
+ 	.determine_rate	= __clk_mux_determine_rate,
+ };
+ 
+-/* STM32 PLL */
+-struct stm32_pll_obj {
+-	/* lock pll enable/disable registers */
+-	spinlock_t *lock;
+-	void __iomem *reg;
+-	struct clk_hw hw;
+-	struct clk_mux mux;
+-};
++static bool is_all_clk_on_switch_are_off(struct clk_hw *hw)
++{
++	struct clk_composite *composite = to_clk_composite(hw);
++	struct clk_hw *mux_hw = composite->mux_hw;
++	struct clk_mux *mux = to_clk_mux(mux_hw);
++	struct stm32_clk_mmux *clk_mmux = to_clk_mmux(mux);
++	int i = 0;
++
++	for (i = 0; i < clk_mmux->mmux->nbr_clk; i++)
++		if (__clk_is_enabled(clk_mmux->mmux->hws[i]->clk))
++			return false;
+ 
+-#define to_pll(_hw) container_of(_hw, struct stm32_pll_obj, hw)
++	return true;
++}
+ 
+-#define PLL_ON		BIT(0)
+-#define PLL_RDY		BIT(1)
+-#define DIVN_MASK	0x1FF
+-#define DIVM_MASK	0x3F
+-#define DIVM_SHIFT	16
+-#define DIVN_SHIFT	0
+-#define FRAC_OFFSET	0xC
+-#define FRAC_MASK	0x1FFF
+-#define FRAC_SHIFT	3
+-#define FRACLE		BIT(16)
+-#define PLL_MUX_SHIFT	0
+-#define PLL_MUX_MASK	3
++#define MMUX_SAFE_POSITION 0
+ 
+-static int __pll_is_enabled(struct clk_hw *hw)
++static int clk_mmux_set_safe_position(struct clk_hw *hw)
+ {
+-	struct stm32_pll_obj *clk_elem = to_pll(hw);
++	struct clk_composite *composite = to_clk_composite(hw);
++	struct clk_hw *mux_hw = composite->mux_hw;
++	struct clk_mux *mux = to_clk_mux(mux_hw);
++	struct stm32_clk_mmux *clk_mmux = to_clk_mmux(mux);
+ 
+-	return readl_relaxed(clk_elem->reg) & PLL_ON;
+-}
++	clk_mmux->mmux->saved_parent = clk_mmux_get_parent(mux_hw);
++	clk_mux_ops.set_parent(mux_hw, MMUX_SAFE_POSITION);
+ 
+-#define TIMEOUT 5
++	return 0;
++}
+ 
+-static int pll_enable(struct clk_hw *hw)
++static int clk_mmux_restore_parent(struct clk_hw *hw)
+ {
+-	struct stm32_pll_obj *clk_elem = to_pll(hw);
+-	u32 reg;
+-	unsigned long flags = 0;
+-	unsigned int timeout = TIMEOUT;
+-	int bit_status = 0;
++	struct clk_composite *composite = to_clk_composite(hw);
++	struct clk_hw *mux_hw = composite->mux_hw;
++	struct clk_mux *mux = to_clk_mux(mux_hw);
++	struct stm32_clk_mmux *clk_mmux = to_clk_mmux(mux);
+ 
+-	spin_lock_irqsave(clk_elem->lock, flags);
++	clk_mux_ops.set_parent(mux_hw, clk_mmux->mmux->saved_parent);
+ 
+-	if (__pll_is_enabled(hw))
+-		goto unlock;
++	return 0;
++}
+ 
+-	reg = readl_relaxed(clk_elem->reg);
+-	reg |= PLL_ON;
+-	writel_relaxed(reg, clk_elem->reg);
++static u8 clk_mmux_get_parent_safe(struct clk_hw *hw)
++{
++	struct clk_mux *mux = to_clk_mux(hw);
++	struct stm32_clk_mmux *clk_mmux = to_clk_mmux(mux);
+ 
+-	/* We can't use readl_poll_timeout() because we can be blocked if
+-	 * someone enables this clock before clocksource changes.
+-	 * Only jiffies counter is available. Jiffies are incremented by
+-	 * interruptions and enable op does not allow to be interrupted.
+-	 */
+-	do {
+-		bit_status = !(readl_relaxed(clk_elem->reg) & PLL_RDY);
++	clk_mmux->mmux->saved_parent = clk_mmux_get_parent(hw);
+ 
+-		if (bit_status)
+-			udelay(120);
++	return clk_mmux->mmux->saved_parent;
++}
+ 
+-	} while (bit_status && --timeout);
++static int clk_mmux_set_parent_safe(struct clk_hw *hw, u8 index)
++{
++	struct clk_mux *mux = to_clk_mux(hw);
++	struct stm32_clk_mmux *clk_mmux = to_clk_mmux(mux);
+ 
+-unlock:
+-	spin_unlock_irqrestore(clk_elem->lock, flags);
++	clk_mmux_set_parent(hw, index);
++	clk_mmux->mmux->saved_parent = index;
+ 
+-	return bit_status;
++	return 0;
+ }
+ 
+-static void pll_disable(struct clk_hw *hw)
+-{
+-	struct stm32_pll_obj *clk_elem = to_pll(hw);
+-	u32 reg;
+-	unsigned long flags = 0;
++static const struct clk_ops clk_mmux_safe_ops = {
++	.get_parent	= clk_mmux_get_parent_safe,
++	.set_parent	= clk_mmux_set_parent_safe,
++	.determine_rate	= __clk_mux_determine_rate,
++};
+ 
+-	spin_lock_irqsave(clk_elem->lock, flags);
++static int mp1_mgate_clk_enable_safe(struct clk_hw *hw)
++{
++	struct clk_hw *composite_hw = __clk_get_hw(hw->clk);
+ 
+-	reg = readl_relaxed(clk_elem->reg);
+-	reg &= ~PLL_ON;
+-	writel_relaxed(reg, clk_elem->reg);
++	clk_mmux_restore_parent(composite_hw);
++	mp1_mgate_clk_enable(hw);
+ 
+-	spin_unlock_irqrestore(clk_elem->lock, flags);
++	return  0;
+ }
+ 
+-static u32 pll_frac_val(struct clk_hw *hw)
++static void mp1_mgate_clk_disable_safe(struct clk_hw *hw)
+ {
+-	struct stm32_pll_obj *clk_elem = to_pll(hw);
+-	u32 reg, frac = 0;
++	struct clk_hw *composite_hw = __clk_get_hw(hw->clk);
+ 
+-	reg = readl_relaxed(clk_elem->reg + FRAC_OFFSET);
+-	if (reg & FRACLE)
+-		frac = (reg >> FRAC_SHIFT) & FRAC_MASK;
++	mp1_mgate_clk_disable(hw);
+ 
+-	return frac;
++	if (is_all_clk_on_switch_are_off(composite_hw))
++		clk_mmux_set_safe_position(composite_hw);
+ }
+ 
+-static unsigned long pll_recalc_rate(struct clk_hw *hw,
+-				     unsigned long parent_rate)
+-{
+-	struct stm32_pll_obj *clk_elem = to_pll(hw);
+-	u32 reg;
+-	u32 frac, divm, divn;
+-	u64 rate, rate_frac = 0;
++static const struct clk_ops mp1_mgate_clk_safe_ops = {
++	.enable		= mp1_mgate_clk_enable_safe,
++	.disable	= mp1_mgate_clk_disable_safe,
++	.is_enabled	= clk_gate_is_enabled,
++};
+ 
+-	reg = readl_relaxed(clk_elem->reg + 4);
++/* STM32 PLL */
++struct clk_pll_fractional_divider {
++	struct clk_hw hw;
++	void __iomem *mreg;
++	u8 mshift;
++	u8 mwidth;
++	u8 mflags;
++	void __iomem *nreg;
++	u8 nshift;
++	u8 nwidth;
++	u8 nflags;
++	void __iomem *freg;
++	u8 fshift;
++	u8 fwidth;
+ 
+-	divm = ((reg >> DIVM_SHIFT) & DIVM_MASK) + 1;
+-	divn = ((reg >> DIVN_SHIFT) & DIVN_MASK) + 1;
+-	rate = (u64)parent_rate * divn;
++	/* lock pll enable/disable registers */
++	spinlock_t *lock;
++};
+ 
+-	do_div(rate, divm);
++#define to_pll_fractional_divider(_hw)\
++	container_of(_hw, struct clk_pll_fractional_divider, hw)
+ 
+-	frac = pll_frac_val(hw);
+-	if (frac) {
+-		rate_frac = (u64)parent_rate * (u64)frac;
+-		do_div(rate_frac, (divm * 8192));
+-	}
++static unsigned long clk_pll_frac_div_recalc_rate(struct clk_hw *hw,
++						  unsigned long parent_rate)
++{
++	struct clk_pll_fractional_divider *fd = to_pll_fractional_divider(hw);
++	u32 mmask = GENMASK(fd->mwidth - 1, 0) << fd->mshift;
++	u32 nmask = GENMASK(fd->nwidth - 1, 0) << fd->nshift;
++	u32 fmask = GENMASK(fd->fwidth - 1, 0) << fd->fshift;
++	unsigned long m, n, f;
++	u64 rate, frate = 0;
++	u32 val;
++
++	val = readl(fd->mreg);
++	m = (val & mmask) >> fd->mshift;
++	if (fd->mflags & CLK_FRAC_DIVIDER_ZERO_BASED)
++		m++;
++
++	val = readl(fd->nreg);
++	n = (val & nmask) >> fd->nshift;
++	if (fd->nflags & CLK_FRAC_DIVIDER_ZERO_BASED)
++		n++;
++
++	if (!n || !m)
++		return parent_rate;
+ 
+-	return rate + rate_frac;
++	rate = (u64)parent_rate * n;
++	do_div(rate, m);
++
++	val = readl(fd->freg);
++	f = (val & fmask) >> fd->fshift;
++	if (f) {
++		frate = (u64)parent_rate * (u64)f;
++		do_div(frate, (m * (1 << fd->fwidth)));
++	}
++	return rate + frate;
+ }
+ 
+-static int pll_is_enabled(struct clk_hw *hw)
++static const struct clk_ops clk_pll_frac_div_ops = {
++	.recalc_rate	= clk_pll_frac_div_recalc_rate,
++};
++
++#define PLL_BIT_ON		0
++#define PLL_BIT_RDY		1
++#define PLL_MUX_SHIFT		0
++#define PLL_MUX_MASK		3
++#define PLL_DIVMN_OFFSET	4
++#define PLL_DIVM_SHIFT		16
++#define PLL_DIVM_WIDTH		6
++#define PLL_DIVN_SHIFT		0
++#define PLL_DIVN_WIDTH		9
++#define PLL_FRAC_OFFSET		0xC
++#define PLL_FRAC_SHIFT		3
++#define PLL_FRAC_WIDTH		13
++
++#define TIMEOUT 5
++
++static int pll_enable(struct clk_hw *hw)
+ {
+-	struct stm32_pll_obj *clk_elem = to_pll(hw);
+-	unsigned long flags = 0;
+-	int ret;
++	struct clk_gate *gate = to_clk_gate(hw);
++	u32 timeout = TIMEOUT;
++	int bit_status = 0;
+ 
+-	spin_lock_irqsave(clk_elem->lock, flags);
+-	ret = __pll_is_enabled(hw);
+-	spin_unlock_irqrestore(clk_elem->lock, flags);
++	if (clk_gate_ops.is_enabled(hw))
++		return 0;
+ 
+-	return ret;
++	clk_gate_ops.enable(hw);
++
++	do {
++		bit_status = !(readl_relaxed(gate->reg) & BIT(PLL_BIT_RDY));
++
++		if (bit_status)
++			udelay(120);
++
++	} while (bit_status && --timeout);
++
++	return bit_status;
+ }
+ 
+-static u8 pll_get_parent(struct clk_hw *hw)
++static void pll_disable(struct clk_hw *hw)
+ {
+-	struct stm32_pll_obj *clk_elem = to_pll(hw);
+-	struct clk_hw *mux_hw = &clk_elem->mux.hw;
+-
+-	__clk_hw_set_clk(mux_hw, hw);
++	if (!clk_gate_ops.is_enabled(hw))
++		return;
+ 
+-	return clk_mux_ops.get_parent(mux_hw);
++	clk_gate_ops.disable(hw);
+ }
+ 
+-static const struct clk_ops pll_ops = {
++const struct clk_ops pll_gate_ops = {
+ 	.enable		= pll_enable,
+ 	.disable	= pll_disable,
+-	.recalc_rate	= pll_recalc_rate,
+-	.is_enabled	= pll_is_enabled,
+-	.get_parent	= pll_get_parent,
++	.is_enabled	= clk_gate_is_enabled,
+ };
+ 
+ static struct clk_hw *clk_register_pll(struct device *dev, const char *name,
+@@ -888,39 +945,50 @@ static struct clk_hw *clk_register_pll(struct device *dev, const char *name,
+ 				       unsigned long flags,
+ 				       spinlock_t *lock)
+ {
+-	struct stm32_pll_obj *element;
+-	struct clk_init_data init;
+-	struct clk_hw *hw;
+-	int err;
++	struct clk_pll_fractional_divider *frac_div;
++	struct clk_gate *gate;
++	struct clk_mux *mux;
+ 
+-	element = devm_kzalloc(dev, sizeof(*element), GFP_KERNEL);
+-	if (!element)
++	mux = devm_kzalloc(dev, sizeof(*mux), GFP_KERNEL);
++	if (!mux)
+ 		return ERR_PTR(-ENOMEM);
+ 
+-	init.name = name;
+-	init.ops = &pll_ops;
+-	init.flags = flags;
+-	init.parent_names = parent_names;
+-	init.num_parents = num_parents;
++	mux->reg = mux_reg;
++	mux->shift = PLL_MUX_SHIFT;
++	mux->mask = PLL_MUX_MASK;
++	mux->flags = CLK_MUX_READ_ONLY;
++	mux->table = NULL;
++	mux->lock = lock;
+ 
+-	element->mux.lock = lock;
+-	element->mux.reg =  mux_reg;
+-	element->mux.shift = PLL_MUX_SHIFT;
+-	element->mux.mask =  PLL_MUX_MASK;
+-	element->mux.flags =  CLK_MUX_READ_ONLY;
+-	element->mux.reg =  mux_reg;
++	gate = devm_kzalloc(dev, sizeof(*gate), GFP_KERNEL);
++	if (!gate)
++		return ERR_PTR(-ENOMEM);
+ 
+-	element->hw.init = &init;
+-	element->reg = reg;
+-	element->lock = lock;
++	gate->reg = reg;
++	gate->bit_idx = PLL_BIT_ON;
++	gate->flags = 0;
++	gate->lock = lock;
+ 
+-	hw = &element->hw;
+-	err = clk_hw_register(dev, hw);
++	frac_div = devm_kzalloc(dev, sizeof(*frac_div), GFP_KERNEL);
++	if (!frac_div)
++		return ERR_PTR(-ENOMEM);
+ 
+-	if (err)
+-		return ERR_PTR(err);
++	frac_div->mreg = reg + PLL_DIVMN_OFFSET;
++	frac_div->mshift = PLL_DIVM_SHIFT;
++	frac_div->mwidth = PLL_DIVM_WIDTH;
++	frac_div->mflags = CLK_FRAC_DIVIDER_ZERO_BASED;
++	frac_div->nreg = reg + PLL_DIVMN_OFFSET;
++	frac_div->nshift = PLL_DIVN_SHIFT;
++	frac_div->nwidth = PLL_DIVN_WIDTH;
++	frac_div->nflags = CLK_FRAC_DIVIDER_ZERO_BASED;
++	frac_div->freg = reg + PLL_FRAC_OFFSET;
++	frac_div->fshift = PLL_FRAC_SHIFT;
++	frac_div->fwidth = PLL_FRAC_WIDTH;
+ 
+-	return hw;
++	return clk_hw_register_composite(dev, name, parent_names, num_parents,
++					 &mux->hw, &clk_mux_ops,
++					 &frac_div->hw, &clk_pll_frac_div_ops,
++					 &gate->hw, &pll_gate_ops, flags);
+ }
+ 
+ /* Kernel Timer */
+@@ -1090,9 +1158,49 @@ static const struct clk_ops rtc_div_clk_ops = {
+ 	.determine_rate = clk_divider_rtc_determine_rate
+ };
+ 
++static int clk_div_get_duty_cycle(struct clk_hw *hw, struct clk_duty *duty)
++{
++	struct clk_divider *divider = to_clk_divider(hw);
++	unsigned int val;
++
++	val = readl(divider->reg) >> divider->shift;
++	val &= clk_div_mask(divider->width);
++
++	duty->num = (val + 1) / 2;
++	duty->den = (val + 1);
++
++	return 0;
++}
++
++static unsigned long clk_div_duty_cycle_recalc_rate(struct clk_hw *hw,
++						    unsigned long parent_rate)
++{
++	return clk_divider_ops.recalc_rate(hw, parent_rate);
++}
++
++static long clk_div_duty_cycle_round_rate(struct clk_hw *hw, unsigned long rate,
++					  unsigned long *prate)
++{
++	return clk_divider_ops.round_rate(hw, rate, prate);
++}
++
++static int clk_div_duty_cycle_set_rate(struct clk_hw *hw, unsigned long rate,
++				       unsigned long parent_rate)
++{
++	return clk_divider_ops.set_rate(hw, rate, parent_rate);
++}
++
++static const struct clk_ops div_dc_clk_ops = {
++	.recalc_rate	= clk_div_duty_cycle_recalc_rate,
++	.round_rate	= clk_div_duty_cycle_round_rate,
++	.set_rate	= clk_div_duty_cycle_set_rate,
++	.get_duty_cycle = clk_div_get_duty_cycle,
++};
++
+ struct stm32_pll_cfg {
+ 	u32 offset;
+ 	u32 muxoff;
++	const struct clk_ops *ops;
+ };
+ 
+ static struct clk_hw *_clk_register_pll(struct device *dev,
+@@ -1281,7 +1389,7 @@ _clk_stm32_register_composite(struct device *dev,
+ 		    NULL, &mp1_gate_clk_ops)\
+ 
+ #define _MGATE_MP1(_mgate)\
+-	.gate = &per_gate_cfg[_mgate]
++	&per_gate_cfg[_mgate]
+ 
+ #define GATE_MP1(_id, _name, _parent, _flags, _offset, _bit_idx, _gate_flags)\
+ 	STM32_GATE(_id, _name, _parent, _flags,\
+@@ -1293,7 +1401,7 @@ _clk_stm32_register_composite(struct device *dev,
+ 
+ #define _STM32_DIV(_div_offset, _div_shift, _div_width,\
+ 		   _div_flags, _div_table, _ops)\
+-	.div = &(struct stm32_div_cfg) {\
++	(&(struct stm32_div_cfg) {\
+ 		&(struct div_cfg) {\
+ 			.reg_off	= _div_offset,\
+ 			.shift		= _div_shift,\
+@@ -1302,18 +1410,23 @@ _clk_stm32_register_composite(struct device *dev,
+ 			.table		= _div_table,\
+ 		},\
+ 		.ops		= _ops,\
+-	}
++	})
+ 
+ #define _DIV(_div_offset, _div_shift, _div_width, _div_flags, _div_table)\
+ 	_STM32_DIV(_div_offset, _div_shift, _div_width,\
+-		   _div_flags, _div_table, NULL)\
++		   _div_flags, _div_table, NULL)
++
++#define _DIV_DUTY_CYCLE(_div_offset, _div_shift, _div_width, _div_flags,\
++			_div_table)\
++	_STM32_DIV(_div_offset, _div_shift, _div_width,\
++		   _div_flags, _div_table, &div_dc_clk_ops)
+ 
+ #define _DIV_RTC(_div_offset, _div_shift, _div_width, _div_flags, _div_table)\
+ 	_STM32_DIV(_div_offset, _div_shift, _div_width,\
+ 		   _div_flags, _div_table, &rtc_div_clk_ops)
+ 
+ #define _STM32_MUX(_offset, _shift, _width, _mux_flags, _mmux, _ops)\
+-	.mux = &(struct stm32_mux_cfg) {\
++	(&(struct stm32_mux_cfg) {\
+ 		&(struct mux_cfg) {\
+ 			.reg_off	= _offset,\
+ 			.shift		= _shift,\
+@@ -1323,18 +1436,18 @@ _clk_stm32_register_composite(struct device *dev,
+ 		},\
+ 		.mmux		= _mmux,\
+ 		.ops		= _ops,\
+-	}
++	})
+ 
+ #define _MUX(_offset, _shift, _width, _mux_flags)\
+-	_STM32_MUX(_offset, _shift, _width, _mux_flags, NULL, NULL)\
++	_STM32_MUX(_offset, _shift, _width, _mux_flags, NULL, NULL)
+ 
+-#define _MMUX(_mmux) .mux = &ker_mux_cfg[_mmux]
++#define _MMUX(_mmux)		&ker_mux_cfg[_mmux]
+ 
+-#define PARENT(_parent) ((const char *[]) { _parent})
++#define PARENT(_parent)		((const char *[]) { _parent})
+ 
+-#define _NO_MUX .mux = NULL
+-#define _NO_DIV .div = NULL
+-#define _NO_GATE .gate = NULL
++#define _NO_MUX			NULL
++#define _NO_DIV			NULL
++#define _NO_GATE		NULL
+ 
+ #define COMPOSITE(_id, _name, _parents, _flags, _gate, _mux, _div)\
+ {\
+@@ -1344,9 +1457,9 @@ _clk_stm32_register_composite(struct device *dev,
+ 	.num_parents	= ARRAY_SIZE(_parents),\
+ 	.flags		= _flags,\
+ 	.cfg		= &(struct stm32_composite_cfg) {\
+-		_gate,\
+-		_mux,\
+-		_div,\
++		.gate = (_gate),\
++		.mux = (_mux),\
++		.div = (_div),\
+ 	},\
+ 	.func		= _clk_stm32_register_composite,\
+ }
+@@ -1498,6 +1611,10 @@ static struct stm32_mgate mp1_mgate[G_LAST];
+ 	_K_GATE(_id, _gate_offset, _gate_bit_idx, _gate_flags,\
+ 	       &mp1_mgate[_id], &mp1_mgate_clk_ops)
+ 
++#define K_MGATE_SAFE(_id, _gate_offset, _gate_bit_idx, _gate_flags)\
++	_K_GATE(_id, _gate_offset, _gate_bit_idx, _gate_flags,\
++		&mp1_mgate[_id], &mp1_mgate_clk_safe_ops)
++
+ /* Peripheral gates */
+ static struct stm32_gate_cfg per_gate_cfg[G_LAST] = {
+ 	/* Multi gates */
+@@ -1609,10 +1726,10 @@ static struct stm32_gate_cfg per_gate_cfg[G_LAST] = {
+ 
+ 	K_GATE(G_USBH,		RCC_AHB6ENSETR, 24, 0),
+ 	K_GATE(G_CRC1,		RCC_AHB6ENSETR, 20, 0),
+-	K_MGATE(G_SDMMC2,	RCC_AHB6ENSETR, 17, 0),
+-	K_MGATE(G_SDMMC1,	RCC_AHB6ENSETR, 16, 0),
+-	K_MGATE(G_QSPI,		RCC_AHB6ENSETR, 14, 0),
+-	K_MGATE(G_FMC,		RCC_AHB6ENSETR, 12, 0),
++	K_MGATE_SAFE(G_SDMMC2,	RCC_AHB6ENSETR, 17, 0),
++	K_MGATE_SAFE(G_SDMMC1,	RCC_AHB6ENSETR, 16, 0),
++	K_MGATE_SAFE(G_QSPI,	RCC_AHB6ENSETR, 14, 0),
++	K_MGATE_SAFE(G_FMC,	RCC_AHB6ENSETR, 12, 0),
+ 	K_GATE(G_ETHMAC,	RCC_AHB6ENSETR, 10, 0),
+ 	K_GATE(G_ETHRX,		RCC_AHB6ENSETR, 9, 0),
+ 	K_GATE(G_ETHTX,		RCC_AHB6ENSETR, 8, 0),
+@@ -1684,9 +1801,13 @@ static struct stm32_mmux ker_mux[M_LAST];
+ 	_K_MUX(_id, _offset, _shift, _width, _mux_flags,\
+ 			&ker_mux[_id], &clk_mmux_ops)
+ 
++#define K_MMUX_SAFE(_id, _offset, _shift, _width, _mux_flags)\
++	_K_MUX(_id, _offset, _shift, _width, _mux_flags,\
++			&ker_mux[_id], &clk_mmux_safe_ops)
++
+ static const struct stm32_mux_cfg ker_mux_cfg[M_LAST] = {
+ 	/* Kernel multi mux */
+-	K_MMUX(M_SDMMC12, RCC_SDMMC12CKSELR, 0, 3, 0),
++	K_MMUX_SAFE(M_SDMMC12, RCC_SDMMC12CKSELR, 0, 3, 0),
+ 	K_MMUX(M_SPI23, RCC_SPI2S23CKSELR, 0, 3, 0),
+ 	K_MMUX(M_SPI45, RCC_SPI2S45CKSELR, 0, 3, 0),
+ 	K_MMUX(M_I2C12, RCC_I2C12CKSELR, 0, 3, 0),
+@@ -1703,8 +1824,8 @@ static const struct stm32_mux_cfg ker_mux_cfg[M_LAST] = {
+ 	/*  Kernel simple mux */
+ 	K_MUX(M_RNG2, RCC_RNG2CKSELR, 0, 2, 0),
+ 	K_MUX(M_SDMMC3, RCC_SDMMC3CKSELR, 0, 3, 0),
+-	K_MUX(M_FMC, RCC_FMCCKSELR, 0, 2, 0),
+-	K_MUX(M_QSPI, RCC_QSPICKSELR, 0, 2, 0),
++	K_MMUX_SAFE(M_FMC, RCC_FMCCKSELR, 0, 2, 0),
++	K_MMUX_SAFE(M_QSPI, RCC_QSPICKSELR, 0, 2, 0),
+ 	K_MUX(M_USBPHY, RCC_USBCKSELR, 0, 2, 0),
+ 	K_MUX(M_USBO, RCC_USBCKSELR, 4, 1, 0),
+ 	K_MUX(M_SPDIF, RCC_SPDIFCKSELR, 0, 2, 0),
+@@ -1748,7 +1869,7 @@ static const struct clock_config stm32mp1_clock_cfg[] = {
+ 	PLL(PLL4, "pll4", ref4_parents, 0, RCC_PLL4CR, RCC_RCK4SELR),
+ 
+ 	/* ODF */
+-	COMPOSITE(PLL1_P, "pll1_p", PARENT("pll1"), 0,
++	COMPOSITE(PLL1_P, "pll1_p", PARENT("pll1"), CLK_SET_RATE_PARENT,
+ 		  _GATE(RCC_PLL1CR, 4, 0),
+ 		  _NO_MUX,
+ 		  _DIV(RCC_PLL1CFGR2, 0, 7, 0, NULL)),
+@@ -1776,7 +1897,7 @@ static const struct clock_config stm32mp1_clock_cfg[] = {
+ 	COMPOSITE(PLL3_Q, "pll3_q", PARENT("pll3"), 0,
+ 		  _GATE(RCC_PLL3CR, 5, 0),
+ 		  _NO_MUX,
+-		  _DIV(RCC_PLL3CFGR2, 8, 7, 0, NULL)),
++		  _DIV_DUTY_CYCLE(RCC_PLL3CFGR2, 8, 7, 0, NULL)),
+ 
+ 	COMPOSITE(PLL3_R, "pll3_r", PARENT("pll3"), 0,
+ 		  _GATE(RCC_PLL3CR, 6, 0),
+@@ -1796,40 +1917,40 @@ static const struct clock_config stm32mp1_clock_cfg[] = {
+ 	COMPOSITE(PLL4_R, "pll4_r", PARENT("pll4"), 0,
+ 		  _GATE(RCC_PLL4CR, 6, 0),
+ 		  _NO_MUX,
+-		  _DIV(RCC_PLL4CFGR2, 16, 7, 0, NULL)),
++		  _DIV_DUTY_CYCLE(RCC_PLL4CFGR2, 16, 7, 0, NULL)),
+ 
+ 	/* MUX system clocks */
+ 	MUX(CK_PER, "ck_per", per_src, CLK_OPS_PARENT_ENABLE,
+ 	    RCC_CPERCKSELR, 0, 2, 0),
+ 
+ 	MUX(CK_MPU, "ck_mpu", cpu_src, CLK_OPS_PARENT_ENABLE |
+-	     CLK_IS_CRITICAL, RCC_MPCKSELR, 0, 2, 0),
++	    CLK_SET_RATE_PARENT | CLK_IS_CRITICAL, RCC_MPCKSELR, 0, 2, 0),
+ 
+ 	COMPOSITE(CK_AXI, "ck_axi", axi_src, CLK_IS_CRITICAL |
+-		   CLK_OPS_PARENT_ENABLE,
+-		   _NO_GATE,
+-		   _MUX(RCC_ASSCKSELR, 0, 2, 0),
+-		   _DIV(RCC_AXIDIVR, 0, 3, 0, axi_div_table)),
++		  CLK_OPS_PARENT_ENABLE,
++		  _NO_GATE,
++		  _MUX(RCC_ASSCKSELR, 0, 2, 0),
++		  _DIV(RCC_AXIDIVR, 0, 3, 0, axi_div_table)),
+ 
+ 	COMPOSITE(CK_MCU, "ck_mcu", mcu_src, CLK_IS_CRITICAL |
+-		   CLK_OPS_PARENT_ENABLE,
+-		   _NO_GATE,
+-		   _MUX(RCC_MSSCKSELR, 0, 2, 0),
+-		   _DIV(RCC_MCUDIVR, 0, 4, 0, mcu_div_table)),
++		  CLK_OPS_PARENT_ENABLE,
++		  _NO_GATE,
++		  _MUX(RCC_MSSCKSELR, 0, 2, 0),
++		  _DIV(RCC_MCUDIVR, 0, 4, 0, mcu_div_table)),
+ 
+-	DIV_TABLE(NO_ID, "pclk1", "ck_mcu", CLK_IGNORE_UNUSED, RCC_APB1DIVR, 0,
++	DIV_TABLE(PCLK1, "pclk1", "ck_mcu", CLK_IGNORE_UNUSED, RCC_APB1DIVR, 0,
+ 		  3, CLK_DIVIDER_READ_ONLY, apb_div_table),
+ 
+-	DIV_TABLE(NO_ID, "pclk2", "ck_mcu", CLK_IGNORE_UNUSED, RCC_APB2DIVR, 0,
++	DIV_TABLE(PCLK2, "pclk2", "ck_mcu", CLK_IGNORE_UNUSED, RCC_APB2DIVR, 0,
+ 		  3, CLK_DIVIDER_READ_ONLY, apb_div_table),
+ 
+-	DIV_TABLE(NO_ID, "pclk3", "ck_mcu", CLK_IGNORE_UNUSED, RCC_APB3DIVR, 0,
++	DIV_TABLE(PCLK3, "pclk3", "ck_mcu", CLK_IGNORE_UNUSED, RCC_APB3DIVR, 0,
+ 		  3, CLK_DIVIDER_READ_ONLY, apb_div_table),
+ 
+-	DIV_TABLE(NO_ID, "pclk4", "ck_axi", CLK_IGNORE_UNUSED, RCC_APB4DIVR, 0,
++	DIV_TABLE(PCLK4, "pclk4", "ck_axi", CLK_IGNORE_UNUSED, RCC_APB4DIVR, 0,
+ 		  3, CLK_DIVIDER_READ_ONLY, apb_div_table),
+ 
+-	DIV_TABLE(NO_ID, "pclk5", "ck_axi", CLK_IGNORE_UNUSED, RCC_APB5DIVR, 0,
++	DIV_TABLE(PCLK5, "pclk5", "ck_axi", CLK_IGNORE_UNUSED, RCC_APB5DIVR, 0,
+ 		  3, CLK_DIVIDER_READ_ONLY, apb_div_table),
+ 
+ 	/* Kernel Timers */
+@@ -1911,8 +2032,7 @@ static const struct clock_config stm32mp1_clock_cfg[] = {
+ 	PCLK(I2C4, "i2c4", "pclk5", 0, G_I2C4),
+ 	PCLK(I2C6, "i2c6", "pclk5", 0, G_I2C6),
+ 	PCLK(USART1, "usart1", "pclk5", 0, G_USART1),
+-	PCLK(RTCAPB, "rtcapb", "pclk5", CLK_IGNORE_UNUSED |
+-	     CLK_IS_CRITICAL, G_RTCAPB),
++	PCLK(RTCAPB, "rtcapb", "pclk5", CLK_IS_CRITICAL, G_RTCAPB),
+ 	PCLK(TZC1, "tzc1", "ck_axi", CLK_IGNORE_UNUSED, G_TZC1),
+ 	PCLK(TZC2, "tzc2", "ck_axi", CLK_IGNORE_UNUSED, G_TZC2),
+ 	PCLK(TZPC, "tzpc", "pclk5", CLK_IGNORE_UNUSED, G_TZPC),
+@@ -1953,10 +2073,6 @@ static const struct clock_config stm32mp1_clock_cfg[] = {
+ 	PCLK(ETHTX, "ethtx", "ck_axi", 0, G_ETHTX),
+ 	PCLK(ETHRX, "ethrx", "ck_axi", 0, G_ETHRX),
+ 	PCLK(ETHMAC, "ethmac", "ck_axi", 0, G_ETHMAC),
+-	PCLK(FMC, "fmc", "ck_axi", CLK_IGNORE_UNUSED, G_FMC),
+-	PCLK(QSPI, "qspi", "ck_axi", CLK_IGNORE_UNUSED, G_QSPI),
+-	PCLK(SDMMC1, "sdmmc1", "ck_axi", 0, G_SDMMC1),
+-	PCLK(SDMMC2, "sdmmc2", "ck_axi", 0, G_SDMMC2),
+ 	PCLK(CRC1, "crc1", "ck_axi", 0, G_CRC1),
+ 	PCLK(USBH, "usbh", "ck_axi", 0, G_USBH),
+ 	PCLK(ETHSTP, "ethstp", "ck_axi", 0, G_ETHSTP),
+@@ -2046,7 +2162,8 @@ static const struct clock_config stm32mp1_clock_cfg[] = {
+ 	GATE(CK_DBG, "ck_sys_dbg", "ck_axi", CLK_IGNORE_UNUSED,
+ 	     RCC_DBGCFGR, 8, 0),
+ 
+-	COMPOSITE(CK_TRACE, "ck_trace", ck_trace_src, CLK_OPS_PARENT_ENABLE,
++	COMPOSITE(CK_TRACE, "ck_trace", ck_trace_src,
++		  CLK_OPS_PARENT_ENABLE | CLK_IGNORE_UNUSED,
+ 		  _GATE(RCC_DBGCFGR, 9, 0),
+ 		  _NO_MUX,
+ 		  _DIV(RCC_DBGCFGR, 0, 3, 0, ck_trace_div_table)),
+diff --git a/drivers/clk/clk.c b/drivers/clk/clk.c
+index ac11cefc3..a66dba8be 100644
+--- a/drivers/clk/clk.c
++++ b/drivers/clk/clk.c
+@@ -1764,6 +1764,7 @@ static void clk_reparent(struct clk_core *core, struct clk_core *new_parent)
+ 	core->parent = new_parent;
+ }
+ 
++static const struct clk_ops clk_nodrv_ops;
+ static struct clk_core *__clk_set_parent_before(struct clk_core *core,
+ 					   struct clk_core *parent)
+ {
+@@ -1792,7 +1793,8 @@ static struct clk_core *__clk_set_parent_before(struct clk_core *core,
+ 
+ 	/* enable old_parent & parent if CLK_OPS_PARENT_ENABLE is set */
+ 	if (core->flags & CLK_OPS_PARENT_ENABLE) {
+-		clk_core_prepare_enable(old_parent);
++		if (old_parent && old_parent->ops != &clk_nodrv_ops)
++			clk_core_prepare_enable(old_parent);
+ 		clk_core_prepare_enable(parent);
+ 	}
+ 
+@@ -1826,7 +1828,8 @@ static void __clk_set_parent_after(struct clk_core *core,
+ 	/* re-balance ref counting if CLK_OPS_PARENT_ENABLE is set */
+ 	if (core->flags & CLK_OPS_PARENT_ENABLE) {
+ 		clk_core_disable_unprepare(parent);
+-		clk_core_disable_unprepare(old_parent);
++		if (old_parent && old_parent->ops != &clk_nodrv_ops)
++			clk_core_disable_unprepare(old_parent);
+ 	}
+ }
+ 
+diff --git a/drivers/clk/stm32/Makefile b/drivers/clk/stm32/Makefile
+new file mode 100644
+index 000000000..95bd2230b
+--- /dev/null
++++ b/drivers/clk/stm32/Makefile
+@@ -0,0 +1 @@
++obj-$(CONFIG_COMMON_CLK_STM32MP135)	+= clk-stm32mp13.o clk-stm32-core.o reset-stm32.o
+diff --git a/drivers/clk/stm32/clk-stm32-core.c b/drivers/clk/stm32/clk-stm32-core.c
+new file mode 100644
+index 000000000..b977bfb1e
+--- /dev/null
++++ b/drivers/clk/stm32/clk-stm32-core.c
+@@ -0,0 +1,722 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) STMicroelectronics 2022 - All Rights Reserved
++ * Author: Gabriel Fernandez <gabriel.fernandez@foss.st.com> for STMicroelectronics.
++ */
++
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/device.h>
++#include <linux/err.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/slab.h>
++#include <linux/spinlock.h>
++
++#include "clk-stm32-core.h"
++#include "reset-stm32.h"
++
++static DEFINE_SPINLOCK(rlock);
++
++static int stm32_rcc_clock_init(struct device *dev,
++				const struct of_device_id *match,
++				void __iomem *base)
++{
++	const struct stm32_rcc_match_data *data = match->data;
++	struct clk_hw_onecell_data *clk_data = data->hw_clks;
++	struct clk_hw **hws;
++	int n, max_binding;
++
++	max_binding =  data->maxbinding;
++
++	clk_data = devm_kzalloc(dev, struct_size(clk_data, hws, max_binding),
++				GFP_KERNEL);
++	if (!clk_data)
++		return -ENOMEM;
++
++	clk_data->num = max_binding;
++
++	hws = clk_data->hws;
++
++	for (n = 0; n < max_binding; n++)
++		hws[n] = ERR_PTR(-ENOENT);
++
++	for (n = 0; n < data->num_clocks; n++) {
++		const struct clock_config *cfg_clock = &data->tab_clocks[n];
++		struct clk_hw *hw = ERR_PTR(-ENOENT);
++
++		if (data->check_security &&
++		    data->check_security(base, cfg_clock))
++			continue;
++
++		if (cfg_clock->func)
++			hw = (*cfg_clock->func)(dev, data, base, &rlock,
++						cfg_clock);
++
++		if (IS_ERR(hw)) {
++			dev_err(dev, "Can't register clk %d: %ld\n", n,
++				PTR_ERR(hw));
++			return PTR_ERR(hw);
++		}
++
++		if (cfg_clock->id < NO_ID)
++			hws[cfg_clock->id] = hw;
++	}
++
++	return of_clk_add_hw_provider(dev_of_node(dev), of_clk_hw_onecell_get,
++				      clk_data);
++}
++
++int stm32_rcc_init(struct device *dev, const struct of_device_id *match_data,
++		   void __iomem *base)
++{
++	const struct of_device_id *match;
++	int err;
++
++	match = of_match_node(match_data, dev_of_node(dev));
++	if (!match) {
++		dev_err(dev, "match data not found\n");
++		return -ENODEV;
++	}
++
++	/* RCC Reset Configuration */
++	err = stm32_rcc_reset_init(dev, match, base);
++	if (err) {
++		pr_err("stm32mp1 reset failed to initialize\n");
++		return err;
++	}
++
++	/* RCC Clock Configuration */
++	err = stm32_rcc_clock_init(dev, match, base);
++	if (err) {
++		pr_err("stm32mp1 clock failed to initialize\n");
++		return err;
++	}
++
++	return 0;
++}
++
++void clk_stm32_endisable_gate(void __iomem *base,
++			      struct clk_stm32_clock_data *data,
++			      u16 gate_id, int enable)
++{
++	const struct stm32_gate_cfg *gate = &data->gates[gate_id];
++	void __iomem *addr = base + gate->offset;
++
++	if (enable) {
++		if (data->gate_cpt[gate_id]++ > 0)
++			return;
++
++		if (gate->set_clr != 0)
++			writel(BIT(gate->bit_idx), addr);
++		else
++			writel(readl(addr) | BIT(gate->bit_idx), addr);
++	} else {
++		if (--data->gate_cpt[gate_id] > 0)
++			return;
++
++		if (gate->set_clr != 0)
++			writel(BIT(gate->bit_idx), addr + gate->set_clr);
++		else
++			writel(readl(addr) & ~BIT(gate->bit_idx), addr);
++	}
++}
++
++static void clk_stm32_disable_unused_gate(void __iomem *base,
++					  struct clk_stm32_clock_data *data,
++					  u16 gate_id)
++{
++	const struct stm32_gate_cfg *gate = &data->gates[gate_id];
++	void __iomem *addr = base + gate->offset;
++
++	if (data->gate_cpt[gate_id] > 0)
++		return;
++
++	if (gate->set_clr != 0)
++		writel(BIT(gate->bit_idx), addr + gate->set_clr);
++	else
++		writel(readl(addr) & ~BIT(gate->bit_idx), addr);
++}
++
++int clk_stm32_is_enabled_gate(void __iomem *base,
++			      struct clk_stm32_clock_data *data,
++			      u16 gate_id)
++{
++	const struct stm32_gate_cfg *gate = &data->gates[gate_id];
++
++	return (readl(base + gate->offset) & BIT(gate->bit_idx)) != 0;
++}
++
++void clk_stm32_gate_endisable(struct clk_hw *hw, int enable)
++{
++	struct clk_stm32_gate *gate = to_clk_stm32_gate(hw);
++	unsigned long flags = 0;
++
++	spin_lock_irqsave(gate->lock, flags);
++
++	clk_stm32_endisable_gate(gate->base, gate->clock_data,
++				 gate->gate_id, enable);
++
++	spin_unlock_irqrestore(gate->lock, flags);
++}
++
++int clk_stm32_gate_enable(struct clk_hw *hw)
++{
++	clk_stm32_gate_endisable(hw, 1);
++
++	return 0;
++}
++
++void clk_stm32_gate_disable(struct clk_hw *hw)
++{
++	clk_stm32_gate_endisable(hw, 0);
++}
++
++int clk_stm32_gate_is_enabled(struct clk_hw *hw)
++{
++	struct clk_stm32_gate *gate = to_clk_stm32_gate(hw);
++
++	return clk_stm32_is_enabled_gate(gate->base, gate->clock_data,
++					 gate->gate_id);
++}
++
++static void clk_stm32_gate_disable_unused(struct clk_hw *hw)
++{
++	struct clk_stm32_gate *gate = to_clk_stm32_gate(hw);
++	unsigned long flags = 0;
++
++	spin_lock_irqsave(gate->lock, flags);
++
++	clk_stm32_disable_unused_gate(gate->base, gate->clock_data, gate->gate_id);
++
++	spin_unlock_irqrestore(gate->lock, flags);
++}
++
++const struct clk_ops clk_stm32_gate_ops = {
++	.enable		= clk_stm32_gate_enable,
++	.disable	= clk_stm32_gate_disable,
++	.is_enabled	= clk_stm32_gate_is_enabled,
++	.disable_unused	= clk_stm32_gate_disable_unused,
++};
++
++#define MUX_SAFE_POSITION 0
++
++static int clk_stm32_has_safe_mux(struct clk_hw *hw)
++{
++	struct clk_stm32_composite *composite = to_clk_stm32_composite(hw);
++	const struct stm32_mux_cfg *mux = &composite->clock_data->muxes[composite->mux_id];
++
++	return !!(mux->flags & MUX_SAFE);
++}
++
++static void clk_stm32_set_safe_position_mux(struct clk_hw *hw)
++{
++	struct clk_stm32_composite *composite = to_clk_stm32_composite(hw);
++
++	if (!clk_stm32_composite_is_enabled(hw)) {
++		unsigned long flags = 0;
++
++		if (composite->clock_data->is_multi_mux) {
++			struct clk_hw *other_mux_hw = NULL;
++
++			other_mux_hw = composite->clock_data->is_multi_mux(hw);
++
++			if (!other_mux_hw || clk_stm32_composite_is_enabled(other_mux_hw))
++				return;
++		}
++
++		spin_lock_irqsave(composite->lock, flags);
++
++		clk_stm32_set_parent_mux(composite->base, composite->clock_data,
++					 composite->mux_id, MUX_SAFE_POSITION);
++
++		spin_unlock_irqrestore(composite->lock, flags);
++	}
++}
++
++static void clk_stm32_safe_restore_position_mux(struct clk_hw *hw)
++{
++	struct clk_stm32_composite *composite = to_clk_stm32_composite(hw);
++	int sel = clk_hw_get_parent_index(hw);
++	unsigned long flags = 0;
++
++	spin_lock_irqsave(composite->lock, flags);
++
++	clk_stm32_set_parent_mux(composite->base, composite->clock_data,
++				 composite->mux_id, sel);
++
++	spin_unlock_irqrestore(composite->lock, flags);
++}
++
++void clk_stm32_composite_gate_endisable(struct clk_hw *hw, int enable)
++{
++	struct clk_stm32_composite *composite = to_clk_stm32_composite(hw);
++	unsigned long flags = 0;
++
++	spin_lock_irqsave(composite->lock, flags);
++
++	clk_stm32_endisable_gate(composite->base, composite->clock_data,
++				 composite->gate_id, enable);
++
++	spin_unlock_irqrestore(composite->lock, flags);
++}
++
++int clk_stm32_composite_gate_enable(struct clk_hw *hw)
++{
++	struct clk_stm32_composite *composite = to_clk_stm32_composite(hw);
++
++	if (composite->gate_id == NO_STM32_GATE)
++		return 0;
++
++	clk_stm32_composite_gate_endisable(hw, 1);
++
++	if (composite->mux_id != NO_STM32_MUX && clk_stm32_has_safe_mux(hw))
++		clk_stm32_safe_restore_position_mux(hw);
++
++	return 0;
++}
++
++void clk_stm32_composite_gate_disable(struct clk_hw *hw)
++{
++	struct clk_stm32_composite *composite = to_clk_stm32_composite(hw);
++
++	if (composite->gate_id == NO_STM32_GATE)
++		return;
++
++	clk_stm32_composite_gate_endisable(hw, 0);
++
++	if (composite->mux_id != NO_STM32_MUX && clk_stm32_has_safe_mux(hw))
++		clk_stm32_set_safe_position_mux(hw);
++}
++
++int clk_stm32_composite_is_enabled(struct clk_hw *hw)
++{
++	struct clk_stm32_composite *composite = to_clk_stm32_composite(hw);
++
++	if (composite->gate_id == NO_STM32_GATE)
++		return (__clk_get_enable_count(hw->clk) > 0);
++
++	return clk_stm32_is_enabled_gate(composite->base, composite->clock_data,
++					 composite->gate_id);
++}
++
++static void clk_stm32_composite_disable_unused(struct clk_hw *hw)
++{
++	struct clk_stm32_composite *composite = to_clk_stm32_composite(hw);
++	unsigned long flags = 0;
++
++	if (composite->gate_id == NO_STM32_GATE)
++		return;
++
++	spin_lock_irqsave(composite->lock, flags);
++
++	clk_stm32_disable_unused_gate(composite->base, composite->clock_data,
++				      composite->gate_id);
++
++	spin_unlock_irqrestore(composite->lock, flags);
++}
++
++u8 clk_stm32_get_parent_mux(void __iomem *base,
++			    struct clk_stm32_clock_data *data, u16 mux_id)
++{
++	const struct stm32_mux_cfg *mux = &data->muxes[mux_id];
++	u32 mask = BIT(mux->width) - 1;
++	u32 val;
++
++	val = readl(base + mux->offset) >> mux->shift;
++	val &= mask;
++
++	return val;
++}
++
++int clk_stm32_set_parent_mux(void __iomem *base,
++			     struct clk_stm32_clock_data *data,
++			     u16 mux_id, u8 index)
++{
++	const struct stm32_mux_cfg *mux = &data->muxes[mux_id];
++
++	u32 mask = BIT(mux->width) - 1;
++	u32 reg = readl(base + mux->offset);
++	u32 val = index << mux->shift;
++
++	reg &= ~(mask << mux->shift);
++	reg |= val;
++
++	writel(reg, base + mux->offset);
++
++	return 0;
++}
++
++u8 clk_stm32_composite_get_parent(struct clk_hw *hw)
++{
++	struct clk_stm32_composite *composite = to_clk_stm32_composite(hw);
++
++	return clk_stm32_get_parent_mux(composite->base, composite->clock_data,
++					composite->mux_id);
++}
++
++int clk_stm32_composite_set_parent(struct clk_hw *hw, u8 index)
++{
++	struct clk_stm32_composite *composite = to_clk_stm32_composite(hw);
++	unsigned long flags = 0;
++
++	spin_lock_irqsave(composite->lock, flags);
++
++	clk_stm32_set_parent_mux(composite->base, composite->clock_data,
++				 composite->mux_id, index);
++
++	spin_unlock_irqrestore(composite->lock, flags);
++
++	if (composite->clock_data->is_multi_mux) {
++		struct clk_hw *other_mux_hw = composite->clock_data->is_multi_mux(hw);
++
++		if (other_mux_hw) {
++			struct clk_hw *hwp = clk_hw_get_parent_by_index(hw, index);
++
++			clk_hw_reparent(other_mux_hw, hwp);
++		}
++	}
++	return 0;
++}
++
++static unsigned int _get_table_div(const struct clk_div_table *table,
++				   unsigned int val)
++{
++	const struct clk_div_table *clkt;
++
++	for (clkt = table; clkt->div; clkt++)
++		if (clkt->val == val)
++			return clkt->div;
++	return 0;
++}
++
++static unsigned int _get_div(const struct clk_div_table *table,
++			     unsigned int val, unsigned long flags, u8 width)
++{
++	if (flags & CLK_DIVIDER_ONE_BASED)
++		return val;
++	if (flags & CLK_DIVIDER_POWER_OF_TWO)
++		return 1 << val;
++	if (table)
++		return _get_table_div(table, val);
++	return val + 1;
++}
++
++unsigned long clk_stm32_get_rate_divider(void __iomem *base,
++					 struct clk_stm32_clock_data *data,
++					 u16 div_id, unsigned long parent_rate)
++{
++	const struct stm32_div_cfg *divider = &data->dividers[div_id];
++	unsigned int val;
++	unsigned int div;
++
++	val =  readl(base + divider->offset) >> divider->shift;
++	val &= clk_div_mask(divider->width);
++	div = _get_div(divider->table, val, divider->flags, divider->width);
++
++	if (!div) {
++		WARN(!(divider->flags & CLK_DIVIDER_ALLOW_ZERO),
++		     "%d: Zero divisor and CLK_DIVIDER_ALLOW_ZERO not set\n",
++		     div_id);
++		return parent_rate;
++	}
++
++	return DIV_ROUND_UP_ULL((u64)parent_rate, div);
++}
++
++unsigned long clk_stm32_composite_recalc_rate(struct clk_hw *hw,
++					      unsigned long parent_rate)
++{
++	struct clk_stm32_composite *composite = to_clk_stm32_composite(hw);
++
++	if (composite->div_id == NO_STM32_DIV)
++		return parent_rate;
++
++	return clk_stm32_get_rate_divider(composite->base,
++					  composite->clock_data,
++					  composite->div_id,
++					  parent_rate);
++}
++
++int clk_stm32_set_rate_divider(void __iomem *base,
++			       struct clk_stm32_clock_data *data,
++			       u16 div_id,
++			       unsigned long rate,
++			       unsigned long parent_rate)
++{
++	const struct stm32_div_cfg *divider = &data->dividers[div_id];
++	int value;
++	u32 val;
++
++	value = divider_get_val(rate, parent_rate, divider->table,
++				divider->width, divider->flags);
++	if (value < 0)
++		return value;
++
++	if (divider->flags & CLK_DIVIDER_HIWORD_MASK) {
++		val = clk_div_mask(divider->width) << (divider->shift + 16);
++	} else {
++		val = readl(base + divider->offset);
++		val &= ~(clk_div_mask(divider->width) << divider->shift);
++	}
++
++	val |= (u32)value << divider->shift;
++
++	writel(val, base + divider->offset);
++
++	return 0;
++}
++
++int clk_stm32_composite_set_rate(struct clk_hw *hw, unsigned long rate,
++				 unsigned long parent_rate)
++{
++	struct clk_stm32_composite *composite = to_clk_stm32_composite(hw);
++	unsigned long flags = 0;
++	int ret;
++
++	if (composite->div_id == NO_STM32_DIV)
++		return rate;
++
++	spin_lock_irqsave(composite->lock, flags);
++
++	ret = clk_stm32_set_rate_divider(composite->base, composite->clock_data,
++					 composite->div_id, rate, parent_rate);
++
++	spin_unlock_irqrestore(composite->lock, flags);
++
++	return ret;
++}
++
++long clk_stm32_composite_round_rate(struct clk_hw *hw, unsigned long rate,
++				    unsigned long *prate)
++{
++	struct clk_stm32_composite *composite = to_clk_stm32_composite(hw);
++
++	const struct stm32_div_cfg *divider;
++
++	if (composite->div_id == NO_STM32_DIV)
++		return rate;
++
++	divider = &composite->clock_data->dividers[composite->div_id];
++
++	/* if read only, just return current value */
++	if (divider->flags & CLK_DIVIDER_READ_ONLY) {
++		u32 val;
++
++		val =  readl(composite->base + divider->offset) >> divider->shift;
++		val &= clk_div_mask(divider->width);
++
++		return divider_ro_round_rate(hw, rate, prate, divider->table,
++				divider->width, divider->flags,
++				val);
++	}
++
++	return divider_round_rate_parent(hw, clk_hw_get_parent(hw),
++					 rate, prate, divider->table,
++					 divider->width, divider->flags);
++}
++
++const struct clk_ops clk_stm32_composite_ops = {
++	.set_rate	= clk_stm32_composite_set_rate,
++	.recalc_rate	= clk_stm32_composite_recalc_rate,
++	.round_rate	= clk_stm32_composite_round_rate,
++	.get_parent	= clk_stm32_composite_get_parent,
++	.set_parent	= clk_stm32_composite_set_parent,
++	.enable		= clk_stm32_composite_gate_enable,
++	.disable	= clk_stm32_composite_gate_disable,
++	.is_enabled	= clk_stm32_composite_is_enabled,
++	.disable_unused	= clk_stm32_composite_disable_unused,
++};
++
++u8 clk_stm32_mux_get_parent(struct clk_hw *hw)
++{
++	struct clk_stm32_mux *mux = to_clk_stm32_mux(hw);
++
++	return clk_stm32_get_parent_mux(mux->base, mux->clock_data,
++					mux->mux_id);
++}
++
++int clk_stm32_mux_set_parent(struct clk_hw *hw, u8 index)
++{
++	struct clk_stm32_mux *mux = to_clk_stm32_mux(hw);
++	unsigned long flags = 0;
++
++	spin_lock_irqsave(mux->lock, flags);
++
++	clk_stm32_set_parent_mux(mux->base, mux->clock_data,
++				 mux->mux_id, index);
++
++	spin_unlock_irqrestore(mux->lock, flags);
++
++	return 0;
++}
++
++const struct clk_ops clk_stm32_mux_ops = {
++	.get_parent	= clk_stm32_mux_get_parent,
++	.set_parent	= clk_stm32_mux_set_parent,
++};
++
++static int clk_stm32_divider_set_rate(struct clk_hw *hw, unsigned long rate,
++				      unsigned long parent_rate)
++{
++	struct clk_stm32_div *div = to_clk_stm32_divider(hw);
++	unsigned long flags = 0;
++	int ret;
++
++	if (div->div_id == NO_STM32_DIV)
++		return rate;
++
++	spin_lock_irqsave(div->lock, flags);
++
++	ret = clk_stm32_set_rate_divider(div->base, div->clock_data, div->div_id,
++					 rate, parent_rate);
++
++	spin_unlock_irqrestore(div->lock, flags);
++
++	return ret;
++
++}
++
++static long clk_stm32_divider_round_rate(struct clk_hw *hw, unsigned long rate,
++					 unsigned long *prate)
++{
++	struct clk_stm32_div *div = to_clk_stm32_divider(hw);
++	const struct stm32_div_cfg *divider;
++
++	if (div->div_id == NO_STM32_DIV)
++		return rate;
++
++	divider = &div->clock_data->dividers[div->div_id];
++
++	/* if read only, just return current value */
++	if (divider->flags & CLK_DIVIDER_READ_ONLY) {
++		u32 val;
++
++		val =  readl(div->base + divider->offset) >> divider->shift;
++		val &= clk_div_mask(divider->width);
++
++		return divider_ro_round_rate(hw, rate, prate, divider->table,
++				divider->width, divider->flags,
++				val);
++	}
++
++	return divider_round_rate_parent(hw, clk_hw_get_parent(hw),
++					 rate, prate, divider->table,
++					 divider->width, divider->flags);
++}
++
++static unsigned long clk_stm32_divider_recalc_rate(struct clk_hw *hw,
++						   unsigned long parent_rate)
++{
++	struct clk_stm32_div *div = to_clk_stm32_divider(hw);
++
++	if (div->div_id == NO_STM32_DIV)
++		return parent_rate;
++
++	return clk_stm32_get_rate_divider(div->base, div->clock_data,
++					  div->div_id, parent_rate);
++}
++
++const struct clk_ops clk_stm32_divider_ops = {
++	.recalc_rate	= clk_stm32_divider_recalc_rate,
++	.round_rate	= clk_stm32_divider_round_rate,
++	.set_rate	= clk_stm32_divider_set_rate,
++};
++
++/* Clock register function */
++struct clk_hw *clk_stm32_gate_register(struct device *dev,
++				       const struct stm32_rcc_match_data *data,
++				       void __iomem *base,
++				       spinlock_t *lock,
++				       const struct clock_config *cfg)
++{
++	struct clk_stm32_gate *gate = cfg->clock_cfg;
++	struct clk_hw *hw = &gate->hw;
++	const struct clk_init_data *init_data = hw->init;
++	int err;
++
++	gate->base = base;
++	gate->lock = lock;
++	gate->clock_data = data->clock_data;
++
++	err = clk_hw_register(dev, hw);
++	if (err) {
++		dev_err(dev, "Can't register clk %s: %ld\n", init_data->name,  PTR_ERR(hw));
++		return ERR_PTR(err);
++	}
++
++	return hw;
++}
++
++struct clk_hw *clk_stm32_div_register(struct device *dev,
++				      const struct stm32_rcc_match_data *data,
++				      void __iomem *base,
++				      spinlock_t *lock,
++				      const struct clock_config *cfg)
++{
++	struct clk_stm32_div *div = cfg->clock_cfg;
++	struct clk_hw *hw = &div->hw;
++	const struct clk_init_data *init_data = hw->init;
++	int err;
++
++	div->base = base;
++	div->lock = lock;
++	div->clock_data = data->clock_data;
++
++	err = clk_hw_register(dev, hw);
++	if (err) {
++		dev_err(dev, "Can't register clk %s: %ld\n", init_data->name,  PTR_ERR(hw));
++		return ERR_PTR(err);
++	}
++
++	return hw;
++}
++
++struct clk_hw *clk_stm32_mux_register(struct device *dev,
++				      const struct stm32_rcc_match_data *data,
++				      void __iomem *base,
++				      spinlock_t *lock,
++				      const struct clock_config *cfg)
++{
++	struct clk_stm32_mux *mux = cfg->clock_cfg;
++	struct clk_hw *hw = &mux->hw;
++	const struct clk_init_data *init_data = hw->init;
++	int err;
++
++	mux->base = base;
++	mux->lock = lock;
++	mux->clock_data = data->clock_data;
++
++	err = clk_hw_register(dev, hw);
++	if (err) {
++		dev_err(dev, "Can't register clk %s: %ld\n", init_data->name,  PTR_ERR(hw));
++		return ERR_PTR(err);
++	}
++
++	return hw;
++}
++
++struct clk_hw *clk_stm32_composite_register(struct device *dev,
++					    const struct stm32_rcc_match_data *data,
++					    void __iomem *base,
++					    spinlock_t *lock,
++					    const struct clock_config *cfg)
++{
++	struct clk_stm32_composite *composite = cfg->clock_cfg;
++	struct clk_hw *hw = &composite->hw;
++	const struct clk_init_data *init_data = hw->init;
++	int err;
++
++	composite->base = base;
++	composite->lock = lock;
++	composite->clock_data = data->clock_data;
++
++	err = clk_hw_register(dev, hw);
++	if (err) {
++		dev_err(dev, "Can't register clk %s: %ld\n", init_data->name,  PTR_ERR(hw));
++		return ERR_PTR(err);
++	}
++
++	return hw;
++}
+diff --git a/drivers/clk/stm32/clk-stm32-core.h b/drivers/clk/stm32/clk-stm32-core.h
+new file mode 100644
+index 000000000..63e62878b
+--- /dev/null
++++ b/drivers/clk/stm32/clk-stm32-core.h
+@@ -0,0 +1,243 @@
++/* SPDX-License-Identifier: GPL-2.0  */
++/*
++ * Copyright (C) STMicroelectronics 2022 - All Rights Reserved
++ * Author: Gabriel Fernandez <gabriel.fernandez@foss.st.com> for STMicroelectronics.
++ */
++
++#include <linux/clk-provider.h>
++
++struct stm32_rcc_match_data;
++
++struct stm32_mux_cfg {
++	u16	offset;
++	u8	shift;
++	u8	width;
++	u8	flags;
++	u32	*table;
++	u8	ready;
++};
++
++struct stm32_gate_cfg {
++	u16	offset;
++	u8	bit_idx;
++	u8	set_clr;
++};
++
++struct stm32_div_cfg {
++	u16	offset;
++	u8	shift;
++	u8	width;
++	u8	flags;
++	u8	ready;
++	const struct clk_div_table *table;
++};
++
++struct stm32_composite_cfg {
++	int	mux;
++	int	gate;
++	int	div;
++};
++
++#define NO_ID 0xFFFF0000
++
++#define NO_STM32_MUX		0xFFFF
++#define NO_STM32_DIV		0xFFFF
++#define NO_STM32_GATE		0xFFFF
++
++struct clock_config {
++	unsigned long	id;
++	int		sec_id;
++	void		*clock_cfg;
++
++	struct clk_hw *(*func)(struct device *dev,
++			       const struct stm32_rcc_match_data *data,
++			       void __iomem *base,
++			       spinlock_t *lock,
++			       const struct clock_config *cfg);
++};
++
++struct clk_stm32_clock_data {
++	u16 *gate_cpt;
++	const struct stm32_gate_cfg	*gates;
++	const struct stm32_mux_cfg	*muxes;
++	const struct stm32_div_cfg	*dividers;
++	struct clk_hw *(*is_multi_mux)(struct clk_hw *hw);
++};
++
++struct stm32_rcc_match_data {
++	struct clk_hw_onecell_data	*hw_clks;
++	unsigned int			num_clocks;
++	const struct clock_config	*tab_clocks;
++	unsigned int			maxbinding;
++	struct clk_stm32_clock_data	*clock_data;
++	int (*multi_mux)(void __iomem *base, const struct clock_config *cfg);
++	int (*check_security)(void __iomem *base, const struct clock_config *cfg);
++	u32 clear_offset;
++};
++
++int stm32_rcc_reset_init(struct device *dev, const struct of_device_id *match,
++			 void __iomem *base);
++
++int stm32_rcc_init(struct device *dev, const struct of_device_id *match_data,
++		   void __iomem *base);
++
++/* MUX define */
++#define MUX_NO_RDY		0xFF
++#define MUX_SAFE		BIT(7)
++
++/* DIV define */
++#define DIV_NO_RDY		0xFF
++
++struct clk_stm32_gate {
++	u16 gate_id;
++	struct clk_hw hw;
++	void __iomem *base;
++	struct clk_stm32_clock_data *clock_data;
++	spinlock_t *lock; /* spin lock */
++};
++
++#define to_clk_stm32_gate(_hw) container_of(_hw, struct clk_stm32_gate, hw)
++
++struct clk_stm32_mux {
++	u16 mux_id;
++	struct clk_hw hw;
++	void __iomem *base;
++	struct clk_stm32_clock_data *clock_data;
++	spinlock_t *lock; /* spin lock */
++};
++
++#define to_clk_stm32_mux(_hw) container_of(_hw, struct clk_stm32_mux, hw)
++
++struct clk_stm32_div {
++	u16 div_id;
++	struct clk_hw hw;
++	void __iomem *base;
++	struct clk_stm32_clock_data *clock_data;
++	spinlock_t *lock; /* spin lock */
++};
++
++#define to_clk_stm32_divider(_hw) container_of(_hw, struct clk_stm32_div, hw)
++
++struct clk_stm32_composite {
++	u16 gate_id;
++	u16 mux_id;
++	u16 div_id;
++	struct clk_hw hw;
++	void __iomem *base;
++	struct clk_stm32_clock_data *clock_data;
++	spinlock_t *lock; /* spin lock */
++};
++
++#define to_clk_stm32_composite(_hw) container_of(_hw, struct clk_stm32_composite, hw)
++
++void clk_stm32_endisable_gate(void __iomem *base,
++			      struct clk_stm32_clock_data *data, u16 gate_id,
++			      int enable);
++int clk_stm32_is_enabled_gate(void __iomem *base,
++			      struct clk_stm32_clock_data *data, u16 gate_id);
++u8 clk_stm32_get_parent_mux(void __iomem *base,
++			    struct clk_stm32_clock_data *data, u16 mux_id);
++int clk_stm32_set_parent_mux(void __iomem *base,
++			     struct clk_stm32_clock_data *data, u16 mux_id,
++			     u8 index);
++int clk_stm32_set_rate_divider(void __iomem *base,
++			       struct clk_stm32_clock_data *data,
++			       u16 div_id, unsigned long rate,
++			       unsigned long parent_rate);
++unsigned long clk_stm32_get_rate_divider(void __iomem *base,
++					 struct clk_stm32_clock_data *data,
++					 u16 div_id, unsigned long parent_rate);
++
++void clk_stm32_gate_endisable(struct clk_hw *hw, int enable);
++int clk_stm32_gate_enable(struct clk_hw *hw);
++void clk_stm32_gate_disable(struct clk_hw *hw);
++int clk_stm32_gate_is_enabled(struct clk_hw *hw);
++
++u8 clk_stm32_mux_get_parent(struct clk_hw *hw);
++int clk_stm32_mux_set_parent(struct clk_hw *hw, u8 index);
++
++void clk_stm32_composite_gate_endisable(struct clk_hw *hw, int enable);
++int clk_stm32_composite_gate_enable(struct clk_hw *hw);
++void clk_stm32_composite_gate_disable(struct clk_hw *hw);
++int clk_stm32_composite_is_enabled(struct clk_hw *hw);
++u8 clk_stm32_composite_get_parent(struct clk_hw *hw);
++int clk_stm32_composite_set_parent(struct clk_hw *hw, u8 index);
++unsigned long clk_stm32_composite_recalc_rate(struct clk_hw *hw,
++					      unsigned long parent_rate);
++long clk_stm32_composite_round_rate(struct clk_hw *hw, unsigned long rate,
++				    unsigned long *prate);
++int clk_stm32_composite_set_rate(struct clk_hw *hw, unsigned long rate,
++				 unsigned long parent_rate);
++
++struct clk_hw *clk_stm32_gate_register(struct device *dev,
++				       const struct stm32_rcc_match_data *data,
++				       void __iomem *base,
++				       spinlock_t *lock,
++				       const struct clock_config *cfg);
++
++struct clk_hw *clk_stm32_div_register(struct device *dev,
++				      const struct stm32_rcc_match_data *data,
++				      void __iomem *base,
++				      spinlock_t *lock,
++				      const struct clock_config *cfg);
++
++struct clk_hw *clk_stm32_mux_register(struct device *dev,
++				      const struct stm32_rcc_match_data *data,
++				      void __iomem *base,
++				      spinlock_t *lock,
++				      const struct clock_config *cfg);
++
++struct clk_hw *clk_stm32_composite_register(struct device *dev,
++					    const struct stm32_rcc_match_data *data,
++					    void __iomem *base,
++					    spinlock_t *lock,
++					    const struct clock_config *cfg);
++
++extern const struct clk_ops clk_stm32_gate_ops;
++extern const struct clk_ops clk_stm32_divider_ops;
++extern const struct clk_ops clk_stm32_mux_ops;
++extern const struct clk_ops clk_stm32_composite_ops;
++
++#define PARENT(_parent)	((const char *[]) { _parent})
++
++#define CLK_STM32_GATE(_name, _parent, _flags, _gate_id)\
++struct clk_stm32_gate _name = {\
++	.gate_id = _gate_id,\
++	.hw.init = CLK_HW_INIT(#_name, _parent, &clk_stm32_gate_ops, _flags),\
++}
++
++#define CLK_STM32_MUX(_name, _parents, _flags, _mux_id)\
++struct clk_stm32_mux _name = {\
++	.mux_id = _mux_id,\
++	.hw.init = CLK_HW_INIT_PARENTS(#_name, _parents, &clk_stm32_mux_ops, _flags),\
++}
++
++#define CLK_STM32_DIV(_name, _parent, _flags, _div_id)\
++struct clk_stm32_div _name = {\
++	.div_id = _div_id,\
++	.hw.init = CLK_HW_INIT(#_name, _parent, &clk_stm32_divider_ops, _flags),\
++}
++
++#define CLK_STM32_COMPOSITE(_name, _parents, _flags, _gate_id, _mux_id, _div_id)\
++struct clk_stm32_composite _name = {\
++	.gate_id = _gate_id,\
++	.mux_id = _mux_id,\
++	.div_id = _div_id,\
++	.hw.init = CLK_HW_INIT_PARENTS(#_name, _parents, &clk_stm32_composite_ops, _flags),\
++}
++
++#define STM32_CLOCK_CFG(_binding, _clk, _sec_id, _struct, _register)\
++{\
++	.id		= (_binding),\
++	.sec_id		= (_sec_id),\
++	.clock_cfg	= (_struct) {_clk},\
++	.func		= (_register),\
++}
++
++#define STM32_GATE_CFG(_binding, _clk, _sec_id)\
++	STM32_CLOCK_CFG(_binding, &(_clk), _sec_id, struct clk_stm32_gate *,\
++			&clk_stm32_gate_register)
++
++#define STM32_COMPOSITE_CFG(_binding, _clk, _sec_id)\
++	STM32_CLOCK_CFG(_binding, &(_clk), _sec_id, struct clk_stm32_composite *,\
++			&clk_stm32_composite_register)
+diff --git a/drivers/clk/stm32/clk-stm32mp13.c b/drivers/clk/stm32/clk-stm32mp13.c
+new file mode 100644
+index 000000000..9c60a1c7f
+--- /dev/null
++++ b/drivers/clk/stm32/clk-stm32mp13.c
+@@ -0,0 +1,1062 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) STMicroelectronics 2022 - All Rights Reserved
++ * Author: Gabriel Fernandez <gabriel.fernandez@foss.st.com> for STMicroelectronics.
++ */
++
++#include <linux/clk.h>
++#include <linux/module.h>
++#include <linux/of_address.h>
++#include <linux/platform_device.h>
++
++#include <dt-bindings/clock/stm32mp13-clks.h>
++
++#include "clk-stm32-core.h"
++#include "stm32mp13_rcc.h"
++
++#define RCC_CLR		0x4
++
++static const char * const adc12_src[] = {
++	"pll4_r", "ck_per", "pll3_q"
++};
++
++static const char * const dcmipp_src[] = {
++	"ck_axi", "pll2_q", "pll4_p", "ck_per",
++};
++
++static const char * const eth12_src[] = {
++	"pll4_p", "pll3_q"
++};
++
++static const char * const fdcan_src[] = {
++	"ck_hse", "pll3_q", "pll4_q", "pll4_r"
++};
++
++static const char * const fmc_src[] = {
++	"ck_axi", "pll3_r", "pll4_p", "ck_per"
++};
++
++static const char * const i2c12_src[] = {
++	"pclk1", "pll4_r", "ck_hsi", "ck_csi"
++};
++
++static const char * const i2c345_src[] = {
++	"pclk6", "pll4_r", "ck_hsi", "ck_csi"
++};
++
++static const char * const lptim1_src[] = {
++	"pclk1", "pll4_p", "pll3_q", "ck_lse", "ck_lsi", "ck_per"
++};
++
++static const char * const lptim23_src[] = {
++	"pclk3", "pll4_q", "ck_per", "ck_lse", "ck_lsi"
++};
++
++static const char * const lptim45_src[] = {
++	"pclk3", "pll4_p", "pll3_q", "ck_lse", "ck_lsi", "ck_per"
++};
++
++static const char * const mco1_src[] = {
++	"ck_hsi", "ck_hse", "ck_csi", "ck_lsi", "ck_lse"
++};
++
++static const char * const mco2_src[] = {
++	"ck_mpu", "ck_axi", "ck_mlahb", "pll4_p", "ck_hse", "ck_hsi"
++};
++
++static const char * const qspi_src[] = {
++	"ck_axi", "pll3_r", "pll4_p", "ck_per"
++};
++
++static const char * const rng1_src[] = {
++	"ck_csi", "pll4_r", "reserved", "ck_lsi"
++};
++
++static const char * const saes_src[] = {
++	"ck_axi", "ck_per", "pll4_r", "ck_lsi"
++};
++
++static const char * const sai1_src[] = {
++	"pll4_q", "pll3_q", "i2s_ckin", "ck_per", "pll3_r"
++};
++
++static const char * const sai2_src[] = {
++	"pll4_q", "pll3_q", "i2s_ckin", "ck_per", "spdif_ck_symb", "pll3_r"
++};
++
++static const char * const sdmmc12_src[] = {
++	"ck_axi", "pll3_r", "pll4_p", "ck_hsi"
++};
++
++static const char * const spdif_src[] = {
++	"pll4_p", "pll3_q", "ck_hsi"
++};
++
++static const char * const spi123_src[] = {
++	"pll4_p", "pll3_q", "i2s_ckin", "ck_per", "pll3_r"
++};
++
++static const char * const spi4_src[] = {
++	"pclk6", "pll4_q", "ck_hsi", "ck_csi", "ck_hse", "i2s_ckin"
++};
++
++static const char * const spi5_src[] = {
++	"pclk6", "pll4_q", "ck_hsi", "ck_csi", "ck_hse"
++};
++
++static const char * const stgen_src[] = {
++	"ck_hsi", "ck_hse"
++};
++
++static const char * const usart12_src[] = {
++	"pclk6", "pll3_q", "ck_hsi", "ck_csi", "pll4_q", "ck_hse"
++};
++
++static const char * const usart34578_src[] = {
++	"pclk1", "pll4_q", "ck_hsi", "ck_csi", "ck_hse"
++};
++
++static const char * const usart6_src[] = {
++	"pclk2", "pll4_q", "ck_hsi", "ck_csi", "ck_hse"
++};
++
++static const char * const usbo_src[] = {
++	"pll4_r", "ck_usbo_48m"
++};
++
++static const char * const usbphy_src[] = {
++	"ck_hse", "pll4_r", "clk-hse-div2"
++};
++
++enum enum_gate_cfg {
++	GATE_MCO1,
++	GATE_MCO2,
++	GATE_DBGCK,
++	GATE_TRACECK,
++	GATE_DDRC1,
++	GATE_DDRC1LP,
++	GATE_DDRPHYC,
++	GATE_DDRPHYCLP,
++	GATE_DDRCAPB,
++	GATE_DDRCAPBLP,
++	GATE_AXIDCG,
++	GATE_DDRPHYCAPB,
++	GATE_DDRPHYCAPBLP,
++	GATE_TIM2,
++	GATE_TIM3,
++	GATE_TIM4,
++	GATE_TIM5,
++	GATE_TIM6,
++	GATE_TIM7,
++	GATE_LPTIM1,
++	GATE_SPI2,
++	GATE_SPI3,
++	GATE_USART3,
++	GATE_UART4,
++	GATE_UART5,
++	GATE_UART7,
++	GATE_UART8,
++	GATE_I2C1,
++	GATE_I2C2,
++	GATE_SPDIF,
++	GATE_TIM1,
++	GATE_TIM8,
++	GATE_SPI1,
++	GATE_USART6,
++	GATE_SAI1,
++	GATE_SAI2,
++	GATE_DFSDM,
++	GATE_ADFSDM,
++	GATE_FDCAN,
++	GATE_LPTIM2,
++	GATE_LPTIM3,
++	GATE_LPTIM4,
++	GATE_LPTIM5,
++	GATE_VREF,
++	GATE_DTS,
++	GATE_PMBCTRL,
++	GATE_HDP,
++	GATE_SYSCFG,
++	GATE_DCMIPP,
++	GATE_DDRPERFM,
++	GATE_IWDG2APB,
++	GATE_USBPHY,
++	GATE_STGENRO,
++	GATE_LTDC,
++	GATE_TZC,
++	GATE_ETZPC,
++	GATE_IWDG1APB,
++	GATE_BSEC,
++	GATE_STGENC,
++	GATE_USART1,
++	GATE_USART2,
++	GATE_SPI4,
++	GATE_SPI5,
++	GATE_I2C3,
++	GATE_I2C4,
++	GATE_I2C5,
++	GATE_TIM12,
++	GATE_TIM13,
++	GATE_TIM14,
++	GATE_TIM15,
++	GATE_TIM16,
++	GATE_TIM17,
++	GATE_DMA1,
++	GATE_DMA2,
++	GATE_DMAMUX1,
++	GATE_DMA3,
++	GATE_DMAMUX2,
++	GATE_ADC1,
++	GATE_ADC2,
++	GATE_USBO,
++	GATE_TSC,
++	GATE_GPIOA,
++	GATE_GPIOB,
++	GATE_GPIOC,
++	GATE_GPIOD,
++	GATE_GPIOE,
++	GATE_GPIOF,
++	GATE_GPIOG,
++	GATE_GPIOH,
++	GATE_GPIOI,
++	GATE_PKA,
++	GATE_SAES,
++	GATE_CRYP1,
++	GATE_HASH1,
++	GATE_RNG1,
++	GATE_BKPSRAM,
++	GATE_AXIMC,
++	GATE_MCE,
++	GATE_ETH1CK,
++	GATE_ETH1TX,
++	GATE_ETH1RX,
++	GATE_ETH1MAC,
++	GATE_FMC,
++	GATE_QSPI,
++	GATE_SDMMC1,
++	GATE_SDMMC2,
++	GATE_CRC1,
++	GATE_USBH,
++	GATE_ETH2CK,
++	GATE_ETH2TX,
++	GATE_ETH2RX,
++	GATE_ETH2MAC,
++	GATE_ETH1STP,
++	GATE_ETH2STP,
++	GATE_MDMA,
++	GATE_NB
++};
++
++#define _CFG_GATE(_id, _offset, _bit_idx, _offset_clr)\
++	[(_id)] = {\
++		.offset		= (_offset),\
++		.bit_idx	= (_bit_idx),\
++		.set_clr	= (_offset_clr),\
++	}
++
++#define CFG_GATE(_id, _offset, _bit_idx)\
++	_CFG_GATE(_id, _offset, _bit_idx, 0)
++
++#define CFG_GATE_SETCLR(_id, _offset, _bit_idx)\
++	_CFG_GATE(_id, _offset, _bit_idx, RCC_CLR)
++
++static struct stm32_gate_cfg stm32mp13_gates[] = {
++	CFG_GATE(GATE_MCO1,		RCC_MCO1CFGR,	12),
++	CFG_GATE(GATE_MCO2,		RCC_MCO2CFGR,	12),
++	CFG_GATE(GATE_DBGCK,		RCC_DBGCFGR,	8),
++	CFG_GATE(GATE_TRACECK,		RCC_DBGCFGR,	9),
++	CFG_GATE(GATE_DDRC1,		RCC_DDRITFCR,	0),
++	CFG_GATE(GATE_DDRC1LP,		RCC_DDRITFCR,	1),
++	CFG_GATE(GATE_DDRPHYC,		RCC_DDRITFCR,	4),
++	CFG_GATE(GATE_DDRPHYCLP,	RCC_DDRITFCR,	5),
++	CFG_GATE(GATE_DDRCAPB,		RCC_DDRITFCR,	6),
++	CFG_GATE(GATE_DDRCAPBLP,	RCC_DDRITFCR,	7),
++	CFG_GATE(GATE_AXIDCG,		RCC_DDRITFCR,	8),
++	CFG_GATE(GATE_DDRPHYCAPB,	RCC_DDRITFCR,	9),
++	CFG_GATE(GATE_DDRPHYCAPBLP,	RCC_DDRITFCR,	10),
++	CFG_GATE_SETCLR(GATE_TIM2,	RCC_MP_APB1ENSETR,	0),
++	CFG_GATE_SETCLR(GATE_TIM3,	RCC_MP_APB1ENSETR,	1),
++	CFG_GATE_SETCLR(GATE_TIM4,	RCC_MP_APB1ENSETR,	2),
++	CFG_GATE_SETCLR(GATE_TIM5,	RCC_MP_APB1ENSETR,	3),
++	CFG_GATE_SETCLR(GATE_TIM6,	RCC_MP_APB1ENSETR,	4),
++	CFG_GATE_SETCLR(GATE_TIM7,	RCC_MP_APB1ENSETR,	5),
++	CFG_GATE_SETCLR(GATE_LPTIM1,	RCC_MP_APB1ENSETR,	9),
++	CFG_GATE_SETCLR(GATE_SPI2,	RCC_MP_APB1ENSETR,	11),
++	CFG_GATE_SETCLR(GATE_SPI3,	RCC_MP_APB1ENSETR,	12),
++	CFG_GATE_SETCLR(GATE_USART3,	RCC_MP_APB1ENSETR,	15),
++	CFG_GATE_SETCLR(GATE_UART4,	RCC_MP_APB1ENSETR,	16),
++	CFG_GATE_SETCLR(GATE_UART5,	RCC_MP_APB1ENSETR,	17),
++	CFG_GATE_SETCLR(GATE_UART7,	RCC_MP_APB1ENSETR,	18),
++	CFG_GATE_SETCLR(GATE_UART8,	RCC_MP_APB1ENSETR,	19),
++	CFG_GATE_SETCLR(GATE_I2C1,	RCC_MP_APB1ENSETR,	21),
++	CFG_GATE_SETCLR(GATE_I2C2,	RCC_MP_APB1ENSETR,	22),
++	CFG_GATE_SETCLR(GATE_SPDIF,	RCC_MP_APB1ENSETR,	26),
++	CFG_GATE_SETCLR(GATE_TIM1,	RCC_MP_APB2ENSETR,	0),
++	CFG_GATE_SETCLR(GATE_TIM8,	RCC_MP_APB2ENSETR,	1),
++	CFG_GATE_SETCLR(GATE_SPI1,	RCC_MP_APB2ENSETR,	8),
++	CFG_GATE_SETCLR(GATE_USART6,	RCC_MP_APB2ENSETR,	13),
++	CFG_GATE_SETCLR(GATE_SAI1,	RCC_MP_APB2ENSETR,	16),
++	CFG_GATE_SETCLR(GATE_SAI2,	RCC_MP_APB2ENSETR,	17),
++	CFG_GATE_SETCLR(GATE_DFSDM,	RCC_MP_APB2ENSETR,	20),
++	CFG_GATE_SETCLR(GATE_ADFSDM,	RCC_MP_APB2ENSETR,	21),
++	CFG_GATE_SETCLR(GATE_FDCAN,	RCC_MP_APB2ENSETR,	24),
++	CFG_GATE_SETCLR(GATE_LPTIM2,	RCC_MP_APB3ENSETR,	0),
++	CFG_GATE_SETCLR(GATE_LPTIM3,	RCC_MP_APB3ENSETR,	1),
++	CFG_GATE_SETCLR(GATE_LPTIM4,	RCC_MP_APB3ENSETR,	2),
++	CFG_GATE_SETCLR(GATE_LPTIM5,	RCC_MP_APB3ENSETR,	3),
++	CFG_GATE_SETCLR(GATE_VREF,	RCC_MP_APB3ENSETR,	13),
++	CFG_GATE_SETCLR(GATE_DTS,	RCC_MP_APB3ENSETR,	16),
++	CFG_GATE_SETCLR(GATE_PMBCTRL,	RCC_MP_APB3ENSETR,	17),
++	CFG_GATE_SETCLR(GATE_HDP,	RCC_MP_APB3ENSETR,	20),
++	CFG_GATE_SETCLR(GATE_SYSCFG,	RCC_MP_NS_APB3ENSETR,	0),
++	CFG_GATE_SETCLR(GATE_DCMIPP,	RCC_MP_APB4ENSETR,	1),
++	CFG_GATE_SETCLR(GATE_DDRPERFM,	RCC_MP_APB4ENSETR,	8),
++	CFG_GATE_SETCLR(GATE_IWDG2APB,	RCC_MP_APB4ENSETR,	15),
++	CFG_GATE_SETCLR(GATE_USBPHY,	RCC_MP_APB4ENSETR,	16),
++	CFG_GATE_SETCLR(GATE_STGENRO,	RCC_MP_APB4ENSETR,	20),
++	CFG_GATE_SETCLR(GATE_LTDC,	RCC_MP_NS_APB4ENSETR,	0),
++	CFG_GATE_SETCLR(GATE_TZC,	RCC_MP_APB5ENSETR,	11),
++	CFG_GATE_SETCLR(GATE_ETZPC,	RCC_MP_APB5ENSETR,	13),
++	CFG_GATE_SETCLR(GATE_IWDG1APB,	RCC_MP_APB5ENSETR,	15),
++	CFG_GATE_SETCLR(GATE_BSEC,	RCC_MP_APB5ENSETR,	16),
++	CFG_GATE_SETCLR(GATE_STGENC,	RCC_MP_APB5ENSETR,	20),
++	CFG_GATE_SETCLR(GATE_USART1,	RCC_MP_APB6ENSETR,	0),
++	CFG_GATE_SETCLR(GATE_USART2,	RCC_MP_APB6ENSETR,	1),
++	CFG_GATE_SETCLR(GATE_SPI4,	RCC_MP_APB6ENSETR,	2),
++	CFG_GATE_SETCLR(GATE_SPI5,	RCC_MP_APB6ENSETR,	3),
++	CFG_GATE_SETCLR(GATE_I2C3,	RCC_MP_APB6ENSETR,	4),
++	CFG_GATE_SETCLR(GATE_I2C4,	RCC_MP_APB6ENSETR,	5),
++	CFG_GATE_SETCLR(GATE_I2C5,	RCC_MP_APB6ENSETR,	6),
++	CFG_GATE_SETCLR(GATE_TIM12,	RCC_MP_APB6ENSETR,	7),
++	CFG_GATE_SETCLR(GATE_TIM13,	RCC_MP_APB6ENSETR,	8),
++	CFG_GATE_SETCLR(GATE_TIM14,	RCC_MP_APB6ENSETR,	9),
++	CFG_GATE_SETCLR(GATE_TIM15,	RCC_MP_APB6ENSETR,	10),
++	CFG_GATE_SETCLR(GATE_TIM16,	RCC_MP_APB6ENSETR,	11),
++	CFG_GATE_SETCLR(GATE_TIM17,	RCC_MP_APB6ENSETR,	12),
++	CFG_GATE_SETCLR(GATE_DMA1,	RCC_MP_AHB2ENSETR,	0),
++	CFG_GATE_SETCLR(GATE_DMA2,	RCC_MP_AHB2ENSETR,	1),
++	CFG_GATE_SETCLR(GATE_DMAMUX1,	RCC_MP_AHB2ENSETR,	2),
++	CFG_GATE_SETCLR(GATE_DMA3,	RCC_MP_AHB2ENSETR,	3),
++	CFG_GATE_SETCLR(GATE_DMAMUX2,	RCC_MP_AHB2ENSETR,	4),
++	CFG_GATE_SETCLR(GATE_ADC1,	RCC_MP_AHB2ENSETR,	5),
++	CFG_GATE_SETCLR(GATE_ADC2,	RCC_MP_AHB2ENSETR,	6),
++	CFG_GATE_SETCLR(GATE_USBO,	RCC_MP_AHB2ENSETR,	8),
++	CFG_GATE_SETCLR(GATE_TSC,	RCC_MP_AHB4ENSETR,	15),
++	CFG_GATE_SETCLR(GATE_GPIOA,	RCC_MP_NS_AHB4ENSETR,	0),
++	CFG_GATE_SETCLR(GATE_GPIOB,	RCC_MP_NS_AHB4ENSETR,	1),
++	CFG_GATE_SETCLR(GATE_GPIOC,	RCC_MP_NS_AHB4ENSETR,	2),
++	CFG_GATE_SETCLR(GATE_GPIOD,	RCC_MP_NS_AHB4ENSETR,	3),
++	CFG_GATE_SETCLR(GATE_GPIOE,	RCC_MP_NS_AHB4ENSETR,	4),
++	CFG_GATE_SETCLR(GATE_GPIOF,	RCC_MP_NS_AHB4ENSETR,	5),
++	CFG_GATE_SETCLR(GATE_GPIOG,	RCC_MP_NS_AHB4ENSETR,	6),
++	CFG_GATE_SETCLR(GATE_GPIOH,	RCC_MP_NS_AHB4ENSETR,	7),
++	CFG_GATE_SETCLR(GATE_GPIOI,	RCC_MP_NS_AHB4ENSETR,	8),
++	CFG_GATE_SETCLR(GATE_PKA,	RCC_MP_AHB5ENSETR,	2),
++	CFG_GATE_SETCLR(GATE_SAES,	RCC_MP_AHB5ENSETR,	3),
++	CFG_GATE_SETCLR(GATE_CRYP1,	RCC_MP_AHB5ENSETR,	4),
++	CFG_GATE_SETCLR(GATE_HASH1,	RCC_MP_AHB5ENSETR,	5),
++	CFG_GATE_SETCLR(GATE_RNG1,	RCC_MP_AHB5ENSETR,	6),
++	CFG_GATE_SETCLR(GATE_BKPSRAM,	RCC_MP_AHB5ENSETR,	8),
++	CFG_GATE_SETCLR(GATE_AXIMC,	RCC_MP_AHB5ENSETR,	16),
++	CFG_GATE_SETCLR(GATE_MCE,	RCC_MP_AHB6ENSETR,	1),
++	CFG_GATE_SETCLR(GATE_ETH1CK,	RCC_MP_AHB6ENSETR,	7),
++	CFG_GATE_SETCLR(GATE_ETH1TX,	RCC_MP_AHB6ENSETR,	8),
++	CFG_GATE_SETCLR(GATE_ETH1RX,	RCC_MP_AHB6ENSETR,	9),
++	CFG_GATE_SETCLR(GATE_ETH1MAC,	RCC_MP_AHB6ENSETR,	10),
++	CFG_GATE_SETCLR(GATE_FMC,	RCC_MP_AHB6ENSETR,	12),
++	CFG_GATE_SETCLR(GATE_QSPI,	RCC_MP_AHB6ENSETR,	14),
++	CFG_GATE_SETCLR(GATE_SDMMC1,	RCC_MP_AHB6ENSETR,	16),
++	CFG_GATE_SETCLR(GATE_SDMMC2,	RCC_MP_AHB6ENSETR,	17),
++	CFG_GATE_SETCLR(GATE_CRC1,	RCC_MP_AHB6ENSETR,	20),
++	CFG_GATE_SETCLR(GATE_USBH,	RCC_MP_AHB6ENSETR,	24),
++	CFG_GATE_SETCLR(GATE_ETH2CK,	RCC_MP_AHB6ENSETR,	27),
++	CFG_GATE_SETCLR(GATE_ETH2TX,	RCC_MP_AHB6ENSETR,	28),
++	CFG_GATE_SETCLR(GATE_ETH2RX,	RCC_MP_AHB6ENSETR,	29),
++	CFG_GATE_SETCLR(GATE_ETH2MAC,	RCC_MP_AHB6ENSETR,	30),
++	CFG_GATE_SETCLR(GATE_ETH1STP,	RCC_MP_AHB6LPENSETR,	11),
++	CFG_GATE_SETCLR(GATE_ETH2STP,	RCC_MP_AHB6LPENSETR,	31),
++	CFG_GATE_SETCLR(GATE_MDMA,	RCC_MP_NS_AHB6ENSETR,	0),
++};
++
++enum enum_mux_cfg {
++	MUX_I2C12,
++	MUX_LPTIM45,
++	MUX_SPI23,
++	MUX_UART35,
++	MUX_UART78,
++	MUX_ADC1,
++	MUX_ADC2,
++	MUX_DCMIPP,
++	MUX_ETH1,
++	MUX_ETH2,
++	MUX_FDCAN,
++	MUX_FMC,
++	MUX_I2C3,
++	MUX_I2C4,
++	MUX_I2C5,
++	MUX_LPTIM1,
++	MUX_LPTIM2,
++	MUX_LPTIM3,
++	MUX_QSPI,
++	MUX_RNG1,
++	MUX_SAES,
++	MUX_SAI1,
++	MUX_SAI2,
++	MUX_SDMMC1,
++	MUX_SDMMC2,
++	MUX_SPDIF,
++	MUX_SPI1,
++	MUX_SPI4,
++	MUX_SPI5,
++	MUX_STGEN,
++	MUX_UART1,
++	MUX_UART2,
++	MUX_UART4,
++	MUX_UART6,
++	MUX_USBO,
++	MUX_USBPHY,
++	MUX_MCO1,
++	MUX_MCO2,
++	MUX_NB
++};
++
++#define _CFG_MUX(_id, _offset, _shift, _witdh, _ready, _flags)\
++	[_id] = {\
++		.offset		= (_offset),\
++		.shift		= (_shift),\
++		.width		= (_witdh),\
++		.ready		= (_ready),\
++		.flags		= (_flags),\
++	}
++
++#define CFG_MUX(_id, _offset, _shift, _witdh)\
++	_CFG_MUX(_id, _offset, _shift, _witdh, MUX_NO_RDY, 0)
++
++#define CFG_MUX_RDY(_id, _offset, _shift, _witdh, _ready)\
++	_CFG_MUX(_id, _offset, _shift, _witdh, _ready, 0)
++
++#define CFG_MUX_SAFE(_id, _offset, _shift, _witdh)\
++	_CFG_MUX(_id, _offset, _shift, _witdh, MUX_NO_RDY, MUX_SAFE)
++
++static const struct stm32_mux_cfg stm32mp13_muxes[] = {
++	CFG_MUX(MUX_I2C12,	RCC_I2C12CKSELR,	0, 3),
++	CFG_MUX(MUX_LPTIM45,	RCC_LPTIM45CKSELR,	0, 3),
++	CFG_MUX(MUX_SPI23,	RCC_SPI2S23CKSELR,	0, 3),
++	CFG_MUX(MUX_UART35,	RCC_UART35CKSELR,	0, 3),
++	CFG_MUX(MUX_UART78,	RCC_UART78CKSELR,	0, 3),
++	CFG_MUX(MUX_ADC1,	RCC_ADC12CKSELR,	0, 2),
++	CFG_MUX(MUX_ADC2,	RCC_ADC12CKSELR,	2, 2),
++	CFG_MUX(MUX_DCMIPP,	RCC_DCMIPPCKSELR,	0, 2),
++	CFG_MUX(MUX_ETH1,	RCC_ETH12CKSELR,	0, 2),
++	CFG_MUX(MUX_ETH2,	RCC_ETH12CKSELR,	8, 2),
++	CFG_MUX(MUX_FDCAN,	RCC_FDCANCKSELR,	0, 2),
++	CFG_MUX(MUX_I2C3,	RCC_I2C345CKSELR,	0, 3),
++	CFG_MUX(MUX_I2C4,	RCC_I2C345CKSELR,	3, 3),
++	CFG_MUX(MUX_I2C5,	RCC_I2C345CKSELR,	6, 3),
++	CFG_MUX(MUX_LPTIM1,	RCC_LPTIM1CKSELR,	0, 3),
++	CFG_MUX(MUX_LPTIM2,	RCC_LPTIM23CKSELR,	0, 3),
++	CFG_MUX(MUX_LPTIM3,	RCC_LPTIM23CKSELR,	3, 3),
++	CFG_MUX(MUX_MCO1,	RCC_MCO1CFGR,		0, 3),
++	CFG_MUX(MUX_MCO2,	RCC_MCO2CFGR,		0, 3),
++	CFG_MUX(MUX_RNG1,	RCC_RNG1CKSELR,		0, 2),
++	CFG_MUX(MUX_SAES,	RCC_SAESCKSELR,		0, 2),
++	CFG_MUX(MUX_SAI1,	RCC_SAI1CKSELR,		0, 3),
++	CFG_MUX(MUX_SAI2,	RCC_SAI2CKSELR,		0, 3),
++	CFG_MUX(MUX_SPDIF,	RCC_SPDIFCKSELR,	0, 2),
++	CFG_MUX(MUX_SPI1,	RCC_SPI2S1CKSELR,	0, 3),
++	CFG_MUX(MUX_SPI4,	RCC_SPI45CKSELR,	0, 3),
++	CFG_MUX(MUX_SPI5,	RCC_SPI45CKSELR,	3, 3),
++	CFG_MUX(MUX_STGEN,	RCC_STGENCKSELR,	0, 2),
++	CFG_MUX(MUX_UART1,	RCC_UART12CKSELR,	0, 3),
++	CFG_MUX(MUX_UART2,	RCC_UART12CKSELR,	3, 3),
++	CFG_MUX(MUX_UART4,	RCC_UART4CKSELR,	0, 3),
++	CFG_MUX(MUX_UART6,	RCC_UART6CKSELR,	0, 3),
++	CFG_MUX(MUX_USBO,	RCC_USBCKSELR,		4, 1),
++	CFG_MUX(MUX_USBPHY,	RCC_USBCKSELR,		0, 2),
++
++	CFG_MUX_SAFE(MUX_FMC,	RCC_FMCCKSELR,		0, 2),
++	CFG_MUX_SAFE(MUX_QSPI,	RCC_QSPICKSELR,		0, 2),
++	CFG_MUX_SAFE(MUX_SDMMC1, RCC_SDMMC12CKSELR,	0, 3),
++	CFG_MUX_SAFE(MUX_SDMMC2, RCC_SDMMC12CKSELR,	3, 3),
++};
++
++enum enum_div_cfg {
++	DIV_MCO1,
++	DIV_MCO2,
++	DIV_TRACE,
++	DIV_ETH1PTP,
++	DIV_ETH2PTP,
++	DIV_NB
++};
++
++static const struct clk_div_table ck_trace_div_table[] = {
++	{ 0, 1 }, { 1, 2 }, { 2, 4 }, { 3, 8 },
++	{ 4, 16 }, { 5, 16 }, { 6, 16 }, { 7, 16 },
++	{ 0 },
++};
++
++#define CFG_DIV(_id, _offset, _shift, _width, _flags, _table, _ready)\
++	[(_id)] = {\
++		.offset	= (_offset),\
++		.shift	= (_shift),\
++		.width	= (_width),\
++		.flags	= (_flags),\
++		.table	= (_table),\
++		.ready	= (_ready),\
++	}
++
++static const struct stm32_div_cfg stm32mp13_dividers[DIV_NB] = {
++	CFG_DIV(DIV_MCO1, RCC_MCO1CFGR, 4, 4, 0, NULL, DIV_NO_RDY),
++	CFG_DIV(DIV_MCO2, RCC_MCO2CFGR, 4, 4, 0, NULL, DIV_NO_RDY),
++	CFG_DIV(DIV_TRACE, RCC_DBGCFGR, 0, 3, 0, ck_trace_div_table, DIV_NO_RDY),
++	CFG_DIV(DIV_ETH1PTP, RCC_ETH12CKSELR, 4, 4, 0, NULL, DIV_NO_RDY),
++	CFG_DIV(DIV_ETH2PTP, RCC_ETH12CKSELR, 12, 4, 0, NULL, DIV_NO_RDY),
++};
++
++struct clk_stm32_securiy {
++	u16	offset;
++	u8	bit_idx;
++};
++
++enum securit_clk {
++	SECF_NONE,
++	SECF_LPTIM2,
++	SECF_LPTIM3,
++	SECF_VREF,
++	SECF_DCMIPP,
++	SECF_USBPHY,
++	SECF_RTC,
++	SECF_TZC,
++	SECF_ETZPC,
++	SECF_IWDG1,
++	SECF_BSEC,
++	SECF_STGENC,
++	SECF_STGENRO,
++	SECF_USART1,
++	SECF_USART2,
++	SECF_SPI4,
++	SECF_SPI5,
++	SECF_I2C3,
++	SECF_I2C4,
++	SECF_I2C5,
++	SECF_TIM12,
++	SECF_TIM13,
++	SECF_TIM14,
++	SECF_TIM15,
++	SECF_TIM16,
++	SECF_TIM17,
++	SECF_DMA3,
++	SECF_DMAMUX2,
++	SECF_ADC1,
++	SECF_ADC2,
++	SECF_USBO,
++	SECF_TSC,
++	SECF_PKA,
++	SECF_SAES,
++	SECF_CRYP1,
++	SECF_HASH1,
++	SECF_RNG1,
++	SECF_BKPSRAM,
++	SECF_MCE,
++	SECF_FMC,
++	SECF_QSPI,
++	SECF_SDMMC1,
++	SECF_SDMMC2,
++	SECF_ETH1CK,
++	SECF_ETH1TX,
++	SECF_ETH1RX,
++	SECF_ETH1MAC,
++	SECF_ETH1STP,
++	SECF_ETH2CK,
++	SECF_ETH2TX,
++	SECF_ETH2RX,
++	SECF_ETH2MAC,
++	SECF_ETH2STP,
++	SECF_MCO1,
++	SECF_MCO2
++};
++
++#define SECF(_sec_id, _offset, _bit_idx)[_sec_id] = {\
++	.offset	= _offset,\
++	.bit_idx	= _bit_idx,\
++}
++
++static const struct clk_stm32_securiy stm32mp13_security[] = {
++	SECF(SECF_LPTIM2, RCC_APB3SECSR, RCC_APB3SECSR_LPTIM2SECF),
++	SECF(SECF_LPTIM3, RCC_APB3SECSR, RCC_APB3SECSR_LPTIM3SECF),
++	SECF(SECF_VREF, RCC_APB3SECSR, RCC_APB3SECSR_VREFSECF),
++	SECF(SECF_DCMIPP, RCC_APB4SECSR, RCC_APB4SECSR_DCMIPPSECF),
++	SECF(SECF_USBPHY, RCC_APB4SECSR, RCC_APB4SECSR_USBPHYSECF),
++	SECF(SECF_RTC, RCC_APB5SECSR, RCC_APB5SECSR_RTCSECF),
++	SECF(SECF_TZC, RCC_APB5SECSR, RCC_APB5SECSR_TZCSECF),
++	SECF(SECF_ETZPC, RCC_APB5SECSR, RCC_APB5SECSR_ETZPCSECF),
++	SECF(SECF_IWDG1, RCC_APB5SECSR, RCC_APB5SECSR_IWDG1SECF),
++	SECF(SECF_BSEC, RCC_APB5SECSR, RCC_APB5SECSR_BSECSECF),
++	SECF(SECF_STGENC, RCC_APB5SECSR, RCC_APB5SECSR_STGENCSECF),
++	SECF(SECF_STGENRO, RCC_APB5SECSR, RCC_APB5SECSR_STGENROSECF),
++	SECF(SECF_USART1, RCC_APB6SECSR, RCC_APB6SECSR_USART1SECF),
++	SECF(SECF_USART2, RCC_APB6SECSR, RCC_APB6SECSR_USART2SECF),
++	SECF(SECF_SPI4, RCC_APB6SECSR, RCC_APB6SECSR_SPI4SECF),
++	SECF(SECF_SPI5, RCC_APB6SECSR, RCC_APB6SECSR_SPI5SECF),
++	SECF(SECF_I2C3, RCC_APB6SECSR, RCC_APB6SECSR_I2C3SECF),
++	SECF(SECF_I2C4, RCC_APB6SECSR, RCC_APB6SECSR_I2C4SECF),
++	SECF(SECF_I2C5, RCC_APB6SECSR, RCC_APB6SECSR_I2C5SECF),
++	SECF(SECF_TIM12, RCC_APB6SECSR, RCC_APB6SECSR_TIM12SECF),
++	SECF(SECF_TIM13, RCC_APB6SECSR, RCC_APB6SECSR_TIM13SECF),
++	SECF(SECF_TIM14, RCC_APB6SECSR, RCC_APB6SECSR_TIM14SECF),
++	SECF(SECF_TIM15, RCC_APB6SECSR, RCC_APB6SECSR_TIM15SECF),
++	SECF(SECF_TIM16, RCC_APB6SECSR, RCC_APB6SECSR_TIM16SECF),
++	SECF(SECF_TIM17, RCC_APB6SECSR, RCC_APB6SECSR_TIM17SECF),
++	SECF(SECF_DMA3, RCC_AHB2SECSR, RCC_AHB2SECSR_DMA3SECF),
++	SECF(SECF_DMAMUX2, RCC_AHB2SECSR, RCC_AHB2SECSR_DMAMUX2SECF),
++	SECF(SECF_ADC1, RCC_AHB2SECSR, RCC_AHB2SECSR_ADC1SECF),
++	SECF(SECF_ADC2, RCC_AHB2SECSR, RCC_AHB2SECSR_ADC2SECF),
++	SECF(SECF_USBO, RCC_AHB2SECSR, RCC_AHB2SECSR_USBOSECF),
++	SECF(SECF_TSC, RCC_AHB4SECSR, RCC_AHB4SECSR_TSCSECF),
++	SECF(SECF_PKA, RCC_AHB5SECSR, RCC_AHB5SECSR_PKASECF),
++	SECF(SECF_SAES, RCC_AHB5SECSR, RCC_AHB5SECSR_SAESSECF),
++	SECF(SECF_CRYP1, RCC_AHB5SECSR, RCC_AHB5SECSR_CRYP1SECF),
++	SECF(SECF_HASH1, RCC_AHB5SECSR, RCC_AHB5SECSR_HASH1SECF),
++	SECF(SECF_RNG1, RCC_AHB5SECSR, RCC_AHB5SECSR_RNG1SECF),
++	SECF(SECF_BKPSRAM, RCC_AHB5SECSR, RCC_AHB5SECSR_BKPSRAMSECF),
++	SECF(SECF_MCE, RCC_AHB6SECSR, RCC_AHB6SECSR_MCESECF),
++	SECF(SECF_FMC, RCC_AHB6SECSR, RCC_AHB6SECSR_FMCSECF),
++	SECF(SECF_QSPI, RCC_AHB6SECSR, RCC_AHB6SECSR_QSPISECF),
++	SECF(SECF_SDMMC1, RCC_AHB6SECSR, RCC_AHB6SECSR_SDMMC1SECF),
++	SECF(SECF_SDMMC2, RCC_AHB6SECSR, RCC_AHB6SECSR_SDMMC2SECF),
++	SECF(SECF_ETH1CK, RCC_AHB6SECSR, RCC_AHB6SECSR_ETH1CKSECF),
++	SECF(SECF_ETH1TX, RCC_AHB6SECSR, RCC_AHB6SECSR_ETH1TXSECF),
++	SECF(SECF_ETH1RX, RCC_AHB6SECSR, RCC_AHB6SECSR_ETH1RXSECF),
++	SECF(SECF_ETH1MAC, RCC_AHB6SECSR, RCC_AHB6SECSR_ETH1MACSECF),
++	SECF(SECF_ETH1STP, RCC_AHB6SECSR, RCC_AHB6SECSR_ETH1STPSECF),
++	SECF(SECF_ETH2CK, RCC_AHB6SECSR, RCC_AHB6SECSR_ETH2CKSECF),
++	SECF(SECF_ETH2TX, RCC_AHB6SECSR, RCC_AHB6SECSR_ETH2TXSECF),
++	SECF(SECF_ETH2RX, RCC_AHB6SECSR, RCC_AHB6SECSR_ETH2RXSECF),
++	SECF(SECF_ETH2MAC, RCC_AHB6SECSR, RCC_AHB6SECSR_ETH2MACSECF),
++	SECF(SECF_ETH2STP, RCC_AHB6SECSR, RCC_AHB6SECSR_ETH2STPSECF),
++	SECF(SECF_MCO1, RCC_SECCFGR, RCC_SECCFGR_MCO1SECF),
++	SECF(SECF_MCO2, RCC_SECCFGR, RCC_SECCFGR_MCO2SECF),
++};
++
++#define CLK_KER(_name, _parents, _flags, _gate_id, _mux_id)\
++	CLK_STM32_COMPOSITE(_name, _parents, ((_flags) | CLK_OPS_PARENT_ENABLE |\
++			    CLK_SET_RATE_NO_REPARENT), _gate_id, _mux_id, NO_STM32_DIV)
++
++static CLK_STM32_GATE(tim2_k, "timg1_ck", CLK_SET_RATE_PARENT, GATE_TIM2);
++static CLK_STM32_GATE(tim3_k, "timg1_ck", CLK_SET_RATE_PARENT, GATE_TIM3);
++static CLK_STM32_GATE(tim4_k, "timg1_ck", CLK_SET_RATE_PARENT, GATE_TIM4);
++static CLK_STM32_GATE(tim5_k, "timg1_ck", CLK_SET_RATE_PARENT, GATE_TIM5);
++static CLK_STM32_GATE(tim6_k, "timg1_ck", CLK_SET_RATE_PARENT, GATE_TIM6);
++static CLK_STM32_GATE(tim7_k, "timg1_ck", CLK_SET_RATE_PARENT, GATE_TIM7);
++static CLK_STM32_GATE(tim1_k, "timg2_ck", CLK_SET_RATE_PARENT, GATE_TIM1);
++static CLK_STM32_GATE(tim8_k, "timg2_ck", CLK_SET_RATE_PARENT, GATE_TIM8);
++static CLK_STM32_GATE(tim12_k, "timg3_ck", CLK_SET_RATE_PARENT, GATE_TIM12);
++static CLK_STM32_GATE(tim13_k, "timg3_ck", CLK_SET_RATE_PARENT, GATE_TIM13);
++static CLK_STM32_GATE(tim14_k, "timg3_ck", CLK_SET_RATE_PARENT, GATE_TIM14);
++static CLK_STM32_GATE(tim15_k, "timg3_ck", CLK_SET_RATE_PARENT, GATE_TIM15);
++static CLK_STM32_GATE(tim16_k, "timg3_ck", CLK_SET_RATE_PARENT, GATE_TIM16);
++static CLK_STM32_GATE(tim17_k, "timg3_ck", CLK_SET_RATE_PARENT, GATE_TIM17);
++
++static CLK_STM32_GATE(sai1, "pclk2", 0, GATE_SAI1);
++static CLK_STM32_GATE(sai2, "pclk2", 0, GATE_SAI2);
++
++static CLK_STM32_GATE(syscfg, "pclk3", 0, GATE_SYSCFG);
++static CLK_STM32_GATE(vref, "pclk3", 0, GATE_VREF);
++static CLK_STM32_GATE(dts, "pclk3", 0, GATE_DTS);
++static CLK_STM32_GATE(pmbctrl, "pclk3", 0, GATE_PMBCTRL);
++static CLK_STM32_GATE(hdp, "pclk3", 0, GATE_HDP);
++
++static CLK_STM32_GATE(iwdg2, "pclk4", 0, GATE_IWDG2APB);
++static CLK_STM32_GATE(stgenro, "pclk4", 0, GATE_STGENRO);
++static CLK_STM32_GATE(gpioa, "pclk4", 0, GATE_GPIOA);
++static CLK_STM32_GATE(gpiob, "pclk4", 0, GATE_GPIOB);
++static CLK_STM32_GATE(gpioc, "pclk4", 0, GATE_GPIOC);
++static CLK_STM32_GATE(gpiod, "pclk4", 0, GATE_GPIOD);
++static CLK_STM32_GATE(gpioe, "pclk4", 0, GATE_GPIOE);
++static CLK_STM32_GATE(gpiof, "pclk4", 0, GATE_GPIOF);
++static CLK_STM32_GATE(gpiog, "pclk4", 0, GATE_GPIOG);
++static CLK_STM32_GATE(gpioh, "pclk4", 0, GATE_GPIOH);
++static CLK_STM32_GATE(gpioi, "pclk4", 0, GATE_GPIOI);
++static CLK_STM32_GATE(tsc, "pclk4", 0, GATE_TSC);
++static CLK_STM32_GATE(ddrperfm, "pclk4", 0, GATE_DDRPERFM);
++
++static CLK_STM32_GATE(tzpc, "pclk5", 0, GATE_TZC);
++static CLK_STM32_GATE(iwdg1, "pclk5", 0, GATE_IWDG1APB);
++static CLK_STM32_GATE(bsec, "pclk5", 0, GATE_BSEC);
++
++static CLK_STM32_GATE(dma1, "ck_mlahb", 0, GATE_DMA1);
++static CLK_STM32_GATE(dma2, "ck_mlahb",  0, GATE_DMA2);
++static CLK_STM32_GATE(dmamux1, "ck_mlahb", 0, GATE_DMAMUX1);
++static CLK_STM32_GATE(dma3, "ck_mlahb", 0, GATE_DMA3);
++static CLK_STM32_GATE(dmamux2, "ck_mlahb", 0, GATE_DMAMUX2);
++static CLK_STM32_GATE(adc1, "ck_mlahb", 0, GATE_ADC1);
++static CLK_STM32_GATE(adc2, "ck_mlahb", 0, GATE_ADC2);
++
++static CLK_STM32_GATE(pka, "ck_axi", 0, GATE_PKA);
++static CLK_STM32_GATE(cryp1, "ck_axi", 0, GATE_CRYP1);
++static CLK_STM32_GATE(hash1, "ck_axi", 0, GATE_HASH1);
++static CLK_STM32_GATE(bkpsram, "ck_axi", 0, GATE_BKPSRAM);
++static CLK_STM32_GATE(mdma, "ck_axi", 0, GATE_MDMA);
++static CLK_STM32_GATE(eth1tx, "ck_axi", 0, GATE_ETH1TX);
++static CLK_STM32_GATE(eth1rx, "ck_axi", 0, GATE_ETH1RX);
++static CLK_STM32_GATE(eth1mac, "ck_axi", 0, GATE_ETH1MAC);
++static CLK_STM32_GATE(eth2tx, "ck_axi", 0, GATE_ETH2TX);
++static CLK_STM32_GATE(eth2rx, "ck_axi", 0, GATE_ETH2RX);
++static CLK_STM32_GATE(eth2mac, "ck_axi", 0, GATE_ETH2MAC);
++static CLK_STM32_GATE(crc1, "ck_axi", 0, GATE_CRC1);
++static CLK_STM32_GATE(usbh, "ck_axi", 0, GATE_USBH);
++static CLK_STM32_GATE(eth1stp, "ck_axi", 0, GATE_ETH1STP);
++static CLK_STM32_GATE(eth2stp, "ck_axi", 0, GATE_ETH2STP);
++
++static CLK_KER(sdmmc1_k, sdmmc12_src, 0, GATE_SDMMC1, MUX_SDMMC1);
++static CLK_KER(sdmmc2_k, sdmmc12_src, 0, GATE_SDMMC2, MUX_SDMMC2);
++static CLK_KER(fmc_k, fmc_src, 0, GATE_FMC, MUX_FMC);
++static CLK_KER(qspi_k, qspi_src, 0, GATE_QSPI, MUX_QSPI);
++static CLK_KER(spi2_k, spi123_src, 0, GATE_SPI2, MUX_SPI23);
++static CLK_KER(spi3_k, spi123_src, 0, GATE_SPI3, MUX_SPI23);
++static CLK_KER(i2c1_k, i2c12_src, 0, GATE_I2C1, MUX_I2C12);
++static CLK_KER(i2c2_k, i2c12_src, 0, GATE_I2C2, MUX_I2C12);
++static CLK_KER(lptim4_k, lptim45_src, 0, GATE_LPTIM4, MUX_LPTIM45);
++static CLK_KER(lptim5_k, lptim45_src, 0, GATE_LPTIM5, MUX_LPTIM45);
++static CLK_KER(usart3_k, usart34578_src, 0, GATE_USART3, MUX_UART35);
++static CLK_KER(uart5_k, usart34578_src, 0, GATE_UART5, MUX_UART35);
++static CLK_KER(uart7_k, usart34578_src, 0, GATE_UART7, MUX_UART78);
++static CLK_KER(uart8_k, usart34578_src, 0, GATE_UART8, MUX_UART78);
++static CLK_KER(sai1_k, sai1_src, 0, GATE_SAI1, MUX_SAI1);
++static CLK_KER(adfsdm_k, sai1_src, 0, GATE_ADFSDM, MUX_SAI1);
++static CLK_KER(sai2_k, sai2_src, 0, GATE_SAI2, MUX_SAI2);
++static CLK_KER(adc1_k, adc12_src, 0, GATE_ADC1, MUX_ADC1);
++static CLK_KER(adc2_k, adc12_src, 0, GATE_ADC2, MUX_ADC2);
++static CLK_KER(rng1_k, rng1_src, 0, GATE_RNG1, MUX_RNG1);
++static CLK_KER(usbphy_k, usbphy_src, 0, GATE_USBPHY, MUX_USBPHY);
++static CLK_KER(stgen_k, stgen_src, 0, GATE_STGENC, MUX_STGEN);
++static CLK_KER(spdif_k, spdif_src, 0, GATE_SPDIF, MUX_SPDIF);
++static CLK_KER(spi1_k, spi123_src, 0, GATE_SPI1, MUX_SPI1);
++static CLK_KER(spi4_k, spi4_src, 0, GATE_SPI4, MUX_SPI4);
++static CLK_KER(spi5_k, spi5_src, 0, GATE_SPI5, MUX_SPI5);
++static CLK_KER(i2c3_k, i2c345_src, 0, GATE_I2C3, MUX_I2C3);
++static CLK_KER(i2c4_k, i2c345_src, 0, GATE_I2C4, MUX_I2C4);
++static CLK_KER(i2c5_k, i2c345_src, 0, GATE_I2C5, MUX_I2C5);
++static CLK_KER(lptim1_k, lptim1_src, 0, GATE_LPTIM1, MUX_LPTIM1);
++static CLK_KER(lptim2_k, lptim23_src, 0, GATE_LPTIM2, MUX_LPTIM2);
++static CLK_KER(lptim3_k, lptim23_src, 0, GATE_LPTIM3, MUX_LPTIM3);
++static CLK_KER(usart1_k, usart12_src, 0, GATE_USART1, MUX_UART1);
++static CLK_KER(usart2_k, usart12_src, 0, GATE_USART2, MUX_UART2);
++static CLK_KER(uart4_k, usart34578_src, 0, GATE_UART4, MUX_UART4);
++static CLK_KER(uart6_k, usart6_src, 0, GATE_USART6, MUX_UART6);
++static CLK_KER(fdcan_k, fdcan_src, 0, GATE_FDCAN, MUX_FDCAN);
++static CLK_KER(dcmipp_k, dcmipp_src, 0, GATE_DCMIPP, MUX_DCMIPP);
++static CLK_KER(usbo_k, usbo_src, 0, GATE_USBO, MUX_USBO);
++static CLK_KER(eth1ck_k, eth12_src, 0, GATE_ETH1CK, MUX_ETH1);
++static CLK_KER(eth2ck_k, eth12_src, 0, GATE_ETH2CK, MUX_ETH2);
++static CLK_KER(saes_k, saes_src, 0, GATE_SAES, MUX_SAES);
++
++static CLK_STM32_GATE(dfsdm_k, "ck_mlahb", 0, GATE_DFSDM);
++static CLK_STM32_GATE(ltdc_px, "pll4_q", CLK_SET_RATE_PARENT, GATE_LTDC);
++
++static CLK_STM32_COMPOSITE(eth1ptp_k, eth12_src, CLK_OPS_PARENT_ENABLE |
++			   CLK_SET_RATE_NO_REPARENT,
++			   NO_STM32_GATE, MUX_ETH1, DIV_ETH1PTP);
++
++static CLK_STM32_COMPOSITE(eth2ptp_k, eth12_src, CLK_OPS_PARENT_ENABLE |
++			   CLK_SET_RATE_NO_REPARENT,
++			   NO_STM32_GATE, MUX_ETH2, DIV_ETH2PTP);
++
++/* MCO clocks */
++static CLK_STM32_COMPOSITE(ck_mco1, mco1_src, CLK_OPS_PARENT_ENABLE |
++			   CLK_SET_RATE_NO_REPARENT | CLK_IGNORE_UNUSED,
++			   GATE_MCO1, MUX_MCO1, DIV_MCO1);
++
++static CLK_STM32_COMPOSITE(ck_mco2, mco2_src, CLK_OPS_PARENT_ENABLE |
++			   CLK_SET_RATE_NO_REPARENT | CLK_IGNORE_UNUSED,
++			   GATE_MCO2, MUX_MCO2, DIV_MCO2);
++
++/* Debug clocks */
++static CLK_STM32_GATE(ck_sys_dbg, "ck_axi", CLK_IS_CRITICAL, GATE_DBGCK);
++
++static CLK_STM32_COMPOSITE(ck_trace, PARENT("ck_axi"), CLK_IGNORE_UNUSED,
++			   GATE_TRACECK, NO_STM32_MUX, DIV_TRACE);
++
++static const struct clock_config stm32mp13_clock_cfg[] = {
++	/* Timer clocks */
++	STM32_GATE_CFG(TIM2_K, tim2_k, SECF_NONE),
++	STM32_GATE_CFG(TIM3_K, tim3_k, SECF_NONE),
++	STM32_GATE_CFG(TIM4_K, tim4_k, SECF_NONE),
++	STM32_GATE_CFG(TIM5_K, tim5_k, SECF_NONE),
++	STM32_GATE_CFG(TIM6_K, tim6_k, SECF_NONE),
++	STM32_GATE_CFG(TIM7_K, tim7_k, SECF_NONE),
++	STM32_GATE_CFG(TIM1_K, tim1_k, SECF_NONE),
++	STM32_GATE_CFG(TIM8_K, tim8_k, SECF_NONE),
++	STM32_GATE_CFG(TIM12_K, tim12_k, SECF_TIM12),
++	STM32_GATE_CFG(TIM13_K, tim13_k, SECF_TIM13),
++	STM32_GATE_CFG(TIM14_K, tim14_k, SECF_TIM14),
++	STM32_GATE_CFG(TIM15_K, tim15_k, SECF_TIM15),
++	STM32_GATE_CFG(TIM16_K, tim16_k, SECF_TIM16),
++	STM32_GATE_CFG(TIM17_K, tim17_k, SECF_TIM17),
++
++	/* Peripheral clocks */
++	STM32_GATE_CFG(SAI1, sai1, SECF_NONE),
++	STM32_GATE_CFG(SAI2, sai2, SECF_NONE),
++	STM32_GATE_CFG(SYSCFG, syscfg, SECF_NONE),
++	STM32_GATE_CFG(VREF, vref, SECF_VREF),
++	STM32_GATE_CFG(DTS, dts, SECF_NONE),
++	STM32_GATE_CFG(PMBCTRL, pmbctrl, SECF_NONE),
++	STM32_GATE_CFG(HDP, hdp, SECF_NONE),
++	STM32_GATE_CFG(IWDG2, iwdg2, SECF_NONE),
++	STM32_GATE_CFG(STGENRO, stgenro, SECF_STGENRO),
++	STM32_GATE_CFG(TZPC, tzpc, SECF_TZC),
++	STM32_GATE_CFG(IWDG1, iwdg1, SECF_IWDG1),
++	STM32_GATE_CFG(BSEC, bsec, SECF_BSEC),
++	STM32_GATE_CFG(DMA1, dma1, SECF_NONE),
++	STM32_GATE_CFG(DMA2, dma2, SECF_NONE),
++	STM32_GATE_CFG(DMAMUX1, dmamux1, SECF_NONE),
++	STM32_GATE_CFG(DMA3, dma3, SECF_DMA3),
++	STM32_GATE_CFG(DMAMUX2, dmamux2, SECF_DMAMUX2),
++	STM32_GATE_CFG(ADC1, adc1, SECF_ADC1),
++	STM32_GATE_CFG(ADC2, adc2, SECF_ADC2),
++	STM32_GATE_CFG(GPIOA, gpioa, SECF_NONE),
++	STM32_GATE_CFG(GPIOB, gpiob, SECF_NONE),
++	STM32_GATE_CFG(GPIOC, gpioc, SECF_NONE),
++	STM32_GATE_CFG(GPIOD, gpiod, SECF_NONE),
++	STM32_GATE_CFG(GPIOE, gpioe, SECF_NONE),
++	STM32_GATE_CFG(GPIOF, gpiof, SECF_NONE),
++	STM32_GATE_CFG(GPIOG, gpiog, SECF_NONE),
++	STM32_GATE_CFG(GPIOH, gpioh, SECF_NONE),
++	STM32_GATE_CFG(GPIOI, gpioi, SECF_NONE),
++	STM32_GATE_CFG(TSC, tsc, SECF_TZC),
++	STM32_GATE_CFG(PKA, pka, SECF_PKA),
++	STM32_GATE_CFG(CRYP1, cryp1, SECF_CRYP1),
++	STM32_GATE_CFG(HASH1, hash1, SECF_HASH1),
++	STM32_GATE_CFG(BKPSRAM, bkpsram, SECF_BKPSRAM),
++	STM32_GATE_CFG(MDMA, mdma, SECF_NONE),
++	STM32_GATE_CFG(ETH1TX, eth1tx, SECF_ETH1TX),
++	STM32_GATE_CFG(ETH1RX, eth1rx, SECF_ETH1RX),
++	STM32_GATE_CFG(ETH1MAC, eth1mac, SECF_ETH1MAC),
++	STM32_GATE_CFG(ETH2TX, eth2tx, SECF_ETH2TX),
++	STM32_GATE_CFG(ETH2RX, eth2rx, SECF_ETH2RX),
++	STM32_GATE_CFG(ETH2MAC, eth2mac, SECF_ETH2MAC),
++	STM32_GATE_CFG(CRC1, crc1, SECF_NONE),
++	STM32_GATE_CFG(USBH, usbh, SECF_NONE),
++	STM32_GATE_CFG(DDRPERFM, ddrperfm, SECF_NONE),
++	STM32_GATE_CFG(ETH1STP, eth1stp, SECF_ETH1STP),
++	STM32_GATE_CFG(ETH2STP, eth2stp, SECF_ETH2STP),
++
++	/* Kernel clocks */
++	STM32_COMPOSITE_CFG(SDMMC1_K, sdmmc1_k, SECF_SDMMC1),
++	STM32_COMPOSITE_CFG(SDMMC2_K, sdmmc2_k, SECF_SDMMC2),
++	STM32_COMPOSITE_CFG(FMC_K, fmc_k, SECF_FMC),
++	STM32_COMPOSITE_CFG(QSPI_K, qspi_k, SECF_QSPI),
++	STM32_COMPOSITE_CFG(SPI2_K, spi2_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(SPI3_K, spi3_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(I2C1_K, i2c1_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(I2C2_K, i2c2_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(LPTIM4_K, lptim4_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(LPTIM5_K, lptim5_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(USART3_K, usart3_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(UART5_K, uart5_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(UART7_K, uart7_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(UART8_K, uart8_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(SAI1_K, sai1_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(SAI2_K, sai2_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(ADFSDM_K, adfsdm_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(ADC1_K, adc1_k, SECF_ADC1),
++	STM32_COMPOSITE_CFG(ADC2_K, adc2_k, SECF_ADC2),
++	STM32_COMPOSITE_CFG(RNG1_K, rng1_k, SECF_RNG1),
++	STM32_COMPOSITE_CFG(USBPHY_K, usbphy_k, SECF_USBPHY),
++	STM32_COMPOSITE_CFG(STGEN_K, stgen_k, SECF_STGENC),
++	STM32_COMPOSITE_CFG(SPDIF_K, spdif_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(SPI1_K, spi1_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(SPI4_K, spi4_k, SECF_SPI4),
++	STM32_COMPOSITE_CFG(SPI5_K, spi5_k, SECF_SPI5),
++	STM32_COMPOSITE_CFG(I2C3_K, i2c3_k, SECF_I2C3),
++	STM32_COMPOSITE_CFG(I2C4_K, i2c4_k, SECF_I2C4),
++	STM32_COMPOSITE_CFG(I2C5_K, i2c5_k, SECF_I2C5),
++	STM32_COMPOSITE_CFG(LPTIM1_K, lptim1_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(LPTIM2_K, lptim2_k, SECF_LPTIM2),
++	STM32_COMPOSITE_CFG(LPTIM3_K, lptim3_k, SECF_LPTIM3),
++	STM32_COMPOSITE_CFG(USART1_K, usart1_k, SECF_USART1),
++	STM32_COMPOSITE_CFG(USART2_K, usart2_k, SECF_USART2),
++	STM32_COMPOSITE_CFG(UART4_K, uart4_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(USART6_K, uart6_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(FDCAN_K, fdcan_k, SECF_NONE),
++	STM32_COMPOSITE_CFG(DCMIPP_K, dcmipp_k, SECF_DCMIPP),
++	STM32_COMPOSITE_CFG(USBO_K, usbo_k, SECF_USBO),
++	STM32_COMPOSITE_CFG(ETH1CK_K, eth1ck_k, SECF_ETH1CK),
++	STM32_COMPOSITE_CFG(ETH2CK_K, eth2ck_k, SECF_ETH2CK),
++	STM32_COMPOSITE_CFG(SAES_K, saes_k, SECF_SAES),
++
++	STM32_GATE_CFG(DFSDM_K, dfsdm_k, SECF_NONE),
++	STM32_GATE_CFG(LTDC_PX, ltdc_px, SECF_NONE),
++
++	STM32_COMPOSITE_CFG(ETH1PTP_K, eth1ptp_k, SECF_ETH1CK),
++	STM32_COMPOSITE_CFG(ETH2PTP_K, eth2ptp_k, SECF_ETH2CK),
++	STM32_COMPOSITE_CFG(CK_MCO1, ck_mco1, SECF_MCO1),
++	STM32_COMPOSITE_CFG(CK_MCO2, ck_mco2, SECF_MCO2),
++
++	STM32_GATE_CFG(CK_DBG, ck_sys_dbg, SECF_NONE),
++
++	STM32_COMPOSITE_CFG(CK_TRACE, ck_trace, SECF_NONE),
++};
++
++static int stm32mp13_check_security(void __iomem *base,
++				    const struct clock_config *cfg)
++{
++	int sec_id = cfg->sec_id;
++	int secured = 0;
++
++	if (sec_id != SECF_NONE) {
++		const struct clk_stm32_securiy *secf;
++
++		secf = &stm32mp13_security[sec_id];
++		secured = !!(readl(base + secf->offset) & BIT(secf->bit_idx));
++	}
++
++	return secured;
++}
++
++struct multi_mux {
++	struct clk_hw *hw1;
++	struct clk_hw *hw2;
++};
++
++static struct multi_mux *stm32_mp13_multi_mux[MUX_NB] = {
++	[MUX_SPI23]	= &(struct multi_mux){ &spi2_k.hw,	&spi3_k.hw },
++	[MUX_I2C12]	= &(struct multi_mux){ &i2c1_k.hw,	&i2c2_k.hw },
++	[MUX_LPTIM45]	= &(struct multi_mux){ &lptim4_k.hw,	&lptim5_k.hw },
++	[MUX_UART35]	= &(struct multi_mux){ &usart3_k.hw,	&uart5_k.hw },
++	[MUX_UART78]	= &(struct multi_mux){ &uart7_k.hw,	&uart8_k.hw },
++	[MUX_SAI1]	= &(struct multi_mux){ &sai1_k.hw,	&adfsdm_k.hw },
++};
++
++static struct clk_hw *clk_stm32_is_multi_mux(struct clk_hw *hw)
++{
++	struct clk_stm32_composite *composite = to_clk_stm32_composite(hw);
++	struct multi_mux *mmux = stm32_mp13_multi_mux[composite->mux_id];
++
++	if (mmux) {
++		if (!(mmux->hw1 == hw))
++			return mmux->hw1;
++		else
++			return mmux->hw2;
++	}
++
++	return NULL;
++}
++
++u16 stm32mp13_cpt_gate[GATE_NB];
++
++struct clk_stm32_clock_data stm32mp13_clock_data = {
++	.gate_cpt	= stm32mp13_cpt_gate,
++	.gates		= stm32mp13_gates,
++	.muxes		= stm32mp13_muxes,
++	.dividers	= stm32mp13_dividers,
++	.is_multi_mux	= clk_stm32_is_multi_mux,
++};
++
++static const struct stm32_rcc_match_data stm32mp13_data = {
++	.tab_clocks	= stm32mp13_clock_cfg,
++	.num_clocks	= ARRAY_SIZE(stm32mp13_clock_cfg),
++	.clock_data	= &stm32mp13_clock_data,
++	.check_security = &stm32mp13_check_security,
++	.maxbinding	= STM32MP1_LAST_CLK,
++	.clear_offset	= RCC_CLR,
++};
++
++static const struct of_device_id stm32mp13_match_data[] = {
++	{
++		.compatible = "st,stm32mp13-rcc",
++		.data = &stm32mp13_data,
++	},
++	{ }
++};
++MODULE_DEVICE_TABLE(of, stm32mp13_match_data);
++
++static int stm32mp1_rcc_init(struct device *dev)
++{
++	void __iomem *rcc_base;
++	int ret = -ENOMEM;
++
++	rcc_base = of_iomap(dev_of_node(dev), 0);
++	if (!rcc_base) {
++		dev_err(dev, "%pOFn: unable to map resource", dev_of_node(dev));
++		goto out;
++	}
++
++	ret = stm32_rcc_init(dev, stm32mp13_match_data, rcc_base);
++out:
++	if (ret) {
++		if (rcc_base)
++			iounmap(rcc_base);
++
++		of_node_put(dev_of_node(dev));
++	}
++
++	return ret;
++}
++
++static int get_clock_deps(struct device *dev)
++{
++	static const char * const clock_deps_name[] = {
++		"hsi", "hse", "csi", "lsi", "lse",
++	};
++	size_t deps_size = sizeof(struct clk *) * ARRAY_SIZE(clock_deps_name);
++	struct clk **clk_deps;
++	int i;
++
++	clk_deps = devm_kzalloc(dev, deps_size, GFP_KERNEL);
++	if (!clk_deps)
++		return -ENOMEM;
++
++	for (i = 0; i < ARRAY_SIZE(clock_deps_name); i++) {
++		struct clk *clk = of_clk_get_by_name(dev_of_node(dev),
++						     clock_deps_name[i]);
++
++		if (IS_ERR(clk)) {
++			if (PTR_ERR(clk) != -EINVAL && PTR_ERR(clk) != -ENOENT)
++				return PTR_ERR(clk);
++		} else {
++			/* Device gets a reference count on the clock */
++			clk_deps[i] = devm_clk_get(dev, __clk_get_name(clk));
++			clk_put(clk);
++		}
++	}
++
++	return 0;
++}
++
++static int stm32mp1_rcc_clocks_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	int ret = get_clock_deps(dev);
++
++	if (!ret)
++		ret = stm32mp1_rcc_init(dev);
++
++	return ret;
++}
++
++static int stm32mp1_rcc_clocks_remove(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct device_node *child, *np = dev_of_node(dev);
++
++	for_each_available_child_of_node(np, child)
++		of_clk_del_provider(child);
++
++	return 0;
++}
++
++static struct platform_driver stm32mp13_rcc_clocks_driver = {
++	.driver	= {
++		.name = "stm32mp13_rcc",
++		.of_match_table = stm32mp13_match_data,
++	},
++	.probe = stm32mp1_rcc_clocks_probe,
++	.remove = stm32mp1_rcc_clocks_remove,
++};
++
++static int __init stm32mp13_clocks_init(void)
++{
++	return platform_driver_register(&stm32mp13_rcc_clocks_driver);
++}
++core_initcall(stm32mp13_clocks_init);
+diff --git a/drivers/clk/stm32/reset-stm32.c b/drivers/clk/stm32/reset-stm32.c
+new file mode 100644
+index 000000000..eb7ed08f9
+--- /dev/null
++++ b/drivers/clk/stm32/reset-stm32.c
+@@ -0,0 +1,122 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) STMicroelectronics 2021 - All Rights Reserved
++ * Author: Gabriel Fernandez <gabriel.fernandez@st.com> for STMicroelectronics.
++ */
++
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/reset-controller.h>
++#include <linux/slab.h>
++#include <linux/spinlock.h>
++
++#include "clk-stm32-core.h"
++
++#define STM32_RESET_ID_MASK GENMASK(15, 0)
++
++struct stm32_reset_data {
++	/* reset lock */
++	spinlock_t			lock;
++	struct reset_controller_dev	rcdev;
++	void __iomem			*membase;
++	u32				clear_offset;
++};
++
++static inline struct stm32_reset_data *
++to_stm32_reset_data(struct reset_controller_dev *rcdev)
++{
++	return container_of(rcdev, struct stm32_reset_data, rcdev);
++}
++
++static int stm32_reset_update(struct reset_controller_dev *rcdev,
++			      unsigned long id, bool assert)
++{
++	struct stm32_reset_data *data = to_stm32_reset_data(rcdev);
++	int reg_width = sizeof(u32);
++	int bank = id / (reg_width * BITS_PER_BYTE);
++	int offset = id % (reg_width * BITS_PER_BYTE);
++
++	if (data->clear_offset) {
++		void __iomem *addr;
++
++		addr = data->membase + (bank * reg_width);
++		if (!assert)
++			addr += data->clear_offset;
++
++		writel(BIT(offset), addr);
++
++	} else {
++		unsigned long flags;
++		u32 reg;
++
++		spin_lock_irqsave(&data->lock, flags);
++
++		reg = readl(data->membase + (bank * reg_width));
++
++		if (assert)
++			reg |= BIT(offset);
++		else
++			reg &= ~BIT(offset);
++
++		writel(reg, data->membase + (bank * reg_width));
++
++		spin_unlock_irqrestore(&data->lock, flags);
++	}
++
++	return 0;
++}
++
++static int stm32_reset_assert(struct reset_controller_dev *rcdev,
++			      unsigned long id)
++{
++	return stm32_reset_update(rcdev, id, true);
++}
++
++static int stm32_reset_deassert(struct reset_controller_dev *rcdev,
++				unsigned long id)
++{
++	return stm32_reset_update(rcdev, id, false);
++}
++
++static int stm32_reset_status(struct reset_controller_dev *rcdev,
++			      unsigned long id)
++{
++	struct stm32_reset_data *data = to_stm32_reset_data(rcdev);
++	int reg_width = sizeof(u32);
++	int bank = id / (reg_width * BITS_PER_BYTE);
++	int offset = id % (reg_width * BITS_PER_BYTE);
++	u32 reg;
++
++	reg = readl(data->membase + (bank * reg_width));
++
++	return !!(reg & BIT(offset));
++}
++
++static const struct reset_control_ops stm32_reset_ops = {
++	.assert		= stm32_reset_assert,
++	.deassert	= stm32_reset_deassert,
++	.status		= stm32_reset_status,
++};
++
++int stm32_rcc_reset_init(struct device *dev, const struct of_device_id *match,
++			 void __iomem *base)
++{
++	const struct stm32_rcc_match_data *data = match->data;
++	struct stm32_reset_data *reset_data = NULL;
++
++	data = match->data;
++
++	reset_data = kzalloc(sizeof(*reset_data), GFP_KERNEL);
++	if (!reset_data)
++		return -ENOMEM;
++
++	reset_data->membase = base;
++	reset_data->rcdev.owner = THIS_MODULE;
++	reset_data->rcdev.ops = &stm32_reset_ops;
++	reset_data->rcdev.of_node = dev_of_node(dev);
++	reset_data->rcdev.nr_resets = STM32_RESET_ID_MASK;
++	reset_data->clear_offset = data->clear_offset;
++
++	return reset_controller_register(&reset_data->rcdev);
++}
+diff --git a/drivers/clk/stm32/reset-stm32.h b/drivers/clk/stm32/reset-stm32.h
+new file mode 100644
+index 000000000..63a4a35b5
+--- /dev/null
++++ b/drivers/clk/stm32/reset-stm32.h
+@@ -0,0 +1,7 @@
++/* SPDX-License-Identifier: GPL-2.0  */
++/*
++ * Copyright (C) STMicroelectronics 2021 - All Rights Reserved
++ * Author: Gabriel Fernandez <gabriel.fernandez@st.com> for STMicroelectronics.
++ */
++
++int stm32_rcc_reset_init(struct device *dev, const struct of_device_id *match, void __iomem *base);
+diff --git a/drivers/clk/stm32/stm32mp13_rcc.h b/drivers/clk/stm32/stm32mp13_rcc.h
+new file mode 100644
+index 000000000..f01a98c85
+--- /dev/null
++++ b/drivers/clk/stm32/stm32mp13_rcc.h
+@@ -0,0 +1,1751 @@
++/* SPDX-License-Identifier: GPL-2.0+ OR BSD-3-Clause */
++/*
++ * Copyright (C) 2020, STMicroelectronics - All Rights Reserved
++ *
++ * Configuration settings for the STM32MP13x CPU
++ */
++
++#ifndef STM32MP13_RCC_H
++#define STM32MP13_RCC_H
++/* RCC registers */
++#define RCC_SECCFGR			0x0
++#define RCC_MP_SREQSETR			0x100
++#define RCC_MP_SREQCLRR			0x104
++#define RCC_MP_APRSTCR			0x108
++#define RCC_MP_APRSTSR			0x10c
++#define RCC_PWRLPDLYCR			0x110
++#define RCC_MP_GRSTCSETR		0x114
++#define RCC_BR_RSTSCLRR			0x118
++#define RCC_MP_RSTSSETR			0x11c
++#define RCC_MP_RSTSCLRR			0x120
++#define RCC_MP_IWDGFZSETR		0x124
++#define RCC_MP_IWDGFZCLRR		0x128
++#define RCC_MP_CIER			0x200
++#define RCC_MP_CIFR			0x204
++#define RCC_BDCR			0x400
++#define RCC_RDLSICR			0x404
++#define RCC_OCENSETR			0x420
++#define RCC_OCENCLRR			0x424
++#define RCC_OCRDYR			0x428
++#define RCC_HSICFGR			0x440
++#define RCC_CSICFGR			0x444
++#define RCC_MCO1CFGR			0x460
++#define RCC_MCO2CFGR			0x464
++#define RCC_DBGCFGR			0x468
++#define RCC_RCK12SELR			0x480
++#define RCC_RCK3SELR			0x484
++#define RCC_RCK4SELR			0x488
++#define RCC_PLL1CR			0x4a0
++#define RCC_PLL1CFGR1			0x4a4
++#define RCC_PLL1CFGR2			0x4a8
++#define RCC_PLL1FRACR			0x4ac
++#define RCC_PLL1CSGR			0x4b0
++#define RCC_PLL2CR			0x4d0
++#define RCC_PLL2CFGR1			0x4d4
++#define RCC_PLL2CFGR2			0x4d8
++#define RCC_PLL2FRACR			0x4dc
++#define RCC_PLL2CSGR			0x4e0
++#define RCC_PLL3CR			0x500
++#define RCC_PLL3CFGR1			0x504
++#define RCC_PLL3CFGR2			0x508
++#define RCC_PLL3FRACR			0x50c
++#define RCC_PLL3CSGR			0x510
++#define RCC_PLL4CR			0x520
++#define RCC_PLL4CFGR1			0x524
++#define RCC_PLL4CFGR2			0x528
++#define RCC_PLL4FRACR			0x52c
++#define RCC_PLL4CSGR			0x530
++#define RCC_MPCKSELR			0x540
++#define RCC_ASSCKSELR			0x544
++#define RCC_MSSCKSELR			0x548
++#define RCC_CPERCKSELR			0x54c
++#define RCC_RTCDIVR			0x560
++#define RCC_MPCKDIVR			0x564
++#define RCC_AXIDIVR			0x568
++#define RCC_MLAHBDIVR			0x56c
++#define RCC_APB1DIVR			0x570
++#define RCC_APB2DIVR			0x574
++#define RCC_APB3DIVR			0x578
++#define RCC_APB4DIVR			0x57c
++#define RCC_APB5DIVR			0x580
++#define RCC_APB6DIVR			0x584
++#define RCC_TIMG1PRER			0x5a0
++#define RCC_TIMG2PRER			0x5a4
++#define RCC_TIMG3PRER			0x5a8
++#define RCC_DDRITFCR			0x5c0
++#define RCC_I2C12CKSELR			0x600
++#define RCC_I2C345CKSELR		0x604
++#define RCC_SPI2S1CKSELR		0x608
++#define RCC_SPI2S23CKSELR		0x60c
++#define RCC_SPI45CKSELR			0x610
++#define RCC_UART12CKSELR		0x614
++#define RCC_UART35CKSELR		0x618
++#define RCC_UART4CKSELR			0x61c
++#define RCC_UART6CKSELR			0x620
++#define RCC_UART78CKSELR		0x624
++#define RCC_LPTIM1CKSELR		0x628
++#define RCC_LPTIM23CKSELR		0x62c
++#define RCC_LPTIM45CKSELR		0x630
++#define RCC_SAI1CKSELR			0x634
++#define RCC_SAI2CKSELR			0x638
++#define RCC_FDCANCKSELR			0x63c
++#define RCC_SPDIFCKSELR			0x640
++#define RCC_ADC12CKSELR			0x644
++#define RCC_SDMMC12CKSELR		0x648
++#define RCC_ETH12CKSELR			0x64c
++#define RCC_USBCKSELR			0x650
++#define RCC_QSPICKSELR			0x654
++#define RCC_FMCCKSELR			0x658
++#define RCC_RNG1CKSELR			0x65c
++#define RCC_STGENCKSELR			0x660
++#define RCC_DCMIPPCKSELR		0x664
++#define RCC_SAESCKSELR			0x668
++#define RCC_APB1RSTSETR			0x6a0
++#define RCC_APB1RSTCLRR			0x6a4
++#define RCC_APB2RSTSETR			0x6a8
++#define RCC_APB2RSTCLRR			0x6ac
++#define RCC_APB3RSTSETR			0x6b0
++#define RCC_APB3RSTCLRR			0x6b4
++#define RCC_APB4RSTSETR			0x6b8
++#define RCC_APB4RSTCLRR			0x6bc
++#define RCC_APB5RSTSETR			0x6c0
++#define RCC_APB5RSTCLRR			0x6c4
++#define RCC_APB6RSTSETR			0x6c8
++#define RCC_APB6RSTCLRR			0x6cc
++#define RCC_AHB2RSTSETR			0x6d0
++#define RCC_AHB2RSTCLRR			0x6d4
++#define RCC_AHB4RSTSETR			0x6e0
++#define RCC_AHB4RSTCLRR			0x6e4
++#define RCC_AHB5RSTSETR			0x6e8
++#define RCC_AHB5RSTCLRR			0x6ec
++#define RCC_AHB6RSTSETR			0x6f0
++#define RCC_AHB6RSTCLRR			0x6f4
++#define RCC_MP_APB1ENSETR		0x700
++#define RCC_MP_APB1ENCLRR		0x704
++#define RCC_MP_APB2ENSETR		0x708
++#define RCC_MP_APB2ENCLRR		0x70c
++#define RCC_MP_APB3ENSETR		0x710
++#define RCC_MP_APB3ENCLRR		0x714
++#define RCC_MP_S_APB3ENSETR		0x718
++#define RCC_MP_S_APB3ENCLRR		0x71c
++#define RCC_MP_NS_APB3ENSETR		0x720
++#define RCC_MP_NS_APB3ENCLRR		0x724
++#define RCC_MP_APB4ENSETR		0x728
++#define RCC_MP_APB4ENCLRR		0x72c
++#define RCC_MP_S_APB4ENSETR		0x730
++#define RCC_MP_S_APB4ENCLRR		0x734
++#define RCC_MP_NS_APB4ENSETR		0x738
++#define RCC_MP_NS_APB4ENCLRR		0x73c
++#define RCC_MP_APB5ENSETR		0x740
++#define RCC_MP_APB5ENCLRR		0x744
++#define RCC_MP_APB6ENSETR		0x748
++#define RCC_MP_APB6ENCLRR		0x74c
++#define RCC_MP_AHB2ENSETR		0x750
++#define RCC_MP_AHB2ENCLRR		0x754
++#define RCC_MP_AHB4ENSETR		0x760
++#define RCC_MP_AHB4ENCLRR		0x764
++#define RCC_MP_S_AHB4ENSETR		0x768
++#define RCC_MP_S_AHB4ENCLRR		0x76c
++#define RCC_MP_NS_AHB4ENSETR		0x770
++#define RCC_MP_NS_AHB4ENCLRR		0x774
++#define RCC_MP_AHB5ENSETR		0x778
++#define RCC_MP_AHB5ENCLRR		0x77c
++#define RCC_MP_AHB6ENSETR		0x780
++#define RCC_MP_AHB6ENCLRR		0x784
++#define RCC_MP_S_AHB6ENSETR		0x788
++#define RCC_MP_S_AHB6ENCLRR		0x78c
++#define RCC_MP_NS_AHB6ENSETR		0x790
++#define RCC_MP_NS_AHB6ENCLRR		0x794
++#define RCC_MP_APB1LPENSETR		0x800
++#define RCC_MP_APB1LPENCLRR		0x804
++#define RCC_MP_APB2LPENSETR		0x808
++#define RCC_MP_APB2LPENCLRR		0x80c
++#define RCC_MP_APB3LPENSETR		0x810
++#define RCC_MP_APB3LPENCLRR		0x814
++#define RCC_MP_S_APB3LPENSETR		0x818
++#define RCC_MP_S_APB3LPENCLRR		0x81c
++#define RCC_MP_NS_APB3LPENSETR		0x820
++#define RCC_MP_NS_APB3LPENCLRR		0x824
++#define RCC_MP_APB4LPENSETR		0x828
++#define RCC_MP_APB4LPENCLRR		0x82c
++#define RCC_MP_S_APB4LPENSETR		0x830
++#define RCC_MP_S_APB4LPENCLRR		0x834
++#define RCC_MP_NS_APB4LPENSETR		0x838
++#define RCC_MP_NS_APB4LPENCLRR		0x83c
++#define RCC_MP_APB5LPENSETR		0x840
++#define RCC_MP_APB5LPENCLRR		0x844
++#define RCC_MP_APB6LPENSETR		0x848
++#define RCC_MP_APB6LPENCLRR		0x84c
++#define RCC_MP_AHB2LPENSETR		0x850
++#define RCC_MP_AHB2LPENCLRR		0x854
++#define RCC_MP_AHB4LPENSETR		0x858
++#define RCC_MP_AHB4LPENCLRR		0x85c
++#define RCC_MP_S_AHB4LPENSETR		0x868
++#define RCC_MP_S_AHB4LPENCLRR		0x86c
++#define RCC_MP_NS_AHB4LPENSETR		0x870
++#define RCC_MP_NS_AHB4LPENCLRR		0x874
++#define RCC_MP_AHB5LPENSETR		0x878
++#define RCC_MP_AHB5LPENCLRR		0x87c
++#define RCC_MP_AHB6LPENSETR		0x880
++#define RCC_MP_AHB6LPENCLRR		0x884
++#define RCC_MP_S_AHB6LPENSETR		0x888
++#define RCC_MP_S_AHB6LPENCLRR		0x88c
++#define RCC_MP_NS_AHB6LPENSETR		0x890
++#define RCC_MP_NS_AHB6LPENCLRR		0x894
++#define RCC_MP_S_AXIMLPENSETR		0x898
++#define RCC_MP_S_AXIMLPENCLRR		0x89c
++#define RCC_MP_NS_AXIMLPENSETR		0x8a0
++#define RCC_MP_NS_AXIMLPENCLRR		0x8a4
++#define RCC_MP_MLAHBLPENSETR		0x8a8
++#define RCC_MP_MLAHBLPENCLRR		0x8ac
++#define RCC_APB3SECSR			0x8c0
++#define RCC_APB4SECSR			0x8c4
++#define RCC_APB5SECSR			0x8c8
++#define RCC_APB6SECSR			0x8cc
++#define RCC_AHB2SECSR			0x8d0
++#define RCC_AHB4SECSR			0x8d4
++#define RCC_AHB5SECSR			0x8d8
++#define RCC_AHB6SECSR			0x8dc
++#define RCC_VERR			0xff4
++#define RCC_IDR				0xff8
++#define RCC_SIDR			0xffc
++
++/* RCC_SECCFGR register fields */
++#define RCC_SECCFGR_HSISEC		BIT(0)
++#define RCC_SECCFGR_CSISEC		BIT(1)
++#define RCC_SECCFGR_HSESEC		BIT(2)
++#define RCC_SECCFGR_LSISEC		BIT(3)
++#define RCC_SECCFGR_LSESEC		BIT(4)
++#define RCC_SECCFGR_PLL12SEC		BIT(8)
++#define RCC_SECCFGR_PLL3SEC		BIT(9)
++#define RCC_SECCFGR_PLL4SEC		BIT(10)
++#define RCC_SECCFGR_MPUSEC		BIT(11)
++#define RCC_SECCFGR_AXISEC		BIT(12)
++#define RCC_SECCFGR_MLAHBSEC		BIT(13)
++#define RCC_SECCFGR_APB3DIVSEC		BIT(16)
++#define RCC_SECCFGR_APB4DIVSEC		BIT(17)
++#define RCC_SECCFGR_APB5DIVSEC		BIT(18)
++#define RCC_SECCFGR_APB6DIVSEC		BIT(19)
++#define RCC_SECCFGR_TIMG3SEC		BIT(20)
++#define RCC_SECCFGR_CPERSEC		BIT(21)
++#define RCC_SECCFGR_MCO1SEC		BIT(22)
++#define RCC_SECCFGR_MCO2SEC		BIT(23)
++#define RCC_SECCFGR_STPSEC		BIT(24)
++#define RCC_SECCFGR_RSTSEC		BIT(25)
++#define RCC_SECCFGR_PWRSEC		BIT(31)
++
++#define RCC_SECCFGR_MCO1SECF		22
++#define RCC_SECCFGR_MCO2SECF		23
++
++/* RCC_MP_SREQSETR register fields */
++#define RCC_MP_SREQSETR_STPREQ_P0	BIT(0)
++
++/* RCC_MP_SREQCLRR register fields */
++#define RCC_MP_SREQCLRR_STPREQ_P0	BIT(0)
++
++/* RCC_MP_APRSTCR register fields */
++#define RCC_MP_APRSTCR_RDCTLEN		BIT(0)
++#define RCC_MP_APRSTCR_RSTTO_MASK	GENMASK(14, 8)
++#define RCC_MP_APRSTCR_RSTTO_SHIFT	8
++
++/* RCC_MP_APRSTSR register fields */
++#define RCC_MP_APRSTSR_RSTTOV_MASK	GENMASK(14, 8)
++#define RCC_MP_APRSTSR_RSTTOV_SHIFT	8
++
++/* RCC_PWRLPDLYCR register fields */
++#define RCC_PWRLPDLYCR_PWRLP_DLY_MASK	GENMASK(21, 0)
++#define RCC_PWRLPDLYCR_PWRLP_DLY_SHIFT	0
++
++/* RCC_MP_GRSTCSETR register fields */
++#define RCC_MP_GRSTCSETR_MPSYSRST	BIT(0)
++#define RCC_MP_GRSTCSETR_MPUP0RST	BIT(4)
++
++/* RCC_BR_RSTSCLRR register fields */
++#define RCC_BR_RSTSCLRR_PORRSTF		BIT(0)
++#define RCC_BR_RSTSCLRR_BORRSTF		BIT(1)
++#define RCC_BR_RSTSCLRR_PADRSTF		BIT(2)
++#define RCC_BR_RSTSCLRR_HCSSRSTF	BIT(3)
++#define RCC_BR_RSTSCLRR_VCORERSTF	BIT(4)
++#define RCC_BR_RSTSCLRR_VCPURSTF	BIT(5)
++#define RCC_BR_RSTSCLRR_MPSYSRSTF	BIT(6)
++#define RCC_BR_RSTSCLRR_IWDG1RSTF	BIT(8)
++#define RCC_BR_RSTSCLRR_IWDG2RSTF	BIT(9)
++#define RCC_BR_RSTSCLRR_MPUP0RSTF	BIT(13)
++
++/* RCC_MP_RSTSSETR register fields */
++#define RCC_MP_RSTSSETR_PORRSTF		BIT(0)
++#define RCC_MP_RSTSSETR_BORRSTF		BIT(1)
++#define RCC_MP_RSTSSETR_PADRSTF		BIT(2)
++#define RCC_MP_RSTSSETR_HCSSRSTF	BIT(3)
++#define RCC_MP_RSTSSETR_VCORERSTF	BIT(4)
++#define RCC_MP_RSTSSETR_VCPURSTF	BIT(5)
++#define RCC_MP_RSTSSETR_MPSYSRSTF	BIT(6)
++#define RCC_MP_RSTSSETR_IWDG1RSTF	BIT(8)
++#define RCC_MP_RSTSSETR_IWDG2RSTF	BIT(9)
++#define RCC_MP_RSTSSETR_STP2RSTF	BIT(10)
++#define RCC_MP_RSTSSETR_STDBYRSTF	BIT(11)
++#define RCC_MP_RSTSSETR_CSTDBYRSTF	BIT(12)
++#define RCC_MP_RSTSSETR_MPUP0RSTF	BIT(13)
++#define RCC_MP_RSTSSETR_SPARE		BIT(15)
++
++/* RCC_MP_RSTSCLRR register fields */
++#define RCC_MP_RSTSCLRR_PORRSTF		BIT(0)
++#define RCC_MP_RSTSCLRR_BORRSTF		BIT(1)
++#define RCC_MP_RSTSCLRR_PADRSTF		BIT(2)
++#define RCC_MP_RSTSCLRR_HCSSRSTF	BIT(3)
++#define RCC_MP_RSTSCLRR_VCORERSTF	BIT(4)
++#define RCC_MP_RSTSCLRR_VCPURSTF	BIT(5)
++#define RCC_MP_RSTSCLRR_MPSYSRSTF	BIT(6)
++#define RCC_MP_RSTSCLRR_IWDG1RSTF	BIT(8)
++#define RCC_MP_RSTSCLRR_IWDG2RSTF	BIT(9)
++#define RCC_MP_RSTSCLRR_STP2RSTF	BIT(10)
++#define RCC_MP_RSTSCLRR_STDBYRSTF	BIT(11)
++#define RCC_MP_RSTSCLRR_CSTDBYRSTF	BIT(12)
++#define RCC_MP_RSTSCLRR_MPUP0RSTF	BIT(13)
++#define RCC_MP_RSTSCLRR_SPARE		BIT(15)
++
++/* RCC_MP_IWDGFZSETR register fields */
++#define RCC_MP_IWDGFZSETR_FZ_IWDG1	BIT(0)
++#define RCC_MP_IWDGFZSETR_FZ_IWDG2	BIT(1)
++
++/* RCC_MP_IWDGFZCLRR register fields */
++#define RCC_MP_IWDGFZCLRR_FZ_IWDG1	BIT(0)
++#define RCC_MP_IWDGFZCLRR_FZ_IWDG2	BIT(1)
++
++/* RCC_MP_CIER register fields */
++#define RCC_MP_CIER_LSIRDYIE		BIT(0)
++#define RCC_MP_CIER_LSERDYIE		BIT(1)
++#define RCC_MP_CIER_HSIRDYIE		BIT(2)
++#define RCC_MP_CIER_HSERDYIE		BIT(3)
++#define RCC_MP_CIER_CSIRDYIE		BIT(4)
++#define RCC_MP_CIER_PLL1DYIE		BIT(8)
++#define RCC_MP_CIER_PLL2DYIE		BIT(9)
++#define RCC_MP_CIER_PLL3DYIE		BIT(10)
++#define RCC_MP_CIER_PLL4DYIE		BIT(11)
++#define RCC_MP_CIER_LSECSSIE		BIT(16)
++#define RCC_MP_CIER_WKUPIE		BIT(20)
++
++/* RCC_MP_CIFR register fields */
++#define RCC_MP_CIFR_LSIRDYF		BIT(0)
++#define RCC_MP_CIFR_LSERDYF		BIT(1)
++#define RCC_MP_CIFR_HSIRDYF		BIT(2)
++#define RCC_MP_CIFR_HSERDYF		BIT(3)
++#define RCC_MP_CIFR_CSIRDYF		BIT(4)
++#define RCC_MP_CIFR_PLL1DYF		BIT(8)
++#define RCC_MP_CIFR_PLL2DYF		BIT(9)
++#define RCC_MP_CIFR_PLL3DYF		BIT(10)
++#define RCC_MP_CIFR_PLL4DYF		BIT(11)
++#define RCC_MP_CIFR_LSECSSF		BIT(16)
++#define RCC_MP_CIFR_WKUPF		BIT(20)
++
++/* RCC_BDCR register fields */
++#define RCC_BDCR_LSEON			BIT(0)
++#define RCC_BDCR_LSEBYP			BIT(1)
++#define RCC_BDCR_LSERDY			BIT(2)
++#define RCC_BDCR_DIGBYP			BIT(3)
++#define RCC_BDCR_LSEDRV_MASK		GENMASK(5, 4)
++#define RCC_BDCR_LSECSSON		BIT(8)
++#define RCC_BDCR_LSECSSD		BIT(9)
++#define RCC_BDCR_RTCSRC_MASK		GENMASK(17, 16)
++#define RCC_BDCR_RTCCKEN		BIT(20)
++#define RCC_BDCR_VSWRST			BIT(31)
++#define RCC_BDCR_LSEDRV_SHIFT		4
++#define RCC_BDCR_RTCSRC_SHIFT		16
++
++/* RCC_RDLSICR register fields */
++#define RCC_RDLSICR_LSION		BIT(0)
++#define RCC_RDLSICR_LSIRDY		BIT(1)
++#define RCC_RDLSICR_MRD_MASK		GENMASK(20, 16)
++#define RCC_RDLSICR_EADLY_MASK		GENMASK(26, 24)
++#define RCC_RDLSICR_SPARE_MASK		GENMASK(31, 27)
++#define RCC_RDLSICR_MRD_SHIFT		16
++#define RCC_RDLSICR_EADLY_SHIFT		24
++#define RCC_RDLSICR_SPARE_SHIFT		27
++
++/* RCC_OCENSETR register fields */
++#define RCC_OCENSETR_HSION		BIT(0)
++#define RCC_OCENSETR_HSIKERON		BIT(1)
++#define RCC_OCENSETR_CSION		BIT(4)
++#define RCC_OCENSETR_CSIKERON		BIT(5)
++#define RCC_OCENSETR_DIGBYP		BIT(7)
++#define RCC_OCENSETR_HSEON		BIT(8)
++#define RCC_OCENSETR_HSEKERON		BIT(9)
++#define RCC_OCENSETR_HSEBYP		BIT(10)
++#define RCC_OCENSETR_HSECSSON		BIT(11)
++
++/* RCC_OCENCLRR register fields */
++#define RCC_OCENCLRR_HSION		BIT(0)
++#define RCC_OCENCLRR_HSIKERON		BIT(1)
++#define RCC_OCENCLRR_CSION		BIT(4)
++#define RCC_OCENCLRR_CSIKERON		BIT(5)
++#define RCC_OCENCLRR_DIGBYP		BIT(7)
++#define RCC_OCENCLRR_HSEON		BIT(8)
++#define RCC_OCENCLRR_HSEKERON		BIT(9)
++#define RCC_OCENCLRR_HSEBYP		BIT(10)
++
++/* RCC_OCRDYR register fields */
++#define RCC_OCRDYR_HSIRDY		BIT(0)
++#define RCC_OCRDYR_HSIDIVRDY		BIT(2)
++#define RCC_OCRDYR_CSIRDY		BIT(4)
++#define RCC_OCRDYR_HSERDY		BIT(8)
++#define RCC_OCRDYR_MPUCKRDY		BIT(23)
++#define RCC_OCRDYR_AXICKRDY		BIT(24)
++
++/* RCC_HSICFGR register fields */
++#define RCC_HSICFGR_HSIDIV_MASK		GENMASK(1, 0)
++#define RCC_HSICFGR_HSITRIM_MASK	GENMASK(14, 8)
++#define RCC_HSICFGR_HSICAL_MASK		GENMASK(27, 16)
++#define RCC_HSICFGR_HSIDIV_SHIFT	0
++#define RCC_HSICFGR_HSITRIM_SHIFT	8
++#define RCC_HSICFGR_HSICAL_SHIFT	16
++
++/* RCC_CSICFGR register fields */
++#define RCC_CSICFGR_CSITRIM_MASK	GENMASK(12, 8)
++#define RCC_CSICFGR_CSICAL_MASK		GENMASK(23, 16)
++#define RCC_CSICFGR_CSITRIM_SHIFT	8
++#define RCC_CSICFGR_CSICAL_SHIFT	16
++
++/* RCC_MCO1CFGR register fields */
++#define RCC_MCO1CFGR_MCO1SEL_MASK	GENMASK(2, 0)
++#define RCC_MCO1CFGR_MCO1DIV_MASK	GENMASK(7, 4)
++#define RCC_MCO1CFGR_MCO1ON		BIT(12)
++#define RCC_MCO1CFGR_MCO1SEL_SHIFT	0
++#define RCC_MCO1CFGR_MCO1DIV_SHIFT	4
++
++/* RCC_MCO2CFGR register fields */
++#define RCC_MCO2CFGR_MCO2SEL_MASK	GENMASK(2, 0)
++#define RCC_MCO2CFGR_MCO2DIV_MASK	GENMASK(7, 4)
++#define RCC_MCO2CFGR_MCO2ON		BIT(12)
++#define RCC_MCO2CFGR_MCO2SEL_SHIFT	0
++#define RCC_MCO2CFGR_MCO2DIV_SHIFT	4
++
++/* RCC_DBGCFGR register fields */
++#define RCC_DBGCFGR_TRACEDIV_MASK	GENMASK(2, 0)
++#define RCC_DBGCFGR_DBGCKEN		BIT(8)
++#define RCC_DBGCFGR_TRACECKEN		BIT(9)
++#define RCC_DBGCFGR_DBGRST		BIT(12)
++#define RCC_DBGCFGR_TRACEDIV_SHIFT	0
++
++/* RCC_RCK12SELR register fields */
++#define RCC_RCK12SELR_PLL12SRC_MASK	GENMASK(1, 0)
++#define RCC_RCK12SELR_PLL12SRCRDY	BIT(31)
++#define RCC_RCK12SELR_PLL12SRC_SHIFT	0
++
++/* RCC_RCK3SELR register fields */
++#define RCC_RCK3SELR_PLL3SRC_MASK	GENMASK(1, 0)
++#define RCC_RCK3SELR_PLL3SRCRDY		BIT(31)
++#define RCC_RCK3SELR_PLL3SRC_SHIFT	0
++
++/* RCC_RCK4SELR register fields */
++#define RCC_RCK4SELR_PLL4SRC_MASK	GENMASK(1, 0)
++#define RCC_RCK4SELR_PLL4SRCRDY		BIT(31)
++#define RCC_RCK4SELR_PLL4SRC_SHIFT	0
++
++/* RCC_PLL1CR register fields */
++#define RCC_PLL1CR_PLLON		BIT(0)
++#define RCC_PLL1CR_PLL1RDY		BIT(1)
++#define RCC_PLL1CR_SSCG_CTRL		BIT(2)
++#define RCC_PLL1CR_DIVPEN		BIT(4)
++#define RCC_PLL1CR_DIVQEN		BIT(5)
++#define RCC_PLL1CR_DIVREN		BIT(6)
++
++/* RCC_PLL1CFGR1 register fields */
++#define RCC_PLL1CFGR1_DIVN_MASK		GENMASK(8, 0)
++#define RCC_PLL1CFGR1_DIVM1_MASK	GENMASK(21, 16)
++#define RCC_PLL1CFGR1_DIVN_SHIFT	0
++#define RCC_PLL1CFGR1_DIVM1_SHIFT	16
++
++/* RCC_PLL1CFGR2 register fields */
++#define RCC_PLL1CFGR2_DIVP_MASK		GENMASK(6, 0)
++#define RCC_PLL1CFGR2_DIVQ_MASK		GENMASK(14, 8)
++#define RCC_PLL1CFGR2_DIVR_MASK		GENMASK(22, 16)
++#define RCC_PLL1CFGR2_DIVP_SHIFT	0
++#define RCC_PLL1CFGR2_DIVQ_SHIFT	8
++#define RCC_PLL1CFGR2_DIVR_SHIFT	16
++
++/* RCC_PLL1FRACR register fields */
++#define RCC_PLL1FRACR_FRACV_MASK	GENMASK(15, 3)
++#define RCC_PLL1FRACR_FRACLE		BIT(16)
++#define RCC_PLL1FRACR_FRACV_SHIFT	3
++
++/* RCC_PLL1CSGR register fields */
++#define RCC_PLL1CSGR_MOD_PER_MASK	GENMASK(12, 0)
++#define RCC_PLL1CSGR_TPDFN_DIS		BIT(13)
++#define RCC_PLL1CSGR_RPDFN_DIS		BIT(14)
++#define RCC_PLL1CSGR_SSCG_MODE		BIT(15)
++#define RCC_PLL1CSGR_INC_STEP_MASK	GENMASK(30, 16)
++#define RCC_PLL1CSGR_MOD_PER_SHIFT	0
++#define RCC_PLL1CSGR_INC_STEP_SHIFT	16
++
++/* RCC_PLL2CR register fields */
++#define RCC_PLL2CR_PLLON		BIT(0)
++#define RCC_PLL2CR_PLL2RDY		BIT(1)
++#define RCC_PLL2CR_SSCG_CTRL		BIT(2)
++#define RCC_PLL2CR_DIVPEN		BIT(4)
++#define RCC_PLL2CR_DIVQEN		BIT(5)
++#define RCC_PLL2CR_DIVREN		BIT(6)
++
++/* RCC_PLL2CFGR1 register fields */
++#define RCC_PLL2CFGR1_DIVN_MASK		GENMASK(8, 0)
++#define RCC_PLL2CFGR1_DIVM2_MASK	GENMASK(21, 16)
++#define RCC_PLL2CFGR1_DIVN_SHIFT	0
++#define RCC_PLL2CFGR1_DIVM2_SHIFT	16
++
++/* RCC_PLL2CFGR2 register fields */
++#define RCC_PLL2CFGR2_DIVP_MASK		GENMASK(6, 0)
++#define RCC_PLL2CFGR2_DIVQ_MASK		GENMASK(14, 8)
++#define RCC_PLL2CFGR2_DIVR_MASK		GENMASK(22, 16)
++#define RCC_PLL2CFGR2_DIVP_SHIFT	0
++#define RCC_PLL2CFGR2_DIVQ_SHIFT	8
++#define RCC_PLL2CFGR2_DIVR_SHIFT	16
++
++/* RCC_PLL2FRACR register fields */
++#define RCC_PLL2FRACR_FRACV_MASK	GENMASK(15, 3)
++#define RCC_PLL2FRACR_FRACLE		BIT(16)
++#define RCC_PLL2FRACR_FRACV_SHIFT	3
++
++/* RCC_PLL2CSGR register fields */
++#define RCC_PLL2CSGR_MOD_PER_MASK	GENMASK(12, 0)
++#define RCC_PLL2CSGR_TPDFN_DIS		BIT(13)
++#define RCC_PLL2CSGR_RPDFN_DIS		BIT(14)
++#define RCC_PLL2CSGR_SSCG_MODE		BIT(15)
++#define RCC_PLL2CSGR_INC_STEP_MASK	GENMASK(30, 16)
++#define RCC_PLL2CSGR_MOD_PER_SHIFT	0
++#define RCC_PLL2CSGR_INC_STEP_SHIFT	16
++
++/* RCC_PLL3CR register fields */
++#define RCC_PLL3CR_PLLON		BIT(0)
++#define RCC_PLL3CR_PLL3RDY		BIT(1)
++#define RCC_PLL3CR_SSCG_CTRL		BIT(2)
++#define RCC_PLL3CR_DIVPEN		BIT(4)
++#define RCC_PLL3CR_DIVQEN		BIT(5)
++#define RCC_PLL3CR_DIVREN		BIT(6)
++
++/* RCC_PLL3CFGR1 register fields */
++#define RCC_PLL3CFGR1_DIVN_MASK		GENMASK(8, 0)
++#define RCC_PLL3CFGR1_DIVM3_MASK	GENMASK(21, 16)
++#define RCC_PLL3CFGR1_IFRGE_MASK	GENMASK(25, 24)
++#define RCC_PLL3CFGR1_DIVN_SHIFT	0
++#define RCC_PLL3CFGR1_DIVM3_SHIFT	16
++#define RCC_PLL3CFGR1_IFRGE_SHIFT	24
++
++/* RCC_PLL3CFGR2 register fields */
++#define RCC_PLL3CFGR2_DIVP_MASK		GENMASK(6, 0)
++#define RCC_PLL3CFGR2_DIVQ_MASK		GENMASK(14, 8)
++#define RCC_PLL3CFGR2_DIVR_MASK		GENMASK(22, 16)
++#define RCC_PLL3CFGR2_DIVP_SHIFT	0
++#define RCC_PLL3CFGR2_DIVQ_SHIFT	8
++#define RCC_PLL3CFGR2_DIVR_SHIFT	16
++
++/* RCC_PLL3FRACR register fields */
++#define RCC_PLL3FRACR_FRACV_MASK	GENMASK(15, 3)
++#define RCC_PLL3FRACR_FRACLE		BIT(16)
++#define RCC_PLL3FRACR_FRACV_SHIFT	3
++
++/* RCC_PLL3CSGR register fields */
++#define RCC_PLL3CSGR_MOD_PER_MASK	GENMASK(12, 0)
++#define RCC_PLL3CSGR_TPDFN_DIS		BIT(13)
++#define RCC_PLL3CSGR_RPDFN_DIS		BIT(14)
++#define RCC_PLL3CSGR_SSCG_MODE		BIT(15)
++#define RCC_PLL3CSGR_INC_STEP_MASK	GENMASK(30, 16)
++#define RCC_PLL3CSGR_MOD_PER_SHIFT	0
++#define RCC_PLL3CSGR_INC_STEP_SHIFT	16
++
++/* RCC_PLL4CR register fields */
++#define RCC_PLL4CR_PLLON		BIT(0)
++#define RCC_PLL4CR_PLL4RDY		BIT(1)
++#define RCC_PLL4CR_SSCG_CTRL		BIT(2)
++#define RCC_PLL4CR_DIVPEN		BIT(4)
++#define RCC_PLL4CR_DIVQEN		BIT(5)
++#define RCC_PLL4CR_DIVREN		BIT(6)
++
++/* RCC_PLL4CFGR1 register fields */
++#define RCC_PLL4CFGR1_DIVN_MASK		GENMASK(8, 0)
++#define RCC_PLL4CFGR1_DIVM4_MASK	GENMASK(21, 16)
++#define RCC_PLL4CFGR1_IFRGE_MASK	GENMASK(25, 24)
++#define RCC_PLL4CFGR1_DIVN_SHIFT	0
++#define RCC_PLL4CFGR1_DIVM4_SHIFT	16
++#define RCC_PLL4CFGR1_IFRGE_SHIFT	24
++
++/* RCC_PLL4CFGR2 register fields */
++#define RCC_PLL4CFGR2_DIVP_MASK		GENMASK(6, 0)
++#define RCC_PLL4CFGR2_DIVQ_MASK		GENMASK(14, 8)
++#define RCC_PLL4CFGR2_DIVR_MASK		GENMASK(22, 16)
++#define RCC_PLL4CFGR2_DIVP_SHIFT	0
++#define RCC_PLL4CFGR2_DIVQ_SHIFT	8
++#define RCC_PLL4CFGR2_DIVR_SHIFT	16
++
++/* RCC_PLL4FRACR register fields */
++#define RCC_PLL4FRACR_FRACV_MASK	GENMASK(15, 3)
++#define RCC_PLL4FRACR_FRACLE		BIT(16)
++#define RCC_PLL4FRACR_FRACV_SHIFT	3
++
++/* RCC_PLL4CSGR register fields */
++#define RCC_PLL4CSGR_MOD_PER_MASK	GENMASK(12, 0)
++#define RCC_PLL4CSGR_TPDFN_DIS		BIT(13)
++#define RCC_PLL4CSGR_RPDFN_DIS		BIT(14)
++#define RCC_PLL4CSGR_SSCG_MODE		BIT(15)
++#define RCC_PLL4CSGR_INC_STEP_MASK	GENMASK(30, 16)
++#define RCC_PLL4CSGR_MOD_PER_SHIFT	0
++#define RCC_PLL4CSGR_INC_STEP_SHIFT	16
++
++/* RCC_MPCKSELR register fields */
++#define RCC_MPCKSELR_MPUSRC_MASK	GENMASK(1, 0)
++#define RCC_MPCKSELR_MPUSRCRDY		BIT(31)
++#define RCC_MPCKSELR_MPUSRC_SHIFT	0
++
++/* RCC_ASSCKSELR register fields */
++#define RCC_ASSCKSELR_AXISSRC_MASK	GENMASK(2, 0)
++#define RCC_ASSCKSELR_AXISSRCRDY	BIT(31)
++#define RCC_ASSCKSELR_AXISSRC_SHIFT	0
++
++/* RCC_MSSCKSELR register fields */
++#define RCC_MSSCKSELR_MLAHBSSRC_MASK	GENMASK(1, 0)
++#define RCC_MSSCKSELR_MLAHBSSRCRDY	BIT(31)
++#define RCC_MSSCKSELR_MLAHBSSRC_SHIFT	0
++
++/* RCC_CPERCKSELR register fields */
++#define RCC_CPERCKSELR_CKPERSRC_MASK	GENMASK(1, 0)
++#define RCC_CPERCKSELR_CKPERSRC_SHIFT	0
++
++/* RCC_RTCDIVR register fields */
++#define RCC_RTCDIVR_RTCDIV_MASK		GENMASK(5, 0)
++#define RCC_RTCDIVR_RTCDIV_SHIFT	0
++
++/* RCC_MPCKDIVR register fields */
++#define RCC_MPCKDIVR_MPUDIV_MASK	GENMASK(3, 0)
++#define RCC_MPCKDIVR_MPUDIVRDY		BIT(31)
++#define RCC_MPCKDIVR_MPUDIV_SHIFT	0
++
++/* RCC_AXIDIVR register fields */
++#define RCC_AXIDIVR_AXIDIV_MASK		GENMASK(2, 0)
++#define RCC_AXIDIVR_AXIDIVRDY		BIT(31)
++#define RCC_AXIDIVR_AXIDIV_SHIFT	0
++
++/* RCC_MLAHBDIVR register fields */
++#define RCC_MLAHBDIVR_MLAHBDIV_MASK	GENMASK(3, 0)
++#define RCC_MLAHBDIVR_MLAHBDIVRDY	BIT(31)
++#define RCC_MLAHBDIVR_MLAHBDIV_SHIFT	0
++
++/* RCC_APB1DIVR register fields */
++#define RCC_APB1DIVR_APB1DIV_MASK	GENMASK(2, 0)
++#define RCC_APB1DIVR_APB1DIVRDY		BIT(31)
++#define RCC_APB1DIVR_APB1DIV_SHIFT	0
++
++/* RCC_APB2DIVR register fields */
++#define RCC_APB2DIVR_APB2DIV_MASK	GENMASK(2, 0)
++#define RCC_APB2DIVR_APB2DIVRDY		BIT(31)
++#define RCC_APB2DIVR_APB2DIV_SHIFT	0
++
++/* RCC_APB3DIVR register fields */
++#define RCC_APB3DIVR_APB3DIV_MASK	GENMASK(2, 0)
++#define RCC_APB3DIVR_APB3DIVRDY		BIT(31)
++#define RCC_APB3DIVR_APB3DIV_SHIFT	0
++
++/* RCC_APB4DIVR register fields */
++#define RCC_APB4DIVR_APB4DIV_MASK	GENMASK(2, 0)
++#define RCC_APB4DIVR_APB4DIVRDY		BIT(31)
++#define RCC_APB4DIVR_APB4DIV_SHIFT	0
++
++/* RCC_APB5DIVR register fields */
++#define RCC_APB5DIVR_APB5DIV_MASK	GENMASK(2, 0)
++#define RCC_APB5DIVR_APB5DIVRDY		BIT(31)
++#define RCC_APB5DIVR_APB5DIV_SHIFT	0
++
++/* RCC_APB6DIVR register fields */
++#define RCC_APB6DIVR_APB6DIV_MASK	GENMASK(2, 0)
++#define RCC_APB6DIVR_APB6DIVRDY		BIT(31)
++#define RCC_APB6DIVR_APB6DIV_SHIFT	0
++
++/* RCC_TIMG1PRER register fields */
++#define RCC_TIMG1PRER_TIMG1PRE		BIT(0)
++#define RCC_TIMG1PRER_TIMG1PRERDY	BIT(31)
++
++/* RCC_TIMG2PRER register fields */
++#define RCC_TIMG2PRER_TIMG2PRE		BIT(0)
++#define RCC_TIMG2PRER_TIMG2PRERDY	BIT(31)
++
++/* RCC_TIMG3PRER register fields */
++#define RCC_TIMG3PRER_TIMG3PRE		BIT(0)
++#define RCC_TIMG3PRER_TIMG3PRERDY	BIT(31)
++
++/* RCC_DDRITFCR register fields */
++#define RCC_DDRITFCR_DDRC1EN		BIT(0)
++#define RCC_DDRITFCR_DDRC1LPEN		BIT(1)
++#define RCC_DDRITFCR_DDRPHYCEN		BIT(4)
++#define RCC_DDRITFCR_DDRPHYCLPEN	BIT(5)
++#define RCC_DDRITFCR_DDRCAPBEN		BIT(6)
++#define RCC_DDRITFCR_DDRCAPBLPEN	BIT(7)
++#define RCC_DDRITFCR_AXIDCGEN		BIT(8)
++#define RCC_DDRITFCR_DDRPHYCAPBEN	BIT(9)
++#define RCC_DDRITFCR_DDRPHYCAPBLPEN	BIT(10)
++#define RCC_DDRITFCR_KERDCG_DLY_MASK	GENMASK(13, 11)
++#define RCC_DDRITFCR_DDRCAPBRST		BIT(14)
++#define RCC_DDRITFCR_DDRCAXIRST		BIT(15)
++#define RCC_DDRITFCR_DDRCORERST		BIT(16)
++#define RCC_DDRITFCR_DPHYAPBRST		BIT(17)
++#define RCC_DDRITFCR_DPHYRST		BIT(18)
++#define RCC_DDRITFCR_DPHYCTLRST		BIT(19)
++#define RCC_DDRITFCR_DDRCKMOD_MASK	GENMASK(22, 20)
++#define RCC_DDRITFCR_GSKPMOD		BIT(23)
++#define RCC_DDRITFCR_GSKPCTRL		BIT(24)
++#define RCC_DDRITFCR_DFILP_WIDTH_MASK	GENMASK(27, 25)
++#define RCC_DDRITFCR_GSKP_DUR_MASK	GENMASK(31, 28)
++#define RCC_DDRITFCR_KERDCG_DLY_SHIFT	11
++#define RCC_DDRITFCR_DDRCKMOD_SHIFT	20
++#define RCC_DDRITFCR_DFILP_WIDTH_SHIFT	25
++#define RCC_DDRITFCR_GSKP_DUR_SHIFT	28
++
++/* RCC_I2C12CKSELR register fields */
++#define RCC_I2C12CKSELR_I2C12SRC_MASK	GENMASK(2, 0)
++#define RCC_I2C12CKSELR_I2C12SRC_SHIFT	0
++
++/* RCC_I2C345CKSELR register fields */
++#define RCC_I2C345CKSELR_I2C3SRC_MASK	GENMASK(2, 0)
++#define RCC_I2C345CKSELR_I2C4SRC_MASK	GENMASK(5, 3)
++#define RCC_I2C345CKSELR_I2C5SRC_MASK	GENMASK(8, 6)
++#define RCC_I2C345CKSELR_I2C3SRC_SHIFT	0
++#define RCC_I2C345CKSELR_I2C4SRC_SHIFT	3
++#define RCC_I2C345CKSELR_I2C5SRC_SHIFT	6
++
++/* RCC_SPI2S1CKSELR register fields */
++#define RCC_SPI2S1CKSELR_SPI1SRC_MASK	GENMASK(2, 0)
++#define RCC_SPI2S1CKSELR_SPI1SRC_SHIFT	0
++
++/* RCC_SPI2S23CKSELR register fields */
++#define RCC_SPI2S23CKSELR_SPI23SRC_MASK	GENMASK(2, 0)
++#define RCC_SPI2S23CKSELR_SPI23SRC_SHIFT	0
++
++/* RCC_SPI45CKSELR register fields */
++#define RCC_SPI45CKSELR_SPI4SRC_MASK	GENMASK(2, 0)
++#define RCC_SPI45CKSELR_SPI5SRC_MASK	GENMASK(5, 3)
++#define RCC_SPI45CKSELR_SPI4SRC_SHIFT	0
++#define RCC_SPI45CKSELR_SPI5SRC_SHIFT	3
++
++/* RCC_UART12CKSELR register fields */
++#define RCC_UART12CKSELR_UART1SRC_MASK	GENMASK(2, 0)
++#define RCC_UART12CKSELR_UART2SRC_MASK	GENMASK(5, 3)
++#define RCC_UART12CKSELR_UART1SRC_SHIFT	0
++#define RCC_UART12CKSELR_UART2SRC_SHIFT	3
++
++/* RCC_UART35CKSELR register fields */
++#define RCC_UART35CKSELR_UART35SRC_MASK	GENMASK(2, 0)
++#define RCC_UART35CKSELR_UART35SRC_SHIFT	0
++
++/* RCC_UART4CKSELR register fields */
++#define RCC_UART4CKSELR_UART4SRC_MASK	GENMASK(2, 0)
++#define RCC_UART4CKSELR_UART4SRC_SHIFT	0
++
++/* RCC_UART6CKSELR register fields */
++#define RCC_UART6CKSELR_UART6SRC_MASK	GENMASK(2, 0)
++#define RCC_UART6CKSELR_UART6SRC_SHIFT	0
++
++/* RCC_UART78CKSELR register fields */
++#define RCC_UART78CKSELR_UART78SRC_MASK	GENMASK(2, 0)
++#define RCC_UART78CKSELR_UART78SRC_SHIFT	0
++
++/* RCC_LPTIM1CKSELR register fields */
++#define RCC_LPTIM1CKSELR_LPTIM1SRC_MASK	GENMASK(2, 0)
++#define RCC_LPTIM1CKSELR_LPTIM1SRC_SHIFT	0
++
++/* RCC_LPTIM23CKSELR register fields */
++#define RCC_LPTIM23CKSELR_LPTIM2SRC_MASK	GENMASK(2, 0)
++#define RCC_LPTIM23CKSELR_LPTIM3SRC_MASK	GENMASK(5, 3)
++#define RCC_LPTIM23CKSELR_LPTIM2SRC_SHIFT	0
++#define RCC_LPTIM23CKSELR_LPTIM3SRC_SHIFT	3
++
++/* RCC_LPTIM45CKSELR register fields */
++#define RCC_LPTIM45CKSELR_LPTIM45SRC_MASK	GENMASK(2, 0)
++#define RCC_LPTIM45CKSELR_LPTIM45SRC_SHIFT	0
++
++/* RCC_SAI1CKSELR register fields */
++#define RCC_SAI1CKSELR_SAI1SRC_MASK	GENMASK(2, 0)
++#define RCC_SAI1CKSELR_SAI1SRC_SHIFT	0
++
++/* RCC_SAI2CKSELR register fields */
++#define RCC_SAI2CKSELR_SAI2SRC_MASK	GENMASK(2, 0)
++#define RCC_SAI2CKSELR_SAI2SRC_SHIFT	0
++
++/* RCC_FDCANCKSELR register fields */
++#define RCC_FDCANCKSELR_FDCANSRC_MASK	GENMASK(1, 0)
++#define RCC_FDCANCKSELR_FDCANSRC_SHIFT	0
++
++/* RCC_SPDIFCKSELR register fields */
++#define RCC_SPDIFCKSELR_SPDIFSRC_MASK	GENMASK(1, 0)
++#define RCC_SPDIFCKSELR_SPDIFSRC_SHIFT	0
++
++/* RCC_ADC12CKSELR register fields */
++#define RCC_ADC12CKSELR_ADC1SRC_MASK	GENMASK(1, 0)
++#define RCC_ADC12CKSELR_ADC2SRC_MASK	GENMASK(3, 2)
++#define RCC_ADC12CKSELR_ADC1SRC_SHIFT	0
++#define RCC_ADC12CKSELR_ADC2SRC_SHIFT	2
++
++/* RCC_SDMMC12CKSELR register fields */
++#define RCC_SDMMC12CKSELR_SDMMC1SRC_MASK	GENMASK(2, 0)
++#define RCC_SDMMC12CKSELR_SDMMC2SRC_MASK	GENMASK(5, 3)
++#define RCC_SDMMC12CKSELR_SDMMC1SRC_SHIFT	0
++#define RCC_SDMMC12CKSELR_SDMMC2SRC_SHIFT	3
++
++/* RCC_ETH12CKSELR register fields */
++#define RCC_ETH12CKSELR_ETH1SRC_MASK	GENMASK(1, 0)
++#define RCC_ETH12CKSELR_ETH1PTPDIV_MASK	GENMASK(7, 4)
++#define RCC_ETH12CKSELR_ETH2SRC_MASK	GENMASK(9, 8)
++#define RCC_ETH12CKSELR_ETH2PTPDIV_MASK	GENMASK(15, 12)
++#define RCC_ETH12CKSELR_ETH1SRC_SHIFT	0
++#define RCC_ETH12CKSELR_ETH1PTPDIV_SHIFT	4
++#define RCC_ETH12CKSELR_ETH2SRC_SHIFT	8
++#define RCC_ETH12CKSELR_ETH2PTPDIV_SHIFT	12
++
++/* RCC_USBCKSELR register fields */
++#define RCC_USBCKSELR_USBPHYSRC_MASK	GENMASK(1, 0)
++#define RCC_USBCKSELR_USBOSRC		BIT(4)
++#define RCC_USBCKSELR_USBPHYSRC_SHIFT	0
++
++/* RCC_QSPICKSELR register fields */
++#define RCC_QSPICKSELR_QSPISRC_MASK	GENMASK(1, 0)
++#define RCC_QSPICKSELR_QSPISRC_SHIFT	0
++
++/* RCC_FMCCKSELR register fields */
++#define RCC_FMCCKSELR_FMCSRC_MASK	GENMASK(1, 0)
++#define RCC_FMCCKSELR_FMCSRC_SHIFT	0
++
++/* RCC_RNG1CKSELR register fields */
++#define RCC_RNG1CKSELR_RNG1SRC_MASK	GENMASK(1, 0)
++#define RCC_RNG1CKSELR_RNG1SRC_SHIFT	0
++
++/* RCC_STGENCKSELR register fields */
++#define RCC_STGENCKSELR_STGENSRC_MASK	GENMASK(1, 0)
++#define RCC_STGENCKSELR_STGENSRC_SHIFT	0
++
++/* RCC_DCMIPPCKSELR register fields */
++#define RCC_DCMIPPCKSELR_DCMIPPSRC_MASK	GENMASK(1, 0)
++#define RCC_DCMIPPCKSELR_DCMIPPSRC_SHIFT	0
++
++/* RCC_SAESCKSELR register fields */
++#define RCC_SAESCKSELR_SAESSRC_MASK	GENMASK(1, 0)
++#define RCC_SAESCKSELR_SAESSRC_SHIFT	0
++
++/* RCC_APB1RSTSETR register fields */
++#define RCC_APB1RSTSETR_TIM2RST		BIT(0)
++#define RCC_APB1RSTSETR_TIM3RST		BIT(1)
++#define RCC_APB1RSTSETR_TIM4RST		BIT(2)
++#define RCC_APB1RSTSETR_TIM5RST		BIT(3)
++#define RCC_APB1RSTSETR_TIM6RST		BIT(4)
++#define RCC_APB1RSTSETR_TIM7RST		BIT(5)
++#define RCC_APB1RSTSETR_LPTIM1RST	BIT(9)
++#define RCC_APB1RSTSETR_SPI2RST		BIT(11)
++#define RCC_APB1RSTSETR_SPI3RST		BIT(12)
++#define RCC_APB1RSTSETR_USART3RST	BIT(15)
++#define RCC_APB1RSTSETR_UART4RST	BIT(16)
++#define RCC_APB1RSTSETR_UART5RST	BIT(17)
++#define RCC_APB1RSTSETR_UART7RST	BIT(18)
++#define RCC_APB1RSTSETR_UART8RST	BIT(19)
++#define RCC_APB1RSTSETR_I2C1RST		BIT(21)
++#define RCC_APB1RSTSETR_I2C2RST		BIT(22)
++#define RCC_APB1RSTSETR_SPDIFRST	BIT(26)
++
++/* RCC_APB1RSTCLRR register fields */
++#define RCC_APB1RSTCLRR_TIM2RST		BIT(0)
++#define RCC_APB1RSTCLRR_TIM3RST		BIT(1)
++#define RCC_APB1RSTCLRR_TIM4RST		BIT(2)
++#define RCC_APB1RSTCLRR_TIM5RST		BIT(3)
++#define RCC_APB1RSTCLRR_TIM6RST		BIT(4)
++#define RCC_APB1RSTCLRR_TIM7RST		BIT(5)
++#define RCC_APB1RSTCLRR_LPTIM1RST	BIT(9)
++#define RCC_APB1RSTCLRR_SPI2RST		BIT(11)
++#define RCC_APB1RSTCLRR_SPI3RST		BIT(12)
++#define RCC_APB1RSTCLRR_USART3RST	BIT(15)
++#define RCC_APB1RSTCLRR_UART4RST	BIT(16)
++#define RCC_APB1RSTCLRR_UART5RST	BIT(17)
++#define RCC_APB1RSTCLRR_UART7RST	BIT(18)
++#define RCC_APB1RSTCLRR_UART8RST	BIT(19)
++#define RCC_APB1RSTCLRR_I2C1RST		BIT(21)
++#define RCC_APB1RSTCLRR_I2C2RST		BIT(22)
++#define RCC_APB1RSTCLRR_SPDIFRST	BIT(26)
++
++/* RCC_APB2RSTSETR register fields */
++#define RCC_APB2RSTSETR_TIM1RST		BIT(0)
++#define RCC_APB2RSTSETR_TIM8RST		BIT(1)
++#define RCC_APB2RSTSETR_SPI1RST		BIT(8)
++#define RCC_APB2RSTSETR_USART6RST	BIT(13)
++#define RCC_APB2RSTSETR_SAI1RST		BIT(16)
++#define RCC_APB2RSTSETR_SAI2RST		BIT(17)
++#define RCC_APB2RSTSETR_DFSDMRST	BIT(20)
++#define RCC_APB2RSTSETR_FDCANRST	BIT(24)
++
++/* RCC_APB2RSTCLRR register fields */
++#define RCC_APB2RSTCLRR_TIM1RST		BIT(0)
++#define RCC_APB2RSTCLRR_TIM8RST		BIT(1)
++#define RCC_APB2RSTCLRR_SPI1RST		BIT(8)
++#define RCC_APB2RSTCLRR_USART6RST	BIT(13)
++#define RCC_APB2RSTCLRR_SAI1RST		BIT(16)
++#define RCC_APB2RSTCLRR_SAI2RST		BIT(17)
++#define RCC_APB2RSTCLRR_DFSDMRST	BIT(20)
++#define RCC_APB2RSTCLRR_FDCANRST	BIT(24)
++
++/* RCC_APB3RSTSETR register fields */
++#define RCC_APB3RSTSETR_LPTIM2RST	BIT(0)
++#define RCC_APB3RSTSETR_LPTIM3RST	BIT(1)
++#define RCC_APB3RSTSETR_LPTIM4RST	BIT(2)
++#define RCC_APB3RSTSETR_LPTIM5RST	BIT(3)
++#define RCC_APB3RSTSETR_SYSCFGRST	BIT(11)
++#define RCC_APB3RSTSETR_VREFRST		BIT(13)
++#define RCC_APB3RSTSETR_DTSRST		BIT(16)
++#define RCC_APB3RSTSETR_PMBCTRLRST	BIT(17)
++
++/* RCC_APB3RSTCLRR register fields */
++#define RCC_APB3RSTCLRR_LPTIM2RST	BIT(0)
++#define RCC_APB3RSTCLRR_LPTIM3RST	BIT(1)
++#define RCC_APB3RSTCLRR_LPTIM4RST	BIT(2)
++#define RCC_APB3RSTCLRR_LPTIM5RST	BIT(3)
++#define RCC_APB3RSTCLRR_SYSCFGRST	BIT(11)
++#define RCC_APB3RSTCLRR_VREFRST		BIT(13)
++#define RCC_APB3RSTCLRR_DTSRST		BIT(16)
++#define RCC_APB3RSTCLRR_PMBCTRLRST	BIT(17)
++
++/* RCC_APB4RSTSETR register fields */
++#define RCC_APB4RSTSETR_LTDCRST		BIT(0)
++#define RCC_APB4RSTSETR_DCMIPPRST	BIT(1)
++#define RCC_APB4RSTSETR_DDRPERFMRST	BIT(8)
++#define RCC_APB4RSTSETR_USBPHYRST	BIT(16)
++
++/* RCC_APB4RSTCLRR register fields */
++#define RCC_APB4RSTCLRR_LTDCRST		BIT(0)
++#define RCC_APB4RSTCLRR_DCMIPPRST	BIT(1)
++#define RCC_APB4RSTCLRR_DDRPERFMRST	BIT(8)
++#define RCC_APB4RSTCLRR_USBPHYRST	BIT(16)
++
++/* RCC_APB5RSTSETR register fields */
++#define RCC_APB5RSTSETR_STGENRST	BIT(20)
++
++/* RCC_APB5RSTCLRR register fields */
++#define RCC_APB5RSTCLRR_STGENRST	BIT(20)
++
++/* RCC_APB6RSTSETR register fields */
++#define RCC_APB6RSTSETR_USART1RST	BIT(0)
++#define RCC_APB6RSTSETR_USART2RST	BIT(1)
++#define RCC_APB6RSTSETR_SPI4RST		BIT(2)
++#define RCC_APB6RSTSETR_SPI5RST		BIT(3)
++#define RCC_APB6RSTSETR_I2C3RST		BIT(4)
++#define RCC_APB6RSTSETR_I2C4RST		BIT(5)
++#define RCC_APB6RSTSETR_I2C5RST		BIT(6)
++#define RCC_APB6RSTSETR_TIM12RST	BIT(7)
++#define RCC_APB6RSTSETR_TIM13RST	BIT(8)
++#define RCC_APB6RSTSETR_TIM14RST	BIT(9)
++#define RCC_APB6RSTSETR_TIM15RST	BIT(10)
++#define RCC_APB6RSTSETR_TIM16RST	BIT(11)
++#define RCC_APB6RSTSETR_TIM17RST	BIT(12)
++
++/* RCC_APB6RSTCLRR register fields */
++#define RCC_APB6RSTCLRR_USART1RST	BIT(0)
++#define RCC_APB6RSTCLRR_USART2RST	BIT(1)
++#define RCC_APB6RSTCLRR_SPI4RST		BIT(2)
++#define RCC_APB6RSTCLRR_SPI5RST		BIT(3)
++#define RCC_APB6RSTCLRR_I2C3RST		BIT(4)
++#define RCC_APB6RSTCLRR_I2C4RST		BIT(5)
++#define RCC_APB6RSTCLRR_I2C5RST		BIT(6)
++#define RCC_APB6RSTCLRR_TIM12RST	BIT(7)
++#define RCC_APB6RSTCLRR_TIM13RST	BIT(8)
++#define RCC_APB6RSTCLRR_TIM14RST	BIT(9)
++#define RCC_APB6RSTCLRR_TIM15RST	BIT(10)
++#define RCC_APB6RSTCLRR_TIM16RST	BIT(11)
++#define RCC_APB6RSTCLRR_TIM17RST	BIT(12)
++
++/* RCC_AHB2RSTSETR register fields */
++#define RCC_AHB2RSTSETR_DMA1RST		BIT(0)
++#define RCC_AHB2RSTSETR_DMA2RST		BIT(1)
++#define RCC_AHB2RSTSETR_DMAMUX1RST	BIT(2)
++#define RCC_AHB2RSTSETR_DMA3RST		BIT(3)
++#define RCC_AHB2RSTSETR_DMAMUX2RST	BIT(4)
++#define RCC_AHB2RSTSETR_ADC1RST		BIT(5)
++#define RCC_AHB2RSTSETR_ADC2RST		BIT(6)
++#define RCC_AHB2RSTSETR_USBORST		BIT(8)
++
++/* RCC_AHB2RSTCLRR register fields */
++#define RCC_AHB2RSTCLRR_DMA1RST		BIT(0)
++#define RCC_AHB2RSTCLRR_DMA2RST		BIT(1)
++#define RCC_AHB2RSTCLRR_DMAMUX1RST	BIT(2)
++#define RCC_AHB2RSTCLRR_DMA3RST		BIT(3)
++#define RCC_AHB2RSTCLRR_DMAMUX2RST	BIT(4)
++#define RCC_AHB2RSTCLRR_ADC1RST		BIT(5)
++#define RCC_AHB2RSTCLRR_ADC2RST		BIT(6)
++#define RCC_AHB2RSTCLRR_USBORST		BIT(8)
++
++/* RCC_AHB4RSTSETR register fields */
++#define RCC_AHB4RSTSETR_GPIOARST	BIT(0)
++#define RCC_AHB4RSTSETR_GPIOBRST	BIT(1)
++#define RCC_AHB4RSTSETR_GPIOCRST	BIT(2)
++#define RCC_AHB4RSTSETR_GPIODRST	BIT(3)
++#define RCC_AHB4RSTSETR_GPIOERST	BIT(4)
++#define RCC_AHB4RSTSETR_GPIOFRST	BIT(5)
++#define RCC_AHB4RSTSETR_GPIOGRST	BIT(6)
++#define RCC_AHB4RSTSETR_GPIOHRST	BIT(7)
++#define RCC_AHB4RSTSETR_GPIOIRST	BIT(8)
++#define RCC_AHB4RSTSETR_TSCRST		BIT(15)
++
++/* RCC_AHB4RSTCLRR register fields */
++#define RCC_AHB4RSTCLRR_GPIOARST	BIT(0)
++#define RCC_AHB4RSTCLRR_GPIOBRST	BIT(1)
++#define RCC_AHB4RSTCLRR_GPIOCRST	BIT(2)
++#define RCC_AHB4RSTCLRR_GPIODRST	BIT(3)
++#define RCC_AHB4RSTCLRR_GPIOERST	BIT(4)
++#define RCC_AHB4RSTCLRR_GPIOFRST	BIT(5)
++#define RCC_AHB4RSTCLRR_GPIOGRST	BIT(6)
++#define RCC_AHB4RSTCLRR_GPIOHRST	BIT(7)
++#define RCC_AHB4RSTCLRR_GPIOIRST	BIT(8)
++#define RCC_AHB4RSTCLRR_TSCRST		BIT(15)
++
++/* RCC_AHB5RSTSETR register fields */
++#define RCC_AHB5RSTSETR_PKARST		BIT(2)
++#define RCC_AHB5RSTSETR_SAESRST		BIT(3)
++#define RCC_AHB5RSTSETR_CRYP1RST	BIT(4)
++#define RCC_AHB5RSTSETR_HASH1RST	BIT(5)
++#define RCC_AHB5RSTSETR_RNG1RST		BIT(6)
++#define RCC_AHB5RSTSETR_AXIMCRST	BIT(16)
++
++/* RCC_AHB5RSTCLRR register fields */
++#define RCC_AHB5RSTCLRR_PKARST		BIT(2)
++#define RCC_AHB5RSTCLRR_SAESRST		BIT(3)
++#define RCC_AHB5RSTCLRR_CRYP1RST	BIT(4)
++#define RCC_AHB5RSTCLRR_HASH1RST	BIT(5)
++#define RCC_AHB5RSTCLRR_RNG1RST		BIT(6)
++#define RCC_AHB5RSTCLRR_AXIMCRST	BIT(16)
++
++/* RCC_AHB6RSTSETR register fields */
++#define RCC_AHB6RSTSETR_MDMARST		BIT(0)
++#define RCC_AHB6RSTSETR_MCERST		BIT(1)
++#define RCC_AHB6RSTSETR_ETH1MACRST	BIT(10)
++#define RCC_AHB6RSTSETR_FMCRST		BIT(12)
++#define RCC_AHB6RSTSETR_QSPIRST		BIT(14)
++#define RCC_AHB6RSTSETR_SDMMC1RST	BIT(16)
++#define RCC_AHB6RSTSETR_SDMMC2RST	BIT(17)
++#define RCC_AHB6RSTSETR_CRC1RST		BIT(20)
++#define RCC_AHB6RSTSETR_USBHRST		BIT(24)
++#define RCC_AHB6RSTSETR_ETH2MACRST	BIT(30)
++
++/* RCC_AHB6RSTCLRR register fields */
++#define RCC_AHB6RSTCLRR_MDMARST		BIT(0)
++#define RCC_AHB6RSTCLRR_MCERST		BIT(1)
++#define RCC_AHB6RSTCLRR_ETH1MACRST	BIT(10)
++#define RCC_AHB6RSTCLRR_FMCRST		BIT(12)
++#define RCC_AHB6RSTCLRR_QSPIRST		BIT(14)
++#define RCC_AHB6RSTCLRR_SDMMC1RST	BIT(16)
++#define RCC_AHB6RSTCLRR_SDMMC2RST	BIT(17)
++#define RCC_AHB6RSTCLRR_CRC1RST		BIT(20)
++#define RCC_AHB6RSTCLRR_USBHRST		BIT(24)
++#define RCC_AHB6RSTCLRR_ETH2MACRST	BIT(30)
++
++/* RCC_MP_APB1ENSETR register fields */
++#define RCC_MP_APB1ENSETR_TIM2EN	BIT(0)
++#define RCC_MP_APB1ENSETR_TIM3EN	BIT(1)
++#define RCC_MP_APB1ENSETR_TIM4EN	BIT(2)
++#define RCC_MP_APB1ENSETR_TIM5EN	BIT(3)
++#define RCC_MP_APB1ENSETR_TIM6EN	BIT(4)
++#define RCC_MP_APB1ENSETR_TIM7EN	BIT(5)
++#define RCC_MP_APB1ENSETR_LPTIM1EN	BIT(9)
++#define RCC_MP_APB1ENSETR_SPI2EN	BIT(11)
++#define RCC_MP_APB1ENSETR_SPI3EN	BIT(12)
++#define RCC_MP_APB1ENSETR_USART3EN	BIT(15)
++#define RCC_MP_APB1ENSETR_UART4EN	BIT(16)
++#define RCC_MP_APB1ENSETR_UART5EN	BIT(17)
++#define RCC_MP_APB1ENSETR_UART7EN	BIT(18)
++#define RCC_MP_APB1ENSETR_UART8EN	BIT(19)
++#define RCC_MP_APB1ENSETR_I2C1EN	BIT(21)
++#define RCC_MP_APB1ENSETR_I2C2EN	BIT(22)
++#define RCC_MP_APB1ENSETR_SPDIFEN	BIT(26)
++
++/* RCC_MP_APB1ENCLRR register fields */
++#define RCC_MP_APB1ENCLRR_TIM2EN	BIT(0)
++#define RCC_MP_APB1ENCLRR_TIM3EN	BIT(1)
++#define RCC_MP_APB1ENCLRR_TIM4EN	BIT(2)
++#define RCC_MP_APB1ENCLRR_TIM5EN	BIT(3)
++#define RCC_MP_APB1ENCLRR_TIM6EN	BIT(4)
++#define RCC_MP_APB1ENCLRR_TIM7EN	BIT(5)
++#define RCC_MP_APB1ENCLRR_LPTIM1EN	BIT(9)
++#define RCC_MP_APB1ENCLRR_SPI2EN	BIT(11)
++#define RCC_MP_APB1ENCLRR_SPI3EN	BIT(12)
++#define RCC_MP_APB1ENCLRR_USART3EN	BIT(15)
++#define RCC_MP_APB1ENCLRR_UART4EN	BIT(16)
++#define RCC_MP_APB1ENCLRR_UART5EN	BIT(17)
++#define RCC_MP_APB1ENCLRR_UART7EN	BIT(18)
++#define RCC_MP_APB1ENCLRR_UART8EN	BIT(19)
++#define RCC_MP_APB1ENCLRR_I2C1EN	BIT(21)
++#define RCC_MP_APB1ENCLRR_I2C2EN	BIT(22)
++#define RCC_MP_APB1ENCLRR_SPDIFEN	BIT(26)
++
++/* RCC_MP_APB2ENSETR register fields */
++#define RCC_MP_APB2ENSETR_TIM1EN	BIT(0)
++#define RCC_MP_APB2ENSETR_TIM8EN	BIT(1)
++#define RCC_MP_APB2ENSETR_SPI1EN	BIT(8)
++#define RCC_MP_APB2ENSETR_USART6EN	BIT(13)
++#define RCC_MP_APB2ENSETR_SAI1EN	BIT(16)
++#define RCC_MP_APB2ENSETR_SAI2EN	BIT(17)
++#define RCC_MP_APB2ENSETR_DFSDMEN	BIT(20)
++#define RCC_MP_APB2ENSETR_ADFSDMEN	BIT(21)
++#define RCC_MP_APB2ENSETR_FDCANEN	BIT(24)
++
++/* RCC_MP_APB2ENCLRR register fields */
++#define RCC_MP_APB2ENCLRR_TIM1EN	BIT(0)
++#define RCC_MP_APB2ENCLRR_TIM8EN	BIT(1)
++#define RCC_MP_APB2ENCLRR_SPI1EN	BIT(8)
++#define RCC_MP_APB2ENCLRR_USART6EN	BIT(13)
++#define RCC_MP_APB2ENCLRR_SAI1EN	BIT(16)
++#define RCC_MP_APB2ENCLRR_SAI2EN	BIT(17)
++#define RCC_MP_APB2ENCLRR_DFSDMEN	BIT(20)
++#define RCC_MP_APB2ENCLRR_ADFSDMEN	BIT(21)
++#define RCC_MP_APB2ENCLRR_FDCANEN	BIT(24)
++
++/* RCC_MP_APB3ENSETR register fields */
++#define RCC_MP_APB3ENSETR_LPTIM2EN	BIT(0)
++#define RCC_MP_APB3ENSETR_LPTIM3EN	BIT(1)
++#define RCC_MP_APB3ENSETR_LPTIM4EN	BIT(2)
++#define RCC_MP_APB3ENSETR_LPTIM5EN	BIT(3)
++#define RCC_MP_APB3ENSETR_VREFEN	BIT(13)
++#define RCC_MP_APB3ENSETR_DTSEN		BIT(16)
++#define RCC_MP_APB3ENSETR_PMBCTRLEN	BIT(17)
++#define RCC_MP_APB3ENSETR_HDPEN		BIT(20)
++
++/* RCC_MP_APB3ENCLRR register fields */
++#define RCC_MP_APB3ENCLRR_LPTIM2EN	BIT(0)
++#define RCC_MP_APB3ENCLRR_LPTIM3EN	BIT(1)
++#define RCC_MP_APB3ENCLRR_LPTIM4EN	BIT(2)
++#define RCC_MP_APB3ENCLRR_LPTIM5EN	BIT(3)
++#define RCC_MP_APB3ENCLRR_VREFEN	BIT(13)
++#define RCC_MP_APB3ENCLRR_DTSEN		BIT(16)
++#define RCC_MP_APB3ENCLRR_PMBCTRLEN	BIT(17)
++#define RCC_MP_APB3ENCLRR_HDPEN		BIT(20)
++
++/* RCC_MP_S_APB3ENSETR register fields */
++#define RCC_MP_S_APB3ENSETR_SYSCFGEN	BIT(0)
++
++/* RCC_MP_S_APB3ENCLRR register fields */
++#define RCC_MP_S_APB3ENCLRR_SYSCFGEN	BIT(0)
++
++/* RCC_MP_NS_APB3ENSETR register fields */
++#define RCC_MP_NS_APB3ENSETR_SYSCFGEN	BIT(0)
++
++/* RCC_MP_NS_APB3ENCLRR register fields */
++#define RCC_MP_NS_APB3ENCLRR_SYSCFGEN	BIT(0)
++
++/* RCC_MP_APB4ENSETR register fields */
++#define RCC_MP_APB4ENSETR_DCMIPPEN	BIT(1)
++#define RCC_MP_APB4ENSETR_DDRPERFMEN	BIT(8)
++#define RCC_MP_APB4ENSETR_IWDG2APBEN	BIT(15)
++#define RCC_MP_APB4ENSETR_USBPHYEN	BIT(16)
++#define RCC_MP_APB4ENSETR_STGENROEN	BIT(20)
++
++/* RCC_MP_APB4ENCLRR register fields */
++#define RCC_MP_APB4ENCLRR_DCMIPPEN	BIT(1)
++#define RCC_MP_APB4ENCLRR_DDRPERFMEN	BIT(8)
++#define RCC_MP_APB4ENCLRR_IWDG2APBEN	BIT(15)
++#define RCC_MP_APB4ENCLRR_USBPHYEN	BIT(16)
++#define RCC_MP_APB4ENCLRR_STGENROEN	BIT(20)
++
++/* RCC_MP_S_APB4ENSETR register fields */
++#define RCC_MP_S_APB4ENSETR_LTDCEN	BIT(0)
++
++/* RCC_MP_S_APB4ENCLRR register fields */
++#define RCC_MP_S_APB4ENCLRR_LTDCEN	BIT(0)
++
++/* RCC_MP_NS_APB4ENSETR register fields */
++#define RCC_MP_NS_APB4ENSETR_LTDCEN	BIT(0)
++
++/* RCC_MP_NS_APB4ENCLRR register fields */
++#define RCC_MP_NS_APB4ENCLRR_LTDCEN	BIT(0)
++
++/* RCC_MP_APB5ENSETR register fields */
++#define RCC_MP_APB5ENSETR_RTCAPBEN	BIT(8)
++#define RCC_MP_APB5ENSETR_TZCEN		BIT(11)
++#define RCC_MP_APB5ENSETR_ETZPCEN	BIT(13)
++#define RCC_MP_APB5ENSETR_IWDG1APBEN	BIT(15)
++#define RCC_MP_APB5ENSETR_BSECEN	BIT(16)
++#define RCC_MP_APB5ENSETR_STGENCEN	BIT(20)
++
++/* RCC_MP_APB5ENCLRR register fields */
++#define RCC_MP_APB5ENCLRR_RTCAPBEN	BIT(8)
++#define RCC_MP_APB5ENCLRR_TZCEN		BIT(11)
++#define RCC_MP_APB5ENCLRR_ETZPCEN	BIT(13)
++#define RCC_MP_APB5ENCLRR_IWDG1APBEN	BIT(15)
++#define RCC_MP_APB5ENCLRR_BSECEN	BIT(16)
++#define RCC_MP_APB5ENCLRR_STGENCEN	BIT(20)
++
++/* RCC_MP_APB6ENSETR register fields */
++#define RCC_MP_APB6ENSETR_USART1EN	BIT(0)
++#define RCC_MP_APB6ENSETR_USART2EN	BIT(1)
++#define RCC_MP_APB6ENSETR_SPI4EN	BIT(2)
++#define RCC_MP_APB6ENSETR_SPI5EN	BIT(3)
++#define RCC_MP_APB6ENSETR_I2C3EN	BIT(4)
++#define RCC_MP_APB6ENSETR_I2C4EN	BIT(5)
++#define RCC_MP_APB6ENSETR_I2C5EN	BIT(6)
++#define RCC_MP_APB6ENSETR_TIM12EN	BIT(7)
++#define RCC_MP_APB6ENSETR_TIM13EN	BIT(8)
++#define RCC_MP_APB6ENSETR_TIM14EN	BIT(9)
++#define RCC_MP_APB6ENSETR_TIM15EN	BIT(10)
++#define RCC_MP_APB6ENSETR_TIM16EN	BIT(11)
++#define RCC_MP_APB6ENSETR_TIM17EN	BIT(12)
++
++/* RCC_MP_APB6ENCLRR register fields */
++#define RCC_MP_APB6ENCLRR_USART1EN	BIT(0)
++#define RCC_MP_APB6ENCLRR_USART2EN	BIT(1)
++#define RCC_MP_APB6ENCLRR_SPI4EN	BIT(2)
++#define RCC_MP_APB6ENCLRR_SPI5EN	BIT(3)
++#define RCC_MP_APB6ENCLRR_I2C3EN	BIT(4)
++#define RCC_MP_APB6ENCLRR_I2C4EN	BIT(5)
++#define RCC_MP_APB6ENCLRR_I2C5EN	BIT(6)
++#define RCC_MP_APB6ENCLRR_TIM12EN	BIT(7)
++#define RCC_MP_APB6ENCLRR_TIM13EN	BIT(8)
++#define RCC_MP_APB6ENCLRR_TIM14EN	BIT(9)
++#define RCC_MP_APB6ENCLRR_TIM15EN	BIT(10)
++#define RCC_MP_APB6ENCLRR_TIM16EN	BIT(11)
++#define RCC_MP_APB6ENCLRR_TIM17EN	BIT(12)
++
++/* RCC_MP_AHB2ENSETR register fields */
++#define RCC_MP_AHB2ENSETR_DMA1EN	BIT(0)
++#define RCC_MP_AHB2ENSETR_DMA2EN	BIT(1)
++#define RCC_MP_AHB2ENSETR_DMAMUX1EN	BIT(2)
++#define RCC_MP_AHB2ENSETR_DMA3EN	BIT(3)
++#define RCC_MP_AHB2ENSETR_DMAMUX2EN	BIT(4)
++#define RCC_MP_AHB2ENSETR_ADC1EN	BIT(5)
++#define RCC_MP_AHB2ENSETR_ADC2EN	BIT(6)
++#define RCC_MP_AHB2ENSETR_USBOEN	BIT(8)
++
++/* RCC_MP_AHB2ENCLRR register fields */
++#define RCC_MP_AHB2ENCLRR_DMA1EN	BIT(0)
++#define RCC_MP_AHB2ENCLRR_DMA2EN	BIT(1)
++#define RCC_MP_AHB2ENCLRR_DMAMUX1EN	BIT(2)
++#define RCC_MP_AHB2ENCLRR_DMA3EN	BIT(3)
++#define RCC_MP_AHB2ENCLRR_DMAMUX2EN	BIT(4)
++#define RCC_MP_AHB2ENCLRR_ADC1EN	BIT(5)
++#define RCC_MP_AHB2ENCLRR_ADC2EN	BIT(6)
++#define RCC_MP_AHB2ENCLRR_USBOEN	BIT(8)
++
++/* RCC_MP_AHB4ENSETR register fields */
++#define RCC_MP_AHB4ENSETR_TSCEN		BIT(15)
++
++/* RCC_MP_AHB4ENCLRR register fields */
++#define RCC_MP_AHB4ENCLRR_TSCEN		BIT(15)
++
++/* RCC_MP_S_AHB4ENSETR register fields */
++#define RCC_MP_S_AHB4ENSETR_GPIOAEN	BIT(0)
++#define RCC_MP_S_AHB4ENSETR_GPIOBEN	BIT(1)
++#define RCC_MP_S_AHB4ENSETR_GPIOCEN	BIT(2)
++#define RCC_MP_S_AHB4ENSETR_GPIODEN	BIT(3)
++#define RCC_MP_S_AHB4ENSETR_GPIOEEN	BIT(4)
++#define RCC_MP_S_AHB4ENSETR_GPIOFEN	BIT(5)
++#define RCC_MP_S_AHB4ENSETR_GPIOGEN	BIT(6)
++#define RCC_MP_S_AHB4ENSETR_GPIOHEN	BIT(7)
++#define RCC_MP_S_AHB4ENSETR_GPIOIEN	BIT(8)
++
++/* RCC_MP_S_AHB4ENCLRR register fields */
++#define RCC_MP_S_AHB4ENCLRR_GPIOAEN	BIT(0)
++#define RCC_MP_S_AHB4ENCLRR_GPIOBEN	BIT(1)
++#define RCC_MP_S_AHB4ENCLRR_GPIOCEN	BIT(2)
++#define RCC_MP_S_AHB4ENCLRR_GPIODEN	BIT(3)
++#define RCC_MP_S_AHB4ENCLRR_GPIOEEN	BIT(4)
++#define RCC_MP_S_AHB4ENCLRR_GPIOFEN	BIT(5)
++#define RCC_MP_S_AHB4ENCLRR_GPIOGEN	BIT(6)
++#define RCC_MP_S_AHB4ENCLRR_GPIOHEN	BIT(7)
++#define RCC_MP_S_AHB4ENCLRR_GPIOIEN	BIT(8)
++
++/* RCC_MP_NS_AHB4ENSETR register fields */
++#define RCC_MP_NS_AHB4ENSETR_GPIOAEN	BIT(0)
++#define RCC_MP_NS_AHB4ENSETR_GPIOBEN	BIT(1)
++#define RCC_MP_NS_AHB4ENSETR_GPIOCEN	BIT(2)
++#define RCC_MP_NS_AHB4ENSETR_GPIODEN	BIT(3)
++#define RCC_MP_NS_AHB4ENSETR_GPIOEEN	BIT(4)
++#define RCC_MP_NS_AHB4ENSETR_GPIOFEN	BIT(5)
++#define RCC_MP_NS_AHB4ENSETR_GPIOGEN	BIT(6)
++#define RCC_MP_NS_AHB4ENSETR_GPIOHEN	BIT(7)
++#define RCC_MP_NS_AHB4ENSETR_GPIOIEN	BIT(8)
++
++/* RCC_MP_NS_AHB4ENCLRR register fields */
++#define RCC_MP_NS_AHB4ENCLRR_GPIOAEN	BIT(0)
++#define RCC_MP_NS_AHB4ENCLRR_GPIOBEN	BIT(1)
++#define RCC_MP_NS_AHB4ENCLRR_GPIOCEN	BIT(2)
++#define RCC_MP_NS_AHB4ENCLRR_GPIODEN	BIT(3)
++#define RCC_MP_NS_AHB4ENCLRR_GPIOEEN	BIT(4)
++#define RCC_MP_NS_AHB4ENCLRR_GPIOFEN	BIT(5)
++#define RCC_MP_NS_AHB4ENCLRR_GPIOGEN	BIT(6)
++#define RCC_MP_NS_AHB4ENCLRR_GPIOHEN	BIT(7)
++#define RCC_MP_NS_AHB4ENCLRR_GPIOIEN	BIT(8)
++
++/* RCC_MP_AHB5ENSETR register fields */
++#define RCC_MP_AHB5ENSETR_PKAEN		BIT(2)
++#define RCC_MP_AHB5ENSETR_SAESEN	BIT(3)
++#define RCC_MP_AHB5ENSETR_CRYP1EN	BIT(4)
++#define RCC_MP_AHB5ENSETR_HASH1EN	BIT(5)
++#define RCC_MP_AHB5ENSETR_RNG1EN	BIT(6)
++#define RCC_MP_AHB5ENSETR_BKPSRAMEN	BIT(8)
++#define RCC_MP_AHB5ENSETR_AXIMCEN	BIT(16)
++
++/* RCC_MP_AHB5ENCLRR register fields */
++#define RCC_MP_AHB5ENCLRR_PKAEN		BIT(2)
++#define RCC_MP_AHB5ENCLRR_SAESEN	BIT(3)
++#define RCC_MP_AHB5ENCLRR_CRYP1EN	BIT(4)
++#define RCC_MP_AHB5ENCLRR_HASH1EN	BIT(5)
++#define RCC_MP_AHB5ENCLRR_RNG1EN	BIT(6)
++#define RCC_MP_AHB5ENCLRR_BKPSRAMEN	BIT(8)
++#define RCC_MP_AHB5ENCLRR_AXIMCEN	BIT(16)
++
++/* RCC_MP_AHB6ENSETR register fields */
++#define RCC_MP_AHB6ENSETR_MCEEN		BIT(1)
++#define RCC_MP_AHB6ENSETR_ETH1CKEN	BIT(7)
++#define RCC_MP_AHB6ENSETR_ETH1TXEN	BIT(8)
++#define RCC_MP_AHB6ENSETR_ETH1RXEN	BIT(9)
++#define RCC_MP_AHB6ENSETR_ETH1MACEN	BIT(10)
++#define RCC_MP_AHB6ENSETR_FMCEN		BIT(12)
++#define RCC_MP_AHB6ENSETR_QSPIEN	BIT(14)
++#define RCC_MP_AHB6ENSETR_SDMMC1EN	BIT(16)
++#define RCC_MP_AHB6ENSETR_SDMMC2EN	BIT(17)
++#define RCC_MP_AHB6ENSETR_CRC1EN	BIT(20)
++#define RCC_MP_AHB6ENSETR_USBHEN	BIT(24)
++#define RCC_MP_AHB6ENSETR_ETH2CKEN	BIT(27)
++#define RCC_MP_AHB6ENSETR_ETH2TXEN	BIT(28)
++#define RCC_MP_AHB6ENSETR_ETH2RXEN	BIT(29)
++#define RCC_MP_AHB6ENSETR_ETH2MACEN	BIT(30)
++
++/* RCC_MP_AHB6ENCLRR register fields */
++#define RCC_MP_AHB6ENCLRR_MCEEN		BIT(1)
++#define RCC_MP_AHB6ENCLRR_ETH1CKEN	BIT(7)
++#define RCC_MP_AHB6ENCLRR_ETH1TXEN	BIT(8)
++#define RCC_MP_AHB6ENCLRR_ETH1RXEN	BIT(9)
++#define RCC_MP_AHB6ENCLRR_ETH1MACEN	BIT(10)
++#define RCC_MP_AHB6ENCLRR_FMCEN		BIT(12)
++#define RCC_MP_AHB6ENCLRR_QSPIEN	BIT(14)
++#define RCC_MP_AHB6ENCLRR_SDMMC1EN	BIT(16)
++#define RCC_MP_AHB6ENCLRR_SDMMC2EN	BIT(17)
++#define RCC_MP_AHB6ENCLRR_CRC1EN	BIT(20)
++#define RCC_MP_AHB6ENCLRR_USBHEN	BIT(24)
++#define RCC_MP_AHB6ENCLRR_ETH2CKEN	BIT(27)
++#define RCC_MP_AHB6ENCLRR_ETH2TXEN	BIT(28)
++#define RCC_MP_AHB6ENCLRR_ETH2RXEN	BIT(29)
++#define RCC_MP_AHB6ENCLRR_ETH2MACEN	BIT(30)
++
++/* RCC_MP_S_AHB6ENSETR register fields */
++#define RCC_MP_S_AHB6ENSETR_MDMAEN	BIT(0)
++
++/* RCC_MP_S_AHB6ENCLRR register fields */
++#define RCC_MP_S_AHB6ENCLRR_MDMAEN	BIT(0)
++
++/* RCC_MP_NS_AHB6ENSETR register fields */
++#define RCC_MP_NS_AHB6ENSETR_MDMAEN	BIT(0)
++
++/* RCC_MP_NS_AHB6ENCLRR register fields */
++#define RCC_MP_NS_AHB6ENCLRR_MDMAEN	BIT(0)
++
++/* RCC_MP_APB1LPENSETR register fields */
++#define RCC_MP_APB1LPENSETR_TIM2LPEN	BIT(0)
++#define RCC_MP_APB1LPENSETR_TIM3LPEN	BIT(1)
++#define RCC_MP_APB1LPENSETR_TIM4LPEN	BIT(2)
++#define RCC_MP_APB1LPENSETR_TIM5LPEN	BIT(3)
++#define RCC_MP_APB1LPENSETR_TIM6LPEN	BIT(4)
++#define RCC_MP_APB1LPENSETR_TIM7LPEN	BIT(5)
++#define RCC_MP_APB1LPENSETR_LPTIM1LPEN	BIT(9)
++#define RCC_MP_APB1LPENSETR_SPI2LPEN	BIT(11)
++#define RCC_MP_APB1LPENSETR_SPI3LPEN	BIT(12)
++#define RCC_MP_APB1LPENSETR_USART3LPEN	BIT(15)
++#define RCC_MP_APB1LPENSETR_UART4LPEN	BIT(16)
++#define RCC_MP_APB1LPENSETR_UART5LPEN	BIT(17)
++#define RCC_MP_APB1LPENSETR_UART7LPEN	BIT(18)
++#define RCC_MP_APB1LPENSETR_UART8LPEN	BIT(19)
++#define RCC_MP_APB1LPENSETR_I2C1LPEN	BIT(21)
++#define RCC_MP_APB1LPENSETR_I2C2LPEN	BIT(22)
++#define RCC_MP_APB1LPENSETR_SPDIFLPEN	BIT(26)
++
++/* RCC_MP_APB1LPENCLRR register fields */
++#define RCC_MP_APB1LPENCLRR_TIM2LPEN	BIT(0)
++#define RCC_MP_APB1LPENCLRR_TIM3LPEN	BIT(1)
++#define RCC_MP_APB1LPENCLRR_TIM4LPEN	BIT(2)
++#define RCC_MP_APB1LPENCLRR_TIM5LPEN	BIT(3)
++#define RCC_MP_APB1LPENCLRR_TIM6LPEN	BIT(4)
++#define RCC_MP_APB1LPENCLRR_TIM7LPEN	BIT(5)
++#define RCC_MP_APB1LPENCLRR_LPTIM1LPEN	BIT(9)
++#define RCC_MP_APB1LPENCLRR_SPI2LPEN	BIT(11)
++#define RCC_MP_APB1LPENCLRR_SPI3LPEN	BIT(12)
++#define RCC_MP_APB1LPENCLRR_USART3LPEN	BIT(15)
++#define RCC_MP_APB1LPENCLRR_UART4LPEN	BIT(16)
++#define RCC_MP_APB1LPENCLRR_UART5LPEN	BIT(17)
++#define RCC_MP_APB1LPENCLRR_UART7LPEN	BIT(18)
++#define RCC_MP_APB1LPENCLRR_UART8LPEN	BIT(19)
++#define RCC_MP_APB1LPENCLRR_I2C1LPEN	BIT(21)
++#define RCC_MP_APB1LPENCLRR_I2C2LPEN	BIT(22)
++#define RCC_MP_APB1LPENCLRR_SPDIFLPEN	BIT(26)
++
++/* RCC_MP_APB2LPENSETR register fields */
++#define RCC_MP_APB2LPENSETR_TIM1LPEN	BIT(0)
++#define RCC_MP_APB2LPENSETR_TIM8LPEN	BIT(1)
++#define RCC_MP_APB2LPENSETR_SPI1LPEN	BIT(8)
++#define RCC_MP_APB2LPENSETR_USART6LPEN	BIT(13)
++#define RCC_MP_APB2LPENSETR_SAI1LPEN	BIT(16)
++#define RCC_MP_APB2LPENSETR_SAI2LPEN	BIT(17)
++#define RCC_MP_APB2LPENSETR_DFSDMLPEN	BIT(20)
++#define RCC_MP_APB2LPENSETR_ADFSDMLPEN	BIT(21)
++#define RCC_MP_APB2LPENSETR_FDCANLPEN	BIT(24)
++
++/* RCC_MP_APB2LPENCLRR register fields */
++#define RCC_MP_APB2LPENCLRR_TIM1LPEN	BIT(0)
++#define RCC_MP_APB2LPENCLRR_TIM8LPEN	BIT(1)
++#define RCC_MP_APB2LPENCLRR_SPI1LPEN	BIT(8)
++#define RCC_MP_APB2LPENCLRR_USART6LPEN	BIT(13)
++#define RCC_MP_APB2LPENCLRR_SAI1LPEN	BIT(16)
++#define RCC_MP_APB2LPENCLRR_SAI2LPEN	BIT(17)
++#define RCC_MP_APB2LPENCLRR_DFSDMLPEN	BIT(20)
++#define RCC_MP_APB2LPENCLRR_ADFSDMLPEN	BIT(21)
++#define RCC_MP_APB2LPENCLRR_FDCANLPEN	BIT(24)
++
++/* RCC_MP_APB3LPENSETR register fields */
++#define RCC_MP_APB3LPENSETR_LPTIM2LPEN	BIT(0)
++#define RCC_MP_APB3LPENSETR_LPTIM3LPEN	BIT(1)
++#define RCC_MP_APB3LPENSETR_LPTIM4LPEN	BIT(2)
++#define RCC_MP_APB3LPENSETR_LPTIM5LPEN	BIT(3)
++#define RCC_MP_APB3LPENSETR_VREFLPEN	BIT(13)
++#define RCC_MP_APB3LPENSETR_DTSLPEN	BIT(16)
++#define RCC_MP_APB3LPENSETR_PMBCTRLLPEN	BIT(17)
++
++/* RCC_MP_APB3LPENCLRR register fields */
++#define RCC_MP_APB3LPENCLRR_LPTIM2LPEN	BIT(0)
++#define RCC_MP_APB3LPENCLRR_LPTIM3LPEN	BIT(1)
++#define RCC_MP_APB3LPENCLRR_LPTIM4LPEN	BIT(2)
++#define RCC_MP_APB3LPENCLRR_LPTIM5LPEN	BIT(3)
++#define RCC_MP_APB3LPENCLRR_VREFLPEN	BIT(13)
++#define RCC_MP_APB3LPENCLRR_DTSLPEN	BIT(16)
++#define RCC_MP_APB3LPENCLRR_PMBCTRLLPEN	BIT(17)
++
++/* RCC_MP_S_APB3LPENSETR register fields */
++#define RCC_MP_S_APB3LPENSETR_SYSCFGLPEN	BIT(0)
++
++/* RCC_MP_S_APB3LPENCLRR register fields */
++#define RCC_MP_S_APB3LPENCLRR_SYSCFGLPEN	BIT(0)
++
++/* RCC_MP_NS_APB3LPENSETR register fields */
++#define RCC_MP_NS_APB3LPENSETR_SYSCFGLPEN	BIT(0)
++
++/* RCC_MP_NS_APB3LPENCLRR register fields */
++#define RCC_MP_NS_APB3LPENCLRR_SYSCFGLPEN	BIT(0)
++
++/* RCC_MP_APB4LPENSETR register fields */
++#define RCC_MP_APB4LPENSETR_DCMIPPLPEN		BIT(1)
++#define RCC_MP_APB4LPENSETR_DDRPERFMLPEN	BIT(8)
++#define RCC_MP_APB4LPENSETR_IWDG2APBLPEN	BIT(15)
++#define RCC_MP_APB4LPENSETR_USBPHYLPEN		BIT(16)
++#define RCC_MP_APB4LPENSETR_STGENROLPEN		BIT(20)
++#define RCC_MP_APB4LPENSETR_STGENROSTPEN	BIT(21)
++
++/* RCC_MP_APB4LPENCLRR register fields */
++#define RCC_MP_APB4LPENCLRR_DCMIPPLPEN		BIT(1)
++#define RCC_MP_APB4LPENCLRR_DDRPERFMLPEN	BIT(8)
++#define RCC_MP_APB4LPENCLRR_IWDG2APBLPEN	BIT(15)
++#define RCC_MP_APB4LPENCLRR_USBPHYLPEN		BIT(16)
++#define RCC_MP_APB4LPENCLRR_STGENROLPEN		BIT(20)
++#define RCC_MP_APB4LPENCLRR_STGENROSTPEN	BIT(21)
++
++/* RCC_MP_S_APB4LPENSETR register fields */
++#define RCC_MP_S_APB4LPENSETR_LTDCLPEN	BIT(0)
++
++/* RCC_MP_S_APB4LPENCLRR register fields */
++#define RCC_MP_S_APB4LPENCLRR_LTDCLPEN	BIT(0)
++
++/* RCC_MP_NS_APB4LPENSETR register fields */
++#define RCC_MP_NS_APB4LPENSETR_LTDCLPEN	BIT(0)
++
++/* RCC_MP_NS_APB4LPENCLRR register fields */
++#define RCC_MP_NS_APB4LPENCLRR_LTDCLPEN	BIT(0)
++
++/* RCC_MP_APB5LPENSETR register fields */
++#define RCC_MP_APB5LPENSETR_RTCAPBLPEN		BIT(8)
++#define RCC_MP_APB5LPENSETR_TZCLPEN		BIT(11)
++#define RCC_MP_APB5LPENSETR_ETZPCLPEN		BIT(13)
++#define RCC_MP_APB5LPENSETR_IWDG1APBLPEN	BIT(15)
++#define RCC_MP_APB5LPENSETR_BSECLPEN		BIT(16)
++#define RCC_MP_APB5LPENSETR_STGENCLPEN		BIT(20)
++#define RCC_MP_APB5LPENSETR_STGENCSTPEN		BIT(21)
++
++/* RCC_MP_APB5LPENCLRR register fields */
++#define RCC_MP_APB5LPENCLRR_RTCAPBLPEN		BIT(8)
++#define RCC_MP_APB5LPENCLRR_TZCLPEN		BIT(11)
++#define RCC_MP_APB5LPENCLRR_ETZPCLPEN		BIT(13)
++#define RCC_MP_APB5LPENCLRR_IWDG1APBLPEN	BIT(15)
++#define RCC_MP_APB5LPENCLRR_BSECLPEN		BIT(16)
++#define RCC_MP_APB5LPENCLRR_STGENCLPEN		BIT(20)
++#define RCC_MP_APB5LPENCLRR_STGENCSTPEN		BIT(21)
++
++/* RCC_MP_APB6LPENSETR register fields */
++#define RCC_MP_APB6LPENSETR_USART1LPEN	BIT(0)
++#define RCC_MP_APB6LPENSETR_USART2LPEN	BIT(1)
++#define RCC_MP_APB6LPENSETR_SPI4LPEN	BIT(2)
++#define RCC_MP_APB6LPENSETR_SPI5LPEN	BIT(3)
++#define RCC_MP_APB6LPENSETR_I2C3LPEN	BIT(4)
++#define RCC_MP_APB6LPENSETR_I2C4LPEN	BIT(5)
++#define RCC_MP_APB6LPENSETR_I2C5LPEN	BIT(6)
++#define RCC_MP_APB6LPENSETR_TIM12LPEN	BIT(7)
++#define RCC_MP_APB6LPENSETR_TIM13LPEN	BIT(8)
++#define RCC_MP_APB6LPENSETR_TIM14LPEN	BIT(9)
++#define RCC_MP_APB6LPENSETR_TIM15LPEN	BIT(10)
++#define RCC_MP_APB6LPENSETR_TIM16LPEN	BIT(11)
++#define RCC_MP_APB6LPENSETR_TIM17LPEN	BIT(12)
++
++/* RCC_MP_APB6LPENCLRR register fields */
++#define RCC_MP_APB6LPENCLRR_USART1LPEN	BIT(0)
++#define RCC_MP_APB6LPENCLRR_USART2LPEN	BIT(1)
++#define RCC_MP_APB6LPENCLRR_SPI4LPEN	BIT(2)
++#define RCC_MP_APB6LPENCLRR_SPI5LPEN	BIT(3)
++#define RCC_MP_APB6LPENCLRR_I2C3LPEN	BIT(4)
++#define RCC_MP_APB6LPENCLRR_I2C4LPEN	BIT(5)
++#define RCC_MP_APB6LPENCLRR_I2C5LPEN	BIT(6)
++#define RCC_MP_APB6LPENCLRR_TIM12LPEN	BIT(7)
++#define RCC_MP_APB6LPENCLRR_TIM13LPEN	BIT(8)
++#define RCC_MP_APB6LPENCLRR_TIM14LPEN	BIT(9)
++#define RCC_MP_APB6LPENCLRR_TIM15LPEN	BIT(10)
++#define RCC_MP_APB6LPENCLRR_TIM16LPEN	BIT(11)
++#define RCC_MP_APB6LPENCLRR_TIM17LPEN	BIT(12)
++
++/* RCC_MP_AHB2LPENSETR register fields */
++#define RCC_MP_AHB2LPENSETR_DMA1LPEN	BIT(0)
++#define RCC_MP_AHB2LPENSETR_DMA2LPEN	BIT(1)
++#define RCC_MP_AHB2LPENSETR_DMAMUX1LPEN	BIT(2)
++#define RCC_MP_AHB2LPENSETR_DMA3LPEN	BIT(3)
++#define RCC_MP_AHB2LPENSETR_DMAMUX2LPEN	BIT(4)
++#define RCC_MP_AHB2LPENSETR_ADC1LPEN	BIT(5)
++#define RCC_MP_AHB2LPENSETR_ADC2LPEN	BIT(6)
++#define RCC_MP_AHB2LPENSETR_USBOLPEN	BIT(8)
++
++/* RCC_MP_AHB2LPENCLRR register fields */
++#define RCC_MP_AHB2LPENCLRR_DMA1LPEN	BIT(0)
++#define RCC_MP_AHB2LPENCLRR_DMA2LPEN	BIT(1)
++#define RCC_MP_AHB2LPENCLRR_DMAMUX1LPEN	BIT(2)
++#define RCC_MP_AHB2LPENCLRR_DMA3LPEN	BIT(3)
++#define RCC_MP_AHB2LPENCLRR_DMAMUX2LPEN	BIT(4)
++#define RCC_MP_AHB2LPENCLRR_ADC1LPEN	BIT(5)
++#define RCC_MP_AHB2LPENCLRR_ADC2LPEN	BIT(6)
++#define RCC_MP_AHB2LPENCLRR_USBOLPEN	BIT(8)
++
++/* RCC_MP_AHB4LPENSETR register fields */
++#define RCC_MP_AHB4LPENSETR_TSCLPEN	BIT(15)
++
++/* RCC_MP_AHB4LPENCLRR register fields */
++#define RCC_MP_AHB4LPENCLRR_TSCLPEN	BIT(15)
++
++/* RCC_MP_S_AHB4LPENSETR register fields */
++#define RCC_MP_S_AHB4LPENSETR_GPIOALPEN	BIT(0)
++#define RCC_MP_S_AHB4LPENSETR_GPIOBLPEN	BIT(1)
++#define RCC_MP_S_AHB4LPENSETR_GPIOCLPEN	BIT(2)
++#define RCC_MP_S_AHB4LPENSETR_GPIODLPEN	BIT(3)
++#define RCC_MP_S_AHB4LPENSETR_GPIOELPEN	BIT(4)
++#define RCC_MP_S_AHB4LPENSETR_GPIOFLPEN	BIT(5)
++#define RCC_MP_S_AHB4LPENSETR_GPIOGLPEN	BIT(6)
++#define RCC_MP_S_AHB4LPENSETR_GPIOHLPEN	BIT(7)
++#define RCC_MP_S_AHB4LPENSETR_GPIOILPEN	BIT(8)
++
++/* RCC_MP_S_AHB4LPENCLRR register fields */
++#define RCC_MP_S_AHB4LPENCLRR_GPIOALPEN	BIT(0)
++#define RCC_MP_S_AHB4LPENCLRR_GPIOBLPEN	BIT(1)
++#define RCC_MP_S_AHB4LPENCLRR_GPIOCLPEN	BIT(2)
++#define RCC_MP_S_AHB4LPENCLRR_GPIODLPEN	BIT(3)
++#define RCC_MP_S_AHB4LPENCLRR_GPIOELPEN	BIT(4)
++#define RCC_MP_S_AHB4LPENCLRR_GPIOFLPEN	BIT(5)
++#define RCC_MP_S_AHB4LPENCLRR_GPIOGLPEN	BIT(6)
++#define RCC_MP_S_AHB4LPENCLRR_GPIOHLPEN	BIT(7)
++#define RCC_MP_S_AHB4LPENCLRR_GPIOILPEN	BIT(8)
++
++/* RCC_MP_NS_AHB4LPENSETR register fields */
++#define RCC_MP_NS_AHB4LPENSETR_GPIOALPEN BIT(0)
++#define RCC_MP_NS_AHB4LPENSETR_GPIOBLPEN BIT(1)
++#define RCC_MP_NS_AHB4LPENSETR_GPIOCLPEN BIT(2)
++#define RCC_MP_NS_AHB4LPENSETR_GPIODLPEN BIT(3)
++#define RCC_MP_NS_AHB4LPENSETR_GPIOELPEN BIT(4)
++#define RCC_MP_NS_AHB4LPENSETR_GPIOFLPEN BIT(5)
++#define RCC_MP_NS_AHB4LPENSETR_GPIOGLPEN BIT(6)
++#define RCC_MP_NS_AHB4LPENSETR_GPIOHLPEN BIT(7)
++#define RCC_MP_NS_AHB4LPENSETR_GPIOILPEN BIT(8)
++
++/* RCC_MP_NS_AHB4LPENCLRR register fields */
++#define RCC_MP_NS_AHB4LPENCLRR_GPIOALPEN BIT(0)
++#define RCC_MP_NS_AHB4LPENCLRR_GPIOBLPEN BIT(1)
++#define RCC_MP_NS_AHB4LPENCLRR_GPIOCLPEN BIT(2)
++#define RCC_MP_NS_AHB4LPENCLRR_GPIODLPEN BIT(3)
++#define RCC_MP_NS_AHB4LPENCLRR_GPIOELPEN BIT(4)
++#define RCC_MP_NS_AHB4LPENCLRR_GPIOFLPEN BIT(5)
++#define RCC_MP_NS_AHB4LPENCLRR_GPIOGLPEN BIT(6)
++#define RCC_MP_NS_AHB4LPENCLRR_GPIOHLPEN BIT(7)
++#define RCC_MP_NS_AHB4LPENCLRR_GPIOILPEN BIT(8)
++
++/* RCC_MP_AHB5LPENSETR register fields */
++#define RCC_MP_AHB5LPENSETR_PKALPEN	BIT(2)
++#define RCC_MP_AHB5LPENSETR_SAESLPEN	BIT(3)
++#define RCC_MP_AHB5LPENSETR_CRYP1LPEN	BIT(4)
++#define RCC_MP_AHB5LPENSETR_HASH1LPEN	BIT(5)
++#define RCC_MP_AHB5LPENSETR_RNG1LPEN	BIT(6)
++#define RCC_MP_AHB5LPENSETR_BKPSRAMLPEN	BIT(8)
++
++/* RCC_MP_AHB5LPENCLRR register fields */
++#define RCC_MP_AHB5LPENCLRR_PKALPEN	BIT(2)
++#define RCC_MP_AHB5LPENCLRR_SAESLPEN	BIT(3)
++#define RCC_MP_AHB5LPENCLRR_CRYP1LPEN	BIT(4)
++#define RCC_MP_AHB5LPENCLRR_HASH1LPEN	BIT(5)
++#define RCC_MP_AHB5LPENCLRR_RNG1LPEN	BIT(6)
++#define RCC_MP_AHB5LPENCLRR_BKPSRAMLPEN	BIT(8)
++
++/* RCC_MP_AHB6LPENSETR register fields */
++#define RCC_MP_AHB6LPENSETR_MCELPEN	BIT(1)
++#define RCC_MP_AHB6LPENSETR_ETH1CKLPEN	BIT(7)
++#define RCC_MP_AHB6LPENSETR_ETH1TXLPEN	BIT(8)
++#define RCC_MP_AHB6LPENSETR_ETH1RXLPEN	BIT(9)
++#define RCC_MP_AHB6LPENSETR_ETH1MACLPEN	BIT(10)
++#define RCC_MP_AHB6LPENSETR_ETH1STPEN	BIT(11)
++#define RCC_MP_AHB6LPENSETR_FMCLPEN	BIT(12)
++#define RCC_MP_AHB6LPENSETR_QSPILPEN	BIT(14)
++#define RCC_MP_AHB6LPENSETR_SDMMC1LPEN	BIT(16)
++#define RCC_MP_AHB6LPENSETR_SDMMC2LPEN	BIT(17)
++#define RCC_MP_AHB6LPENSETR_CRC1LPEN	BIT(20)
++#define RCC_MP_AHB6LPENSETR_USBHLPEN	BIT(24)
++#define RCC_MP_AHB6LPENSETR_ETH2CKLPEN	BIT(27)
++#define RCC_MP_AHB6LPENSETR_ETH2TXLPEN	BIT(28)
++#define RCC_MP_AHB6LPENSETR_ETH2RXLPEN	BIT(29)
++#define RCC_MP_AHB6LPENSETR_ETH2MACLPEN	BIT(30)
++#define RCC_MP_AHB6LPENSETR_ETH2STPEN	BIT(31)
++
++/* RCC_MP_AHB6LPENCLRR register fields */
++#define RCC_MP_AHB6LPENCLRR_MCELPEN	BIT(1)
++#define RCC_MP_AHB6LPENCLRR_ETH1CKLPEN	BIT(7)
++#define RCC_MP_AHB6LPENCLRR_ETH1TXLPEN	BIT(8)
++#define RCC_MP_AHB6LPENCLRR_ETH1RXLPEN	BIT(9)
++#define RCC_MP_AHB6LPENCLRR_ETH1MACLPEN	BIT(10)
++#define RCC_MP_AHB6LPENCLRR_ETH1STPEN	BIT(11)
++#define RCC_MP_AHB6LPENCLRR_FMCLPEN	BIT(12)
++#define RCC_MP_AHB6LPENCLRR_QSPILPEN	BIT(14)
++#define RCC_MP_AHB6LPENCLRR_SDMMC1LPEN	BIT(16)
++#define RCC_MP_AHB6LPENCLRR_SDMMC2LPEN	BIT(17)
++#define RCC_MP_AHB6LPENCLRR_CRC1LPEN	BIT(20)
++#define RCC_MP_AHB6LPENCLRR_USBHLPEN	BIT(24)
++#define RCC_MP_AHB6LPENCLRR_ETH2CKLPEN	BIT(27)
++#define RCC_MP_AHB6LPENCLRR_ETH2TXLPEN	BIT(28)
++#define RCC_MP_AHB6LPENCLRR_ETH2RXLPEN	BIT(29)
++#define RCC_MP_AHB6LPENCLRR_ETH2MACLPEN	BIT(30)
++#define RCC_MP_AHB6LPENCLRR_ETH2STPEN	BIT(31)
++
++/* RCC_MP_S_AHB6LPENSETR register fields */
++#define RCC_MP_S_AHB6LPENSETR_MDMALPEN	BIT(0)
++
++/* RCC_MP_S_AHB6LPENCLRR register fields */
++#define RCC_MP_S_AHB6LPENCLRR_MDMALPEN	BIT(0)
++
++/* RCC_MP_NS_AHB6LPENSETR register fields */
++#define RCC_MP_NS_AHB6LPENSETR_MDMALPEN	BIT(0)
++
++/* RCC_MP_NS_AHB6LPENCLRR register fields */
++#define RCC_MP_NS_AHB6LPENCLRR_MDMALPEN	BIT(0)
++
++/* RCC_MP_S_AXIMLPENSETR register fields */
++#define RCC_MP_S_AXIMLPENSETR_SYSRAMLPEN BIT(0)
++
++/* RCC_MP_S_AXIMLPENCLRR register fields */
++#define RCC_MP_S_AXIMLPENCLRR_SYSRAMLPEN BIT(0)
++
++/* RCC_MP_NS_AXIMLPENSETR register fields */
++#define RCC_MP_NS_AXIMLPENSETR_SYSRAMLPEN BIT(0)
++
++/* RCC_MP_NS_AXIMLPENCLRR register fields */
++#define RCC_MP_NS_AXIMLPENCLRR_SYSRAMLPEN BIT(0)
++
++/* RCC_MP_MLAHBLPENSETR register fields */
++#define RCC_MP_MLAHBLPENSETR_SRAM1LPEN	BIT(0)
++#define RCC_MP_MLAHBLPENSETR_SRAM2LPEN	BIT(1)
++#define RCC_MP_MLAHBLPENSETR_SRAM3LPEN	BIT(2)
++
++/* RCC_MP_MLAHBLPENCLRR register fields */
++#define RCC_MP_MLAHBLPENCLRR_SRAM1LPEN	BIT(0)
++#define RCC_MP_MLAHBLPENCLRR_SRAM2LPEN	BIT(1)
++#define RCC_MP_MLAHBLPENCLRR_SRAM3LPEN	BIT(2)
++
++/* RCC_APB3SECSR register fields */
++#define RCC_APB3SECSR_LPTIM2SECF	0
++#define RCC_APB3SECSR_LPTIM3SECF	1
++#define RCC_APB3SECSR_VREFSECF		13
++
++/* RCC_APB4SECSR register fields */
++#define RCC_APB4SECSR_DCMIPPSECF	1
++#define RCC_APB4SECSR_USBPHYSECF	16
++
++/* RCC_APB5SECSR register fields */
++#define RCC_APB5SECSR_RTCSECF		8
++#define RCC_APB5SECSR_TZCSECF		11
++#define RCC_APB5SECSR_ETZPCSECF		13
++#define RCC_APB5SECSR_IWDG1SECF		15
++#define RCC_APB5SECSR_BSECSECF		16
++#define RCC_APB5SECSR_STGENCSECF_MASK	GENMASK(21, 20)
++#define RCC_APB5SECSR_STGENCSECF	20
++#define RCC_APB5SECSR_STGENROSECF	21
++
++/* RCC_APB6SECSR register fields */
++#define RCC_APB6SECSR_USART1SECF        0
++#define RCC_APB6SECSR_USART2SECF	1
++#define RCC_APB6SECSR_SPI4SECF		2
++#define RCC_APB6SECSR_SPI5SECF		3
++#define RCC_APB6SECSR_I2C3SECF		4
++#define RCC_APB6SECSR_I2C4SECF		5
++#define RCC_APB6SECSR_I2C5SECF		6
++#define RCC_APB6SECSR_TIM12SECF		7
++#define RCC_APB6SECSR_TIM13SECF		8
++#define RCC_APB6SECSR_TIM14SECF		9
++#define RCC_APB6SECSR_TIM15SECF		10
++#define RCC_APB6SECSR_TIM16SECF		11
++#define RCC_APB6SECSR_TIM17SECF		12
++
++/* RCC_AHB2SECSR register fields */
++#define RCC_AHB2SECSR_DMA3SECF		3
++#define RCC_AHB2SECSR_DMAMUX2SECF	4
++#define RCC_AHB2SECSR_ADC1SECF		5
++#define RCC_AHB2SECSR_ADC2SECF		6
++#define RCC_AHB2SECSR_USBOSECF		8
++
++/* RCC_AHB4SECSR register fields */
++#define RCC_AHB4SECSR_TSCSECF		15
++
++/* RCC_AHB5SECSR register fields */
++#define RCC_AHB5SECSR_PKASECF		2
++#define RCC_AHB5SECSR_SAESSECF		3
++#define RCC_AHB5SECSR_CRYP1SECF		4
++#define RCC_AHB5SECSR_HASH1SECF		5
++#define RCC_AHB5SECSR_RNG1SECF		6
++#define RCC_AHB5SECSR_BKPSRAMSECF	8
++
++/* RCC_AHB6SECSR register fields */
++#define RCC_AHB6SECSR_MCESECF		1
++#define RCC_AHB6SECSR_FMCSECF		12
++#define RCC_AHB6SECSR_QSPISECF		14
++#define RCC_AHB6SECSR_SDMMC1SECF	16
++#define RCC_AHB6SECSR_SDMMC2SECF	17
++
++#define RCC_AHB6SECSR_ETH1SECF_MASK	GENMASK(11, 7)
++#define RCC_AHB6SECSR_ETH2SECF_MASK	GENMASK(31, 27)
++#define RCC_AHB6SECSR_ETH1SECF_SHIFT	7
++#define RCC_AHB6SECSR_ETH2SECF_SHIFT	27
++
++#define RCC_AHB6SECSR_ETH1CKSECF	7
++#define RCC_AHB6SECSR_ETH1TXSECF	8
++#define RCC_AHB6SECSR_ETH1RXSECF	9
++#define RCC_AHB6SECSR_ETH1MACSECF	10
++#define RCC_AHB6SECSR_ETH1STPSECF	11
++
++#define RCC_AHB6SECSR_ETH2CKSECF	27
++#define RCC_AHB6SECSR_ETH2TXSECF	28
++#define RCC_AHB6SECSR_ETH2RXSECF	29
++#define RCC_AHB6SECSR_ETH2MACSECF	30
++#define RCC_AHB6SECSR_ETH2STPSECF	31
++
++/* RCC_VERR register fields */
++#define RCC_VERR_MINREV_MASK		GENMASK(3, 0)
++#define RCC_VERR_MAJREV_MASK		GENMASK(7, 4)
++#define RCC_VERR_MINREV_SHIFT		0
++#define RCC_VERR_MAJREV_SHIFT		4
++
++/* RCC_IDR register fields */
++#define RCC_IDR_ID_MASK			GENMASK(31, 0)
++#define RCC_IDR_ID_SHIFT		0
++
++/* RCC_SIDR register fields */
++#define RCC_SIDR_SID_MASK		GENMASK(31, 0)
++#define RCC_SIDR_SID_SHIFT		0
++
++#endif /* STM32MP13_RCC_H */
++
+diff --git a/drivers/clocksource/timer-stm32-lp.c b/drivers/clocksource/timer-stm32-lp.c
+index db2841d0b..90c10f378 100644
+--- a/drivers/clocksource/timer-stm32-lp.c
++++ b/drivers/clocksource/timer-stm32-lp.c
+@@ -168,9 +168,7 @@ static int stm32_clkevent_lp_probe(struct platform_device *pdev)
+ 	}
+ 
+ 	if (of_property_read_bool(pdev->dev.parent->of_node, "wakeup-source")) {
+-		ret = device_init_wakeup(&pdev->dev, true);
+-		if (ret)
+-			goto out_clk_disable;
++		device_set_wakeup_capable(&pdev->dev, true);
+ 
+ 		ret = dev_pm_set_wake_irq(&pdev->dev, irq);
+ 		if (ret)
+diff --git a/include/dt-bindings/clock/stm32mp1-clks.h b/include/dt-bindings/clock/stm32mp1-clks.h
+index e02770b98..2e23e0384 100644
+--- a/include/dt-bindings/clock/stm32mp1-clks.h
++++ b/include/dt-bindings/clock/stm32mp1-clks.h
+@@ -179,6 +179,12 @@
+ #define DAC12_K		168
+ #define ETHPTP_K	169
+ 
++#define PCLK1		170
++#define PCLK2		171
++#define PCLK3		172
++#define PCLK4		173
++#define PCLK5		174
++
+ /* PLL */
+ #define PLL1		176
+ #define PLL2		177
+@@ -249,30 +255,26 @@
+ #define STM32MP1_LAST_CLK 232
+ 
+ /* SCMI clock identifiers */
+-#define CK_SCMI0_HSE		0
+-#define CK_SCMI0_HSI		1
+-#define CK_SCMI0_CSI		2
+-#define CK_SCMI0_LSE		3
+-#define CK_SCMI0_LSI		4
+-#define CK_SCMI0_PLL2_Q		5
+-#define CK_SCMI0_PLL2_R		6
+-#define CK_SCMI0_MPU		7
+-#define CK_SCMI0_AXI		8
+-#define CK_SCMI0_BSEC		9
+-#define CK_SCMI0_CRYP1		10
+-#define CK_SCMI0_GPIOZ		11
+-#define CK_SCMI0_HASH1		12
+-#define CK_SCMI0_I2C4		13
+-#define CK_SCMI0_I2C6		14
+-#define CK_SCMI0_IWDG1		15
+-#define CK_SCMI0_RNG1		16
+-#define CK_SCMI0_RTC		17
+-#define CK_SCMI0_RTCAPB		18
+-#define CK_SCMI0_SPI6		19
+-#define CK_SCMI0_USART1		20
+-
+-#define CK_SCMI1_PLL3_Q		0
+-#define CK_SCMI1_PLL3_R		1
+-#define CK_SCMI1_MCU		2
++#define CK_SCMI_HSE		0
++#define CK_SCMI_HSI		1
++#define CK_SCMI_CSI		2
++#define CK_SCMI_LSE		3
++#define CK_SCMI_LSI		4
++#define CK_SCMI_PLL2_Q		5
++#define CK_SCMI_PLL2_R		6
++#define CK_SCMI_MPU		7
++#define CK_SCMI_AXI		8
++#define CK_SCMI_BSEC		9
++#define CK_SCMI_CRYP1		10
++#define CK_SCMI_GPIOZ		11
++#define CK_SCMI_HASH1		12
++#define CK_SCMI_I2C4		13
++#define CK_SCMI_I2C6		14
++#define CK_SCMI_IWDG1		15
++#define CK_SCMI_RNG1		16
++#define CK_SCMI_RTC		17
++#define CK_SCMI_RTCAPB		18
++#define CK_SCMI_SPI6		19
++#define CK_SCMI_USART1		20
+ 
+ #endif /* _DT_BINDINGS_STM32MP1_CLKS_H_ */
+diff --git a/include/dt-bindings/clock/stm32mp13-clks.h b/include/dt-bindings/clock/stm32mp13-clks.h
+new file mode 100644
+index 000000000..02befd25e
+--- /dev/null
++++ b/include/dt-bindings/clock/stm32mp13-clks.h
+@@ -0,0 +1,229 @@
++/* SPDX-License-Identifier: GPL-2.0+ or BSD-3-Clause */
++/*
++ * Copyright (C) STMicroelectronics 2020 - All Rights Reserved
++ * Author: Gabriel Fernandez <gabriel.fernandez@st.com> for STMicroelectronics.
++ */
++
++#ifndef _DT_BINDINGS_STM32MP13_CLKS_H_
++#define _DT_BINDINGS_STM32MP13_CLKS_H_
++
++/* OSCILLATOR clocks */
++#define CK_HSE		0
++#define CK_CSI		1
++#define CK_LSI		2
++#define CK_LSE		3
++#define CK_HSI		4
++#define CK_HSE_DIV2	5
++
++/* PLL */
++#define PLL1		6
++#define PLL2		7
++#define PLL3		8
++#define PLL4		9
++
++/* ODF */
++#define PLL1_P		10
++#define PLL1_Q		11
++#define PLL1_R		12
++#define PLL2_P		13
++#define PLL2_Q		14
++#define PLL2_R		15
++#define PLL3_P		16
++#define PLL3_Q		17
++#define PLL3_R		18
++#define PLL4_P		19
++#define PLL4_Q		20
++#define PLL4_R		21
++
++#define PCLK1		22
++#define PCLK2		23
++#define PCLK3		24
++#define PCLK4		25
++#define PCLK5		26
++#define PCLK6		27
++
++/* SYSTEM CLOCK */
++#define CK_PER		28
++#define CK_MPU		29
++#define CK_AXI		30
++#define CK_MLAHB	31
++
++/* BASE TIMER */
++#define CK_TIMG1	32
++#define CK_TIMG2	33
++#define CK_TIMG3	34
++
++/* AUX */
++#define RTC		35
++
++/* TRACE & DEBUG clocks */
++#define CK_DBG		36
++#define CK_TRACE	37
++
++/* MCO clocks */
++#define CK_MCO1		38
++#define CK_MCO2		39
++
++/*  IP clocks */
++#define SYSCFG		40
++#define VREF		41
++#define DTS		42
++#define PMBCTRL		43
++#define HDP		44
++#define IWDG2		45
++#define STGENRO		46
++#define USART1		47
++#define RTCAPB		48
++#define TZC		49
++#define TZPC		50
++#define IWDG1		51
++#define BSEC		52
++#define DMA1		53
++#define DMA2		54
++#define DMAMUX1		55
++#define DMAMUX2		56
++#define GPIOA		57
++#define GPIOB		58
++#define GPIOC		59
++#define GPIOD		60
++#define GPIOE		61
++#define GPIOF		62
++#define GPIOG		63
++#define GPIOH		64
++#define GPIOI		65
++#define CRYP1		66
++#define HASH1		67
++#define BKPSRAM		68
++#define MDMA		69
++#define CRC1		70
++#define USBH		71
++#define DMA3		72
++#define TSC		73
++#define PKA		74
++#define AXIMC		75
++#define MCE		76
++#define ETH1TX		77
++#define ETH2TX		78
++#define ETH1RX		79
++#define ETH2RX		80
++#define ETH1MAC		81
++#define ETH2MAC		82
++#define ETH1STP		83
++#define ETH2STP		84
++
++/* IP clocks with parents */
++#define SDMMC1_K	85
++#define SDMMC2_K	86
++#define ADC1_K		87
++#define ADC2_K		88
++#define FMC_K		89
++#define QSPI_K		90
++#define RNG1_K		91
++#define USBPHY_K	92
++#define STGEN_K		93
++#define SPDIF_K		94
++#define SPI1_K		95
++#define SPI2_K		96
++#define SPI3_K		97
++#define SPI4_K		98
++#define SPI5_K		99
++#define I2C1_K		100
++#define I2C2_K		101
++#define I2C3_K		102
++#define I2C4_K		103
++#define I2C5_K		104
++#define TIM2_K		105
++#define TIM3_K		106
++#define TIM4_K		107
++#define TIM5_K		108
++#define TIM6_K		109
++#define TIM7_K		110
++#define TIM12_K		111
++#define TIM13_K		112
++#define TIM14_K		113
++#define TIM1_K		114
++#define TIM8_K		115
++#define TIM15_K		116
++#define TIM16_K		117
++#define TIM17_K		118
++#define LPTIM1_K	119
++#define LPTIM2_K	120
++#define LPTIM3_K	121
++#define LPTIM4_K	122
++#define LPTIM5_K	123
++#define USART1_K	124
++#define USART2_K	125
++#define USART3_K	126
++#define UART4_K		127
++#define UART5_K		128
++#define USART6_K	129
++#define UART7_K		130
++#define UART8_K		131
++#define DFSDM_K		132
++#define FDCAN_K		133
++#define SAI1_K		134
++#define SAI2_K		135
++#define ADFSDM_K	136
++#define USBO_K		137
++#define LTDC_PX		138
++#define ETH1CK_K	139
++#define ETH1PTP_K	140
++#define ETH2CK_K	141
++#define ETH2PTP_K	142
++#define DCMIPP_K	143
++#define SAES_K		144
++#define DTS_K		145
++
++/* DDR */
++#define DDRC1		146
++#define DDRC1LP		147
++#define DDRC2		148
++#define DDRC2LP		149
++#define DDRPHYC		150
++#define DDRPHYCLP	151
++#define DDRCAPB		152
++#define DDRCAPBLP	153
++#define AXIDCG		154
++#define DDRPHYCAPB	155
++#define DDRPHYCAPBLP	156
++#define DDRPERFM	157
++
++#define ADC1		158
++#define ADC2		159
++#define SAI1		160
++#define SAI2		161
++
++#define STM32MP1_LAST_CLK 162
++
++/* SCMI clock identifiers */
++#define CK_SCMI_HSE		0
++#define CK_SCMI_HSI		1
++#define CK_SCMI_CSI		2
++#define CK_SCMI_LSE		3
++#define CK_SCMI_LSI		4
++#define CK_SCMI_HSE_DIV2	5
++#define CK_SCMI_PLL2_Q		6
++#define CK_SCMI_PLL2_R		7
++#define CK_SCMI_PLL3_P		8
++#define CK_SCMI_PLL3_Q		9
++#define CK_SCMI_PLL3_R		10
++#define CK_SCMI_PLL4_P		11
++#define CK_SCMI_PLL4_Q		12
++#define CK_SCMI_PLL4_R		13
++#define CK_SCMI_MPU		14
++#define CK_SCMI_AXI		15
++#define CK_SCMI_MLAHB		16
++#define CK_SCMI_CKPER		17
++#define CK_SCMI_PCLK1		18
++#define CK_SCMI_PCLK2		19
++#define CK_SCMI_PCLK3		20
++#define CK_SCMI_PCLK4		21
++#define CK_SCMI_PCLK5		22
++#define CK_SCMI_PCLK6		23
++#define CK_SCMI_CKTIMG1		24
++#define CK_SCMI_CKTIMG2		25
++#define CK_SCMI_CKTIMG3		26
++#define CK_SCMI_RTC		27
++#define CK_SCMI_RTCAPB		28
++
++#endif /* _DT_BINDINGS_STM32MP13_CLKS_H_ */
+-- 
+2.25.1
+

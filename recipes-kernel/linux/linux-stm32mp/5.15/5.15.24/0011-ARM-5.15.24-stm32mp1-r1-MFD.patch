@@ -1,24 +1,105 @@
-From a8b88220ea06e256ca6268be9856a8bbe522b0b5 Mon Sep 17 00:00:00 2001
-From: Lionel Vitte <lionel.vitte@st.com>
-Date: Thu, 14 Oct 2021 16:51:47 +0200
-Subject: [PATCH 11/23] ARM 5.10.61-stm32mp1-r2 MFD
+From d88b31f16b525087c38623bda52699ff7859dcf6 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+Date: Tue, 31 May 2022 11:59:44 +0200
+Subject: [PATCH 11/22] ARM-5.15.24-stm32mp1-r1-MFD
 
+Signed-off-by: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
 ---
- drivers/mfd/Kconfig              |  10 +
- drivers/mfd/Makefile             |   1 +
- drivers/mfd/stm32-pwr.c          | 402 +++++++++++++++++++++++++++++++
- drivers/mfd/stmfx.c              |   2 -
- drivers/mfd/stpmic1.c            |   6 +
- drivers/mfd/wm8994-core.c        |   6 +
- include/linux/mfd/stm32-timers.h |   1 +
- 7 files changed, 426 insertions(+), 2 deletions(-)
+ .../bindings/mfd/st,stm32-lptimer.yaml        |   3 +
+ .../bindings/mfd/st,stm32mp1-pwr.txt          |  57 +++
+ drivers/mfd/Kconfig                           |  10 +
+ drivers/mfd/Makefile                          |   1 +
+ drivers/mfd/stm32-pwr.c                       | 423 ++++++++++++++++++
+ drivers/mfd/stmfx.c                           |   2 -
+ drivers/mfd/stpmic1.c                         |   6 +
+ drivers/mfd/wm8994-core.c                     |   6 +
+ include/linux/mfd/stm32-timers.h              |   1 +
+ 9 files changed, 507 insertions(+), 2 deletions(-)
+ create mode 100644 Documentation/devicetree/bindings/mfd/st,stm32mp1-pwr.txt
  create mode 100644 drivers/mfd/stm32-pwr.c
 
+diff --git a/Documentation/devicetree/bindings/mfd/st,stm32-lptimer.yaml b/Documentation/devicetree/bindings/mfd/st,stm32-lptimer.yaml
+index 8bcea8dd7..6e518ae12 100644
+--- a/Documentation/devicetree/bindings/mfd/st,stm32-lptimer.yaml
++++ b/Documentation/devicetree/bindings/mfd/st,stm32-lptimer.yaml
+@@ -44,6 +44,9 @@ properties:
+ 
+   wakeup-source: true
+ 
++  power-domains:
++    maxItems: 1
++
+   pwm:
+     type: object
+ 
+diff --git a/Documentation/devicetree/bindings/mfd/st,stm32mp1-pwr.txt b/Documentation/devicetree/bindings/mfd/st,stm32mp1-pwr.txt
+new file mode 100644
+index 000000000..b5f414a19
+--- /dev/null
++++ b/Documentation/devicetree/bindings/mfd/st,stm32mp1-pwr.txt
+@@ -0,0 +1,57 @@
++STMicroelectronics STM32MP1 Power Management Controller
++=======================================================
++
++The PWR IP is responsible for handling the power related resources such as
++clocks, power supplies and resets. It provides 6 wake-up pins that are handled
++by an interrupt-controller. Wake-up pin can be used to wake-up from STANDBY SoC state.
++
++Required properties:
++- compatible should be: "st,stm32mp1-pwr"
++- reg: should be register base and length as documented in the
++  datasheet
++- interrupts: contains the reference to the gic wake-up pin interrupt
++- interrupt-controller; Enable interrupt controller for wake-up pins.
++- #interrupt-cells = <3>
++- st,wakeup-pins: contains a list of GPIO spec describing each wake-up pin.
++
++Optional Properties:
++- pwr-supply: main soc power supply
++
++Interrupt consumers have to specify 3 cells:
++  - cell 1: wake-up pin id from 0 to 5
++  - cell 2: IRQ_TYPE_EDGE_FALLING or IRQ_TYPE_EDGE_RISING
++  - cell 3: Pull config: 0 = No Pull, 1=Pull Up, 2=Pull Down
++
++
++Example:
++
++	pwr: pwr@50001000 {
++		compatible = "st,stm32mp1-pwr", "simple-mfd";
++		reg = <0x50001000 0x400>;
++		interrupts = <GIC_SPI 149 IRQ_TYPE_NONE>;
++		interrupt-controller;
++		#interrupt-cells = <3>;
++
++		st,wakeup-pins = <&gpioa 0 0>, <&gpioa 2 0>,
++				 <&gpioc 13 0>, <&gpioi 8 0>,
++				 <&gpioi 11 0>, <&gpioc 1 0>;
++
++		pwr-supply = <&vdd>;
++	};
++
++
++Example of interrupt user:
++gpio_keys {
++	compatible = "gpio-keys";
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	button@4 {
++		label = "WakeUp4";
++		linux,code = <BTN_4>;
++		interrupt-parent = <&pwr>;
++		interrupts = <3 IRQ_TYPE_EDGE_FALLING 1>;
++		wakeup-source;
++	};
++};
++
 diff --git a/drivers/mfd/Kconfig b/drivers/mfd/Kconfig
-index b8847ae04..16449cfc8 100644
+index d2f345245..181730a69 100644
 --- a/drivers/mfd/Kconfig
 +++ b/drivers/mfd/Kconfig
-@@ -2053,6 +2053,16 @@ config MFD_STPMIC1
+@@ -2042,6 +2042,16 @@ config MFD_STPMIC1
  	  To compile this driver as a module, choose M here: the
  	  module will be called stpmic1.
  
@@ -36,7 +117,7 @@ index b8847ae04..16449cfc8 100644
  	tristate "Support for STMicroelectronics Multi-Function eXpander (STMFX)"
  	depends on I2C
 diff --git a/drivers/mfd/Makefile b/drivers/mfd/Makefile
-index 1780019d2..90ffa501a 100644
+index 2ba6646e8..68201ea8e 100644
 --- a/drivers/mfd/Makefile
 +++ b/drivers/mfd/Makefile
 @@ -255,6 +255,7 @@ obj-$(CONFIG_MFD_SUN4I_GPADC)	+= sun4i-gpadc.o
@@ -49,10 +130,10 @@ index 1780019d2..90ffa501a 100644
  obj-$(CONFIG_RAVE_SP_CORE)	+= rave-sp.o
 diff --git a/drivers/mfd/stm32-pwr.c b/drivers/mfd/stm32-pwr.c
 new file mode 100644
-index 000000000..5c130603d
+index 000000000..c06e2fb6c
 --- /dev/null
 +++ b/drivers/mfd/stm32-pwr.c
-@@ -0,0 +1,402 @@
+@@ -0,0 +1,423 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Copyright (C) STMicroelectronics 2017 - All Rights Reserved
@@ -61,10 +142,12 @@ index 000000000..5c130603d
 +
 +#include <linux/arm-smccc.h>
 +#include <linux/gpio.h>
++#include <linux/gpio/consumer.h>
 +#include <linux/irqchip.h>
 +#include <linux/irqchip/chained_irq.h>
 +#include <linux/module.h>
 +#include <linux/of_address.h>
++#include <linux/of_gpio.h>
 +#include <linux/of_irq.h>
 +#include <linux/platform_device.h>
 +#include <asm/exception.h>
@@ -110,7 +193,7 @@ index 000000000..5c130603d
 +	u32 masked;			/* IRQ is masked */
 +	u32 wake;			/* IRQ is wake on */
 +	u32 pending;			/* IRQ has been received while wake on*/
-+	struct gpio_desc *gpio[NB_WAKEUPPINS];
++	int gpio[NB_WAKEUPPINS];
 +};
 +
 +static void stm32_pwr_irq_ack(struct irq_data *d)
@@ -121,11 +204,13 @@ index 000000000..5c130603d
 +	SMC(STM32_SVC_PWR, STM32_SET_BITS, WKUPCR, BIT(d->hwirq));
 +}
 +
-+static void stm32_pwr_irq_set_enable(struct irq_data *d)
++static void stm32_pwr_irq_set_state(struct irq_data *d)
 +{
 +	struct stm32_pwr_data *priv = d->domain->host_data;
 +
 +	dev_dbg(priv->dev, "irq:%lu\n", d->hwirq);
++
++	/* enable is not masker or wake enabled */
 +	if (!(priv->masked & BIT(d->hwirq)) || (priv->wake & BIT(d->hwirq)))
 +		SMC(STM32_SVC_PWR, STM32_SET_BITS, MPUWKUPENR, BIT(d->hwirq));
 +	else
@@ -138,7 +223,7 @@ index 000000000..5c130603d
 +
 +	dev_dbg(priv->dev, "irq:%lu\n", d->hwirq);
 +	priv->masked |= BIT(d->hwirq);
-+	stm32_pwr_irq_set_enable(d);
++	stm32_pwr_irq_set_state(d);
 +}
 +
 +static void stm32_pwr_irq_unmask(struct irq_data *d)
@@ -147,7 +232,7 @@ index 000000000..5c130603d
 +
 +	dev_dbg(priv->dev, "irq:%lu\n", d->hwirq);
 +	priv->masked &= ~BIT(d->hwirq);
-+	stm32_pwr_irq_set_enable(d);
++	stm32_pwr_irq_set_state(d);
 +}
 +
 +static int stm32_pwr_irq_set_wake(struct irq_data *d, unsigned int on)
@@ -162,7 +247,7 @@ index 000000000..5c130603d
 +		priv->wake &= ~BIT(d->hwirq);
 +		priv->pending &= ~BIT(d->hwirq);
 +	}
-+	stm32_pwr_irq_set_enable(d);
++	stm32_pwr_irq_set_state(d);
 +
 +	if (parent->chip && parent->chip->irq_set_wake)
 +		return parent->chip->irq_set_wake(parent, on);
@@ -225,17 +310,34 @@ index 000000000..5c130603d
 +static int stm32_pwr_irq_request_resources(struct irq_data *d)
 +{
 +	struct stm32_pwr_data *priv = d->domain->host_data;
-+	struct gpio_desc *gpio;
++	struct device_node *dn = priv->dev->of_node;
++	int gpio;
 +	int ret;
 +
-+	dev_dbg(priv->dev, "irq:%lu\n", d->hwirq);
-+	gpio = gpiod_get_index(priv->dev, "wakeup", d->hwirq, GPIOD_IN);
-+	if (IS_ERR(gpio)) {
-+		ret = PTR_ERR(gpio);
-+		dev_err(priv->dev, "Failed to get wakeup gpio: %d", ret);
-+		return ret;
++	if (!dn) {
++		dev_err(priv->dev, "No platform data\n");
++		return -ENODEV;
 +	}
++
++	/* Get GPIO from device tree */
++	dev_dbg(priv->dev, "irq:%lu\n", d->hwirq);
++	gpio = of_get_named_gpio(dn, "st,wakeup-pins", d->hwirq);
++
++	if (gpio < 0) {
++		dev_err(priv->dev, "Failed to get wakeup gpio: %d", gpio);
++		return gpio;
++	}
++
++	/* GPIO request and configuration */
++	ret = devm_gpio_request_one(priv->dev, gpio, GPIOF_DIR_IN,
++				    "wake-up pin");
++	if (ret) {
++		dev_err(priv->dev, "Failed to request wake-up pin\n");
++		return -ENODEV;
++	}
++
 +	priv->gpio[d->hwirq] = gpio;
++
 +	return 0;
 +}
 +
@@ -244,7 +346,7 @@ index 000000000..5c130603d
 +	struct stm32_pwr_data *priv = d->domain->host_data;
 +
 +	dev_dbg(priv->dev, "irq:%lu\n", d->hwirq);
-+	gpiod_put(priv->gpio[d->hwirq]);
++	devm_gpio_free(priv->dev, priv->gpio[d->hwirq]);
 +}
 +
 +static struct irq_chip stm32_pwr_irq_chip = {
@@ -456,7 +558,7 @@ index 000000000..5c130603d
 +arch_initcall(stm32_pwr_init);
 +module_exit(stm32_pwr_exit);
 diff --git a/drivers/mfd/stmfx.c b/drivers/mfd/stmfx.c
-index 988e2ba6d..39b2fc952 100644
+index e095a3930..b411d2958 100644
 --- a/drivers/mfd/stmfx.c
 +++ b/drivers/mfd/stmfx.c
 @@ -81,13 +81,11 @@ static struct mfd_cell stmfx_cells[] = {
@@ -498,7 +600,7 @@ index eb3da558c..40eef5d18 100644
  
  	return 0;
 diff --git a/drivers/mfd/wm8994-core.c b/drivers/mfd/wm8994-core.c
-index 3b2b93c5b..507572b09 100644
+index 7b1d27072..e2c98c66b 100644
 --- a/drivers/mfd/wm8994-core.c
 +++ b/drivers/mfd/wm8994-core.c
 @@ -185,6 +185,12 @@ static int wm8994_resume(struct device *dev)
@@ -527,5 +629,5 @@ index f8db83aed..f48f04dc4 100644
  #define TIM_CR1_CEN	BIT(0)	/* Counter Enable	   */
  #define TIM_CR1_DIR	BIT(4)  /* Counter Direction	   */
 -- 
-2.17.1
+2.25.1
 
