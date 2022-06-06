@@ -5,7 +5,7 @@ HOMEPAGE = "https://github.com/libb64/libb64"
 LICENSE = "PD"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=ce551aad762074c7ab618a0e07a8dca3"
 
-SRC_URI = "git://github.com/libb64/libb64.git;protocol=https;branch=master"
+SRC_URI = "git://github.com/libb64/libb64.git;protocol=https;nobranch=1"
 SRCREV="04a1ee7590ebb8a81bbd3854ec141c2d4c2bead9"
 
 PV = "1.4.1+git${SRCPV}"

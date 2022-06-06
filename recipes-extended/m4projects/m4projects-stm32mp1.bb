@@ -1,9 +1,5 @@
 SUMMARY = "STM32MP1 Firmware examples for CM4"
-LICENSE = " \
-    Apache-2.0 \
-    & MIT \
-    & BSD-3-Clause \
-    "
+LICENSE = "Apache-2.0 & MIT & BSD-3-Clause"
 LIC_FILES_CHKSUM = "file://License.md;md5=532c0d9fc2820ec1304ab8e0f227acc7"
 
 SRC_URI = "git://github.com/STMicroelectronics/STM32CubeMP1.git;protocol=https;branch=master"

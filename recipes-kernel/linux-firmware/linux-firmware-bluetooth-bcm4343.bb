@@ -9,7 +9,7 @@ NO_GENERIC_LICENSE[Firmware-cypress-bcm4343] = "LICENCE.cypress"
 
 inherit allarch
 
-SRC_URI = "git://github.com/murata-wireless/cyw-bt-patch;protocol=https"
+SRC_URI = "git://github.com/murata-wireless/cyw-bt-patch;protocol=https;branch=master"
 SRCREV = "c5f1b13697d4ac8eec2cb6f21636085fbb55acd1"
 
 PV = "3.0"
