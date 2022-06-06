@@ -131,7 +131,7 @@ FLASHLAYOUT_TYPE_LABELS:trusted:spinand-2-128 = "${@' '.join(d for d in '${DEVIC
 #   7) FLASHLAYOUT_PARTITION_LABELS:<OVERRIDES>
 #   8) FLASHLAYOUT_PARTITION_LABELS
 # -----------------------------------------------------------------------------
-FLASHLAYOUT_PROGRAMMER_SECTIONS ?= "${STM32MP_FSBL1_NAME}-boot ${STM32MP_SSBL1_NAME}-boot"
+FLASHLAYOUT_PROGRAMMER_SECTIONS ?= "${STM32MP_FSBL_PROGAMMER_NAME} ${STM32MP_SSBL_PROGAMMER_NAME}"
 
 # FLASHLAYOUT_PARTITION_IMAGES is initalized through PARTITIONS_CONFIG within 'flashlayout-stm32mp' class
 FLASHLAYOUT_PARTITION_IMAGES ?= ""
@@ -216,14 +216,13 @@ FLASHLAYOUT_PARTITION_LABELS:trusted:spinand-2-128 = "\
 #           9) Default 'FLASHLAYOUT_PARTITION_xxx' to 'none' when not defined
 # -----------------------------------------------------------------------------
 FLASHLAYOUT_PARTITION_ENABLE = "P"
-FLASHLAYOUT_PARTITION_ENABLE:${STM32MP_FSBL1_NAME}-boot = "-"
-FLASHLAYOUT_PARTITION_ENABLE:${STM32MP_SSBL1_NAME}-boot = "-"
-FLASHLAYOUT_PARTITION_ENABLE:empty      = "PE"
-FLASHLAYOUT_PARTITION_ENABLE:nor:${STM32MP_UENV_NAME} = "PDE"
-FLASHLAYOUT_PARTITION_ENABLE:nor-sdcard:${STM32MP_UENV_NAME} = "PDE"
+FLASHLAYOUT_PARTITION_ENABLE:${STM32MP_FSBL_PROGAMMER_NAME} = "-"
+FLASHLAYOUT_PARTITION_ENABLE:${STM32MP_SSBL_PROGAMMER_NAME} = "-"
+FLASHLAYOUT_PARTITION_ENABLE:empty = "PE"
 # Need to make sure to delete partition that contains U-Boot env before update (gpt partitions only)
-FLASHLAYOUT_PARTITION_ENABLE:sdcard:${STM32MP_SSBL1_NAME} = "PD"
-FLASHLAYOUT_PARTITION_ENABLE:emmc:${STM32MP_SSBL1_NAME} = "PD"
+FLASHLAYOUT_PARTITION_ENABLE:sdcard:${STM32MP_SSBL1_NAME} = "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', '', 'PD', d)}"
+FLASHLAYOUT_PARTITION_ENABLE:emmc:${STM32MP_SSBL1_NAME} = "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', '', 'PD', d)}"
+
 # -----------------------------------------------------------------------------
 # Partition ID
 # -----------------------------------------------------------------------------
@@ -231,10 +230,11 @@ FLASHLAYOUT_PARTITION_ENABLE:emmc:${STM32MP_SSBL1_NAME} = "PD"
 # reserved IDs on STM32CubeProgrammer side:
 #   0x01 for FSBL
 #   0x03 for SSBL
-FLASHLAYOUT_PARTITION_ID:${STM32MP_FSBL1_NAME}-boot = "0x01"
-FLASHLAYOUT_PARTITION_ID:${STM32MP_SSBL1_NAME}-boot = "0x03"
+FLASHLAYOUT_PARTITION_ID:${STM32MP_FSBL_PROGAMMER_NAME} = "0x01"
+FLASHLAYOUT_PARTITION_ID:${STM32MP_SSBL_PROGAMMER_NAME} = "0x03"
 
 FLASHLAYOUT_PARTITION_TYPE = "Binary"
+FLASHLAYOUT_PARTITION_TYPE:${STM32MP_SSBL_PROGAMMER_NAME} = "FIP"
 FLASHLAYOUT_PARTITION_TYPE:ubifs = "System"
 
 FLASHLAYOUT_PARTITION_COPY = "1"
@@ -246,14 +246,19 @@ FLASHLAYOUT_PARTITION_DEVICE:nor-sdcard     = "none:${FLASHLAYOUT_PROGRAMMER_SEC
 FLASHLAYOUT_PARTITION_DEVICE:sdcard         = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE:SDCARD}:default"
 FLASHLAYOUT_PARTITION_DEVICE:spinand-2-128  = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE:SPINAND}:default"
 
-FLASHLAYOUT_PARTITION_OFFSET:${STM32MP_FSBL1_NAME}-boot = "0x0"
-FLASHLAYOUT_PARTITION_OFFSET:${STM32MP_SSBL1_NAME}-boot = "0x0"
+FLASHLAYOUT_PARTITION_OFFSET:${STM32MP_FSBL_PROGAMMER_NAME} = "0x0"
+FLASHLAYOUT_PARTITION_OFFSET:${STM32MP_SSBL_PROGAMMER_NAME} = "0x0"
 FLASHLAYOUT_PARTITION_OFFSET:emmc:${STM32MP_FSBL1_NAME} = "${DEVICE_START_OFFSET_BOOT0:EMMC}"
 FLASHLAYOUT_PARTITION_OFFSET:emmc:${STM32MP_FSBL2_NAME} = "${DEVICE_START_OFFSET_BOOT1:EMMC}"
-FLASHLAYOUT_PARTITION_OFFSET:emmc:${STM32MP_SSBL1_NAME} = "${DEVICE_START_OFFSET_EMMC}"
 
 # Size defined in Kbytes
 FLASHLAYOUT_PARTITION_SIZE:empty = "0"
+# Override default partition size for rootfs to increase available free space
+# 3GiB for emmc
+#FLASHLAYOUT_PARTITION_SIZE:emmc:${STM32MP_ROOTFS_LABEL} = "3145728"
+# 4GiB for sdcard
+#FLASHLAYOUT_PARTITION_SIZE:nor-sdcard:${STM32MP_ROOTFS_LABEL} = "4194304"
+#FLASHLAYOUT_PARTITION_SIZE:sdcard:${STM32MP_ROOTFS_LABEL}     = "4194304"
 
 # Set binaries to use for each partition
 # -----------------------------------------------------------------------------
@@ -264,8 +269,8 @@ FLASHLAYOUT_PARTITION_SIZE:empty = "0"
 #       '<TYPE>'       (to insert label  from FLASHLAYOUT_TYPE_LABELS)
 # These patterns are processed to expand binary name for each config.
 # -----------------------------------------------------------------------------
-FLASHLAYOUT_PARTITION_BIN2LOAD:${STM32MP_FSBL1_NAME}-boot = "${@bb.utils.contains('MACHINE_FEATURES', 'fip', 'arm-trusted-firmware/tf-a-<TYPE>-usb.stm32', 'arm-trusted-firmware/tf-a-<TYPE>-serialboot.stm32', d)}"
-FLASHLAYOUT_PARTITION_BIN2LOAD:${STM32MP_SSBL1_NAME}-boot = "${STM32MP_SSBL1_DATA}"
+FLASHLAYOUT_PARTITION_BIN2LOAD:${STM32MP_FSBL_PROGAMMER_NAME} = "arm-trusted-firmware/tf-a-<TYPE>-usb.stm32"
+FLASHLAYOUT_PARTITION_BIN2LOAD:${STM32MP_SSBL_PROGAMMER_NAME} = "${STM32MP_SSBL1_DATA}"
 
 # -----------------------------------------------------------------------------
 # Use the 'FLASHLAYOUT_PARTITION_REPLACE_PATTERNS' var to allow dynamic binary
@@ -278,5 +283,5 @@ FLASHLAYOUT_PARTITION_BIN2LOAD:${STM32MP_SSBL1_NAME}-boot = "${STM32MP_SSBL1_DAT
 # -----------------------------------------------------------------------------
 # The daughter board does not support Programmer mode, so use eval one
 # (valid for FLASHLAYOUT_PROGRAMMER_SECTIONS partitions)
-FLASHLAYOUT_PARTITION_REPLACE_PATTERNS:${STM32MP_FSBL1_NAME}-boot:append = " ed1;ev1"
-FLASHLAYOUT_PARTITION_REPLACE_PATTERNS:${STM32MP_SSBL1_NAME}-boot:append = " ed1;ev1"
+FLASHLAYOUT_PARTITION_REPLACE_PATTERNS:${STM32MP_FSBL_PROGAMMER_NAME}:append = " ed1;ev1"
+FLASHLAYOUT_PARTITION_REPLACE_PATTERNS:${STM32MP_SSBL_PROGAMMER_NAME}:append = " ed1;ev1"
