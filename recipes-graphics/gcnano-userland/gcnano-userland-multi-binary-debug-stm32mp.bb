@@ -1,17 +1,11 @@
-# Recipe for installing gcnano-userland binaries (gbm backend)
+require gcnano-userland-binary.inc
+
 SUMMARY = "[DEBUG] Vivante libraries OpenGL ES, OpenVG and EGL (multi backend)"
 LICENSE = "Proprietary"
 
-BACKEND = "multi"
+GCNANO_PACKAGECONFIG = "egl glesv1 glesv2 vg gbm"
 
-DEPENDS += " libdrm wayland "
-
-GCNANO_TYPE = "debug"
-
-do_install:append() {
-    clean_release_file
-}
-
-include gcnano-userland-binary.inc
+GCNANO_BACKEND = "multi"
+GCNANO_FLAVOUR = "debug"
 
 PROVIDES:remove = "gcnano-userland"

@@ -1,8 +1,5 @@
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 
-# To share stm32mp1 patches between layers
-FILESEXTRAPATHS:prepend := "${THISDIR}/gcnano-driver-stm32mp:"
-
 inherit module
 
 # todo manage android build (sync)
