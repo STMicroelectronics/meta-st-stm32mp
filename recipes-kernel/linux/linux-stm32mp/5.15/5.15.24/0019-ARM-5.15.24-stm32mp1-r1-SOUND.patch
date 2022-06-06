@@ -1,0 +1,299 @@
+From a0c67a64074c33685451fff84871a846bc29d523 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+Date: Tue, 31 May 2022 12:07:28 +0200
+Subject: [PATCH 19/22] ARM-5.15.24-stm32mp1-r1-SOUND
+
+Signed-off-by: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+---
+ sound/soc/codecs/Kconfig      |  2 +-
+ sound/soc/codecs/wm8994.c     | 81 ++++++++++++++++++++++++++++++++---
+ sound/soc/stm/stm32_adfsdm.c  | 11 +++--
+ sound/soc/stm/stm32_i2s.c     |  4 ++
+ sound/soc/stm/stm32_sai_sub.c |  4 +-
+ sound/soc/stm/stm32_spdifrx.c |  4 ++
+ 6 files changed, 94 insertions(+), 12 deletions(-)
+
+diff --git a/sound/soc/codecs/Kconfig b/sound/soc/codecs/Kconfig
+index f12c9b942..4cc91bcfe 100644
+--- a/sound/soc/codecs/Kconfig
++++ b/sound/soc/codecs/Kconfig
+@@ -1771,7 +1771,7 @@ config SND_SOC_WM8993
+ 	depends on I2C
+ 
+ config SND_SOC_WM8994
+-	tristate
++	tristate "Wolfson Microelectronics WM8994 codec"
+ 
+ config SND_SOC_WM8995
+ 	tristate
+diff --git a/sound/soc/codecs/wm8994.c b/sound/soc/codecs/wm8994.c
+index f117ec0c4..98e803516 100644
+--- a/sound/soc/codecs/wm8994.c
++++ b/sound/soc/codecs/wm8994.c
+@@ -7,6 +7,7 @@
+  * Author: Mark Brown <broonie@opensource.wolfsonmicro.com>
+  */
+ 
++#include <linux/clk.h>
+ #include <linux/module.h>
+ #include <linux/moduleparam.h>
+ #include <linux/init.h>
+@@ -838,6 +839,37 @@ static int clk_sys_event(struct snd_soc_dapm_widget *w,
+ 	return 0;
+ }
+ 
++static int mclk_event(struct snd_soc_dapm_widget *w,
++		      struct snd_kcontrol *kcontrol, int event)
++{
++	struct snd_soc_component *comp = snd_soc_dapm_to_component(w->dapm);
++	struct wm8994_priv *wm8994 = snd_soc_component_get_drvdata(comp);
++	int ret, mclk_id = 0;
++
++	if (!strncmp(w->name, "MCLK2", 5))
++		mclk_id = 1;
++
++	switch (event) {
++	case SND_SOC_DAPM_PRE_PMU:
++		dev_dbg(comp->dev, "Enable master clock %s\n",
++			mclk_id ? "MCLK2" : "MCLK1");
++
++		ret = clk_prepare_enable(wm8994->mclk[mclk_id].clk);
++		if (ret < 0) {
++			dev_err(comp->dev, "Failed to enable clock: %d\n", ret);
++			return ret;
++		}
++		break;
++	case SND_SOC_DAPM_POST_PMD:
++		dev_dbg(comp->dev, "Disable master clock %s\n",
++			mclk_id ? "MCLK2" : "MCLK1");
++		clk_disable_unprepare(wm8994->mclk[mclk_id].clk);
++		break;
++	}
++
++	return 0;
++}
++
+ static void vmid_reference(struct snd_soc_component *component)
+ {
+ 	struct wm8994_priv *wm8994 = snd_soc_component_get_drvdata(component);
+@@ -1225,7 +1257,6 @@ static int aif2clk_ev(struct snd_soc_dapm_widget *w,
+ 		else
+ 			adc = WM8994_AIF2ADCL_ENA | WM8994_AIF2ADCR_ENA;
+ 
+-
+ 		val = snd_soc_component_read(component, WM8994_AIF2_CONTROL_2);
+ 		if ((val & WM8994_AIF2DACL_SRC) &&
+ 		    (val & WM8994_AIF2DACR_SRC))
+@@ -1847,6 +1878,16 @@ static const struct snd_soc_dapm_widget wm8994_specific_dapm_widgets[] = {
+ SND_SOC_DAPM_MUX("AIF3ADC Mux", SND_SOC_NOPM, 0, 0, &wm8994_aif3adc_mux),
+ };
+ 
++static const struct snd_soc_dapm_widget wm8994_mclk1_dapm_widgets[] = {
++SND_SOC_DAPM_SUPPLY("MCLK1", SND_SOC_NOPM, 0, 0, mclk_event,
++		    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++};
++
++static const struct snd_soc_dapm_widget wm8994_mclk2_dapm_widgets[] = {
++SND_SOC_DAPM_SUPPLY("MCLK2", SND_SOC_NOPM, 0, 0, mclk_event,
++		    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++};
++
+ static const struct snd_soc_dapm_widget wm8958_dapm_widgets[] = {
+ SND_SOC_DAPM_SUPPLY("AIF3", WM8994_POWER_MANAGEMENT_6, 5, 1, NULL, 0),
+ SND_SOC_DAPM_MUX("Mono PCM Out Mux", SND_SOC_NOPM, 0, 0, &mono_pcm_out_mux),
+@@ -2071,10 +2112,10 @@ static const struct snd_soc_dapm_route wm8994_lateclk_intercon[] = {
+ };
+ 
+ static const struct snd_soc_dapm_route wm8994_revd_intercon[] = {
+-	{ "AIF1DACDAT", NULL, "AIF2DACDAT" },
+-	{ "AIF2DACDAT", NULL, "AIF1DACDAT" },
+-	{ "AIF1ADCDAT", NULL, "AIF2ADCDAT" },
+-	{ "AIF2ADCDAT", NULL, "AIF1ADCDAT" },
++//	{ "AIF1DACDAT", NULL, "AIF2DACDAT" },
++//	{ "AIF2DACDAT", NULL, "AIF1DACDAT" },
++//	{ "AIF1ADCDAT", NULL, "AIF2ADCDAT" },
++//	{ "AIF2ADCDAT", NULL, "AIF1ADCDAT" },
+ 	{ "MICBIAS1", NULL, "CLK_SYS" },
+ 	{ "MICBIAS1", NULL, "MICBIAS Supply" },
+ 	{ "MICBIAS2", NULL, "CLK_SYS" },
+@@ -2506,11 +2547,24 @@ static int wm8994_set_dai_sysclk(struct snd_soc_dai *dai,
+ {
+ 	struct snd_soc_component *component = dai->component;
+ 	struct wm8994_priv *wm8994 = snd_soc_component_get_drvdata(component);
+-	int ret, i;
++	int i, ret;
+ 
++	/*
++	 * Simple card provides unconditionnaly clock_id = 0.
++	 * Workaround to select master clock for aif1/2
++	 */
+ 	switch (dai->id) {
+ 	case 1:
++		if (wm8994->mclk[0].clk)
++			clk_id = WM8994_SYSCLK_MCLK1;
++		else if (wm8994->mclk[1].clk)
++			clk_id = WM8994_SYSCLK_MCLK2;
++		break;
+ 	case 2:
++		if (wm8994->mclk[1].clk)
++			clk_id = WM8994_SYSCLK_MCLK2;
++		else if (wm8994->mclk[0].clk)
++			clk_id = WM8994_SYSCLK_MCLK1;
+ 		break;
+ 
+ 	default:
+@@ -2522,6 +2576,10 @@ static int wm8994_set_dai_sysclk(struct snd_soc_dai *dai,
+ 	case WM8994_SYSCLK_MCLK1:
+ 		wm8994->sysclk[dai->id - 1] = WM8994_SYSCLK_MCLK1;
+ 
++		/* Avoid busy error on exclusive rate change request */
++		if (!freq)
++			break;
++
+ 		ret = wm8994_set_mclk_rate(wm8994, dai->id - 1, &freq);
+ 		if (ret < 0)
+ 			return ret;
+@@ -2535,6 +2593,9 @@ static int wm8994_set_dai_sysclk(struct snd_soc_dai *dai,
+ 		/* TODO: Set GPIO AF */
+ 		wm8994->sysclk[dai->id - 1] = WM8994_SYSCLK_MCLK2;
+ 
++		if (!freq)
++			break;
++
+ 		ret = wm8994_set_mclk_rate(wm8994, dai->id - 1, &freq);
+ 		if (ret < 0)
+ 			return ret;
+@@ -4438,6 +4499,14 @@ static int wm8994_component_probe(struct snd_soc_component *component)
+ 					       ARRAY_SIZE(wm8994_snd_controls));
+ 		snd_soc_dapm_new_controls(dapm, wm8994_specific_dapm_widgets,
+ 					  ARRAY_SIZE(wm8994_specific_dapm_widgets));
++		if (wm8994->mclk[0].clk)
++			snd_soc_dapm_new_controls(dapm, wm8994_mclk1_dapm_widgets,
++						  ARRAY_SIZE(wm8994_mclk1_dapm_widgets));
++
++		if (wm8994->mclk[1].clk)
++			snd_soc_dapm_new_controls(dapm, wm8994_mclk2_dapm_widgets,
++						  ARRAY_SIZE(wm8994_mclk2_dapm_widgets));
++
+ 		if (control->revision < 4) {
+ 			snd_soc_dapm_new_controls(dapm, wm8994_lateclk_revd_widgets,
+ 						  ARRAY_SIZE(wm8994_lateclk_revd_widgets));
+diff --git a/sound/soc/stm/stm32_adfsdm.c b/sound/soc/stm/stm32_adfsdm.c
+index e6078f50e..534f96af9 100644
+--- a/sound/soc/stm/stm32_adfsdm.c
++++ b/sound/soc/stm/stm32_adfsdm.c
+@@ -12,7 +12,7 @@
+ #include <linux/mutex.h>
+ #include <linux/platform_device.h>
+ #include <linux/slab.h>
+-
++#include <linux/pm_runtime.h>
+ #include <linux/iio/iio.h>
+ #include <linux/iio/consumer.h>
+ #include <linux/iio/adc/stm32-dfsdm-adc.h>
+@@ -363,15 +363,20 @@ static int stm32_adfsdm_probe(struct platform_device *pdev)
+ #endif
+ 
+ 	ret = snd_soc_add_component(component, NULL, 0);
+-	if (ret < 0)
++	if (ret < 0) {
+ 		dev_err(&pdev->dev, "%s: Failed to register PCM platform\n",
+ 			__func__);
++		return ret;
++	}
+ 
+-	return ret;
++	pm_runtime_enable(&pdev->dev);
++
++	return 0;
+ }
+ 
+ static int stm32_adfsdm_remove(struct platform_device *pdev)
+ {
++	pm_runtime_disable(&pdev->dev);
+ 	snd_soc_unregister_component(&pdev->dev);
+ 
+ 	return 0;
+diff --git a/sound/soc/stm/stm32_i2s.c b/sound/soc/stm/stm32_i2s.c
+index 717f45a83..61e2c5d51 100644
+--- a/sound/soc/stm/stm32_i2s.c
++++ b/sound/soc/stm/stm32_i2s.c
+@@ -13,6 +13,7 @@
+ #include <linux/module.h>
+ #include <linux/of_irq.h>
+ #include <linux/of_platform.h>
++#include <linux/pm_runtime.h>
+ #include <linux/regmap.h>
+ #include <linux/reset.h>
+ #include <linux/spinlock.h>
+@@ -1113,6 +1114,7 @@ static int stm32_i2s_remove(struct platform_device *pdev)
+ {
+ 	snd_dmaengine_pcm_unregister(&pdev->dev);
+ 	snd_soc_unregister_component(&pdev->dev);
++	pm_runtime_disable(&pdev->dev);
+ 
+ 	return 0;
+ }
+@@ -1195,6 +1197,8 @@ static int stm32_i2s_probe(struct platform_device *pdev)
+ 			FIELD_GET(I2S_VERR_MIN_MASK, val));
+ 	}
+ 
++	pm_runtime_enable(&pdev->dev);
++
+ 	return ret;
+ 
+ error:
+diff --git a/sound/soc/stm/stm32_sai_sub.c b/sound/soc/stm/stm32_sai_sub.c
+index 9c3b8e209..95cd38a50 100644
+--- a/sound/soc/stm/stm32_sai_sub.c
++++ b/sound/soc/stm/stm32_sai_sub.c
+@@ -1294,7 +1294,7 @@ static struct snd_soc_dai_driver stm32_sai_playback_dai = {
+ 		.id = 1, /* avoid call to fmt_single_name() */
+ 		.playback = {
+ 			.channels_min = 1,
+-			.channels_max = 2,
++			.channels_max = 16,
+ 			.rate_min = 8000,
+ 			.rate_max = 192000,
+ 			.rates = SNDRV_PCM_RATE_CONTINUOUS,
+@@ -1312,7 +1312,7 @@ static struct snd_soc_dai_driver stm32_sai_capture_dai = {
+ 		.id = 1, /* avoid call to fmt_single_name() */
+ 		.capture = {
+ 			.channels_min = 1,
+-			.channels_max = 2,
++			.channels_max = 16,
+ 			.rate_min = 8000,
+ 			.rate_max = 192000,
+ 			.rates = SNDRV_PCM_RATE_CONTINUOUS,
+diff --git a/sound/soc/stm/stm32_spdifrx.c b/sound/soc/stm/stm32_spdifrx.c
+index 48145f553..e885796ca 100644
+--- a/sound/soc/stm/stm32_spdifrx.c
++++ b/sound/soc/stm/stm32_spdifrx.c
+@@ -12,6 +12,7 @@
+ #include <linux/delay.h>
+ #include <linux/module.h>
+ #include <linux/of_platform.h>
++#include <linux/pm_runtime.h>
+ #include <linux/regmap.h>
+ #include <linux/reset.h>
+ 
+@@ -955,6 +956,7 @@ static int stm32_spdifrx_remove(struct platform_device *pdev)
+ 
+ 	snd_dmaengine_pcm_unregister(&pdev->dev);
+ 	snd_soc_unregister_component(&pdev->dev);
++	pm_runtime_disable(&pdev->dev);
+ 
+ 	return 0;
+ }
+@@ -1045,6 +1047,8 @@ static int stm32_spdifrx_probe(struct platform_device *pdev)
+ 			FIELD_GET(SPDIFRX_VERR_MIN_MASK, ver));
+ 	}
+ 
++	pm_runtime_enable(&pdev->dev);
++
+ 	return ret;
+ 
+ error:
+-- 
+2.25.1
+

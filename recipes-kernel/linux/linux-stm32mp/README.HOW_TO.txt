@@ -1,14 +1,15 @@
 Compilation of kernel:
 1. Pre-requisite
-2. Initialise cross-compilation via SDK
+2. Initialize cross-compilation via SDK
 3. Prepare kernel source code
-4. Manage the kernel source code
+4. Manage kernel source code
 5. Configure kernel source code
 6. Compile kernel source code
 7. Update software on board
 
-1. Pre-requisite:
------------------
+----------------
+1. Pre-requisite
+----------------
 OpenSTLinux SDK must be installed.
 
 For kernel build, you need to install:
@@ -32,8 +33,9 @@ If you have never configured your git configuration, run the following commands:
     $ git config --global user.name "your_name"
     $ git config --global user.email "your_email@example.com"
 
-2. Initialise cross-compilation via SDK:
-----------------------------------------
+---------------------------------------
+2. Initialize cross-compilation via SDK
+---------------------------------------
 Source SDK environment:
     $ source <path to SDK>/environment-setup-cortexa7t2hf-neon-vfpv4-ostl-linux-gnueabi
 
@@ -45,27 +47,38 @@ run the following command:
 Warning: the environment is valid only on the shell session where you have
 sourced the SDK environment.
 
-3. Prepare kernel source:
--------------------------
-If you have the tarball and the list of patches, then you must extract the
-tarball and apply the patches.
-    $> tar xfJ ##LINUX_TARNAME##.tar.xz
-A new directory containing kernel standard source code will be created, go into it:
-    $> cd ##LINUX_TARNAME##
+------------------------
+3. Prepare kernel source
+------------------------
+If not already done, extract the sources from Developer Package tarball, for example:
+$ tar xfJ en.SOURCES-stm32mp1-*.tar.xz
 
-NB: if you like to have a git management of the code, see section 4 [Manage the
-kernel source code]
-    if there is some patch, please apply it on source code
+In the kernel source directory (sources/*/##BP##-##PR##),
+you have one kernel source tarball, the patches and one Makefile:
+   - ##LINUX_TARNAME##.tar.xz
+   - 00*.patch
+   - Makefile.sdk
+
+If you would like to have a git management for the source code move to
+to section 4 [Management of kernel source code with GIT].
+
+Otherwise, to manage kernel source code without git, you must extract the
+tarball now and apply the patch:
+
+    $> tar xfJ ##LINUX_TARNAME##.tar.xz
+    $> cd ##LINUX_TARNAME##
     $> for p in `ls -1 ../*.patch`; do patch -p1 < $p; done
 
-4. Manage the kernel source code:
----------------------------------
+You can now move to section 5 [Configure kernel source code].
+
+-------------------------------------
+4. Manage kernel source code with GIT
+-------------------------------------
 If you like to have a better management of change made on kernel source, you
 have 3 solutions to use git.
 
 4.1 Get STMicroelectronics kernel source code from GitHub
-
-
+---------------------------------------------------------
     URL: https://github.com/STMicroelectronics/linux.git
     Branch: ##ARCHIVER_ST_BRANCH##
     Revision: ##ARCHIVER_ST_REVISION##
@@ -74,31 +87,29 @@ have 3 solutions to use git.
     $ git checkout -b WORKING ##ARCHIVER_ST_REVISION##
 
 4.2 Create Git from tarball
-
-* With the kernel source code extracted in the section 3 [Prepare kernel source]
+---------------------------
     $ cd <directory to kernel source code>
     $ test -d .git || git init . && git add . && git commit -m "new kernel" && git gc
     $ git checkout -b WORKING
     Apply patches:
-    $ for p in `ls -1 <path to patch>/*.patch`; do git am $p; done
+    $ for p in `ls -1 ../*.patch`; do git am $p; done
   NB: this is the fastest way to get your kernel source code ready for development
 
-4.3 Get Git from community and apply STMicroelectronics patches
-
-* With the kernel source code from the Linux kernel git repositories:
+4.3 Get Git from Linux kernel community and apply STMicroelectronics patches
+---------------------------------------------------------------
     URL: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
     Branch: ##ARCHIVER_COMMUNITY_BRANCH##
     Revision: ##ARCHIVER_COMMUNITY_REVISION##
 
     $ git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
-    $ cd <kernel source>
+    $ cd linux-stable
     $ git checkout -b WORKING ##ARCHIVER_COMMUNITY_REVISION##
     $ for p in `ls -1 <path to patch>/*.patch`; do git am $p; done
   NB: this way is slightly slower than the tarball extraction but you get
       advantage of all git history.
 
-4.2 Predefined kernel version vs auto-generated kernel version:
----------------------------------------------------------------
+4.4 Predefined kernel version vs auto-generated kernel version
+--------------------------------------------------------------
 If you are using git for managing your source code, kernel makefile get the SHA1
 of current git and add it to kernel version number generated.
  ex.: 4.9.23-g3e866b0 (kernel version  + SHA1 of current git commit)
@@ -112,8 +123,9 @@ This configuration allows to build new kernel from modified source code without
 any issue when using the new kernel binary on target regarding any external
 kernel module already available on target rootfs (as built without scmversion).
 
-5. Configure kernel source code:
---------------------------------
+-------------------------------
+5. Configure kernel source code
+-------------------------------
 There are two methods to configure and compile kernel source code:
 - Inside kernel source tree directory
 - Outside kernel source tree in a build directory
@@ -167,8 +179,9 @@ NB: Two types of fragments are provided:
     Please pay special attention to the naming of your optional fragments to
     ensure you select the right features.
 
-6. Compile kernel source code:
-------------------------------
+-----------------------------
+6. Compile kernel source code
+-----------------------------
 You MUST compile from the directory on which the configuration has been done (i.e.
 the directory which contains the '.config' file).
 
@@ -217,20 +230,20 @@ Generated files are :
  #> $PWD/install_artifact/boot/uImage
  #> $PWD/install_artifact/boot/<stm32-boards>.dtb
 
+---------------------------
+7. Update software on board
+---------------------------
 
-
-7. Update software on board:
+7.1 Partitioning of binaries
 ----------------------------
-7.1. Partitioning of binaries:
-------------------------------
 * Bootfs:
   Bootfs contains the kernel and the devicetree.
 * Rootfs:
   Rootfs contains the external kernel modules.
 Please refer to User guide for more details.
 
-7.2. Update via network:
-------------------------
+7.2 Update via network
+----------------------
 * kernel + devicetree
     $ cd <path to install_artifact dir>/install_artifact
     if bootfs are not monted on target, mount it
@@ -258,8 +271,8 @@ Please refer to User guide for more details.
     Reboot the board in order to take update into account
     $ ssh root@<ip of board> reboot
 
-7.3. Update via SDCARD on your Linux PC:
-----------------------------------------
+7.3 Update via SDCARD on your Linux PC
+--------------------------------------
 * kernel + devicetree
     $ cd <path to install_artifact dir>/install_artifact
     Verify sdcard are mounted on your Linux PC: /media/$USER/bootfs
@@ -290,8 +303,8 @@ Please refer to User guide for more details.
     Reboot the board in order to take update into account
     $ ssh root@<ip of board> reboot
 
-7.4. Update via SDCARD on your BOARD (via U-Boot):
---------------------------------------------------
+7.4 Update via SDCARD on your BOARD (via U-Boot)
+------------------------------------------------
 You MUST configure first, via U-Boot, the board into usb mass storage:
 * Plug the SDCARD on Board.
 * Start the board and stop on U-boot shell:
@@ -342,8 +355,9 @@ For USB Disk:  ums 0 usb 0
     Reboot the board in order to take update into account
     $on board> reboot
 
-8. Useful information:
-----------------------
+---------------------
+8. Useful information
+---------------------
 * How to re-generate kernel database on board:
     $on board> depmod -a
     (don't forget to synchronize the filesystem before to reboot)
@@ -353,12 +367,12 @@ For USB Disk:  ums 0 usb 0
     $on board> lsmod
 
 * How to see information about kernel module:
-    $on board> modinfo /lib/modules/5.4.31/kernel/drivers/leds/led-class-flash.ko 
+    $on board> modinfo /lib/modules/5.4.31/kernel/drivers/leds/led-class-flash.ko
 filename:       /lib/modules/5.4.31/kernel/drivers/leds/led-class-flash.ko
 license:        GPL v2
 description:    LED Flash class interface
 author:         Jacek Anaszewski <j.anaszewski@samsung.com>
-depends:        
+depends:
 intree:         Y
 name:           led_class_flash
 vermagic:       5.4.31 SMP preempt mod_unload modversions ARMv7 p2v8 

@@ -1,0 +1,2640 @@
+From 36353ea45646109b55656e806ea70c10fce2453b Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+Date: Tue, 31 May 2022 12:04:31 +0200
+Subject: [PATCH 15/22] ARM-5.15.24-stm32mp1-r1-PHY-USB
+
+Signed-off-by: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+---
+ .../bindings/phy/phy-stm32-usbphyc.yaml       | 133 +++
+ .../devicetree/bindings/usb/dwc2.yaml         |  33 +-
+ .../devicetree/bindings/usb/generic-ehci.yaml |   5 +
+ .../devicetree/bindings/usb/generic-ohci.yaml |   5 +
+ .../bindings/usb/st,typec-stm32g0.yaml        |  83 ++
+ drivers/phy/st/phy-stm32-usbphyc.c            | 232 ++++-
+ drivers/usb/core/hcd.c                        |   9 +-
+ drivers/usb/core/phy.c                        |  22 +-
+ drivers/usb/core/phy.h                        |   6 +-
+ drivers/usb/dwc2/core.h                       |  24 +-
+ drivers/usb/dwc2/core_intr.c                  |   3 +-
+ drivers/usb/dwc2/debugfs.c                    |   4 +-
+ drivers/usb/dwc2/drd.c                        |  85 +-
+ drivers/usb/dwc2/gadget.c                     |   5 +-
+ drivers/usb/dwc2/hcd.c                        |  61 +-
+ drivers/usb/dwc2/params.c                     |  75 +-
+ drivers/usb/dwc2/platform.c                   |  82 +-
+ drivers/usb/host/ehci-platform.c              |  16 +-
+ drivers/usb/host/ohci-platform.c              |  14 +-
+ drivers/usb/typec/ucsi/Kconfig                |  10 +
+ drivers/usb/typec/ucsi/Makefile               |   1 +
+ drivers/usb/typec/ucsi/ucsi.c                 |  42 +-
+ drivers/usb/typec/ucsi/ucsi.h                 |   2 +
+ drivers/usb/typec/ucsi/ucsi_stm32g0.c         | 801 ++++++++++++++++++
+ 24 files changed, 1584 insertions(+), 169 deletions(-)
+ create mode 100644 Documentation/devicetree/bindings/usb/st,typec-stm32g0.yaml
+ create mode 100644 drivers/usb/typec/ucsi/ucsi_stm32g0.c
+
+diff --git a/Documentation/devicetree/bindings/phy/phy-stm32-usbphyc.yaml b/Documentation/devicetree/bindings/phy/phy-stm32-usbphyc.yaml
+index 3329f1d33..750ce7074 100644
+--- a/Documentation/devicetree/bindings/phy/phy-stm32-usbphyc.yaml
++++ b/Documentation/devicetree/bindings/phy/phy-stm32-usbphyc.yaml
+@@ -74,6 +74,10 @@ patternProperties:
+       "#phy-cells":
+         enum: [ 0x0, 0x1 ]
+ 
++      interrupts:
++        maxItems: 1
++        description: interrupt used for wakeup when port is used by USBH controller
++
+       connector:
+         type: object
+         allOf:
+@@ -81,6 +85,119 @@ patternProperties:
+         properties:
+           vbus-supply: true
+ 
++      # It can be necessary to adjust the PHY settings to compensate parasitics, which can be due
++      # to USB connector/receptacle, routing, ESD protection component,... Here is the list of
++      # all optional parameters to tune the interface of the PHY (HS for High-Speed, FS for Full-
++      # Speed, LS for Low-Speed)
++
++      st,current-boost-microamp:
++        description: Current boosting in uA
++        enum: [ 1000, 2000 ]
++
++      st,no-lsfs-fb-cap:
++        description: Disables the LS/FS feedback capacitor
++        type: boolean
++
++      st,decrease-hs-slew-rate:
++        description: Decreases the HS driver slew rate by 10%
++        type: boolean
++
++      st,tune-hs-dc-level:
++        description: |
++          Tunes the HS driver DC level
++          - <0> normal level
++          - <1> increases the level by 5 to 7 mV
++          - <2> increases the level by 10 to 14 mV
++          - <3> decreases the level by 5 to 7 mV
++        $ref: /schemas/types.yaml#/definitions/uint32
++        minimum: 0
++        maximum: 3
++        default: 0
++
++      st,enable-fs-rftime-tuning:
++        description: Enables the FS rise/fall tuning option
++        type: boolean
++
++      st,enable-hs-rftime-reduction:
++        description: Enables the HS rise/fall reduction feature
++        type: boolean
++
++      st,trim-hs-current:
++        description: |
++          Controls HS driver current trimming for choke compensation
++          - <0> = 18.87 mA target current / nominal + 0%
++          - <1> = 19.165 mA target current / nominal + 1.56%
++          - <2> = 19.46 mA target current / nominal + 3.12%
++          - <3> = 19.755 mA target current / nominal + 4.68%
++          - <4> = 20.05 mA target current / nominal + 6.24%
++          - <5> = 20.345 mA target current / nominal + 7.8%
++          - <6> = 20.64 mA target current / nominal + 9.36%
++          - <7> = 20.935 mA target current / nominal + 10.92%
++          - <8> = 21.23 mA target current / nominal + 12.48%
++          - <9> = 21.525 mA target current / nominal + 14.04%
++          - <10> = 21.82 mA target current / nominal + 15.6%
++          - <11> = 22.115 mA target current / nominal + 17.16%
++          - <12> = 22.458 mA target current / nominal + 19.01%
++          - <13> = 22.755 mA target current / nominal + 20.58%
++          - <14> = 23.052 mA target current / nominal + 22.16%
++          - <15> = 23.348 mA target current / nominal + 23.73%
++        $ref: /schemas/types.yaml#/definitions/uint32
++        minimum: 0
++        maximum: 15
++        default: 0
++
++      st,trim-hs-impedance:
++        description: |
++          Controls HS driver impedance tuning for choke compensation
++          - <0> = no impedance offset
++          - <1> = reduce the impedance by 2 ohms
++          - <2> = reduce the impedance by 4 ohms
++          - <3> = reduce the impedance by 6 ohms
++        $ref: /schemas/types.yaml#/definitions/uint32
++        minimum: 0
++        maximum: 3
++        default: 0
++
++      st,tune-squelch-level:
++        description: |
++          Tunes the squelch DC threshold value
++          - <0> = no shift in threshold
++          - <1> = threshold shift by +7 mV
++          - <2> = threshold shift by -5 mV
++          - <3> = threshold shift by +14 mV
++        $ref: /schemas/types.yaml#/definitions/uint32
++        minimum: 0
++        maximum: 3
++        default: 0
++
++      st,enable-hs-rx-gain-eq:
++        description: Enables the HS Rx gain equalizer
++        type: boolean
++
++      st,tune-hs-rx-offset:
++        description: |
++          Adjusts the HS Rx offset
++          - <0> = no offset
++          - <1> = offset of +5 mV
++          - <2> = offset of +10 mV
++          - <3> = offset of -5 mV
++        $ref: /schemas/types.yaml#/definitions/uint32
++        minimum: 0
++        maximum: 3
++        default: 0
++
++      st,no-hs-ftime-ctrl:
++        description: Disables the HS fall time control of single ended signals during pre-emphasis
++        type: boolean
++
++      st,no-lsfs-sc:
++        description: Disables the short circuit protection in LS/FS driver
++        type: boolean
++
++      st,enable-hs-tx-staggering:
++        description: Enables the basic staggering in HS Tx mode
++        type: boolean
++
+     allOf:
+       - if:
+           properties:
+@@ -137,6 +254,14 @@ examples:
+             reg = <0>;
+             phy-supply = <&vdd_usb>;
+             #phy-cells = <0>;
++            st,tune-hs-dc-level = <2>;
++            st,enable-fs-rftime-tuning;
++            st,enable-hs-rftime-reduction;
++            st,trim-hs-current = <15>;
++            st,trim-hs-impedance = <1>;
++            st,tune-squelch-level = <3>;
++            st,tune-hs-rx-offset = <2>;
++            st,no-lsfs-sc;
+             connector {
+                 compatible = "usb-a-connector";
+                 vbus-supply = <&vbus_sw>;
+@@ -147,6 +272,14 @@ examples:
+             reg = <1>;
+             phy-supply = <&vdd_usb>;
+             #phy-cells = <1>;
++            st,tune-hs-dc-level = <2>;
++            st,enable-fs-rftime-tuning;
++            st,enable-hs-rftime-reduction;
++            st,trim-hs-current = <15>;
++            st,trim-hs-impedance = <1>;
++            st,tune-squelch-level = <3>;
++            st,tune-hs-rx-offset = <2>;
++            st,no-lsfs-sc;
+         };
+     };
+ ...
+diff --git a/Documentation/devicetree/bindings/usb/dwc2.yaml b/Documentation/devicetree/bindings/usb/dwc2.yaml
+index 10c7d9b6c..882a2f1e0 100644
+--- a/Documentation/devicetree/bindings/usb/dwc2.yaml
++++ b/Documentation/devicetree/bindings/usb/dwc2.yaml
+@@ -9,6 +9,9 @@ title: DesignWare HS OTG USB 2.0 controller Bindings
+ maintainers:
+   - Rob Herring <robh@kernel.org>
+ 
++allOf:
++  - $ref: usb-drd.yaml#
++
+ properties:
+   compatible:
+     oneOf:
+@@ -101,12 +104,17 @@ properties:
+     description: reference to the VBUS and ID sensing comparators supply, in
+       order to perform OTG operation, used on STM32MP15 SoCs.
+ 
+-  dr_mode:
+-    enum: [host, peripheral, otg]
++  dr_mode: true
+ 
+-  usb-role-switch:
+-    $ref: /schemas/types.yaml#/definitions/flag
+-    description: Support role switch.
++  otg-rev: true
++
++  hnp-disable: true
++
++  srp-disable: true
++
++  usb-role-switch: true
++
++  role-switch-default-mode: true
+ 
+   g-rx-fifo-size:
+     $ref: /schemas/types.yaml#/definitions/uint32
+@@ -130,6 +138,21 @@ properties:
+     description: If present indicates that we need to reset the PHY when we 
+       detect a wakeup. This is due to a hardware errata.
+ 
++  port:
++    description:
++      Any connector to the data bus of this controller should be modelled
++      using the OF graph bindings specified, if the "usb-role-switch"
++      property is used.
++    $ref: /schemas/graph.yaml#/properties/port
++
++  wakeup-source:
++    $ref: /schemas/types.yaml#/definitions/flag
++    description: If present indicates this device has wakeup capabilities
++
++dependencies:
++  port: [ usb-role-switch ]
++  role-switch-default-mode: [ usb-role-switch ]
++
+ required:
+   - compatible
+   - reg
+diff --git a/Documentation/devicetree/bindings/usb/generic-ehci.yaml b/Documentation/devicetree/bindings/usb/generic-ehci.yaml
+index 891349762..c134aabec 100644
+--- a/Documentation/devicetree/bindings/usb/generic-ehci.yaml
++++ b/Documentation/devicetree/bindings/usb/generic-ehci.yaml
+@@ -148,6 +148,11 @@ properties:
+       - host
+       - otg
+ 
++  wakeup-source:
++    $ref: /schemas/types.yaml#/definitions/flag
++    description:
++      Indicate this device has wakeup capabilities.
++
+ required:
+   - compatible
+   - reg
+diff --git a/Documentation/devicetree/bindings/usb/generic-ohci.yaml b/Documentation/devicetree/bindings/usb/generic-ohci.yaml
+index acbf94fa5..1efa1eed9 100644
+--- a/Documentation/devicetree/bindings/usb/generic-ohci.yaml
++++ b/Documentation/devicetree/bindings/usb/generic-ohci.yaml
+@@ -115,6 +115,11 @@ properties:
+       - host
+       - otg
+ 
++  wakeup-source:
++    $ref: /schemas/types.yaml#/definitions/flag
++    description:
++      Indicate this device has wakeup capabilities.
++
+ required:
+   - compatible
+   - reg
+diff --git a/Documentation/devicetree/bindings/usb/st,typec-stm32g0.yaml b/Documentation/devicetree/bindings/usb/st,typec-stm32g0.yaml
+new file mode 100644
+index 000000000..b2729bd01
+--- /dev/null
++++ b/Documentation/devicetree/bindings/usb/st,typec-stm32g0.yaml
+@@ -0,0 +1,83 @@
++# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: "http://devicetree.org/schemas/usb/st,typec-stm32g0.yaml#"
++$schema: "http://devicetree.org/meta-schemas/core.yaml#"
++
++title: STMicroelectronics STM32G0 Type-C controller bindings
++
++description: |
++  The STM32G0 MCU can be programmed to control Type-C connector(s) through I2C
++  typically using the UCSI protocol over I2C, with a dedicated alert
++  (interrupt) pin.
++
++maintainers:
++  - Fabrice Gasnier <fabrice.gasnier@foss.st.com>
++
++properties:
++  compatible:
++    const: st,stm32g0-typec
++
++  reg:
++    maxItems: 1
++
++  interrupts:
++    maxItems: 1
++
++  connector:
++    type: object
++    allOf:
++      - $ref: ../connector/usb-connector.yaml#
++
++  firmware-name:
++    description: |
++      Should contain the name of the default firmware image
++      file located on the firmware search path
++
++  wakeup-source: true
++  power-domains: true
++
++required:
++  - compatible
++  - reg
++  - interrupts
++
++additionalProperties: false
++
++examples:
++  - |
++    #include <dt-bindings/interrupt-controller/irq.h>
++    i2c5 {
++      #address-cells = <1>;
++      #size-cells = <0>;
++
++      stm32g0@53 {
++        compatible = "st,stm32g0-typec";
++        reg = <0x53>;
++        /* Alert pin on GPIO PE12 */
++        interrupts = <12 IRQ_TYPE_EDGE_FALLING>;
++        interrupt-parent = <&gpioe>;
++
++        /* Example with one type-C connector */
++        connector {
++          compatible = "usb-c-connector";
++          label = "USB-C";
++
++          port {
++            con_usb_c_ep: endpoint {
++              remote-endpoint = <&usbotg_hs_ep>;
++            };
++          };
++        };
++      };
++    };
++
++    usbotg_hs {
++      usb-role-switch;
++      port {
++        usbotg_hs_ep: endpoint {
++          remote-endpoint = <&con_usb_c_ep>;
++        };
++      };
++    };
++...
+diff --git a/drivers/phy/st/phy-stm32-usbphyc.c b/drivers/phy/st/phy-stm32-usbphyc.c
+index da05642d3..d3d1235b9 100644
+--- a/drivers/phy/st/phy-stm32-usbphyc.c
++++ b/drivers/phy/st/phy-stm32-usbphyc.c
+@@ -12,6 +12,7 @@
+ #include <linux/iopoll.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
++#include <linux/of_irq.h>
+ #include <linux/of_platform.h>
+ #include <linux/phy/phy.h>
+ #include <linux/reset.h>
+@@ -20,6 +21,7 @@
+ #define STM32_USBPHYC_PLL	0x0
+ #define STM32_USBPHYC_MISC	0x8
+ #define STM32_USBPHYC_MONITOR(X) (0x108 + ((X) * 0x100))
++#define STM32_USBPHYC_TUNE(X)	(0x10C + ((X) * 0x100))
+ #define STM32_USBPHYC_VERSION	0x3F4
+ 
+ /* STM32_USBPHYC_PLL bit fields */
+@@ -41,6 +43,83 @@
+ #define STM32_USBPHYC_MON_SEL_LOCKP 0x1F
+ #define STM32_USBPHYC_MON_OUT_LOCKP BIT(3)
+ 
++/* STM32_USBPHYC_TUNE bit fields */
++#define INCURREN		BIT(0)
++#define INCURRINT		BIT(1)
++#define LFSCAPEN		BIT(2)
++#define HSDRVSLEW		BIT(3)
++#define HSDRVDCCUR		BIT(4)
++#define HSDRVDCLEV		BIT(5)
++#define HSDRVCURINCR		BIT(6)
++#define FSDRVRFADJ		BIT(7)
++#define HSDRVRFRED		BIT(8)
++#define HSDRVCHKITRM		GENMASK(12, 9)
++#define HSDRVCHKZTRM		GENMASK(14, 13)
++#define OTPCOMP			GENMASK(19, 15)
++#define SQLCHCTL		GENMASK(21, 20)
++#define HDRXGNEQEN		BIT(22)
++#define HSRXOFF			GENMASK(24, 23)
++#define HSFALLPREEM		BIT(25)
++#define SHTCCTCTLPROT		BIT(26)
++#define STAGSEL			BIT(27)
++
++enum boosting_vals {
++	BOOST_1000_UA = 1000,
++	BOOST_2000_UA = 2000,
++};
++
++enum dc_level_vals {
++	DC_NOMINAL,
++	DC_PLUS_5_TO_7_MV,
++	DC_PLUS_10_TO_14_MV,
++	DC_MINUS_5_TO_7_MV,
++	DC_MAX,
++};
++
++enum current_trim {
++	CUR_NOMINAL,
++	CUR_PLUS_1_56_PCT,
++	CUR_PLUS_3_12_PCT,
++	CUR_PLUS_4_68_PCT,
++	CUR_PLUS_6_24_PCT,
++	CUR_PLUS_7_8_PCT,
++	CUR_PLUS_9_36_PCT,
++	CUR_PLUS_10_92_PCT,
++	CUR_PLUS_12_48_PCT,
++	CUR_PLUS_14_04_PCT,
++	CUR_PLUS_15_6_PCT,
++	CUR_PLUS_17_16_PCT,
++	CUR_PLUS_19_01_PCT,
++	CUR_PLUS_20_58_PCT,
++	CUR_PLUS_22_16_PCT,
++	CUR_PLUS_23_73_PCT,
++	CUR_MAX,
++};
++
++enum impedance_trim {
++	IMP_NOMINAL,
++	IMP_MINUS_2_OHMS,
++	IMP_MINUS_4_OMHS,
++	IMP_MINUS_6_OHMS,
++	IMP_MAX,
++};
++
++enum squelch_level {
++	SQLCH_NOMINAL,
++	SQLCH_PLUS_7_MV,
++	SQLCH_MINUS_5_MV,
++	SQLCH_PLUS_14_MV,
++	SQLCH_MAX,
++};
++
++enum rx_offset {
++	NO_RX_OFFSET,
++	RX_OFFSET_PLUS_5_MV,
++	RX_OFFSET_PLUS_10_MV,
++	RX_OFFSET_MINUS_5_MV,
++	RX_OFFSET_MAX,
++};
++
+ /* STM32_USBPHYC_VERSION bit fields */
+ #define MINREV			GENMASK(3, 0)
+ #define MAJREV			GENMASK(7, 4)
+@@ -58,8 +137,10 @@ struct stm32_usbphyc_phy {
+ 	struct phy *phy;
+ 	struct stm32_usbphyc *usbphyc;
+ 	struct regulator *vbus;
++	int wakeirq;
+ 	u32 index;
+ 	bool active;
++	u32 tune;
+ };
+ 
+ struct stm32_usbphyc {
+@@ -295,6 +376,12 @@ static int stm32_usbphyc_phy_exit(struct phy *phy)
+ static int stm32_usbphyc_phy_power_on(struct phy *phy)
+ {
+ 	struct stm32_usbphyc_phy *usbphyc_phy = phy_get_drvdata(phy);
++	struct stm32_usbphyc *usbphyc = usbphyc_phy->usbphyc;
++
++	if (usbphyc_phy->wakeirq > 0)
++		if (enable_irq_wake(usbphyc_phy->wakeirq))
++			dev_warn(usbphyc->dev,
++				 "Wake irq for phy%d not enabled\n", usbphyc_phy->index);
+ 
+ 	if (usbphyc_phy->vbus)
+ 		return regulator_enable(usbphyc_phy->vbus);
+@@ -305,6 +392,12 @@ static int stm32_usbphyc_phy_power_on(struct phy *phy)
+ static int stm32_usbphyc_phy_power_off(struct phy *phy)
+ {
+ 	struct stm32_usbphyc_phy *usbphyc_phy = phy_get_drvdata(phy);
++	struct stm32_usbphyc *usbphyc = usbphyc_phy->usbphyc;
++
++	if (usbphyc_phy->wakeirq > 0)
++		if (disable_irq_wake(usbphyc_phy->wakeirq))
++			dev_warn(usbphyc->dev,
++				 "Wake irq for phy%d not disabled\n", usbphyc_phy->index);
+ 
+ 	if (usbphyc_phy->vbus)
+ 		return regulator_disable(usbphyc_phy->vbus);
+@@ -375,6 +468,107 @@ static int stm32_usbphyc_clk48_register(struct stm32_usbphyc *usbphyc)
+ 	return ret;
+ }
+ 
++static void stm32_usbphyc_phy_tuning(struct stm32_usbphyc *usbphyc,
++				     struct device_node *np, u32 index)
++{
++	struct stm32_usbphyc_phy *usbphyc_phy = usbphyc->phys[index];
++	u32 reg = STM32_USBPHYC_TUNE(index);
++	u32 otpcomp, val;
++	int ret;
++
++	/* Backup OTP compensation code */
++	otpcomp = FIELD_GET(OTPCOMP, readl_relaxed(usbphyc->base + reg));
++
++	ret = of_property_read_u32(np, "st,current-boost-microamp", &val);
++	if (ret != -EINVAL) {
++		if (!ret && (val == BOOST_1000_UA || val == BOOST_2000_UA)) {
++			val = (val == BOOST_2000_UA) ? 1 : 0;
++			usbphyc_phy->tune |= INCURREN | FIELD_PREP(INCURRINT, val);
++		} else {
++			dev_warn(usbphyc->dev, "phy%d: invalid st,current-boost-microamp\n", index);
++		}
++	}
++
++	if (!of_property_read_bool(np, "st,no-lsfs-fb-cap"))
++		usbphyc_phy->tune |= LFSCAPEN;
++
++	if (of_property_read_bool(np, "st,decrease-hs-slew-rate"))
++		usbphyc_phy->tune |= HSDRVSLEW;
++
++	ret = of_property_read_u32(np, "st,tune-hs-dc-level", &val);
++	if (ret != -EINVAL) {
++		if (!ret && val < DC_MAX) {
++			if (val == DC_MINUS_5_TO_7_MV) {/* Decreases HS driver DC level */
++				usbphyc_phy->tune |= HSDRVDCCUR;
++			} else if (val > 0) {		/* Increases HS driver DC level */
++				val = (val == DC_PLUS_10_TO_14_MV) ? 1 : 0;
++				usbphyc_phy->tune |= HSDRVCURINCR | FIELD_PREP(HSDRVDCLEV, val);
++			}
++		} else {
++			dev_warn(usbphyc->dev, "phy%d: invalid st,tune-hs-dc-level\n", index);
++		}
++	}
++
++	if (of_property_read_bool(np, "st,enable-fs-rftime-tuning"))
++		usbphyc_phy->tune |= FSDRVRFADJ;
++
++	if (of_property_read_bool(np, "st,enable-hs-rftime-reduction"))
++		usbphyc_phy->tune |= HSDRVRFRED;
++
++	ret = of_property_read_u32(np, "st,trim-hs-current", &val);
++	if (ret != -EINVAL) {
++		if (!ret && val < CUR_MAX)
++			usbphyc_phy->tune |= FIELD_PREP(HSDRVCHKITRM, val);
++		else
++			dev_warn(usbphyc->dev, "phy%d: invalid st,trim-hs-current\n", index);
++	}
++
++	ret = of_property_read_u32(np, "st,trim-hs-impedance", &val);
++	if (ret != -EINVAL) {
++		if (!ret && val < IMP_MAX)
++			usbphyc_phy->tune |= FIELD_PREP(HSDRVCHKZTRM, val);
++		else
++			dev_warn(usbphyc->dev, "phy%d: invalid st,trim-hs-impedance\n", index);
++	}
++
++	ret = of_property_read_u32(np, "st,tune-squelch-level", &val);
++	if (ret != -EINVAL) {
++		if (!ret && val < SQLCH_MAX)
++			usbphyc_phy->tune |= FIELD_PREP(SQLCHCTL, val);
++		else
++			dev_warn(usbphyc->dev, "phy%d: invalid st,tune-squelch\n", index);
++	}
++
++	if (of_property_read_bool(np, "st,enable-hs-rx-gain-eq"))
++		usbphyc_phy->tune |= HDRXGNEQEN;
++
++	ret = of_property_read_u32(np, "st,tune-hs-rx-offset", &val);
++	if (ret != -EINVAL) {
++		if (!ret && val < RX_OFFSET_MAX)
++			usbphyc_phy->tune |= FIELD_PREP(HSRXOFF, val);
++		else
++			dev_warn(usbphyc->dev, "phy%d: invalid st,tune-hs-rx-offset\n", index);
++	}
++
++	if (of_property_read_bool(np, "st,no-hs-ftime-ctrl"))
++		usbphyc_phy->tune |= HSFALLPREEM;
++
++	if (!of_property_read_bool(np, "st,no-lsfs-sc"))
++		usbphyc_phy->tune |= SHTCCTCTLPROT;
++
++	if (of_property_read_bool(np, "st,enable-hs-tx-staggering"))
++		usbphyc_phy->tune |= STAGSEL;
++
++	/* Restore OTP compensation code */
++	usbphyc_phy->tune |= FIELD_PREP(OTPCOMP, otpcomp);
++
++	/*
++	 * By default, if no st,xxx tuning property is used, usbphyc_phy->tune is equal to
++	 * STM32_USBPHYC_TUNE reset value (LFSCAPEN | SHTCCTCTLPROT | OTPCOMP).
++	 */
++	writel_relaxed(usbphyc_phy->tune, usbphyc->base + reg);
++}
++
+ static void stm32_usbphyc_switch_setup(struct stm32_usbphyc *usbphyc,
+ 				       u32 utmi_switch)
+ {
+@@ -492,17 +686,15 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
+ 
+ 	usbphyc->vdda1v1 = devm_regulator_get(dev, "vdda1v1");
+ 	if (IS_ERR(usbphyc->vdda1v1)) {
+-		ret = PTR_ERR(usbphyc->vdda1v1);
+-		if (ret != -EPROBE_DEFER)
+-			dev_err(dev, "failed to get vdda1v1 supply: %d\n", ret);
++		ret = dev_err_probe(dev, PTR_ERR(usbphyc->vdda1v1),
++				    "failed to get vdda1v1 supply\n");
+ 		goto clk_disable;
+ 	}
+ 
+ 	usbphyc->vdda1v8 = devm_regulator_get(dev, "vdda1v8");
+ 	if (IS_ERR(usbphyc->vdda1v8)) {
+-		ret = PTR_ERR(usbphyc->vdda1v8);
+-		if (ret != -EPROBE_DEFER)
+-			dev_err(dev, "failed to get vdda1v8 supply: %d\n", ret);
++		ret = dev_err_probe(dev, PTR_ERR(usbphyc->vdda1v8),
++				    "failed to get vdda1v8 supply\n");
+ 		goto clk_disable;
+ 	}
+ 
+@@ -550,6 +742,14 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
+ 			usbphyc->phys[port]->vbus = NULL;
+ 		}
+ 
++		/* Get optional wakeup interrupt */
++		usbphyc->phys[port]->wakeirq = of_irq_get(child, 0);
++		if (usbphyc->phys[port]->wakeirq == -EPROBE_DEFER)
++			goto put_child;
++
++		/* Configure phy tuning */
++		stm32_usbphyc_phy_tuning(usbphyc, child, index);
++
+ 		port++;
+ 	}
+ 
+@@ -598,6 +798,25 @@ static int stm32_usbphyc_remove(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
++static int __maybe_unused stm32_usbphyc_resume(struct device *dev)
++{
++	struct stm32_usbphyc *usbphyc = dev_get_drvdata(dev);
++	struct stm32_usbphyc_phy *usbphyc_phy;
++	int port;
++
++	if (usbphyc->switch_setup >= 0)
++		stm32_usbphyc_switch_setup(usbphyc, usbphyc->switch_setup);
++
++	for (port = 0; port < usbphyc->nphys; port++) {
++		usbphyc_phy = usbphyc->phys[port];
++		writel_relaxed(usbphyc_phy->tune, usbphyc->base + STM32_USBPHYC_TUNE(port));
++	}
++
++	return 0;
++}
++
++static SIMPLE_DEV_PM_OPS(stm32_usbphyc_pm_ops, NULL, stm32_usbphyc_resume);
++
+ static const struct of_device_id stm32_usbphyc_of_match[] = {
+ 	{ .compatible = "st,stm32mp1-usbphyc", },
+ 	{ },
+@@ -610,6 +829,7 @@ static struct platform_driver stm32_usbphyc_driver = {
+ 	.driver = {
+ 		.of_match_table = stm32_usbphyc_of_match,
+ 		.name = "stm32-usbphyc",
++		.pm = &stm32_usbphyc_pm_ops,
+ 	}
+ };
+ module_platform_driver(stm32_usbphyc_driver);
+diff --git a/drivers/usb/core/hcd.c b/drivers/usb/core/hcd.c
+index dd3c288fa..9c4fef396 100644
+--- a/drivers/usb/core/hcd.c
++++ b/drivers/usb/core/hcd.c
+@@ -2292,7 +2292,8 @@ int hcd_bus_suspend(struct usb_device *rhdev, pm_message_t msg)
+ 
+ 		if (!PMSG_IS_AUTO(msg))
+ 			usb_phy_roothub_suspend(hcd->self.sysdev,
+-						hcd->phy_roothub);
++						hcd->phy_roothub,
++						usb_wakeup_enabled_descendants(rhdev));
+ 
+ 		/* Did we race with a root-hub wakeup event? */
+ 		if (rhdev->do_remote_wakeup) {
+@@ -2333,7 +2334,8 @@ int hcd_bus_resume(struct usb_device *rhdev, pm_message_t msg)
+ 
+ 	if (!PMSG_IS_AUTO(msg)) {
+ 		status = usb_phy_roothub_resume(hcd->self.sysdev,
+-						hcd->phy_roothub);
++						hcd->phy_roothub,
++						usb_wakeup_enabled_descendants(rhdev));
+ 		if (status)
+ 			return status;
+ 	}
+@@ -2378,7 +2380,8 @@ int hcd_bus_resume(struct usb_device *rhdev, pm_message_t msg)
+ 		}
+ 	} else {
+ 		hcd->state = old_state;
+-		usb_phy_roothub_suspend(hcd->self.sysdev, hcd->phy_roothub);
++		usb_phy_roothub_suspend(hcd->self.sysdev, hcd->phy_roothub,
++					usb_wakeup_enabled_descendants(rhdev));
+ 		dev_dbg(&rhdev->dev, "bus %s fail, err %d\n",
+ 				"resume", status);
+ 		if (status != -ESHUTDOWN)
+diff --git a/drivers/usb/core/phy.c b/drivers/usb/core/phy.c
+index fb1588e7c..746615aa1 100644
+--- a/drivers/usb/core/phy.c
++++ b/drivers/usb/core/phy.c
+@@ -212,34 +212,36 @@ void usb_phy_roothub_power_off(struct usb_phy_roothub *phy_roothub)
+ EXPORT_SYMBOL_GPL(usb_phy_roothub_power_off);
+ 
+ int usb_phy_roothub_suspend(struct device *controller_dev,
+-			    struct usb_phy_roothub *phy_roothub)
++			    struct usb_phy_roothub *phy_roothub,
++			    unsigned wakeup_enabled_descendants)
+ {
+-	usb_phy_roothub_power_off(phy_roothub);
+-
+ 	/* keep the PHYs initialized so the device can wake up the system */
+-	if (device_may_wakeup(controller_dev))
++	if (device_may_wakeup(controller_dev) || wakeup_enabled_descendants)
+ 		return 0;
+ 
++	usb_phy_roothub_power_off(phy_roothub);
++
+ 	return usb_phy_roothub_exit(phy_roothub);
+ }
+ EXPORT_SYMBOL_GPL(usb_phy_roothub_suspend);
+ 
+ int usb_phy_roothub_resume(struct device *controller_dev,
+-			   struct usb_phy_roothub *phy_roothub)
++			   struct usb_phy_roothub *phy_roothub,
++			   unsigned wakeup_enabled_descendants)
+ {
+-	int err;
++	int err = 0;
+ 
+ 	/* if the device can't wake up the system _exit was called */
+-	if (!device_may_wakeup(controller_dev)) {
++	if (!device_may_wakeup(controller_dev) && !wakeup_enabled_descendants) {
+ 		err = usb_phy_roothub_init(phy_roothub);
+ 		if (err)
+ 			return err;
+-	}
+ 
+-	err = usb_phy_roothub_power_on(phy_roothub);
++		err = usb_phy_roothub_power_on(phy_roothub);
++	}
+ 
+ 	/* undo _init if _power_on failed */
+-	if (err && !device_may_wakeup(controller_dev))
++	if (err && !device_may_wakeup(controller_dev) && !wakeup_enabled_descendants)
+ 		usb_phy_roothub_exit(phy_roothub);
+ 
+ 	return err;
+diff --git a/drivers/usb/core/phy.h b/drivers/usb/core/phy.h
+index 20a267cd9..3df4ddbb6 100644
+--- a/drivers/usb/core/phy.h
++++ b/drivers/usb/core/phy.h
+@@ -23,8 +23,10 @@ int usb_phy_roothub_power_on(struct usb_phy_roothub *phy_roothub);
+ void usb_phy_roothub_power_off(struct usb_phy_roothub *phy_roothub);
+ 
+ int usb_phy_roothub_suspend(struct device *controller_dev,
+-			    struct usb_phy_roothub *phy_roothub);
++			    struct usb_phy_roothub *phy_roothub,
++			    unsigned wakeup_enabled_descendants);
+ int usb_phy_roothub_resume(struct device *controller_dev,
+-			   struct usb_phy_roothub *phy_roothub);
++			   struct usb_phy_roothub *phy_roothub,
++			   unsigned wakeup_enabled_descendants);
+ 
+ #endif /* __USB_CORE_PHY_H_ */
+diff --git a/drivers/usb/dwc2/core.h b/drivers/usb/dwc2/core.h
+index cb9059a84..255fca4e8 100644
+--- a/drivers/usb/dwc2/core.h
++++ b/drivers/usb/dwc2/core.h
+@@ -238,11 +238,14 @@ enum dwc2_ep0_state {
+ /**
+  * struct dwc2_core_params - Parameters for configuring the core
+  *
+- * @otg_cap:            Specifies the OTG capabilities.
+- *                       0 - HNP and SRP capable
+- *                       1 - SRP Only capable
+- *                       2 - No HNP/SRP capable (always available)
+- *                      Defaults to best available option (0, 1, then 2)
++ * @otg_caps:           Specifies the OTG capabilities. OTG caps from the platform parameters,
++ *                      used to setup the:
++ *                       - HNP and SRP capable
++ *                       - SRP Only capable
++ *                       - No HNP/SRP capable (always available)
++ *                       Defaults to best available option
++ *                       - OTG revision number the device is compliant with, in binary-coded
++ *                         decimal (i.e. 2.0 is 0200H). (see struct usb_otg_caps)
+  * @host_dma:           Specifies whether to use slave or DMA mode for accessing
+  *                      the data FIFOs. The driver will automatically detect the
+  *                      value for this parameter if none is specified.
+@@ -453,11 +456,7 @@ enum dwc2_ep0_state {
+  * default described above.
+  */
+ struct dwc2_core_params {
+-	u8 otg_cap;
+-#define DWC2_CAP_PARAM_HNP_SRP_CAPABLE		0
+-#define DWC2_CAP_PARAM_SRP_ONLY_CAPABLE		1
+-#define DWC2_CAP_PARAM_NO_HNP_SRP_CAPABLE	2
+-
++	struct usb_otg_caps otg_caps;
+ 	u8 phy_type;
+ #define DWC2_PHY_TYPE_PARAM_FS		0
+ #define DWC2_PHY_TYPE_PARAM_UTMI	1
+@@ -870,6 +869,8 @@ struct dwc2_hregs_backup {
+  *                      - USB_DR_MODE_HOST
+  *                      - USB_DR_MODE_OTG
+  * @role_sw:		usb_role_switch handle
++ * @role_sw_default_mode: default operation mode of controller while usb role
++ *			is USB_ROLE_NONE
+  * @hcd_enabled:	Host mode sub-driver initialization indicator.
+  * @gadget_enabled:	Peripheral mode sub-driver initialization indicator.
+  * @ll_hw_enabled:	Status of low-level hardware resources.
+@@ -1066,6 +1067,7 @@ struct dwc2_hsotg {
+ 	enum usb_otg_state op_state;
+ 	enum usb_dr_mode dr_mode;
+ 	struct usb_role_switch *role_sw;
++	enum usb_dr_mode role_sw_default_mode;
+ 	unsigned int hcd_enabled:1;
+ 	unsigned int gadget_enabled:1;
+ 	unsigned int ll_hw_enabled:1;
+@@ -1417,6 +1419,7 @@ void dwc2_hsotg_core_connect(struct dwc2_hsotg *hsotg);
+ void dwc2_hsotg_disconnect(struct dwc2_hsotg *dwc2);
+ int dwc2_hsotg_set_test_mode(struct dwc2_hsotg *hsotg, int testmode);
+ #define dwc2_is_device_connected(hsotg) (hsotg->connected)
++#define dwc2_is_device_enabled(hsotg) (hsotg->enabled)
+ int dwc2_backup_device_registers(struct dwc2_hsotg *hsotg);
+ int dwc2_restore_device_registers(struct dwc2_hsotg *hsotg, int remote_wakeup);
+ int dwc2_gadget_enter_hibernation(struct dwc2_hsotg *hsotg);
+@@ -1453,6 +1456,7 @@ static inline int dwc2_hsotg_set_test_mode(struct dwc2_hsotg *hsotg,
+ 					   int testmode)
+ { return 0; }
+ #define dwc2_is_device_connected(hsotg) (0)
++#define dwc2_is_device_enabled(hsotg) (0)
+ static inline int dwc2_backup_device_registers(struct dwc2_hsotg *hsotg)
+ { return 0; }
+ static inline int dwc2_restore_device_registers(struct dwc2_hsotg *hsotg,
+diff --git a/drivers/usb/dwc2/core_intr.c b/drivers/usb/dwc2/core_intr.c
+index a5c52b237..c786560fb 100644
+--- a/drivers/usb/dwc2/core_intr.c
++++ b/drivers/usb/dwc2/core_intr.c
+@@ -433,13 +433,14 @@ static void dwc2_handle_wakeup_detected_intr(struct dwc2_hsotg *hsotg)
+ 				if (ret)
+ 					dev_err(hsotg->dev,
+ 						"exit partial_power_down failed\n");
+-				call_gadget(hsotg, resume);
+ 			}
+ 
+ 			/* Exit gadget mode clock gating. */
+ 			if (hsotg->params.power_down ==
+ 			    DWC2_POWER_DOWN_PARAM_NONE && hsotg->bus_suspended)
+ 				dwc2_gadget_exit_clock_gating(hsotg, 0);
++
++			call_gadget(hsotg, resume);
+ 		} else {
+ 			/* Change to L0 state */
+ 			hsotg->lx_state = DWC2_L0;
+diff --git a/drivers/usb/dwc2/debugfs.c b/drivers/usb/dwc2/debugfs.c
+index f13eed423..1d72ece9c 100644
+--- a/drivers/usb/dwc2/debugfs.c
++++ b/drivers/usb/dwc2/debugfs.c
+@@ -670,7 +670,9 @@ static int params_show(struct seq_file *seq, void *v)
+ 	struct dwc2_core_params *p = &hsotg->params;
+ 	int i;
+ 
+-	print_param(seq, p, otg_cap);
++	print_param(seq, p, otg_caps.hnp_support);
++	print_param(seq, p, otg_caps.srp_support);
++	print_param(seq, p, otg_caps.otg_rev);
+ 	print_param(seq, p, dma_desc_enable);
+ 	print_param(seq, p, dma_desc_fs_enable);
+ 	print_param(seq, p, speed);
+diff --git a/drivers/usb/dwc2/drd.c b/drivers/usb/dwc2/drd.c
+index aa6eb76f6..c64701307 100644
+--- a/drivers/usb/dwc2/drd.c
++++ b/drivers/usb/dwc2/drd.c
+@@ -13,6 +13,10 @@
+ #include <linux/usb/role.h>
+ #include "core.h"
+ 
++#define dwc2_ovr_gotgctl(gotgctl) \
++	((gotgctl) |= GOTGCTL_BVALOEN | GOTGCTL_AVALOEN | GOTGCTL_VBVALOEN | \
++	 GOTGCTL_DBNCE_FLTR_BYPASS)
++
+ static void dwc2_ovr_init(struct dwc2_hsotg *hsotg)
+ {
+ 	unsigned long flags;
+@@ -21,9 +25,12 @@ static void dwc2_ovr_init(struct dwc2_hsotg *hsotg)
+ 	spin_lock_irqsave(&hsotg->lock, flags);
+ 
+ 	gotgctl = dwc2_readl(hsotg, GOTGCTL);
+-	gotgctl |= GOTGCTL_BVALOEN | GOTGCTL_AVALOEN | GOTGCTL_VBVALOEN;
+-	gotgctl |= GOTGCTL_DBNCE_FLTR_BYPASS;
++	dwc2_ovr_gotgctl(gotgctl);
+ 	gotgctl &= ~(GOTGCTL_BVALOVAL | GOTGCTL_AVALOVAL | GOTGCTL_VBVALOVAL);
++	if (hsotg->role_sw_default_mode == USB_DR_MODE_HOST)
++		gotgctl |= GOTGCTL_AVALOVAL | GOTGCTL_VBVALOVAL;
++	else if (hsotg->role_sw_default_mode == USB_DR_MODE_PERIPHERAL)
++		gotgctl |= GOTGCTL_BVALOVAL | GOTGCTL_VBVALOVAL;
+ 	dwc2_writel(hsotg, gotgctl, GOTGCTL);
+ 
+ 	spin_unlock_irqrestore(&hsotg->lock, flags);
+@@ -36,10 +43,13 @@ static int dwc2_ovr_avalid(struct dwc2_hsotg *hsotg, bool valid)
+ 	u32 gotgctl = dwc2_readl(hsotg, GOTGCTL);
+ 
+ 	/* Check if A-Session is already in the right state */
+-	if ((valid && (gotgctl & GOTGCTL_ASESVLD)) ||
+-	    (!valid && !(gotgctl & GOTGCTL_ASESVLD)))
++	if ((valid && (gotgctl & GOTGCTL_AVALOVAL) && (gotgctl & GOTGCTL_VBVALOVAL)) ||
++	    (!valid && !(gotgctl & (GOTGCTL_AVALOVAL | GOTGCTL_VBVALOVAL))))
+ 		return -EALREADY;
+ 
++	/* Always enable overrides to handle the resume case */
++	dwc2_ovr_gotgctl(gotgctl);
++
+ 	gotgctl &= ~GOTGCTL_BVALOVAL;
+ 	if (valid)
+ 		gotgctl |= GOTGCTL_AVALOVAL | GOTGCTL_VBVALOVAL;
+@@ -55,10 +65,13 @@ static int dwc2_ovr_bvalid(struct dwc2_hsotg *hsotg, bool valid)
+ 	u32 gotgctl = dwc2_readl(hsotg, GOTGCTL);
+ 
+ 	/* Check if B-Session is already in the right state */
+-	if ((valid && (gotgctl & GOTGCTL_BSESVLD)) ||
+-	    (!valid && !(gotgctl & GOTGCTL_BSESVLD)))
++	if ((valid && (gotgctl & GOTGCTL_BVALOVAL) && (gotgctl & GOTGCTL_VBVALOVAL)) ||
++	    (!valid && !(gotgctl & (GOTGCTL_BVALOVAL | GOTGCTL_VBVALOVAL))))
+ 		return -EALREADY;
+ 
++	/* Always enable overrides to handle the resume case */
++	dwc2_ovr_gotgctl(gotgctl);
++
+ 	gotgctl &= ~GOTGCTL_AVALOVAL;
+ 	if (valid)
+ 		gotgctl |= GOTGCTL_BVALOVAL | GOTGCTL_VBVALOVAL;
+@@ -105,12 +118,22 @@ static int dwc2_drd_role_sw_set(struct usb_role_switch *sw, enum usb_role role)
+ 
+ 	spin_lock_irqsave(&hsotg->lock, flags);
+ 
++	if (role == USB_ROLE_NONE) {
++		/* default operation mode when usb role is USB_ROLE_NONE */
++		if (hsotg->role_sw_default_mode == USB_DR_MODE_HOST)
++			role = USB_ROLE_HOST;
++		else if (hsotg->role_sw_default_mode == USB_DR_MODE_PERIPHERAL)
++			role = USB_ROLE_DEVICE;
++	}
++
+ 	if (role == USB_ROLE_HOST) {
+ 		already = dwc2_ovr_avalid(hsotg, true);
+ 	} else if (role == USB_ROLE_DEVICE) {
+ 		already = dwc2_ovr_bvalid(hsotg, true);
+-		/* This clear DCTL.SFTDISCON bit */
+-		dwc2_hsotg_core_connect(hsotg);
++		if (dwc2_is_device_enabled(hsotg)) {
++			/* This clear DCTL.SFTDISCON bit */
++			dwc2_hsotg_core_connect(hsotg);
++		}
+ 	} else {
+ 		if (dwc2_is_device_mode(hsotg)) {
+ 			if (!dwc2_ovr_bvalid(hsotg, false))
+@@ -123,9 +146,18 @@ static int dwc2_drd_role_sw_set(struct usb_role_switch *sw, enum usb_role role)
+ 
+ 	spin_unlock_irqrestore(&hsotg->lock, flags);
+ 
+-	if (!already && hsotg->dr_mode == USB_DR_MODE_OTG)
++	if (!already && hsotg->dr_mode == USB_DR_MODE_OTG) {
++		/*
++		 * The bus may have been suspended (typically in hcd), need to resume as the HW
++		 * may not be HW accessible. Schedule work to call dwc2_conn_id_status_change
++		 * to handle the port resume before switching mode.
++		 */
++		if (hsotg->bus_suspended && hsotg->wq_otg)
++			queue_work(hsotg->wq_otg, &hsotg->wf_otg);
++
+ 		/* This will raise a Connector ID Status Change Interrupt */
+ 		dwc2_force_mode(hsotg, role == USB_ROLE_HOST);
++	}
+ 
+ 	if (!hsotg->ll_hw_enabled && hsotg->clk)
+ 		clk_disable_unprepare(hsotg->clk);
+@@ -141,11 +173,21 @@ int dwc2_drd_init(struct dwc2_hsotg *hsotg)
+ {
+ 	struct usb_role_switch_desc role_sw_desc = {0};
+ 	struct usb_role_switch *role_sw;
++	const char *str;
+ 	int ret;
+ 
+ 	if (!device_property_read_bool(hsotg->dev, "usb-role-switch"))
+ 		return 0;
+ 
++	hsotg->role_sw_default_mode = USB_DR_MODE_UNKNOWN;
++	ret = device_property_read_string(hsotg->dev, "role-switch-default-mode", &str);
++	if (!ret) {
++		if (!strncmp(str, "host", strlen("host")))
++			hsotg->role_sw_default_mode = USB_DR_MODE_HOST;
++		else if (!strncmp(str, "peripheral", strlen("peripheral")))
++			hsotg->role_sw_default_mode = USB_DR_MODE_PERIPHERAL;
++	}
++
+ 	role_sw_desc.driver_data = hsotg;
+ 	role_sw_desc.fwnode = dev_fwnode(hsotg->dev);
+ 	role_sw_desc.set = dwc2_drd_role_sw_set;
+@@ -183,6 +225,31 @@ void dwc2_drd_suspend(struct dwc2_hsotg *hsotg)
+ void dwc2_drd_resume(struct dwc2_hsotg *hsotg)
+ {
+ 	u32 gintsts, gintmsk;
++	enum usb_role role;
++
++	if (hsotg->role_sw) {
++		/* get last known role (as the get ops isn't implemented by this driver) */
++		role = usb_role_switch_get_role(hsotg->role_sw);
++
++		if (role == USB_ROLE_NONE) {
++			if (hsotg->role_sw_default_mode == USB_DR_MODE_HOST)
++				role = USB_ROLE_HOST;
++			else if (hsotg->role_sw_default_mode == USB_DR_MODE_PERIPHERAL)
++				role = USB_ROLE_DEVICE;
++		}
++
++		/* restore last role that may have been lost */
++		if (role == USB_ROLE_HOST)
++			dwc2_ovr_avalid(hsotg, true);
++		else if (role == USB_ROLE_DEVICE)
++			dwc2_ovr_bvalid(hsotg, true);
++
++		dwc2_force_mode(hsotg, role == USB_ROLE_HOST);
++
++		dev_dbg(hsotg->dev, "resuming %s-session valid\n",
++			role == USB_ROLE_NONE ? "No" :
++			role == USB_ROLE_HOST ? "A" : "B");
++	}
+ 
+ 	if (hsotg->role_sw && !hsotg->params.external_id_pin_ctl) {
+ 		gintsts = dwc2_readl(hsotg, GINTSTS);
+diff --git a/drivers/usb/dwc2/gadget.c b/drivers/usb/dwc2/gadget.c
+index 0909b088a..c96299472 100644
+--- a/drivers/usb/dwc2/gadget.c
++++ b/drivers/usb/dwc2/gadget.c
+@@ -3594,7 +3594,8 @@ void dwc2_hsotg_core_disconnect(struct dwc2_hsotg *hsotg)
+ void dwc2_hsotg_core_connect(struct dwc2_hsotg *hsotg)
+ {
+ 	/* remove the soft-disconnect and let's go */
+-	dwc2_clear_bit(hsotg, DCTL, DCTL_SFTDISCON);
++	if (!hsotg->role_sw || (dwc2_readl(hsotg, GOTGCTL) & GOTGCTL_BSESVLD))
++		dwc2_clear_bit(hsotg, DCTL, DCTL_SFTDISCON);
+ }
+ 
+ /**
+@@ -4988,6 +4989,7 @@ int dwc2_gadget_init(struct dwc2_hsotg *hsotg)
+ 
+ 	hsotg->gadget.ops = &dwc2_hsotg_gadget_ops;
+ 	hsotg->gadget.name = dev_name(dev);
++	hsotg->gadget.otg_caps = &hsotg->params.otg_caps;
+ 	hsotg->remote_wakeup_allowed = 0;
+ 
+ 	if (hsotg->params.lpm)
+@@ -5670,7 +5672,6 @@ void dwc2_gadget_exit_clock_gating(struct dwc2_hsotg *hsotg, int rem_wakeup)
+ 	}
+ 
+ 	/* Change to L0 state */
+-	call_gadget(hsotg, resume);
+ 	hsotg->lx_state = DWC2_L0;
+ 	hsotg->bus_suspended = false;
+ }
+diff --git a/drivers/usb/dwc2/hcd.c b/drivers/usb/dwc2/hcd.c
+index 657dbd50f..7929af33f 100644
+--- a/drivers/usb/dwc2/hcd.c
++++ b/drivers/usb/dwc2/hcd.c
+@@ -138,19 +138,15 @@ static void dwc2_gusbcfg_init(struct dwc2_hsotg *hsotg)
+ 
+ 	switch (hsotg->hw_params.op_mode) {
+ 	case GHWCFG2_OP_MODE_HNP_SRP_CAPABLE:
+-		if (hsotg->params.otg_cap ==
+-				DWC2_CAP_PARAM_HNP_SRP_CAPABLE)
++		if (hsotg->params.otg_caps.hnp_support &&
++		    hsotg->params.otg_caps.srp_support)
+ 			usbcfg |= GUSBCFG_HNPCAP;
+-		if (hsotg->params.otg_cap !=
+-				DWC2_CAP_PARAM_NO_HNP_SRP_CAPABLE)
+-			usbcfg |= GUSBCFG_SRPCAP;
+-		break;
++		fallthrough;
+ 
+ 	case GHWCFG2_OP_MODE_SRP_ONLY_CAPABLE:
+ 	case GHWCFG2_OP_MODE_SRP_CAPABLE_DEVICE:
+ 	case GHWCFG2_OP_MODE_SRP_CAPABLE_HOST:
+-		if (hsotg->params.otg_cap !=
+-				DWC2_CAP_PARAM_NO_HNP_SRP_CAPABLE)
++		if (hsotg->params.otg_caps.srp_support)
+ 			usbcfg |= GUSBCFG_SRPCAP;
+ 		break;
+ 
+@@ -1734,7 +1730,8 @@ static void dwc2_hcd_cleanup_channels(struct dwc2_hsotg *hsotg)
+ 		 * release_channel_ddma(), which is called from ep_disable when
+ 		 * device disconnects
+ 		 */
+-		channel->qh = NULL;
++		if (hsotg->params.host_dma && hsotg->params.dma_desc_enable)
++			channel->qh = NULL;
+ 	}
+ 	/* All channels have been freed, mark them available */
+ 	if (hsotg->params.uframe_sched) {
+@@ -3647,7 +3644,8 @@ static int dwc2_hcd_hub_control(struct dwc2_hsotg *hsotg, u16 typereq,
+ 		if (wvalue != USB_PORT_FEAT_TEST && (!windex || windex > 1))
+ 			goto error;
+ 
+-		if (!hsotg->flags.b.port_connect_status) {
++		if (!hsotg->flags.b.port_connect_status &&
++		    !dwc2_is_host_mode(hsotg)) {
+ 			/*
+ 			 * The port is disconnected, which means the core is
+ 			 * either in device mode or it soon will be. Just
+@@ -3749,6 +3747,7 @@ static int dwc2_hcd_hub_control(struct dwc2_hsotg *hsotg, u16 typereq,
+ 			hprt0 &= ~HPRT0_TSTCTL_MASK;
+ 			hprt0 |= (windex >> 8) << HPRT0_TSTCTL_SHIFT;
+ 			dwc2_writel(hsotg, hprt0, HPRT0);
++			hsotg->test_mode = windex >> 8;
+ 			break;
+ 
+ 		default:
+@@ -4293,9 +4292,11 @@ static int _dwc2_hcd_start(struct usb_hcd *hcd)
+ 		return 0;	/* why 0 ?? */
+ 	}
+ 
++	hprt0 = dwc2_read_hprt0(hsotg);
++
+ 	dwc2_hcd_reinit(hsotg);
+ 
+-	hprt0 = dwc2_read_hprt0(hsotg);
++	hprt0 ^= dwc2_read_hprt0(hsotg);
+ 	/* Has vbus power been turned on in dwc2_core_host_init ? */
+ 	if (hprt0 & HPRT0_PWR) {
+ 		/* Enable external vbus supply before resuming root hub */
+@@ -4399,6 +4400,7 @@ static int _dwc2_hcd_suspend(struct usb_hcd *hcd)
+ 		clear_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
+ 		break;
+ 	case DWC2_POWER_DOWN_PARAM_NONE:
++		dwc2_disable_global_interrupts(hsotg);
+ 		/*
+ 		 * If not hibernation nor partial power down are supported,
+ 		 * clock gating is used to save power.
+@@ -4414,10 +4416,6 @@ static int _dwc2_hcd_suspend(struct usb_hcd *hcd)
+ 		goto skip_power_saving;
+ 	}
+ 
+-	spin_unlock_irqrestore(&hsotg->lock, flags);
+-	dwc2_vbus_supply_exit(hsotg);
+-	spin_lock_irqsave(&hsotg->lock, flags);
+-
+ 	/* Ask phy to be suspended */
+ 	if (!IS_ERR_OR_NULL(hsotg->uphy)) {
+ 		spin_unlock_irqrestore(&hsotg->lock, flags);
+@@ -4448,20 +4446,20 @@ static int _dwc2_hcd_resume(struct usb_hcd *hcd)
+ 	if (hsotg->lx_state != DWC2_L2)
+ 		goto unlock;
+ 
+-	hprt0 = dwc2_read_hprt0(hsotg);
+-
+-	/*
+-	 * Added port connection status checking which prevents exiting from
+-	 * Partial Power Down mode from _dwc2_hcd_resume() if not in Partial
+-	 * Power Down mode.
+-	 */
+-	if (hprt0 & HPRT0_CONNSTS) {
+-		hsotg->lx_state = DWC2_L0;
+-		goto unlock;
+-	}
+-
+ 	switch (hsotg->params.power_down) {
+ 	case DWC2_POWER_DOWN_PARAM_PARTIAL:
++		hprt0 = dwc2_read_hprt0(hsotg);
++
++		/*
++		 * Added port connection status checking which prevents exiting from
++		 * Partial Power Down mode from _dwc2_hcd_resume() if not in Partial
++		 * Power Down mode.
++		 */
++		if (hprt0 & HPRT0_CONNSTS) {
++			hsotg->lx_state = DWC2_L0;
++			goto unlock;
++		}
++
+ 		ret = dwc2_exit_partial_power_down(hsotg, 0, true);
+ 		if (ret)
+ 			dev_err(hsotg->dev,
+@@ -4496,7 +4494,6 @@ static int _dwc2_hcd_resume(struct usb_hcd *hcd)
+ 		 * the global interrupts are disabled.
+ 		 */
+ 		dwc2_core_init(hsotg, false);
+-		dwc2_enable_global_interrupts(hsotg);
+ 		dwc2_hcd_reinit(hsotg);
+ 		spin_lock_irqsave(&hsotg->lock, flags);
+ 
+@@ -4505,15 +4502,14 @@ static int _dwc2_hcd_resume(struct usb_hcd *hcd)
+ 		 * since an interrupt may rise.
+ 		 */
+ 		set_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
++		dwc2_enable_global_interrupts(hsotg);
++
+ 		break;
+ 	default:
+ 		hsotg->lx_state = DWC2_L0;
+ 		goto unlock;
+ 	}
+ 
+-	/* Change Root port status, as port status change occurred after resume.*/
+-	hsotg->flags.b.port_suspend_change = 1;
+-
+ 	/*
+ 	 * Enable power if not already done.
+ 	 * This must not be spinlocked since duration
+@@ -4525,10 +4521,7 @@ static int _dwc2_hcd_resume(struct usb_hcd *hcd)
+ 		spin_lock_irqsave(&hsotg->lock, flags);
+ 	}
+ 
+-	/* Enable external vbus supply after resuming the port. */
+ 	spin_unlock_irqrestore(&hsotg->lock, flags);
+-	dwc2_vbus_supply_init(hsotg);
+-
+ 	/* Wait for controller to correctly update D+/D- level */
+ 	usleep_range(3000, 5000);
+ 	spin_lock_irqsave(&hsotg->lock, flags);
+diff --git a/drivers/usb/dwc2/params.c b/drivers/usb/dwc2/params.c
+index 59e119345..d300ae3d9 100644
+--- a/drivers/usb/dwc2/params.c
++++ b/drivers/usb/dwc2/params.c
+@@ -36,6 +36,7 @@
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/of_device.h>
++#include <linux/usb/of.h>
+ 
+ #include "core.h"
+ 
+@@ -53,7 +54,8 @@ static void dwc2_set_his_params(struct dwc2_hsotg *hsotg)
+ {
+ 	struct dwc2_core_params *p = &hsotg->params;
+ 
+-	p->otg_cap = DWC2_CAP_PARAM_NO_HNP_SRP_CAPABLE;
++	p->otg_caps.hnp_support = false;
++	p->otg_caps.srp_support = false;
+ 	p->speed = DWC2_SPEED_PARAM_HIGH;
+ 	p->host_rx_fifo_size = 512;
+ 	p->host_nperio_tx_fifo_size = 512;
+@@ -84,7 +86,8 @@ static void dwc2_set_rk_params(struct dwc2_hsotg *hsotg)
+ {
+ 	struct dwc2_core_params *p = &hsotg->params;
+ 
+-	p->otg_cap = DWC2_CAP_PARAM_NO_HNP_SRP_CAPABLE;
++	p->otg_caps.hnp_support = false;
++	p->otg_caps.srp_support = false;
+ 	p->host_rx_fifo_size = 525;
+ 	p->host_nperio_tx_fifo_size = 128;
+ 	p->host_perio_tx_fifo_size = 256;
+@@ -97,7 +100,8 @@ static void dwc2_set_ltq_params(struct dwc2_hsotg *hsotg)
+ {
+ 	struct dwc2_core_params *p = &hsotg->params;
+ 
+-	p->otg_cap = 2;
++	p->otg_caps.hnp_support = false;
++	p->otg_caps.srp_support = false;
+ 	p->host_rx_fifo_size = 288;
+ 	p->host_nperio_tx_fifo_size = 128;
+ 	p->host_perio_tx_fifo_size = 96;
+@@ -111,7 +115,8 @@ static void dwc2_set_amlogic_params(struct dwc2_hsotg *hsotg)
+ {
+ 	struct dwc2_core_params *p = &hsotg->params;
+ 
+-	p->otg_cap = DWC2_CAP_PARAM_NO_HNP_SRP_CAPABLE;
++	p->otg_caps.hnp_support = false;
++	p->otg_caps.srp_support = false;
+ 	p->speed = DWC2_SPEED_PARAM_HIGH;
+ 	p->host_rx_fifo_size = 512;
+ 	p->host_nperio_tx_fifo_size = 500;
+@@ -144,7 +149,8 @@ static void dwc2_set_stm32f4x9_fsotg_params(struct dwc2_hsotg *hsotg)
+ {
+ 	struct dwc2_core_params *p = &hsotg->params;
+ 
+-	p->otg_cap = DWC2_CAP_PARAM_NO_HNP_SRP_CAPABLE;
++	p->otg_caps.hnp_support = false;
++	p->otg_caps.srp_support = false;
+ 	p->speed = DWC2_SPEED_PARAM_FULL;
+ 	p->host_rx_fifo_size = 128;
+ 	p->host_nperio_tx_fifo_size = 96;
+@@ -168,7 +174,9 @@ static void dwc2_set_stm32mp15_fsotg_params(struct dwc2_hsotg *hsotg)
+ {
+ 	struct dwc2_core_params *p = &hsotg->params;
+ 
+-	p->otg_cap = DWC2_CAP_PARAM_NO_HNP_SRP_CAPABLE;
++	p->otg_caps.hnp_support = false;
++	p->otg_caps.srp_support = false;
++	p->otg_caps.otg_rev = 0x200;
+ 	p->speed = DWC2_SPEED_PARAM_FULL;
+ 	p->host_rx_fifo_size = 128;
+ 	p->host_nperio_tx_fifo_size = 96;
+@@ -188,7 +196,9 @@ static void dwc2_set_stm32mp15_hsotg_params(struct dwc2_hsotg *hsotg)
+ {
+ 	struct dwc2_core_params *p = &hsotg->params;
+ 
+-	p->otg_cap = DWC2_CAP_PARAM_NO_HNP_SRP_CAPABLE;
++	p->otg_caps.hnp_support = false;
++	p->otg_caps.srp_support = false;
++	p->otg_caps.otg_rev = 0x200;
+ 	p->activate_stm_id_vb_detection = !device_property_read_bool(hsotg->dev, "usb-role-switch");
+ 	p->host_rx_fifo_size = 440;
+ 	p->host_nperio_tx_fifo_size = 256;
+@@ -241,23 +251,22 @@ MODULE_DEVICE_TABLE(acpi, dwc2_acpi_match);
+ 
+ static void dwc2_set_param_otg_cap(struct dwc2_hsotg *hsotg)
+ {
+-	u8 val;
+-
+ 	switch (hsotg->hw_params.op_mode) {
+ 	case GHWCFG2_OP_MODE_HNP_SRP_CAPABLE:
+-		val = DWC2_CAP_PARAM_HNP_SRP_CAPABLE;
++		hsotg->params.otg_caps.hnp_support = true;
++		hsotg->params.otg_caps.srp_support = true;
+ 		break;
+ 	case GHWCFG2_OP_MODE_SRP_ONLY_CAPABLE:
+ 	case GHWCFG2_OP_MODE_SRP_CAPABLE_DEVICE:
+ 	case GHWCFG2_OP_MODE_SRP_CAPABLE_HOST:
+-		val = DWC2_CAP_PARAM_SRP_ONLY_CAPABLE;
++		hsotg->params.otg_caps.hnp_support = false;
++		hsotg->params.otg_caps.srp_support = true;
+ 		break;
+ 	default:
+-		val = DWC2_CAP_PARAM_NO_HNP_SRP_CAPABLE;
++		hsotg->params.otg_caps.hnp_support = false;
++		hsotg->params.otg_caps.srp_support = false;
+ 		break;
+ 	}
+-
+-	hsotg->params.otg_cap = val;
+ }
+ 
+ static void dwc2_set_param_phy_type(struct dwc2_hsotg *hsotg)
+@@ -463,6 +472,8 @@ static void dwc2_get_device_properties(struct dwc2_hsotg *hsotg)
+ 						       &p->g_tx_fifo_size[1],
+ 						       num);
+ 		}
++
++		of_usb_update_otg_caps(hsotg->dev->of_node, &p->otg_caps);
+ 	}
+ 
+ 	if (of_find_property(hsotg->dev->of_node, "disable-over-current", NULL))
+@@ -473,29 +484,27 @@ static void dwc2_check_param_otg_cap(struct dwc2_hsotg *hsotg)
+ {
+ 	int valid = 1;
+ 
+-	switch (hsotg->params.otg_cap) {
+-	case DWC2_CAP_PARAM_HNP_SRP_CAPABLE:
++	if (hsotg->params.otg_caps.hnp_support && hsotg->params.otg_caps.srp_support) {
++		/* check HNP && SRP capable */
+ 		if (hsotg->hw_params.op_mode != GHWCFG2_OP_MODE_HNP_SRP_CAPABLE)
+ 			valid = 0;
+-		break;
+-	case DWC2_CAP_PARAM_SRP_ONLY_CAPABLE:
+-		switch (hsotg->hw_params.op_mode) {
+-		case GHWCFG2_OP_MODE_HNP_SRP_CAPABLE:
+-		case GHWCFG2_OP_MODE_SRP_ONLY_CAPABLE:
+-		case GHWCFG2_OP_MODE_SRP_CAPABLE_DEVICE:
+-		case GHWCFG2_OP_MODE_SRP_CAPABLE_HOST:
+-			break;
+-		default:
+-			valid = 0;
+-			break;
++	} else if (!hsotg->params.otg_caps.hnp_support) {
++		/* check SRP only capable */
++		if (hsotg->params.otg_caps.srp_support) {
++			switch (hsotg->hw_params.op_mode) {
++			case GHWCFG2_OP_MODE_HNP_SRP_CAPABLE:
++			case GHWCFG2_OP_MODE_SRP_ONLY_CAPABLE:
++			case GHWCFG2_OP_MODE_SRP_CAPABLE_DEVICE:
++			case GHWCFG2_OP_MODE_SRP_CAPABLE_HOST:
++				break;
++			default:
++				valid = 0;
++				break;
++			}
+ 		}
+-		break;
+-	case DWC2_CAP_PARAM_NO_HNP_SRP_CAPABLE:
+-		/* always valid */
+-		break;
+-	default:
++		/* else: NO HNP && NO SRP capable: always valid */
++	} else {
+ 		valid = 0;
+-		break;
+ 	}
+ 
+ 	if (!valid)
+diff --git a/drivers/usb/dwc2/platform.c b/drivers/usb/dwc2/platform.c
+index c331a5128..cdfd78535 100644
+--- a/drivers/usb/dwc2/platform.c
++++ b/drivers/usb/dwc2/platform.c
+@@ -222,20 +222,16 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
+ 	int i, ret;
+ 
+ 	hsotg->reset = devm_reset_control_get_optional(hsotg->dev, "dwc2");
+-	if (IS_ERR(hsotg->reset)) {
+-		ret = PTR_ERR(hsotg->reset);
+-		dev_err(hsotg->dev, "error getting reset control %d\n", ret);
+-		return ret;
+-	}
++	if (IS_ERR(hsotg->reset))
++		return dev_err_probe(hsotg->dev, PTR_ERR(hsotg->reset),
++				     "error getting reset control\n");
+ 
+ 	reset_control_deassert(hsotg->reset);
+ 
+ 	hsotg->reset_ecc = devm_reset_control_get_optional(hsotg->dev, "dwc2-ecc");
+-	if (IS_ERR(hsotg->reset_ecc)) {
+-		ret = PTR_ERR(hsotg->reset_ecc);
+-		dev_err(hsotg->dev, "error getting reset control for ecc %d\n", ret);
+-		return ret;
+-	}
++	if (IS_ERR(hsotg->reset_ecc))
++		return dev_err_probe(hsotg->dev, PTR_ERR(hsotg->reset_ecc),
++				     "error getting reset control for ecc\n");
+ 
+ 	reset_control_deassert(hsotg->reset_ecc);
+ 
+@@ -251,11 +247,8 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
+ 		case -ENOSYS:
+ 			hsotg->phy = NULL;
+ 			break;
+-		case -EPROBE_DEFER:
+-			return ret;
+ 		default:
+-			dev_err(hsotg->dev, "error getting phy %d\n", ret);
+-			return ret;
++			return dev_err_probe(hsotg->dev, ret, "error getting phy\n");
+ 		}
+ 	}
+ 
+@@ -268,12 +261,8 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
+ 			case -ENXIO:
+ 				hsotg->uphy = NULL;
+ 				break;
+-			case -EPROBE_DEFER:
+-				return ret;
+ 			default:
+-				dev_err(hsotg->dev, "error getting usb phy %d\n",
+-					ret);
+-				return ret;
++				return dev_err_probe(hsotg->dev, ret, "error getting usb phy\n");
+ 			}
+ 		}
+ 	}
+@@ -282,10 +271,8 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
+ 
+ 	/* Clock */
+ 	hsotg->clk = devm_clk_get_optional(hsotg->dev, "otg");
+-	if (IS_ERR(hsotg->clk)) {
+-		dev_err(hsotg->dev, "cannot get otg clock\n");
+-		return PTR_ERR(hsotg->clk);
+-	}
++	if (IS_ERR(hsotg->clk))
++		return dev_err_probe(hsotg->dev, PTR_ERR(hsotg->clk), "cannot get otg clock\n");
+ 
+ 	/* Regulators */
+ 	for (i = 0; i < ARRAY_SIZE(hsotg->supplies); i++)
+@@ -293,12 +280,9 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
+ 
+ 	ret = devm_regulator_bulk_get(hsotg->dev, ARRAY_SIZE(hsotg->supplies),
+ 				      hsotg->supplies);
+-	if (ret) {
+-		if (ret != -EPROBE_DEFER)
+-			dev_err(hsotg->dev, "failed to request supplies: %d\n",
+-				ret);
+-		return ret;
+-	}
++	if (ret)
++		return dev_err_probe(hsotg->dev, ret, "failed to request supplies\n");
++
+ 	return 0;
+ }
+ 
+@@ -558,16 +542,12 @@ static int dwc2_driver_probe(struct platform_device *dev)
+ 		hsotg->usb33d = devm_regulator_get(hsotg->dev, "usb33d");
+ 		if (IS_ERR(hsotg->usb33d)) {
+ 			retval = PTR_ERR(hsotg->usb33d);
+-			if (retval != -EPROBE_DEFER)
+-				dev_err(hsotg->dev,
+-					"failed to request usb33d supply: %d\n",
+-					retval);
++			dev_err_probe(hsotg->dev, retval, "failed to request usb33d supply\n");
+ 			goto error;
+ 		}
+ 		retval = regulator_enable(hsotg->usb33d);
+ 		if (retval) {
+-			dev_err(hsotg->dev,
+-				"failed to enable usb33d supply: %d\n", retval);
++			dev_err_probe(hsotg->dev, retval, "failed to enable usb33d supply\n");
+ 			goto error;
+ 		}
+ 
+@@ -582,8 +562,7 @@ static int dwc2_driver_probe(struct platform_device *dev)
+ 
+ 	retval = dwc2_drd_init(hsotg);
+ 	if (retval) {
+-		if (retval != -EPROBE_DEFER)
+-			dev_err(hsotg->dev, "failed to initialize dual-role\n");
++		dev_err_probe(hsotg->dev, retval, "failed to initialize dual-role\n");
+ 		goto error_init;
+ 	}
+ 
+@@ -669,8 +648,19 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
+ 	bool is_device_mode = dwc2_is_device_mode(dwc2);
+ 	int ret = 0;
+ 
+-	if (is_device_mode)
++	if (is_device_mode) {
++		/*
++		 * Handle the case when bus has been suspended prior to platform suspend.
++		 * As the lx_state is DWC2_L2, dwc2_hsotg_suspend() is then a no-op.
++		 * So need to exit clock gating first, so the gadget can be suspended and
++		 * resumed later on.
++		 */
++		if (dwc2->params.power_down == DWC2_POWER_DOWN_PARAM_NONE &&
++		    dwc2->bus_suspended)
++			dwc2_gadget_exit_clock_gating(dwc2, 0);
++
+ 		dwc2_hsotg_suspend(dwc2);
++	}
+ 
+ 	dwc2_drd_suspend(dwc2);
+ 
+@@ -711,6 +701,9 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
+ 		dwc2->phy_off_for_suspend = true;
+ 	}
+ 
++	if (device_may_wakeup(dev) || device_wakeup_path(dev))
++		enable_irq_wake(dwc2->irq);
++
+ 	return ret;
+ }
+ 
+@@ -719,6 +712,9 @@ static int __maybe_unused dwc2_resume(struct device *dev)
+ 	struct dwc2_hsotg *dwc2 = dev_get_drvdata(dev);
+ 	int ret = 0;
+ 
++	if (device_may_wakeup(dev) || device_wakeup_path(dev))
++		disable_irq_wake(dwc2->irq);
++
+ 	if (dwc2->phy_off_for_suspend && dwc2->ll_hw_enabled) {
+ 		ret = __dwc2_lowlevel_hw_enable(dwc2);
+ 		if (ret)
+@@ -751,10 +747,12 @@ static int __maybe_unused dwc2_resume(struct device *dev)
+ 		spin_unlock_irqrestore(&dwc2->lock, flags);
+ 	}
+ 
+-	/* Need to restore FORCEDEVMODE/FORCEHOSTMODE */
+-	dwc2_force_dr_mode(dwc2);
+-
+-	dwc2_drd_resume(dwc2);
++	if (!dwc2->role_sw) {
++		/* Need to restore FORCEDEVMODE/FORCEHOSTMODE */
++		dwc2_force_dr_mode(dwc2);
++	} else {
++		dwc2_drd_resume(dwc2);
++	}
+ 
+ 	if (dwc2_is_device_mode(dwc2))
+ 		ret = dwc2_hsotg_resume(dwc2);
+diff --git a/drivers/usb/host/ehci-platform.c b/drivers/usb/host/ehci-platform.c
+index c3dc90627..92401d01d 100644
+--- a/drivers/usb/host/ehci-platform.c
++++ b/drivers/usb/host/ehci-platform.c
+@@ -35,6 +35,7 @@
+ #include <linux/usb/hcd.h>
+ #include <linux/usb/ehci_pdriver.h>
+ #include <linux/usb/of.h>
++#include <linux/pm_wakeirq.h>
+ 
+ #include "ehci.h"
+ 
+@@ -375,7 +376,9 @@ static int ehci_platform_probe(struct platform_device *dev)
+ 	if (err)
+ 		goto err_power;
+ 
+-	device_wakeup_enable(hcd->self.controller);
++	if (of_property_read_bool(dev->dev.of_node, "wakeup-source"))
++		device_set_wakeup_capable(hcd->self.controller, true);
++
+ 	device_enable_async_suspend(hcd->self.controller);
+ 	platform_set_drvdata(dev, hcd);
+ 
+@@ -411,6 +414,9 @@ static int ehci_platform_remove(struct platform_device *dev)
+ 	if (priv->quirk_poll)
+ 		quirk_poll_end(priv);
+ 
++	if (of_property_read_bool(dev->dev.of_node, "wakeup-source"))
++		device_set_wakeup_capable(hcd->self.controller, false);
++
+ 	usb_remove_hcd(hcd);
+ 
+ 	if (pdata->power_off)
+@@ -435,7 +441,7 @@ static int __maybe_unused ehci_platform_suspend(struct device *dev)
+ 	struct usb_ehci_pdata *pdata = dev_get_platdata(dev);
+ 	struct platform_device *pdev = to_platform_device(dev);
+ 	struct ehci_platform_priv *priv = hcd_to_ehci_priv(hcd);
+-	bool do_wakeup = device_may_wakeup(dev);
++	bool do_wakeup = device_may_wakeup(dev) || device_wakeup_path(dev);
+ 	int ret;
+ 
+ 	if (priv->quirk_poll)
+@@ -448,6 +454,9 @@ static int __maybe_unused ehci_platform_suspend(struct device *dev)
+ 	if (pdata->power_suspend)
+ 		pdata->power_suspend(pdev);
+ 
++	if (do_wakeup)
++		enable_irq_wake(hcd->irq);
++
+ 	return ret;
+ }
+ 
+@@ -459,6 +468,9 @@ static int __maybe_unused ehci_platform_resume(struct device *dev)
+ 	struct ehci_platform_priv *priv = hcd_to_ehci_priv(hcd);
+ 	struct device *companion_dev;
+ 
++	if (device_may_wakeup(dev) || device_wakeup_path(dev))
++		disable_irq_wake(hcd->irq);
++
+ 	if (pdata->power_on) {
+ 		int err = pdata->power_on(pdev);
+ 		if (err < 0)
+diff --git a/drivers/usb/host/ohci-platform.c b/drivers/usb/host/ohci-platform.c
+index 4a8456f12..f2e0c78cc 100644
+--- a/drivers/usb/host/ohci-platform.c
++++ b/drivers/usb/host/ohci-platform.c
+@@ -214,7 +214,8 @@ static int ohci_platform_probe(struct platform_device *dev)
+ 	if (err)
+ 		goto err_power;
+ 
+-	device_wakeup_enable(hcd->self.controller);
++	if (of_property_read_bool(dev->dev.of_node, "wakeup-source"))
++		device_set_wakeup_capable(hcd->self.controller, true);
+ 
+ 	platform_set_drvdata(dev, hcd);
+ 
+@@ -245,6 +246,9 @@ static int ohci_platform_remove(struct platform_device *dev)
+ 	struct ohci_platform_priv *priv = hcd_to_ohci_priv(hcd);
+ 	int clk;
+ 
++	if (of_property_read_bool(dev->dev.of_node, "wakeup-source"))
++		device_set_wakeup_capable(hcd->self.controller, false);
++
+ 	pm_runtime_get_sync(&dev->dev);
+ 	usb_remove_hcd(hcd);
+ 
+@@ -273,7 +277,7 @@ static int ohci_platform_suspend(struct device *dev)
+ 	struct usb_hcd *hcd = dev_get_drvdata(dev);
+ 	struct usb_ohci_pdata *pdata = dev->platform_data;
+ 	struct platform_device *pdev = to_platform_device(dev);
+-	bool do_wakeup = device_may_wakeup(dev);
++	bool do_wakeup = device_may_wakeup(dev) || device_wakeup_path(dev);
+ 	int ret;
+ 
+ 	ret = ohci_suspend(hcd, do_wakeup);
+@@ -283,6 +287,9 @@ static int ohci_platform_suspend(struct device *dev)
+ 	if (pdata->power_suspend)
+ 		pdata->power_suspend(pdev);
+ 
++	if (do_wakeup)
++		enable_irq_wake(hcd->irq);
++
+ 	return ret;
+ }
+ 
+@@ -292,6 +299,9 @@ static int ohci_platform_resume(struct device *dev)
+ 	struct usb_ohci_pdata *pdata = dev_get_platdata(dev);
+ 	struct platform_device *pdev = to_platform_device(dev);
+ 
++	if (device_may_wakeup(dev) || device_wakeup_path(dev))
++		disable_irq_wake(hcd->irq);
++
+ 	if (pdata->power_on) {
+ 		int err = pdata->power_on(pdev);
+ 		if (err < 0)
+diff --git a/drivers/usb/typec/ucsi/Kconfig b/drivers/usb/typec/ucsi/Kconfig
+index 5e9b37b3f..8f9c4b9f3 100644
+--- a/drivers/usb/typec/ucsi/Kconfig
++++ b/drivers/usb/typec/ucsi/Kconfig
+@@ -48,4 +48,14 @@ config UCSI_ACPI
+ 	  To compile the driver as a module, choose M here: the module will be
+ 	  called ucsi_acpi
+ 
++config UCSI_STM32G0
++	tristate "UCSI Interface Driver for STM32G0"
++	depends on I2C
++	help
++	  This driver enables UCSI support on platforms that expose a STM32G0
++	  Type-C controller over I2C interface.
++
++	  To compile the driver as a module, choose M here: the module will be
++	  called ucsi_stm32g0.
++
+ endif
+diff --git a/drivers/usb/typec/ucsi/Makefile b/drivers/usb/typec/ucsi/Makefile
+index 8a8eb5cb8..480d533d7 100644
+--- a/drivers/usb/typec/ucsi/Makefile
++++ b/drivers/usb/typec/ucsi/Makefile
+@@ -17,3 +17,4 @@ endif
+ 
+ obj-$(CONFIG_UCSI_ACPI)			+= ucsi_acpi.o
+ obj-$(CONFIG_UCSI_CCG)			+= ucsi_ccg.o
++obj-$(CONFIG_UCSI_STM32G0)		+= ucsi_stm32g0.o
+diff --git a/drivers/usb/typec/ucsi/ucsi.c b/drivers/usb/typec/ucsi/ucsi.c
+index 5ef5bd0e8..3f5bd05a6 100644
+--- a/drivers/usb/typec/ucsi/ucsi.c
++++ b/drivers/usb/typec/ucsi/ucsi.c
+@@ -1142,12 +1142,8 @@ static int ucsi_register_port(struct ucsi *ucsi, int index)
+ 		ucsi_port_psy_changed(con);
+ 	}
+ 
+-	con->usb_role_sw = fwnode_usb_role_switch_get(cap->fwnode);
+-	if (IS_ERR(con->usb_role_sw)) {
+-		dev_err(ucsi->dev, "con%d: failed to get usb role switch\n",
+-			con->num);
+-		con->usb_role_sw = NULL;
+-	}
++	if (index < ucsi->usb_role_sw_count)
++		con->usb_role_sw = ucsi->usb_role_sw[index];
+ 
+ 	/* Only notify USB controller if partner supports USB data */
+ 	if (!(UCSI_CONSTAT_PARTNER_FLAGS(con->status.flags) & UCSI_CONSTAT_PARTNER_FLAG_USB))
+@@ -1331,7 +1327,9 @@ EXPORT_SYMBOL_GPL(ucsi_destroy);
+  */
+ int ucsi_register(struct ucsi *ucsi)
+ {
+-	int ret;
++	struct fwnode_handle *fwnode;
++	int i = 0, ret;
++	struct usb_role_switch **usb_role_sw;
+ 
+ 	ret = ucsi->ops->read(ucsi, UCSI_VERSION, &ucsi->version,
+ 			      sizeof(ucsi->version));
+@@ -1341,6 +1339,33 @@ int ucsi_register(struct ucsi *ucsi)
+ 	if (!ucsi->version)
+ 		return -ENODEV;
+ 
++	ucsi->usb_role_sw_count = device_get_child_node_count(ucsi->dev);
++	if (ucsi->usb_role_sw_count) {
++
++		usb_role_sw = kcalloc(ucsi->usb_role_sw_count, sizeof(struct usb_role_switch *),
++				      GFP_KERNEL);
++		if (!usb_role_sw)
++			return -ENOMEM;
++
++		device_for_each_child_node(ucsi->dev, fwnode) {
++			fw_devlink_purge_absent_suppliers(fwnode);
++			usb_role_sw[i] = fwnode_usb_role_switch_get(fwnode);
++			fwnode_handle_put(fwnode);
++			if (IS_ERR(usb_role_sw[i])) {
++				ret = PTR_ERR(usb_role_sw[i]);
++				dev_err_probe(ucsi->dev, ret,
++					      "con%d: failed to get usb role switch\n", i);
++				if (ret == -EPROBE_DEFER)
++					return -EPROBE_DEFER;
++				else
++					usb_role_sw[i] = NULL;
++			}
++			i++;
++		}
++
++		ucsi->usb_role_sw = usb_role_sw;
++	}
++
+ 	queue_work(system_long_wq, &ucsi->work);
+ 
+ 	return 0;
+@@ -1374,6 +1399,9 @@ void ucsi_unregister(struct ucsi *ucsi)
+ 	}
+ 
+ 	kfree(ucsi->connector);
++
++	if (ucsi->usb_role_sw_count)
++		kfree(ucsi->usb_role_sw);
+ }
+ EXPORT_SYMBOL_GPL(ucsi_unregister);
+ 
+diff --git a/drivers/usb/typec/ucsi/ucsi.h b/drivers/usb/typec/ucsi/ucsi.h
+index cee666790..26572e953 100644
+--- a/drivers/usb/typec/ucsi/ucsi.h
++++ b/drivers/usb/typec/ucsi/ucsi.h
+@@ -286,6 +286,8 @@ struct ucsi {
+ 
+ 	struct ucsi_capability cap;
+ 	struct ucsi_connector *connector;
++	struct usb_role_switch **usb_role_sw;
++	int usb_role_sw_count;
+ 
+ 	struct work_struct work;
+ 
+diff --git a/drivers/usb/typec/ucsi/ucsi_stm32g0.c b/drivers/usb/typec/ucsi/ucsi_stm32g0.c
+new file mode 100644
+index 000000000..9d7651d5c
+--- /dev/null
++++ b/drivers/usb/typec/ucsi/ucsi_stm32g0.c
+@@ -0,0 +1,801 @@
++// SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
++/*
++ * UCSI driver for STMicroelectronics STM32G0 Type-C controller
++ *
++ * Copyright (C) 2021, STMicroelectronics - All Rights Reserved
++ * Author: Fabrice Gasnier <fabrice.gasnier@foss.st.com>.
++ */
++
++#include <linux/delay.h>
++#include <linux/firmware.h>
++#include <linux/i2c.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <asm/unaligned.h>
++
++#include "ucsi.h"
++
++/* STM32G0 I2C bootloader addr: 0b1010001x (See AN2606) */
++#define STM32G0_I2C_BL_ADDR	(0xa2 >> 1)
++
++/* STM32G0 I2C bootloader max data size */
++#define STM32G0_I2C_BL_SZ	256
++
++/* STM32 I2C bootloader commands (See AN4221) */
++#define STM32_CMD_GVR		0x01	/* Gets the bootloader version */
++#define STM32_CMD_GVR_LEN	1
++#define STM32_CMD_RM		0x11	/* Reag memory */
++#define STM32_CMD_WM		0x31	/* Write memory */
++#define STM32_CMD_ADDR_LEN	5	/* Address len for go, mem write... */
++#define STM32_CMD_ERASE		0x44	/* Erase page, bank or all */
++#define STM32_CMD_ERASE_SPECIAL_LEN	3
++#define STM32_CMD_GLOBAL_MASS_ERASE	0xffff /* All-bank erase */
++
++/* STM32 I2C bootloader answer status */
++#define STM32G0_I2C_BL_ACK	0x79
++#define STM32G0_I2C_BL_NACK	0x1f
++#define STM32G0_I2C_BL_BUSY	0x76
++
++/* STM32G0 flash definitions */
++#define STM32G0_USER_OPTION_BYTES	0x1fff7800
++#define STM32G0_USER_OB_NBOOT0		BIT(26)
++#define STM32G0_USER_OB_NBOOT_SEL	BIT(24)
++#define STM32G0_USER_OB_BOOT_MAIN	(STM32G0_USER_OB_NBOOT0 | STM32G0_USER_OB_NBOOT_SEL)
++#define STM32G0_MAIN_MEM_ADDR		0x08000000
++
++/* STM32 Firmware definitions: additional commands */
++#define STM32G0_FW_GETVER	0x00	/* Gets the firmware version */
++#define STM32G0_FW_GETVER_LEN	4
++#define STM32G0_FW_RSTGOBL	0x21	/* Reset and go to bootloader */
++#define STM32G0_FW_KEYWORD	0xa56959a6
++
++/* ucsi_stm32g0_fw_info located at the end of the firmware */
++struct ucsi_stm32g0_fw_info {
++	u32 version;
++	u32 keyword;
++};
++
++struct ucsi_stm32g0 {
++	struct i2c_client *client;
++	struct i2c_client *i2c_bl;
++	bool in_bootloader;
++	u8 bl_version;
++	struct completion complete;
++	struct device *dev;
++	unsigned long flags;
++	const char *fw_name;
++	struct ucsi *ucsi;
++	bool suspended;
++	bool wakeup_event;
++};
++
++/*
++ * Bootloader commands helpers:
++ * - send command (2 bytes)
++ * - check ack
++ * Then either:
++ * - receive data
++ * - receive data + check ack
++ * - send data + check ack
++ * These operations depends on the command and have various length.
++ */
++static int ucsi_stm32g0_bl_check_ack(struct ucsi *ucsi)
++{
++	struct ucsi_stm32g0 *g0 = ucsi_get_drvdata(ucsi);
++	struct i2c_client *client = g0->i2c_bl;
++	unsigned char ack;
++	struct i2c_msg msg[] = {
++		{
++			.addr	= client->addr,
++			.flags  = I2C_M_RD,
++			.len	= 1,
++			.buf	= &ack,
++		},
++	};
++	int ret;
++
++	ret = i2c_transfer(client->adapter, msg, ARRAY_SIZE(msg));
++	if (ret != ARRAY_SIZE(msg)) {
++		dev_err(g0->dev, "i2c bl ack (%02x), error: %d\n", client->addr, ret);
++
++		return ret < 0 ? ret : -EIO;
++	}
++
++	/* The 'ack' byte should contain bootloader answer: ack/nack/busy */
++	switch (ack) {
++	case STM32G0_I2C_BL_ACK:
++		return 0;
++	case STM32G0_I2C_BL_NACK:
++		return -ENOENT;
++	case STM32G0_I2C_BL_BUSY:
++		return -EBUSY;
++	default:
++		dev_err(g0->dev, "i2c bl ack (%02x), invalid byte: %02x\n",
++			client->addr, ack);
++		return -EINVAL;
++	}
++}
++
++static int ucsi_stm32g0_bl_cmd_check_ack(struct ucsi *ucsi, unsigned int cmd, bool check_ack)
++{
++	struct ucsi_stm32g0 *g0 = ucsi_get_drvdata(ucsi);
++	struct i2c_client *client = g0->i2c_bl;
++	unsigned char buf[2];
++	struct i2c_msg msg[] = {
++		{
++			.addr	= client->addr,
++			.flags  = 0,
++			.len	= sizeof(buf),
++			.buf	= buf,
++		},
++	};
++	int ret;
++
++	/*
++	 * Send STM32 bootloader command format is two bytes:
++	 * - command code
++	 * - XOR'ed command code
++	 */
++	buf[0] = cmd;
++	buf[1] = cmd ^ 0xff;
++
++	ret = i2c_transfer(client->adapter, msg, ARRAY_SIZE(msg));
++	if (ret != ARRAY_SIZE(msg)) {
++		dev_dbg(g0->dev, "i2c bl cmd %d (%02x), error: %d\n", cmd, client->addr, ret);
++
++		return ret < 0 ? ret : -EIO;
++	}
++
++	if (check_ack)
++		return ucsi_stm32g0_bl_check_ack(ucsi);
++
++	return 0;
++}
++
++static int ucsi_stm32g0_bl_cmd(struct ucsi *ucsi, unsigned int cmd)
++{
++	return ucsi_stm32g0_bl_cmd_check_ack(ucsi, cmd, true);
++}
++
++static int ucsi_stm32g0_bl_rcv_check_ack(struct ucsi *ucsi, void *data, size_t len, bool check_ack)
++{
++	struct ucsi_stm32g0 *g0 = ucsi_get_drvdata(ucsi);
++	struct i2c_client *client = g0->i2c_bl;
++	struct i2c_msg msg[] = {
++		{
++			.addr	= client->addr,
++			.flags  = I2C_M_RD,
++			.len	= len,
++			.buf	= data,
++		},
++	};
++	int ret;
++
++	ret = i2c_transfer(client->adapter, msg, ARRAY_SIZE(msg));
++	if (ret != ARRAY_SIZE(msg)) {
++		dev_err(g0->dev, "i2c bl rcv %02x, error: %d\n", client->addr, ret);
++
++		return ret < 0 ? ret : -EIO;
++	}
++
++	if (check_ack)
++		return ucsi_stm32g0_bl_check_ack(ucsi);
++
++	return 0;
++}
++
++static int ucsi_stm32g0_bl_rcv(struct ucsi *ucsi, void *data, size_t len)
++{
++	return ucsi_stm32g0_bl_rcv_check_ack(ucsi, data, len, true);
++}
++
++static int ucsi_stm32g0_bl_rcv_woack(struct ucsi *ucsi, void *data, size_t len)
++{
++	return ucsi_stm32g0_bl_rcv_check_ack(ucsi, data, len, false);
++}
++
++static int ucsi_stm32g0_bl_send(struct ucsi *ucsi, void *data, size_t len)
++{
++	struct ucsi_stm32g0 *g0 = ucsi_get_drvdata(ucsi);
++	struct i2c_client *client = g0->i2c_bl;
++	struct i2c_msg msg[] = {
++		{
++			.addr	= client->addr,
++			.flags  = 0,
++			.len	= len,
++			.buf	= data,
++		},
++	};
++	int ret;
++
++	ret = i2c_transfer(client->adapter, msg, ARRAY_SIZE(msg));
++	if (ret != ARRAY_SIZE(msg)) {
++		dev_err(g0->dev, "i2c bl send %02x, error: %d\n", client->addr, ret);
++
++		return ret < 0 ? ret : -EIO;
++	}
++
++	return ucsi_stm32g0_bl_check_ack(ucsi);
++}
++
++/* Bootloader commands */
++static int ucsi_stm32g0_bl_get_version(struct ucsi *ucsi, u8 *bl_version)
++{
++	int ret;
++
++	ret = ucsi_stm32g0_bl_cmd(ucsi, STM32_CMD_GVR);
++	if (ret)
++		return ret;
++
++	return ucsi_stm32g0_bl_rcv(ucsi, bl_version, STM32_CMD_GVR_LEN);
++}
++
++static int ucsi_stm32g0_bl_send_addr(struct ucsi *ucsi, u32 addr)
++{
++	u8 data8[STM32_CMD_ADDR_LEN];
++
++	/* Address format: 4 bytes addr (MSB first) + XOR'ed addr bytes */
++	put_unaligned_be32(addr, data8);
++	data8[4] = data8[0] ^ data8[1] ^ data8[2] ^ data8[3];
++
++	return ucsi_stm32g0_bl_send(ucsi, data8, STM32_CMD_ADDR_LEN);
++}
++
++static int ucsi_stm32g0_bl_global_mass_erase(struct ucsi *ucsi)
++{
++	u8 data8[4];
++	u16 *data16 = (u16 *)&data8[0];
++	int ret;
++
++	data16[0] = STM32_CMD_GLOBAL_MASS_ERASE;
++	data8[2] = data8[0] ^ data8[1];
++
++	ret = ucsi_stm32g0_bl_cmd(ucsi, STM32_CMD_ERASE);
++	if (ret)
++		return ret;
++
++	return ucsi_stm32g0_bl_send(ucsi, data8, STM32_CMD_ERASE_SPECIAL_LEN);
++}
++
++static int ucsi_stm32g0_bl_write(struct ucsi *ucsi, u32 addr, const void *data, size_t len)
++{
++	u8 *data8;
++	int i, ret;
++
++	if (!len || len > STM32G0_I2C_BL_SZ)
++		return -EINVAL;
++
++	/* Write memory: len bytes -1, data up to 256 bytes + XOR'ed bytes */
++	data8 = kzalloc(STM32G0_I2C_BL_SZ + 2, GFP_KERNEL);
++	if (!data8)
++		return -ENOMEM;
++
++	ret = ucsi_stm32g0_bl_cmd(ucsi, STM32_CMD_WM);
++	if (ret)
++		goto free;
++
++	ret = ucsi_stm32g0_bl_send_addr(ucsi, addr);
++	if (ret)
++		goto free;
++
++	data8[0] = len - 1;
++	memcpy(data8 + 1, data, len);
++	data8[len + 1] = data8[0];
++	for (i = 1; i <= len; i++)
++		data8[len + 1] ^= data8[i];
++
++	ret = ucsi_stm32g0_bl_send(ucsi, data8, len + 2);
++free:
++	kfree(data8);
++
++	return ret;
++}
++
++static int ucsi_stm32g0_bl_read(struct ucsi *ucsi, u32 addr, void *data, size_t len)
++{
++	int ret;
++
++	if (!len || len > STM32G0_I2C_BL_SZ)
++		return -EINVAL;
++
++	ret = ucsi_stm32g0_bl_cmd(ucsi, STM32_CMD_RM);
++	if (ret)
++		return ret;
++
++	ret = ucsi_stm32g0_bl_send_addr(ucsi, addr);
++	if (ret)
++		return ret;
++
++	ret = ucsi_stm32g0_bl_cmd(ucsi, len - 1);
++	if (ret)
++		return ret;
++
++	return ucsi_stm32g0_bl_rcv_woack(ucsi, data, len);
++}
++
++/* Firmware commands (the same address as the bootloader) */
++static int ucsi_stm32g0_fw_cmd(struct ucsi *ucsi, unsigned int cmd)
++{
++	return ucsi_stm32g0_bl_cmd_check_ack(ucsi, cmd, false);
++}
++
++static int ucsi_stm32g0_fw_rcv(struct ucsi *ucsi, void *data, size_t len)
++{
++	return ucsi_stm32g0_bl_rcv_woack(ucsi, data, len);
++}
++
++/* UCSI ops */
++static int ucsi_stm32g0_read(struct ucsi *ucsi, unsigned int offset, void *val, size_t len)
++{
++	struct ucsi_stm32g0 *g0 = ucsi_get_drvdata(ucsi);
++	struct i2c_client *client = g0->client;
++	u8 reg = offset;
++	struct i2c_msg msg[] = {
++		{
++			.addr	= client->addr,
++			.flags  = 0,
++			.len	= 1,
++			.buf	= &reg,
++		},
++		{
++			.addr	= client->addr,
++			.flags  = I2C_M_RD,
++			.len	= len,
++			.buf	= val,
++		},
++	};
++	int ret;
++
++	ret = i2c_transfer(client->adapter, msg, ARRAY_SIZE(msg));
++	if (ret != ARRAY_SIZE(msg)) {
++		dev_err(g0->dev, "i2c read %02x, %02x error: %d\n", client->addr, reg, ret);
++
++		return ret < 0 ? ret : -EIO;
++	}
++
++	return 0;
++}
++
++static int ucsi_stm32g0_async_write(struct ucsi *ucsi, unsigned int offset, const void *val,
++				    size_t len)
++{
++	struct ucsi_stm32g0 *g0 = ucsi_get_drvdata(ucsi);
++	struct i2c_client *client = g0->client;
++	struct i2c_msg msg[] = {
++		{
++			.addr	= client->addr,
++			.flags  = 0,
++		}
++	};
++	unsigned char *buf;
++	int ret;
++
++	buf = kzalloc(len + 1, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++
++	buf[0] = offset;
++	memcpy(&buf[1], val, len);
++	msg[0].len = len + 1;
++	msg[0].buf = buf;
++
++	ret = i2c_transfer(client->adapter, msg, ARRAY_SIZE(msg));
++	kfree(buf);
++	if (ret != ARRAY_SIZE(msg)) {
++		dev_err(g0->dev, "i2c write %02x, %02x error: %d\n", client->addr, buf[0], ret);
++
++		return ret < 0 ? ret : -EIO;
++	}
++
++	return 0;
++}
++
++static int ucsi_stm32g0_sync_write(struct ucsi *ucsi, unsigned int offset, const void *val,
++				   size_t len)
++{
++	struct ucsi_stm32g0 *g0 = ucsi_get_drvdata(ucsi);
++	int ret;
++
++	set_bit(COMMAND_PENDING, &g0->flags);
++
++	ret = ucsi_stm32g0_async_write(ucsi, offset, val, len);
++	if (ret)
++		goto out_clear_bit;
++
++	if (!wait_for_completion_timeout(&g0->complete, msecs_to_jiffies(5000)))
++		ret = -ETIMEDOUT;
++
++out_clear_bit:
++	clear_bit(COMMAND_PENDING, &g0->flags);
++
++	return ret;
++}
++
++static irqreturn_t ucsi_stm32g0_irq_handler(int irq, void *data)
++{
++	struct ucsi_stm32g0 *g0 = data;
++	u32 cci;
++	int ret;
++
++	if (g0->suspended)
++		g0->wakeup_event = true;
++
++	ret = ucsi_stm32g0_read(g0->ucsi, UCSI_CCI, &cci, sizeof(cci));
++	if (ret)
++		return IRQ_NONE;
++
++	if (UCSI_CCI_CONNECTOR(cci))
++		ucsi_connector_change(g0->ucsi, UCSI_CCI_CONNECTOR(cci));
++
++	if (test_bit(COMMAND_PENDING, &g0->flags) &&
++	    cci & (UCSI_CCI_ACK_COMPLETE | UCSI_CCI_COMMAND_COMPLETE))
++		complete(&g0->complete);
++
++	return IRQ_HANDLED;
++}
++
++static const struct ucsi_operations ucsi_stm32g0_ops = {
++	.read = ucsi_stm32g0_read,
++	.sync_write = ucsi_stm32g0_sync_write,
++	.async_write = ucsi_stm32g0_async_write,
++};
++
++static int ucsi_stm32g0_register(struct ucsi *ucsi)
++{
++	struct ucsi_stm32g0 *g0 = ucsi_get_drvdata(ucsi);
++	struct i2c_client *client = g0->client;
++	struct power_supply *psy;
++	int i, ret;
++
++	/* Request alert interrupt */
++	ret = request_threaded_irq(client->irq, NULL, ucsi_stm32g0_irq_handler, IRQF_ONESHOT,
++				   dev_name(g0->dev), g0);
++	if (ret) {
++		dev_err(g0->dev, "request IRQ failed: %d\n", ret);
++		return ret;
++	}
++
++	ret = ucsi_register(ucsi);
++	if (ret) {
++		dev_err_probe(g0->dev, ret, "ucsi_register failed\n");
++		free_irq(client->irq, g0);
++		return ret;
++	}
++
++	/*
++	 * Below hack disables psy wakeup (enabled by default) to avoid limiting the low power
++	 * mode that can be achieved on the platform. Another way is to let the userland
++	 * enable or disable it with power/wakeup entries.
++	 * So, unless stm32g0 wakeup has been explicitly enabled, also disable the power supply
++	 * wakeup. Else, we're done here, so simply return.
++	 */
++	if (device_may_wakeup(g0->dev))
++		return 0;
++
++	/*
++	 * ucsi_init() runs on system_long_wq, wait for it to complete. Then num_connectors is
++	 * known and psy have been registered.
++	 */
++	flush_workqueue(system_long_wq);
++
++	for (i = 0; i < ucsi->cap.num_connectors; i++) {
++		psy = ucsi->connector[i].psy;
++		device_wakeup_disable(&psy->dev);
++	}
++
++	return 0;
++}
++
++static void ucsi_stm32g0_unregister(struct ucsi *ucsi)
++{
++	struct ucsi_stm32g0 *g0 = ucsi_get_drvdata(ucsi);
++	struct i2c_client *client = g0->client;
++
++	ucsi_unregister(ucsi);
++	free_irq(client->irq, g0);
++}
++
++static void ucsi_stm32g0_fw_cb(const struct firmware *fw, void *context)
++{
++	struct ucsi_stm32g0 *g0;
++	const u8 *data, *end;
++	const struct ucsi_stm32g0_fw_info *fw_info;
++	u32 addr = STM32G0_MAIN_MEM_ADDR, ob, fw_version;
++	int ret, size;
++
++	if (!context)
++		return;
++
++	g0 = ucsi_get_drvdata(context);
++
++	if (!fw)
++		goto fw_release;
++
++	fw_info = (struct ucsi_stm32g0_fw_info *)(fw->data + fw->size - sizeof(*fw_info));
++
++	if (!g0->in_bootloader) {
++		/* Read running firmware version */
++		ret = ucsi_stm32g0_fw_cmd(g0->ucsi, STM32G0_FW_GETVER);
++		if (ret) {
++			dev_err(g0->dev, "Get version cmd failed %d\n", ret);
++			goto fw_release;
++		}
++		ret = ucsi_stm32g0_fw_rcv(g0->ucsi, &fw_version,
++					  STM32G0_FW_GETVER_LEN);
++		if (ret) {
++			dev_err(g0->dev, "Get version failed %d\n", ret);
++			goto fw_release;
++		}
++
++		/* Sanity check on keyword and firmware version */
++		if (fw_info->keyword != STM32G0_FW_KEYWORD || fw_info->version == fw_version)
++			goto fw_release;
++
++		dev_info(g0->dev, "Flashing FW: %08x (%08x cur)\n", fw_info->version, fw_version);
++
++		/* Switch to bootloader mode */
++		ucsi_stm32g0_unregister(g0->ucsi);
++		ret = ucsi_stm32g0_fw_cmd(g0->ucsi, STM32G0_FW_RSTGOBL);
++		if (ret) {
++			dev_err(g0->dev, "bootloader cmd failed %d\n", ret);
++			goto fw_release;
++		}
++		g0->in_bootloader = true;
++
++		/* STM32G0 reboot delay */
++		msleep(100);
++	}
++
++	ret = ucsi_stm32g0_bl_global_mass_erase(g0->ucsi);
++	if (ret) {
++		dev_err(g0->dev, "Erase failed %d\n", ret);
++		goto fw_release;
++	}
++
++	data = fw->data;
++	end = fw->data + fw->size;
++	while (data < end) {
++		if ((end - data) < STM32G0_I2C_BL_SZ)
++			size = end - data;
++		else
++			size = STM32G0_I2C_BL_SZ;
++
++		ret = ucsi_stm32g0_bl_write(g0->ucsi, addr, data, size);
++		if (ret) {
++			dev_err(g0->dev, "Write failed %d\n", ret);
++			goto fw_release;
++		}
++		addr += size;
++		data += size;
++	}
++
++	dev_dbg(g0->dev, "Configure to boot from main flash\n");
++
++	ret = ucsi_stm32g0_bl_read(g0->ucsi, STM32G0_USER_OPTION_BYTES, &ob, sizeof(ob));
++	if (ret) {
++		dev_err(g0->dev, "read user option bytes failed %d\n", ret);
++		goto fw_release;
++	}
++
++	dev_dbg(g0->dev, "STM32G0_USER_OPTION_BYTES 0x%08x\n", ob);
++
++	/* Configure user option bytes to boot from main flash next time */
++	ob |= STM32G0_USER_OB_BOOT_MAIN;
++
++	/* Writing option bytes will also reset G0 for updates to be loaded */
++	ret = ucsi_stm32g0_bl_write(g0->ucsi, STM32G0_USER_OPTION_BYTES, &ob, sizeof(ob));
++	if (ret) {
++		dev_err(g0->dev, "write user option bytes failed %d\n", ret);
++		goto fw_release;
++	}
++
++	dev_info(g0->dev, "Starting, option bytes:0x%08x\n", ob);
++
++	/* STM32G0 FW boot delay */
++	msleep(500);
++
++	/* Register UCSI interface */
++	if (!ucsi_stm32g0_register(g0->ucsi))
++		g0->in_bootloader = false;
++
++fw_release:
++	release_firmware(fw);
++}
++
++static int ucsi_stm32g0_probe_bootloader(struct ucsi *ucsi)
++{
++	struct ucsi_stm32g0 *g0 = ucsi_get_drvdata(ucsi);
++	int ret;
++	u16 ucsi_version;
++
++	/*
++	 * Try to guess if the STM32G0 is running a UCSI firmware. Probe first the UCSI FW at its
++	 * specified i2c address.
++	 */
++	ret = ucsi_stm32g0_read(ucsi, UCSI_VERSION, &ucsi_version, sizeof(ucsi_version));
++	if (!ret)
++		return 0;
++
++	/* Speculatively read the bootloader version that has a known length. */
++	ret = ucsi_stm32g0_bl_get_version(ucsi, &g0->bl_version);
++	if (ret < 0)
++		return ret;
++
++	/* Device in bootloader mode */
++	g0->in_bootloader = true;
++	dev_info(g0->dev, "Bootloader Version 0x%02x\n", g0->bl_version);
++
++	return 0;
++}
++
++static int ucsi_stm32g0_probe(struct i2c_client *client, const struct i2c_device_id *id)
++{
++	struct device *dev = &client->dev;
++	struct ucsi_stm32g0 *g0;
++	int ret;
++
++	g0 = devm_kzalloc(dev, sizeof(*g0), GFP_KERNEL);
++	if (!g0)
++		return -ENOMEM;
++
++	g0->dev = dev;
++	g0->client = client;
++	init_completion(&g0->complete);
++	i2c_set_clientdata(client, g0);
++
++	g0->ucsi = ucsi_create(dev, &ucsi_stm32g0_ops);
++	if (IS_ERR(g0->ucsi))
++		return PTR_ERR(g0->ucsi);
++
++	ucsi_set_drvdata(g0->ucsi, g0);
++
++	/*
++	 * When the "wakeup-source" flag is found, I2C core marks the device as wakeup capable
++	 * and enables the wakeup by default.
++	 * Only stick with wakeup capable here (disable wakeup), to avoid limiting the low power
++	 * mode that can be achived by default (depending on the selected power domain).
++	 */
++	if (client->flags & I2C_CLIENT_WAKE)
++		device_wakeup_disable(dev);
++
++	/* STM32G0 in bootloader mode communicates at reserved address 0x51 */
++	g0->i2c_bl = i2c_new_dummy_device(client->adapter, STM32G0_I2C_BL_ADDR);
++	if (IS_ERR(g0->i2c_bl)) {
++		ret = dev_err_probe(dev, PTR_ERR(g0->i2c_bl), "Failed to register booloader I2C\n");
++		goto destroy;
++	}
++
++	ret = ucsi_stm32g0_probe_bootloader(g0->ucsi);
++	if (ret < 0)
++		goto freei2c;
++
++	/*
++	 * Don't register in bootloader mode: wait for the firmware to be loaded and started before
++	 * registering UCSI device.
++	 */
++	if (!g0->in_bootloader) {
++		ret = ucsi_stm32g0_register(g0->ucsi);
++		if (ret < 0)
++			goto freei2c;
++	}
++
++	ret = of_property_read_string(dev->of_node, "firmware-name", &g0->fw_name);
++	if (ret) {
++		/* firmware-name is optional, but report an error when found in bootloader mode */
++		if (g0->in_bootloader) {
++			dev_err_probe(dev, ret, "firmware-name not specified\n");
++			goto freei2c;
++		}
++	} else {
++		/*
++		 * Asynchronously flash (e.g. bootloader mode) or update the running firmware,
++		 * not to hang the boot process
++		 */
++		ret = request_firmware_nowait(THIS_MODULE, FW_ACTION_UEVENT, g0->fw_name, g0->dev,
++					      GFP_KERNEL, g0->ucsi, ucsi_stm32g0_fw_cb);
++		if (ret < 0) {
++			dev_err_probe(dev, ret, "firmware request failed\n");
++			goto unregister;
++		}
++	}
++
++	return 0;
++
++unregister:
++	if (!g0->in_bootloader)
++		ucsi_stm32g0_unregister(g0->ucsi);
++freei2c:
++	i2c_unregister_device(g0->i2c_bl);
++destroy:
++	ucsi_destroy(g0->ucsi);
++
++	return ret;
++}
++
++static int ucsi_stm32g0_remove(struct i2c_client *client)
++{
++	struct ucsi_stm32g0 *g0 = i2c_get_clientdata(client);
++
++	if (!g0->in_bootloader)
++		ucsi_stm32g0_unregister(g0->ucsi);
++	i2c_unregister_device(g0->i2c_bl);
++	ucsi_destroy(g0->ucsi);
++
++	return 0;
++}
++
++static int __maybe_unused ucsi_stm32g0_suspend(struct device *dev)
++{
++	struct ucsi_stm32g0 *g0 = dev_get_drvdata(dev);
++	struct i2c_client *client = g0->client;
++
++	if (g0->in_bootloader)
++		return 0;
++
++	/* Keep the interrupt disabled until the i2c bus has been resumed */
++	disable_irq(client->irq);
++
++	g0->suspended = true;
++	g0->wakeup_event = false;
++
++	if (device_may_wakeup(dev) || device_wakeup_path(dev))
++		enable_irq_wake(client->irq);
++
++	return 0;
++}
++
++static int __maybe_unused ucsi_stm32g0_resume(struct device *dev)
++{
++	struct ucsi_stm32g0 *g0 = dev_get_drvdata(dev);
++	struct i2c_client *client = g0->client;
++
++	if (g0->in_bootloader)
++		return 0;
++
++	if (device_may_wakeup(dev) || device_wakeup_path(dev))
++		disable_irq_wake(client->irq);
++
++	enable_irq(client->irq);
++
++	/* Enforce any pending handler gets called to signal a wakeup_event */
++	synchronize_irq(client->irq);
++
++	if (g0->wakeup_event)
++		pm_wakeup_event(g0->dev, 0);
++
++	g0->suspended = false;
++
++	return 0;
++}
++
++static SIMPLE_DEV_PM_OPS(ucsi_stm32g0_pm_ops, ucsi_stm32g0_suspend, ucsi_stm32g0_resume);
++
++static const struct of_device_id __maybe_unused ucsi_stm32g0_typec_of_match[] = {
++	{ .compatible = "st,stm32g0-typec" },
++	{},
++};
++MODULE_DEVICE_TABLE(of, ucsi_stm32g0_typec_of_match);
++
++static const struct i2c_device_id ucsi_stm32g0_typec_i2c_devid[] = {
++	{"stm32g0-typec", 0},
++	{},
++};
++MODULE_DEVICE_TABLE(i2c, ucsi_stm32g0_typec_i2c_devid);
++
++static struct i2c_driver ucsi_stm32g0_i2c_driver = {
++	.driver = {
++		.name = "ucsi-stm32g0-i2c",
++		.of_match_table = of_match_ptr(ucsi_stm32g0_typec_of_match),
++		.pm = &ucsi_stm32g0_pm_ops,
++	},
++	.probe = ucsi_stm32g0_probe,
++	.remove = ucsi_stm32g0_remove,
++	.id_table = ucsi_stm32g0_typec_i2c_devid
++};
++module_i2c_driver(ucsi_stm32g0_i2c_driver);
++
++MODULE_AUTHOR("Fabrice Gasnier <fabrice.gasnier@foss.st.com>");
++MODULE_DESCRIPTION("STMicroelectronics STM32G0 Type-C controller");
++MODULE_LICENSE("Dual BSD/GPL");
++MODULE_ALIAS("platform:ucsi-stm32g0");
+-- 
+2.25.1
+

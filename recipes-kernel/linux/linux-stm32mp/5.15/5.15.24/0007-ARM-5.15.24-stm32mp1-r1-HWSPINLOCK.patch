@@ -1,15 +1,95 @@
-From e6689ed5bee01020d4f2411e92c3741a06232c92 Mon Sep 17 00:00:00 2001
-From: Lionel Vitte <lionel.vitte@st.com>
-Date: Thu, 14 Oct 2021 16:51:43 +0200
-Subject: [PATCH 07/23] ARM 5.10.61-stm32mp1-r2 HWSPINLOCK
+From 924efc211ec362bf6b42a5f18327ad6b8b0652a2 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+Date: Tue, 31 May 2022 11:53:54 +0200
+Subject: [PATCH 07/22] ARM-5.15.24-stm32mp1-r1-HWSPINLOCK
 
+Signed-off-by: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
 ---
- Documentation/locking/hwspinlock.rst     | 10 ++-
- drivers/hwspinlock/hwspinlock_core.c     | 80 +++++++++++++++++++-----
- drivers/hwspinlock/hwspinlock_internal.h |  2 +
- drivers/hwspinlock/stm32_hwspinlock.c    | 60 +++++++++++-------
- 4 files changed, 110 insertions(+), 42 deletions(-)
+ .../devicetree/bindings/hwlock/hwlock.txt     | 27 +++++--
+ .../bindings/hwlock/st,stm32-hwspinlock.yaml  |  4 +-
+ Documentation/locking/hwspinlock.rst          | 10 ++-
+ drivers/hwspinlock/hwspinlock_core.c          | 80 +++++++++++++++----
+ drivers/hwspinlock/hwspinlock_internal.h      |  2 +
+ drivers/hwspinlock/stm32_hwspinlock.c         | 58 +++++++++-----
+ 6 files changed, 131 insertions(+), 50 deletions(-)
 
+diff --git a/Documentation/devicetree/bindings/hwlock/hwlock.txt b/Documentation/devicetree/bindings/hwlock/hwlock.txt
+index 085d1f5c9..e98088a40 100644
+--- a/Documentation/devicetree/bindings/hwlock/hwlock.txt
++++ b/Documentation/devicetree/bindings/hwlock/hwlock.txt
+@@ -13,7 +13,7 @@ hwlock providers:
+ 
+ Required properties:
+ - #hwlock-cells:        Specifies the number of cells needed to represent a
+-                        specific lock.
++                        specific lock. Shall be 1 or 2 (see hwlocks below).
+ 
+ hwlock users:
+ =============
+@@ -27,6 +27,11 @@ Required properties:
+                         #hwlock-cells. The list can have just a single hwlock
+                         or multiple hwlocks, with each hwlock represented by
+                         a phandle and a corresponding args specifier.
++                        If #hwlock-cells is 1, all of the locks are exclusive
++                        (cannot be used by several users).
++                        If #hwlock-cells is 2, the value of the second cell
++                        defines whether the lock is for exclusive usage (0) or
++                        shared (1) i.e. can be used by several users.
+ 
+ Optional properties:
+ - hwlock-names:         List of hwlock name strings defined in the same order
+@@ -46,14 +51,22 @@ of length 1.
+ 		...
+ 	};
+ 
+-2. Example of a node using multiple specific hwlocks:
++2. Example of nodes using multiple and shared specific hwlocks:
+ 
+-The following example has a node requesting two hwlocks, a hwlock within
+-the hwlock device node 'hwlock1' with #hwlock-cells value of 1, and another
+-hwlock within the hwlock device node 'hwlock2' with #hwlock-cells value of 2.
++The following example has a nodeA requesting two hwlocks:
++- an exclusive one (#hwlock-cells = 1) within the hwlock device node 'hwlock1'
++- a shared one (#hwlock-cells = 2, second cell = 1) within the hwlock device
++  node 'hwlock2'.
++The shared lock is also be used by nodeB.
+ 
+-	node {
++	nodeA {
+ 		...
+-		hwlocks = <&hwlock1 2>, <&hwlock2 0 3>;
++		hwlocks = <&hwlock1 2>, <&hwlock2 0 1>;
+ 		...
+ 	};
++
++	nodeB {
++		...
++		hwlocks = <&hwlock2 0 1>;
++		...
++	};
+\ No newline at end of file
+diff --git a/Documentation/devicetree/bindings/hwlock/st,stm32-hwspinlock.yaml b/Documentation/devicetree/bindings/hwlock/st,stm32-hwspinlock.yaml
+index 47cf9c8d9..539a1dc05 100644
+--- a/Documentation/devicetree/bindings/hwlock/st,stm32-hwspinlock.yaml
++++ b/Documentation/devicetree/bindings/hwlock/st,stm32-hwspinlock.yaml
+@@ -12,7 +12,7 @@ maintainers:
+ 
+ properties:
+   "#hwlock-cells":
+-    const: 1
++    const: 2
+ 
+   compatible:
+     const: st,stm32-hwspinlock
+@@ -41,7 +41,7 @@ examples:
+     #include <dt-bindings/clock/stm32mp1-clks.h>
+     hwspinlock@4c000000 {
+         compatible = "st,stm32-hwspinlock";
+-        #hwlock-cells = <1>;
++        #hwlock-cells = <2>;
+         reg = <0x4c000000 0x400>;
+         clocks = <&rcc HSEM>;
+         clock-names = "hsem";
 diff --git a/Documentation/locking/hwspinlock.rst b/Documentation/locking/hwspinlock.rst
 index 6f03713b7..605bd2dc8 100644
 --- a/Documentation/locking/hwspinlock.rst
@@ -247,7 +327,7 @@ index 29892767b..e1f9c9600 100644
  };
  
 diff --git a/drivers/hwspinlock/stm32_hwspinlock.c b/drivers/hwspinlock/stm32_hwspinlock.c
-index 3ad0ce0da..6c3be33f3 100644
+index 3ad0ce0da..5bd11a7fa 100644
 --- a/drivers/hwspinlock/stm32_hwspinlock.c
 +++ b/drivers/hwspinlock/stm32_hwspinlock.c
 @@ -54,8 +54,23 @@ static const struct hwspinlock_ops stm32_hwspinlock_ops = {
@@ -295,26 +375,25 @@ index 3ad0ce0da..6c3be33f3 100644
 +		dev_err(dev, "Failed to prepare_enable clock\n");
 +		return ret;
 +	}
-+
-+	pm_runtime_get_noresume(dev);
-+	pm_runtime_set_active(dev);
-+	pm_runtime_enable(dev);
-+	pm_runtime_put(dev);
  
  	platform_set_drvdata(pdev, hw);
 -	pm_runtime_enable(&pdev->dev);
  
 -	ret = hwspin_lock_register(&hw->bank, &pdev->dev, &stm32_hwspinlock_ops,
 -				   0, STM32_MUTEX_NUM_LOCKS);
++	pm_runtime_get_noresume(dev);
++	pm_runtime_set_active(dev);
++	pm_runtime_enable(dev);
++	pm_runtime_put(dev);
+ 
+-	if (ret)
+-		pm_runtime_disable(&pdev->dev);
 +	ret = devm_add_action_or_reset(dev, stm32_hwspinlock_disable_clk, pdev);
 +	if (ret) {
 +		dev_err(dev, "Failed to register action\n");
 +		return ret;
 +	}
  
--	if (ret)
--		pm_runtime_disable(&pdev->dev);
--
 -	return ret;
 -}
 +	for (i = 0; i < STM32_MUTEX_NUM_LOCKS; i++)
@@ -348,5 +427,5 @@ index 3ad0ce0da..6c3be33f3 100644
  		.name	= "stm32_hwspinlock",
  		.of_match_table = stm32_hwpinlock_ids,
 -- 
-2.17.1
+2.25.1
 
