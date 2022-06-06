@@ -393,10 +393,23 @@ ST_TOOLS_FOR_SDK_PERL:append = " \
 
 ST_TOOLS_FOR_SDK:append = " ${ST_TOOLS_FOR_SDK_PERL} "
 
+# For support of python module for u-boot
+ST_TOOLS_FOR_SDK:append = " \
+    nativesdk-python3-dev \
+    nativesdk-python3-setuptools \
+    nativesdk-swig \
+    nativesdk-dtc \
+    nativesdk-flex \
+    "
+
 # For support of python module for optee-os
 ST_TOOLS_FOR_SDK:append = " \
     nativesdk-python3-pyelftools \
     nativesdk-python3-pycryptodomex \
+    nativesdk-python3-pillow \
+    nativesdk-python3-cffi \
+    nativesdk-python3-pycparser \
+    nativesdk-python3-cryptography \
 "
 
 # For support of string convertion (iconv) in SDK
@@ -427,7 +440,7 @@ ST_TOOLS_FOR_SDK:append = " \
 
 # Fip tool
 ST_TOOLS_FOR_SDK:append = " \
-    ${@bb.utils.contains('MACHINE_FEATURES', 'fip', 'nativesdk-${FIPTOOL_WRAPPER}', '', d)} \
+    nativesdk-${FIPTOOL_WRAPPER} \
     "
 
 # Make sure to append mkimage to SDK for kernel uImage build
@@ -473,6 +486,8 @@ KERNEL_IMAGETYPE     =  "${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'fitIma
 KERNEL_ALT_IMAGETYPE =  " Image "
 KERNEL_ALT_IMAGETYPE =+ " vmlinux "
 KERNEL_ALT_IMAGETYPE =+ " ${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'uImage', 'zImage', d)} "
+
+KERNEL_CLASSES = " ${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'kernel-fitimage', 'kernel-uimage', d)} "
 
 # Maxsize authorized for uncompressed kernel binary
 # Define to null to skip kernel image size check
