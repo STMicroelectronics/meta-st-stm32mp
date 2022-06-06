@@ -23,15 +23,8 @@ FWCONFIG_DEPLOYDIR ?= \$(DEPLOYDIR)/fwconfig
 # Configure default TF-A features
 TF_A_ENABLE_DEBUG_WRAPPER ?= ${TF_A_ENABLE_DEBUG_WRAPPER}
 
-# Configure FIP
-ENABLE_FIP ?= ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '1', '', d)}
-
 # Set default TF-A config
-ifeq (\$(ENABLE_FIP), 1)
 TF_A_CONFIG ?= ${TF_A_CONFIG}
-else
-TF_A_CONFIG ?= ${BOOTSCHEME_LABELS} ${TF_A_CONFIG_4LEGACY}
-endif
 
 # Default TF-A overall settings to null
 TF_A_BINARY ?=
@@ -39,7 +32,8 @@ TF_A_DEVICETREE ?=
 TF_A_MAKE_TARGET ?=
 TF_A_EXTRA_OPTFLAGS ?=
 
-ifeq (\$(ENABLE_FIP), 1)
+# Default TF-A metadata template
+TF_A_METADATA_JSON ?= \$(SRC_PATH)/${TF_A_METADATA_JSON}
 
 EOF
     unset i
@@ -55,45 +49,6 @@ TF_A_MAKE_TARGET_$config ?= $(echo ${TF_A_MAKE_TARGET} | cut -d',' -f${i})
 EOF
     done
     cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-else
-
-EOF
-    for bootscheme in ${BOOTSCHEME_LABELS}; do
-        unset i
-        for config in ${TF_A_CONFIG}; do
-            i=$(expr $i + 1)
-            if [ "$bootscheme" = "$config" ]; then
-                cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-# Init default config settings
-TF_A_DEVICETREE_$config ?= $(echo ${TF_A_DEVICETREE} | cut -d',' -f${i})
-TF_A_EXTRA_OPTFLAGS_$config ?= $(echo ${TF_A_EXTRA_OPTFLAGS} | cut -d',' -f${i}) ${TF_A_EXTRACONF_LEGACY}
-TF_A_BINARY_$config ?= $(echo ${TF_A_BINARIES} | cut -d',' -f${i})
-TF_A_MAKE_TARGET_$config ?=
-
-EOF
-            fi
-        done
-    done
-
-    cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk
-TF_A_DEVICETREE_$(echo ${TF_A_CONFIG_4LEGACY} | xargs) ?=
-TF_A_EXTRA_OPTFLAGS_$(echo ${TF_A_CONFIG_4LEGACY} | xargs) ?=
-TF_A_BINARY_$(echo ${TF_A_CONFIG_4LEGACY} | xargs) ?=
-TF_A_MAKE_TARGET_$(echo ${TF_A_CONFIG_4LEGACY} | xargs) ?=
-
-ifeq (\$(TF_A_DEVICETREE_$(echo ${TF_A_CONFIG_4LEGACY} | xargs)),)
-\$(error "Please, define the variable TF_A_DEVICETREE_$(echo ${TF_A_CONFIG_4LEGACY} | xargs)")
-endif
-
-ifeq (\$(TF_A_EXTRA_OPTFLAGS_$(echo ${TF_A_CONFIG_4LEGACY} | xargs)),)
-\$(error "Please, define the variable TF_A_EXTRA_OPTFLAGS_$(echo ${TF_A_CONFIG_4LEGACY} | xargs)")
-endif
-
-ifeq (\$(TF_A_BINARY_$(echo ${TF_A_CONFIG_4LEGACY} | xargs)),)
-\$(error "Please, define the variable TF_A_BINARY_$(echo ${TF_A_CONFIG_4LEGACY} | xargs)")
-endif
-
-endif
 
 # Reset default variables
 LDFLAGS =
@@ -107,9 +62,6 @@ LD =
 NM =
 # Define default make options
 EXTRA_OEMAKE ?= ${EXTRA_OEMAKE}
-
-# Configure overall devicetree list for FIP
-TF_A_DEVICETREE_ALL = $(echo "${TF_A_DEVICETREE}" | sed 's/,/ /g' | xargs -n1 | sort -u | xargs)
 
 # Display TF-A config details
 define tf-configs
@@ -172,9 +124,8 @@ endef
 
 # Set dependencies list for building all
 DEPS = \$(addprefix deploy-,\$(TF_A_CONFIG))
-ifeq (\$(ENABLE_FIP), 1)
 DEPS += fip
-endif
+DEPS += metadata
 
 help:
 	@echo
@@ -200,16 +151,17 @@ help:
 	@echo "  FWCONFIG_DEPLOYDIR = \$(DEPLOYDIR)/fwconfig"
 	@echo
 	@echo "FIP configuration:"
-	@echo "  ENABLE_FIP = \$(ENABLE_FIP) ('1' to generate fip binary)"
-ifeq (\$(ENABLE_FIP),1)
 	@echo "  Do not forget to set FIP deploydir folders (such as FIP_DEPLOYDIR_ROOT) to provide path to needed binaries"
-endif
+	@echo
+	@echo "METADATA configuration:"
+	@echo "  TF_A_METADATA_JSON = \$(TF_A_METADATA_JSON)"
 	@echo
 	@echo "Available targets:"
-	@echo "  all   : build TF-A binaries for defined config(s)"
-	@echo "  fip   : build FIP binaries"
-	@echo "  stm32 : build TF-A stm32 binaries"
-	@echo "  clean : clean build directories from generated files"
+	@echo "  all      : build TF-A binaries for defined config(s)"
+	@echo "  fip      : build FIP binaries"
+	@echo "  metadata : build the TF-A metadata binary"
+	@echo "  stm32    : build TF-A stm32 binaries"
+	@echo "  clean    : clean build directories from generated files"
 	@echo
 
 all: \$(DEPS)
@@ -224,9 +176,20 @@ host_tools:
 \$(foreach config, \$(TF_A_CONFIG), \$(eval \$(call deploy-rules,\$(config),\$(if \$(TF_A_BINARY),\$(TF_A_BINARY),\$(TF_A_BINARY_\$(config))))))
 
 fip: \$(addprefix deploy-,\$(TF_A_CONFIG))
-	FIP_DEPLOYDIR_TFA=\$(BL32_DEPLOYDIR) FIP_DEPLOYDIR_FWCONF=\$(FWCONFIG_DEPLOYDIR) FIP_DEVICETREE="\$(if \$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE_ALL))" fiptool-stm32mp
+	for config in \$(TF_A_CONFIG) ; do \\
+		if [ "\$\$config" = "trusted" ]; then \\
+			FIP_DEPLOYDIR_TFA=\$(BL32_DEPLOYDIR) FIP_DEPLOYDIR_FWCONF=\$(FWCONFIG_DEPLOYDIR) FIP_DEVICETREE="\$(if \$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE_trusted))" FIP_CONFIG="trusted" FIP_BL32_CONF="tfa" fiptool-stm32mp ; \\
+		fi ; \\
+		if [ "\$\$config" = "optee" ]; then \\
+			FIP_DEPLOYDIR_TFA=\$(BL32_DEPLOYDIR) FIP_DEPLOYDIR_FWCONF=\$(FWCONFIG_DEPLOYDIR) FIP_DEVICETREE="\$(if \$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE_optee))" FIP_CONFIG="optee" FIP_BL32_CONF="optee" fiptool-stm32mp ; \\
+		fi ; \\
+	done
 
 stm32: \$(addprefix deploy-,\$(TF_A_CONFIG))
+
+metadata:
+	@mkdir -p \$(DEPLOYDIR)
+	\$(SRC_PATH)/${TF_A_METADATA_TOOL} jsonparse "\$(TF_A_METADATA_JSON)" -b \$(DEPLOYDIR)/${TF_A_METADATA_BINARY}
 
 clean:
 	@for config in \$(TF_A_CONFIG) ; do \\
