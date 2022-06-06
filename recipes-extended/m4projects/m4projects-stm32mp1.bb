@@ -2,10 +2,10 @@ SUMMARY = "STM32MP1 Firmware examples for CM4"
 LICENSE = "Apache-2.0 & MIT & BSD-3-Clause"
 LIC_FILES_CHKSUM = "file://License.md;md5=532c0d9fc2820ec1304ab8e0f227acc7"
 
-SRC_URI = "git://github.com/STMicroelectronics/STM32CubeMP1.git;protocol=https;branch=master"
-SRCREV  = "817e844fa791a34cf67df8100345f2a7382373d7"
+SRC_URI = "git://gitolite@codex.cro.st.com/stm32cube/stm32cube/stm32cube_fw_mp1.git;protocol=ssh;branch=master"
+SRCREV  = "9215898dc8ffedcf8383e95d242143c7827bb78b"
 
-PV = "1.5.0"
+PV = "1.6.0"
 
 S = "${WORKDIR}/git"
 
