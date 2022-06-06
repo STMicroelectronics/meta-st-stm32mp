@@ -1,4 +1,7 @@
 # Add stm32mp1 support
-SRC_URI:append:stm32mpcommon = " file://0001-data-STMicro-add-support-of-stm32mp15xxx.patch"
+SRC_URI:append:stm32mpcommon = " file://STM32MP13xx.svd;subdir=git/data/STMicro"
+SRC_URI:append:stm32mpcommon = " file://STM32MP15xxx.svd;subdir=git/data/STMicro"
+
 # Add the same for nativesdk
-SRC_URI:append:class-nativesdk = " file://0001-data-STMicro-add-support-of-stm32mp15xxx.patch"
+SRC_URI:append:class-nativesdk = " file://STM32MP13xx.svd;subdir=git/data/STMicro"
+SRC_URI:append:class-nativesdk = " file://STM32MP15xxx.svd;subdir=git/data/STMicro"
