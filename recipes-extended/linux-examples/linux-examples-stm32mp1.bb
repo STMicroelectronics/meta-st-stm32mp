@@ -6,8 +6,8 @@ COMPATIBLE_MACHINE = "(stm32mpcommon)"
 
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
-SRC_URI = "git://github.com/STMicroelectronics/linux-examples;protocol=https;branch=master"
-SRCREV  = "1046d23448d0031db8bbf15668b666325402a09e"
+SRC_URI = "git://gerrit.st.com:29418/mpu/oe/st/linux-examples;protocol=ssh;branch=master"
+SRCREV  = "377d3eb9f1afb938632129b6576d486b3ddbe324"
 
 PV = "5.4+${SRCPV}"
 
