@@ -8,7 +8,7 @@ PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 SRC_URI = "file://boot.scr.cmd"
 
-PV = "3.1"
+PV = "3.1.1"
 
 inherit kernel-arch extlinuxconf-stm32mp
 
@@ -37,6 +37,13 @@ do_compile() {
             if [ "$(basename ${subdir})" != "extlinux" ]; then
                 bbnote "Moving $(basename ${subdir}) to extlinux subdir"
                 mv -f ${subdir} ${B}/extlinux
+            fi
+        else
+            if [ "$(find ${B}/* -maxdepth 1 -type f | wc -l)" -eq 1 ] ; then
+                if [ "$(basename ${subdir})" != "extlinux" ]; then
+                    bbnote "Moving $(basename ${subdir}) to extlinux subdir"
+                    mv -f ${subdir} ${B}/extlinux
+                fi
             fi
         fi
     fi
