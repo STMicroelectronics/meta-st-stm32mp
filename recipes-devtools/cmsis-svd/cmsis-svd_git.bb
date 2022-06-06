@@ -7,10 +7,10 @@ LIC_FILES_CHKSUM = "\
     file://data/STMicro/License.html;md5=9a2821012ac32bea060eccbc76512bdb \
     file://data/Freescale/Freescale%20CMSIS-SVD%20License%20Agreement.pdf;md5=33928757d8c2861dc9256ce344d11db3 \
     file://data/Fujitsu/License.html;md5=e630487a365e7e0c5e03afcc644ce0ad \
-    file://data/Atmel/License.html;md5=466a7215aa18f98886ba2c15dba6b35a \
+    file://data/Atmel/LICENSE;md5=c4400c3a321c71218e903363e6f28890 \
     "
 
-NO_GENERIC_LICENSE[svd-Atmel] = "data/Atmel/License.html"
+NO_GENERIC_LICENSE[svd-Atmel] = "data/Atmel/LICENSE"
 NO_GENERIC_LICENSE[svd-Freescale] = "data/Freescale/Freescale CMSIS-SVD License Agreement.pdf"
 NO_GENERIC_LICENSE[svd-Fujitsu] = "data/Fujitsu/License.html"
 NO_GENERIC_LICENSE[svd-STMicro] = "data/STMicro/License.html"
@@ -18,7 +18,7 @@ NO_GENERIC_LICENSE[svd-STMicro] = "data/STMicro/License.html"
 inherit pkgconfig autotools-brokensep gettext
 
 SRC_URI = "git://github.com/posborne/cmsis-svd.git;protocol=https;branch=master"
-SRCREV = "2ab163c2aea83eb9b39c163856450089255ce4f2"
+SRCREV = "f487b5ca7c132b8f09d11514c509372f83a6cb75"
 
 PV = "0.4+git${SRCPV}"
 
@@ -101,7 +101,7 @@ RDEPENDS:${PN}-parser += "python3-xml"
 LICENSE:${PN}-data-atmel = "svd-Atmel"
 LICENSE:${PN}-atmel-license = "svd-Atmel"
 
-FILES:${PN}-atmel-license = "${INSTALL_PATH}/data/Atmel/License.html"
+FILES:${PN}-atmel-license = "${INSTALL_PATH}/data/Atmel/LICENSE"
 FILES:${PN}-data-atmel = "${INSTALL_PATH}/data/Atmel/*.svd"
 
 RDEPENDS:${PN}-data-atmel += "${PN}-atmel-license"
