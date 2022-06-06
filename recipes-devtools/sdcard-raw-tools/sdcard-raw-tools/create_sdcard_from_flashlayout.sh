@@ -47,6 +47,9 @@ DEFAULT_ROOTFS_PARTITION_SIZE=768432
 DEFAULT_PADDING_SIZE=33554432
 
 DEFAULT_SDCARD_PARTUUID=e91c4e10-16e6-4c0e-bd0e-77becf4a3582
+DEFAULT_FIP_TYPEUUID=19d5df83-11b0-457b-be2c-7559c13142a5
+DEFAULT_FIP_A_PARTUUID=4fd84c93-54ef-463f-a7ef-ae25ff887087
+DEFAULT_FIP_B_PARTUUID=09c54952-d5bf-45af-acee-335303766fb3
 
 # Columns name on FLASHLAYOUT_data
 COL_SELECTED_OPT=0
@@ -89,6 +92,17 @@ function exec_print() {
 		eval "$@" 2> /dev/null > /dev/null
 	fi
 }
+function exec_display_print() {
+	if [ "$DEBUG" ];
+	then
+		echo ""
+		echo "[DEBUG EXEC]: $*"
+		eval "$@"
+	else
+		eval "$@" 2> /dev/null
+	fi
+}
+
 
 tools_check() {
 	for tools in ${PRE_REQUISITE_TOOLS}; do
@@ -110,7 +124,7 @@ function read_flash_layout() {
 	debug "Number of line: $FLASHLAYOUT_number_of_line"
 	while read -ra flashlayout_data; do
 		selected=${flashlayout_data[0]}
-		if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ];
+		if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ] || [ "$selected" == "PED" ];
 		then
 			# Selected=
 			FLASHLAYOUT_data[$i,$COL_SELECTED_OPT]=${flashlayout_data[0]}
@@ -162,7 +176,7 @@ function get_last_image_path() {
 		if [ "$ip" == "$SDCARD_TOKEN" ];
 		then
 			case "$selected" in
-			1|P|D|PD|DP)
+			1|P|D|PD|DP|PED)
 				if [ "$partName" == 'rootfs' ];
 				then
 					last_image=$bin2flash
@@ -206,7 +220,7 @@ function calculate_number_of_partition() {
 		ip=${FLASHLAYOUT_data[$i,$COL_IP]}
 		if [ "$ip" == "$SDCARD_TOKEN" ]
 		then
-			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ];
+			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ] || [ "$selected" == "PED" ];
 			then
 				num=$((num+1))
 			fi
@@ -230,7 +244,7 @@ function move_partition_offset() {
 
 		if [ "$ip" == "$SDCARD_TOKEN" ]
 		then
-			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ];
+			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ] || [ "$selected" == "PED" ];
 			then
 				#calculate actual size of partition (before update)
 				# in case of last partition, we doesn't take care of tmp_next_offset
@@ -277,7 +291,7 @@ function generate_gpt_partition_table_from_flash_layout() {
 		debug "DUMP Process for $partName partition"
 
 		case "$selected" in
-		P|E|1|PD|DP)
+		P|E|1|PD|DP|PED)
 			# partition are present and must be created
 			;;
 		*)
@@ -286,13 +300,24 @@ function generate_gpt_partition_table_from_flash_layout() {
 		esac
 
 		case "$partName" in
-		boot)
+		boot|bootfs)
 			# add boot flags on gpt parition
 			extrafs_param=" -A $j:set:2"
 			;;
 		rootfs)
 			# add rootfs PARTUUID flags
 			extrafs_param=" -u $j:${DEFAULT_SDCARD_PARTUUID}"
+			display_info="$display_info $j"
+			;;
+		fip-a*)
+			# add fip-a PARTUUID flags
+			extrafs_param=" -u $j:${DEFAULT_FIP_A_PARTUUID}"
+			display_info="$display_info  $j"
+			;;
+		fip-b*)
+			# add fip-b PARTUUID flags
+			extrafs_param=" -u $j:${DEFAULT_FIP_B_PARTUUID}"
+			display_info="$display_info  $j"
 			;;
 		*)
 			extrafs_param=""
@@ -387,7 +412,7 @@ function generate_gpt_partition_table_from_flash_layout() {
 			debug "   DUMP image size     $image_size"
 			debug "   DUMP partition size $partition_size"
 			debug "   DUMP free size      $free_size "
-			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ];
+			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ] || [ "$selected" == "PED" ];
 			then
 				if [ $free_size -lt 0 ];
 				then
@@ -432,20 +457,26 @@ function generate_gpt_partition_table_from_flash_layout() {
 						exit 1
 					fi
 				fi
-				if [ "$partType" == "Binary" ];
-				then
+				case $partType in
+				Binary)
 					# Linux reserved: 0x8301
 					gpt_code="8301"
-				else
+					;;
+				FIP)
+					# FIP specific TYPE UUID
+					gpt_code=$DEFAULT_FIP_TYPEUUID
+					;;
+				*)
 					# Linux File system: 0x8300
 					gpt_code="8300"
-				fi
+					;;
+				esac
 
 				printf "part %d: %8s ..." $j "$partName"
 				exec_print "sgdisk -a 1 -n $j:$offset:$next_offset -c $j:$partName -t $j:$gpt_code $extrafs_param $FLASHLAYOUT_rawname"
-				partition_size=$(sgdisk -p "$FLASHLAYOUT_rawname" | grep $partName | awk '{ print $4}')
-				partition_size_type=$(sgdisk -p "$FLASHLAYOUT_rawname" | grep $partName | awk '{ print $5}')
-				printf "\r[CREATED] part %d: %8s [partition size %s %s]\n" $j "$partName"  "$partition_size" "$partition_size_type"
+				partition_size=$(sgdisk -p "$FLASHLAYOUT_rawname" | grep $partName | grep -v "\-$partName" | awk '{ print $4}')
+				partition_size_type=$(sgdisk -p "$FLASHLAYOUT_rawname" | grep $partName | grep -v "\-$partName" | awk '{ print $5}')
+				printf "\r[CREATED] part %02d: %10s [partition size %s %s]\n" $j "$partName"  "$partition_size" "$partition_size_type"
 
 			j=$((j+1))
 			fi
@@ -455,7 +486,12 @@ function generate_gpt_partition_table_from_flash_layout() {
 
 	echo ""
 	echo "Partition table from $FLASHLAYOUT_rawname"
-	exec_print "sgdisk -p $FLASHLAYOUT_rawname"
+	exec_display_print "sgdisk -p $FLASHLAYOUT_rawname"
+	for info in $display_info;
+	do
+		echo ""
+		exec_display_print "sgdisk $FLASHLAYOUT_rawname -i $info"
+	done
 	echo ""
 }
 
@@ -494,25 +530,28 @@ function populate_gpt_partition_table_from_flash_layout() {
 			#debug "   DUMP ip        $ip"
 			#debug "   DUMP offset    $offset "
 			#debug "   DUMP bin2flash $bin2flash"
-			if [ "$selected" == "P" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ];
+			if [ "$selected" == "P" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ]|| [ "$selected" == "PED" ];
 			then
 				# Populate only the partition in "P"
 				if [ -e "$FLASHLAYOUT_prefix_image_path/$bin2flash" ];
 				then
-					printf "part %d: %8s, image: %s ..." $j "$partName" "$bin2flash"
+					printf "part %02d: %10s, image: %s ..." $j "$partName" "$bin2flash"
 					exec_print "dd if=$FLASHLAYOUT_prefix_image_path/$bin2flash of=$FLASHLAYOUT_rawname conv=fdatasync,notrunc seek=1 bs=$offset"
-					printf "\r[ FILLED ] part %d: %8s, image: %s \n" $j "$partName" "$bin2flash"
+					printf "\r[ FILLED ] part %02d: %10s, image: %s \n" $j "$partName" "$bin2flash"
 				else
-					printf "\r[UNFILLED] part %d: %8s, image: %s (not present) \n" $j "$partName" "$bin2flash"
-					echo "   [WARNING]: THE FILE $FLASHLAYOUT_prefix_image_path/$bin2flash ARE NOT PRESENT."
-					echo "   [WARNING]: THE PARTITION $partName ARE NOT FILL."
-					WARNING_TEXT+="[WARNING]: THE PARTITION $partName ARE NOT FILL (file $FLASHLAYOUT_prefix_image_path/$bin2flash are not present) #"
+					if [ ! "$(basename $FLASHLAYOUT_prefix_image_path/$bin2flash)" = "none" ];
+					then
+						printf "\r[UNFILLED] part %02d: %10s, image: %s (not present) \n" $j "$partName" "$bin2flash"
+						echo "   [WARNING]: THE FILE $FLASHLAYOUT_prefix_image_path/$bin2flash ARE NOT PRESENT."
+						echo "   [WARNING]: THE PARTITION $partName ARE NOT FILL."
+						WARNING_TEXT+="[WARNING]: THE PARTITION $partName ARE NOT FILL (file $FLASHLAYOUT_prefix_image_path/$bin2flash are not present) #"
+					fi
 				fi
 				j=$((j+1))
 			else
 				if [ "$selected" == "E" ];
 				then
-					printf "\r[UNFILLED] part %d: %8s, \n" $j "$partName"
+					printf "\r[UNFILLED] part %02d: %10s, \n" $j "$partName"
 					j=$((j+1))
 				fi
 			fi
@@ -534,7 +573,7 @@ function print_shema_on_infofile() {
 		ip=${FLASHLAYOUT_data[$i,$COL_IP]}
 		if [ "$ip" == "$SDCARD_TOKEN" ];
 		then
-			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ];
+			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ] || [ "$selected" == "PED" ];
 			then
 				echo -n "=============" >> "$FLASHLAYOUT_infoname"
 			fi
@@ -549,7 +588,7 @@ function print_shema_on_infofile() {
 		ip=${FLASHLAYOUT_data[$i,$COL_IP]}
 		if [ "$ip" == "$SDCARD_TOKEN" ];
 		then
-			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ];
+			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ] || [ "$selected" == "PED" ];
 			then
 				echo -n "=            " >> "$FLASHLAYOUT_infoname"
 			fi
@@ -564,7 +603,7 @@ function print_shema_on_infofile() {
 		partName=${FLASHLAYOUT_data[$i,$COL_PARTNAME]}
 		if [ "$ip" == "$SDCARD_TOKEN" ];
 		then
-			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ];
+			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ] || [ "$selected" == "PED" ];
 			then
 				printf "=  %08s  " "$partName" >> "$FLASHLAYOUT_infoname"
 			fi
@@ -578,7 +617,7 @@ function print_shema_on_infofile() {
 		ip=${FLASHLAYOUT_data[$i,$COL_IP]}
 		if [ "$ip" == "$SDCARD_TOKEN" ];
 		then
-			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ];
+			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ] || [ "$selected" == "PED" ];
 			then
 				echo -n "=            " >> "$FLASHLAYOUT_infoname"
 			fi
@@ -592,7 +631,7 @@ function print_shema_on_infofile() {
 		ip=${FLASHLAYOUT_data[$i,$COL_IP]}
 		if [ "$ip" == "$SDCARD_TOKEN" ];
 		then
-			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ];
+			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ] || [ "$selected" == "PED" ];
 			then
 				printf "= %08s%-2d " "mmcblk0p" $j>> "$FLASHLAYOUT_infoname"
 				j=$((j+1))
@@ -607,7 +646,7 @@ function print_shema_on_infofile() {
 		ip=${FLASHLAYOUT_data[$i,$COL_IP]}
 		if [ "$ip" == "$SDCARD_TOKEN" ];
 		then
-			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ];
+			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ] || [ "$selected" == "PED" ];
 			then
 				printf "=    (%-2d)    " $j>> "$FLASHLAYOUT_infoname"
 				j=$((j+1))
@@ -621,7 +660,7 @@ function print_shema_on_infofile() {
 		ip=${FLASHLAYOUT_data[$i,$COL_IP]}
 		if [ "$ip" == "$SDCARD_TOKEN" ];
 		then
-			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ];
+			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ] || [ "$selected" == "PED" ];
 			then
 				echo -n "=            " >> "$FLASHLAYOUT_infoname"
 			fi
@@ -634,7 +673,7 @@ function print_shema_on_infofile() {
 		ip=${FLASHLAYOUT_data[$i,$COL_IP]}
 		if [ "$ip" == "$SDCARD_TOKEN" ];
 		then
-			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ];
+			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ] || [ "$selected" == "PED" ];
 			then
 				echo -n "=============" >> "$FLASHLAYOUT_infoname"
 			fi
@@ -651,7 +690,7 @@ function print_shema_on_infofile() {
 		bin2flash=${FLASHLAYOUT_data[$i,$COL_BIN2FLASH]}
 		if [ "$ip" == "$SDCARD_TOKEN" ];
 		then
-			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ];
+			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ] || [ "$selected" == "PED" ];
 			then
 				{
 					echo "($j):"
@@ -680,7 +719,7 @@ function print_populate_on_infofile() {
 		bin2flash=${FLASHLAYOUT_data[$i,$COL_BIN2FLASH]}
 		if [ "$ip" == "$SDCARD_TOKEN" ];
 		then
-			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ];
+			if [ "$selected" == "P" ] || [ "$selected" == "E" ] || [ "$selected" == "PD" ] || [ "$selected" == "DP" ] || [ "$selected" == "PED" ];
 			then
 				if [ "$selected" == "E" ];
 				then
@@ -732,11 +771,11 @@ The kernel and devicetree are present on "boot" partition.
 To change kernel and devicetree, you can copy the file on this partitions:
 - plug SDCARD on your PC
 - copy kernel uImage on SDCARD
-   sudo cp uImage /media/\$USER/boot/
+   sudo cp uImage /media/\$USER/bootfs/
 - copy devicetree uImage on SDCARD
-   sudo cp stm32mp1*.dtb /media/\$USER/boot/
+   sudo cp stm32mp1*.dtb /media/\$USER/bootfs/
 - umount partitions of SDCARD
-   sudo umount /media/\$USER/boot/
+   sudo umount /media/\$USER/bootfs/
    (dont't forget to umount the other partitions of SDCARD:
    sudo umount \`lsblk --list | grep mmcblk0 | grep part | gawk '{ print \$7 }' | tr '\\n' ' '\`
    )
