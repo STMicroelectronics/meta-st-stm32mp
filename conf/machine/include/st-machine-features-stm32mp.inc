@@ -9,6 +9,7 @@ include conf/machine/include/gpu_vivante.inc
 # please add "gpu" to MACHINE_FEATURES in machine conf file
 GPU_LIST ?= "\
     gcnano-driver-stm32mp \
+    ${GPU_USERLAND_LIBRARIES_INSTALL} \
     "
 GPU_IMAGE_INSTALL = "${@bb.utils.contains('MACHINE_FEATURES', 'gpu', '${GPU_LIST}', '', d)} "
 
@@ -49,10 +50,24 @@ OPTEE_BINARY ?= "\
 OPTEE_BINARY_INSTALL = "${@bb.utils.contains('MACHINE_FEATURES', 'optee', '${OPTEE_BINARY}', '', d)} "
 
 # =========================================================================
+# pci
+# =========================================================================
+PCI_LIST ?= ""
+PCI_IMAGE_INSTALL = "${@bb.utils.contains('MACHINE_FEATURES', 'pci', '${PCI_LIST}', '', d)} "
+
+# =========================================================================
 # wifi
 # =========================================================================
 WIFI_LIST ?= ""
 WIFI_IMAGE_INSTALL = "${@bb.utils.contains('MACHINE_FEATURES', 'wifi', '${WIFI_LIST}', '', d)} "
+
+# =========================================================================
+# g0
+# =========================================================================
+G0_LIST ?= "\
+    stm32mp-g0 \
+    "
+G0_IMAGE_INSTALL = "${@bb.utils.contains('MACHINE_FEATURES', 'usbg0', '${G0_LIST}', '', d)} "
 
 # =========================================================================
 # Image appends
@@ -67,5 +82,7 @@ MACHINE_EXTRA_RRECOMMENDS:append = " \
     ${BLUETOOTH_IMAGE_INSTALL}  \
     ${M4COPRO_IMAGE_INSTALL}    \
     ${OPTEE_IMAGE_INSTALL}      \
+    ${PCI_IMAGE_INSTALL}        \
     ${WIFI_IMAGE_INSTALL}       \
+    ${G0_IMAGE_INSTALL}         \
     "

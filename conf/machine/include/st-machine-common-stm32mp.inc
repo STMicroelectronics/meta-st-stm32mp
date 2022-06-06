@@ -16,7 +16,12 @@ MACHINEOVERRIDES .= ":stm32mpcommon"
 # =========================================================================
 # SOC
 # =========================================================================
-STM32MP_SOC_NAME = "stm32mp15"
+STM32MP_SOC_NAME = ""
+STM32MP_SOC_NAME:append:stm32mp15common = " stm32mp15 "
+STM32MP_SOC_NAME:append:stm32mp13common = " stm32mp13 "
+# Take care of nativesdk override use case
+STM32MP_SOC_NAME:append:class-nativesdk = " stm32mp15 "
+STM32MP_SOC_NAME:append:class-nativesdk = " stm32mp13 "
 
 # =========================================================================
 # boot scheme
@@ -34,7 +39,7 @@ BOOTDEVICE_LABELS ??= "emmc nand-4-256 nor-sdcard sdcard"
 # Machine settings
 # =========================================================================
 # Default machine feature
-MACHINE_FEATURES = "usbhost usbgadget alsa screen ext2"
+MACHINE_FEATURES = "usbhost usbgadget alsa screen ext2 pci"
 MACHINE_FEATURES:append = " ${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'optee', '', d)} "
 MACHINE_FEATURES:append = " tpm2 "
 
@@ -48,7 +53,7 @@ DISTRO_EXTRA_RRECOMMENDS:remove = " ${@bb.utils.contains('COMBINED_FEATURES', 'i
 MACHINE_FEATURES:append = " ${@bb.utils.contains_any('BOOTDEVICE_LABELS',  ['emmc', 'sdcard'], 'autoresize', '', d)} "
 
 # Use FIP image for boot loaders
-MACHINE_FEATURES += "fip"
+MACHINE_FEATURES:append = " fip"
 
 # Default serial consoles (TTYs) to enable using getty
 # Before kernel 4.18, serial console are ttyS3 but after is ttySTM0
@@ -514,19 +519,21 @@ ST_CMD_LINE_DEBUG_TRACE ?= "loglevel=1 quiet"
 EXTRA_IMAGEDEPENDS += "virtual/bootloader"
 
 # Define default U-Boot config
-UBOOT_CONFIG += "${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee trusted', 'trusted_stm32mp15', '', d)}"
-# The 'basic' config is only available for stm32mp1 machines
-UBOOT_CONFIG:append:stm32mp1common = " basic_stm32mp15 "
+UBOOT_CONFIG = ""
+
+# STM32mp15
+UBOOT_CONFIG:append:stm32mp15common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee trusted', 'trusted_stm32mp15', '', d)} "
+
+# STM32mp13
+UBOOT_CONFIG:append:stm32mp13common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee trusted', 'trusted_stm32mp13', '', d)} "
 
 # Select u-boot binary that needs specific devicetree suffix (from UBOOT_DEVICETREE)
-# For legacy mode keep the 'u-boot.stm32' but for FIP feature we need both
 # 'u-boot-nodtb.bin' and 'u-boot.dtb' : prefer 'u-boot.dtb' binary as 'u-boot-nodtb.bin'
 # doesn't need any devicetree suffix (specific case for 'u-boot-nodtb' binary
 # implemented on u-boot-stm32mp recipe)
-BINARY_NAME = "${@bb.utils.contains('MACHINE_FEATURES', 'fip', 'u-boot.dtb', 'u-boot.stm32', d)}"
 # Define u-boot defconfig and binary to use for each UBOOT_CONFIG
-UBOOT_CONFIG[basic_stm32mp15]   = "stm32mp15_basic_defconfig,,u-boot.img"
-UBOOT_CONFIG[trusted_stm32mp15] = "stm32mp15_trusted_defconfig,,${BINARY_NAME}"
+UBOOT_CONFIG[trusted_stm32mp15] = "stm32mp15_defconfig,,u-boot.dtb"
+UBOOT_CONFIG[trusted_stm32mp13] = "stm32mp13_defconfig,,u-boot.dtb"
 
 # List of U-Boot device tree to use
 UBOOT_DEVICETREE = "${STM32MP_DEVICETREE}"
@@ -539,21 +546,13 @@ UBOOT_SPLASH_LANDSCAPE_IMAGE = "splash_landscape"
 UBOOT_MTDPART_CHECK_ENABLE ?= "${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee trusted', d.getVarFlag('UBOOT_CONFIG', 'trusted_stm32mp15').split(',')[0], '', d)}"
 # Set U-Boot MTD partition configurations
 UBOOT_MTDPART_NAND_BOOT    ?= "${@','.join(['%sk(%s)' % (align_size(d, 'NAND', l.split(',')[2], l.split(',')[4]), l.split(',')[1]) for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nand-4-256').split()])}"
-UBOOT_MTDPART_NAND_TEE     ?= "${@','.join(['%sk(%s)' % (align_size(d, 'NAND', l.split(',')[2], l.split(',')[4]), l.split(',')[1]) for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'nand-4-256').split()])}"
 UBOOT_MTDPART_NOR_BOOT     ?= "${@','.join(['%sk(%s)' % (align_size(d, 'NOR', l.split(',')[2], l.split(',')[4]), l.split(',')[1]) for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nor-sdcard').split()])}"
-UBOOT_MTDPART_NOR_TEE      ?= "${@','.join(['%sk(%s)' % (align_size(d, 'NOR', l.split(',')[2], l.split(',')[4]), l.split(',')[1]) for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'nor-sdcard').split()])}"
 UBOOT_MTDPART_SPINAND_BOOT ?= "${@','.join(['%sk(%s)' % (align_size(d, 'SPINAND', l.split(',')[2], l.split(',')[4]), l.split(',')[1]) for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'spinand-2-128').split()])}"
-UBOOT_MTDPART_SPINAND_TEE  ?= "${@','.join(['%sk(%s)' % (align_size(d, 'SPINAND', l.split(',')[2], l.split(',')[4]), l.split(',')[1]) for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'spinand-2-128').split()])}"
-
-UBOOT_MTDPART_4LEGACY += "${@'CONFIG_MTDPARTS_NAND0_TEE=${UBOOT_MTDPART_NAND_TEE}' if bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', True, False, d) and bb.utils.contains('BOOTSCHEME_LABELS', 'optee', True, False, d) else ''}"
-UBOOT_MTDPART_4LEGACY += "${@'CONFIG_MTDPARTS_NOR0_TEE=${UBOOT_MTDPART_NOR_TEE}' if bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', True, False, d) and bb.utils.contains('BOOTSCHEME_LABELS', 'optee', True, False, d) else ''}"
-UBOOT_MTDPART_4LEGACY += "${@'CONFIG_MTDPARTS_SPINAND0_TEE=${UBOOT_MTDPART_SPINAND_TEE}' if bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', True, False, d) and bb.utils.contains('BOOTSCHEME_LABELS', 'optee', True, False, d) else ''}"
 
 UBOOT_MTDPART_CHECK ?= "\
     ${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', 'CONFIG_MTDPARTS_NAND0_BOOT=${UBOOT_MTDPART_NAND_BOOT}', '', d)} \
     ${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', 'CONFIG_MTDPARTS_NOR0_BOOT=${UBOOT_MTDPART_NOR_BOOT}', '', d)} \
     ${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', 'CONFIG_MTDPARTS_SPINAND0_BOOT=${UBOOT_MTDPART_SPINAND_BOOT}', '', d)} \
-    ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', '${UBOOT_MTDPART_4LEGACY}', d)} \
     "
 
 PREFERRED_PROVIDER_u-boot-fw-utils:stm32mp1common = "libubootenv"
@@ -573,16 +572,14 @@ EXTRA_IMAGEDEPENDS += "${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee trus
 TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'optee', '', d)}"
 TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'trusted', 'trusted', '', d)}"
 # Manage specific config settings
-TF_A_CONFIG_4LEGACY += "serialboot"
-TF_A_CONFIG_4FIP += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'emmc', '', d)}"
-TF_A_CONFIG_4FIP += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', 'nand', '', d)}"
-TF_A_CONFIG_4FIP += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', 'nor', '', d)}"
-TF_A_CONFIG_4FIP += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'sdcard', '', d)}"
-TF_A_CONFIG_4FIP += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', 'spinand', '', d)}"
-TF_A_CONFIG_4FIP += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'nor', '', d)}"
-TF_A_CONFIG_4FIP += "uart"
-TF_A_CONFIG_4FIP += "usb"
-TF_A_CONFIG += "${@bb.utils.contains('MACHINE_FEATURES', 'fip', '${TF_A_CONFIG_4FIP}', '${TF_A_CONFIG_4LEGACY}', d)}"
+TF_A_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'emmc', '', d)}"
+TF_A_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', 'nand', '', d)}"
+TF_A_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', 'nor', '', d)}"
+TF_A_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'sdcard', '', d)}"
+TF_A_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', 'spinand', '', d)}"
+TF_A_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'nor', '', d)}"
+TF_A_CONFIG += "uart"
+TF_A_CONFIG += "usb"
 
 # Append SSP config to TF_A_CONFIG
 TF_A_SSP_ENABLE ?= "0"
@@ -617,7 +614,7 @@ FIP_CONFIG[trusted] ?= "tfa,${FIP_DEVICETREE_TRUSTED}"
 
 # List of device tree to use for fip binary creation
 FIP_DEVICETREE_OPTEE   ?= "${STM32MP_DEVICETREE}"
-FIP_DEVICETREE_TRUSTED ?= "${STM32MP_DEVICETREE}"
+FIP_DEVICETREE_TRUSTED ?= "${@' '.join(d for d in '${STM32MP_DEVICETREE}'.split() if 'stm32mp15' in d)}"
 
 # Define fiptool wrapper name
 FIPTOOL_WRAPPER ?= "fiptool-stm32mp"
