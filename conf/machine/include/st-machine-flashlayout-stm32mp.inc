@@ -98,19 +98,25 @@ FLASHLAYOUT_CONFIG_LABELS:remove = "${@bb.utils.contains('ST_EXAMPLE_IMAGE', '1'
 # EMMC
 # Set flashlayout file generation to eval board (mother and daughter) only
 FLASHLAYOUT_TYPE_LABELS:emmc = "${DEVICE_BOARD_ENABLE:EMMC}"
+FLASHLAYOUT_TYPE_LABELS:trusted:emmc = "${@' '.join(d for d in '${DEVICE_BOARD_ENABLE:EMMC}'.split() if 'stm32mp15' in d)}"
 # NAND
 # Set flashlayout file generation to eval board only
 FLASHLAYOUT_TYPE_LABELS:nand-4-256 = "${DEVICE_BOARD_ENABLE:NAND}"
+FLASHLAYOUT_TYPE_LABELS:trusted:nand-4-256 = "${@' '.join(d for d in '${DEVICE_BOARD_ENABLE:NAND}'.split() if 'stm32mp15' in d)}"
 # NOR
 # Set flashlayout file generation to eval board only
 FLASHLAYOUT_TYPE_LABELS:nor = "${DEVICE_BOARD_ENABLE:NOR}"
+FLASHLAYOUT_TYPE_LABELS:trusted:nor = "${@' '.join(d for d in '${DEVICE_BOARD_ENABLE:NOR}'.split() if 'stm32mp15' in d)}"
 FLASHLAYOUT_TYPE_LABELS:nor-sdcard = "${DEVICE_BOARD_ENABLE:NOR}"
+FLASHLAYOUT_TYPE_LABELS:trusted:nor-sdcard = "${@' '.join(d for d in '${DEVICE_BOARD_ENABLE:NOR}'.split() if 'stm32mp15' in d)}"
 # SDCARD
 # Set flashlayout file generation for all boards
 FLASHLAYOUT_TYPE_LABELS:sdcard = "${DEVICE_BOARD_ENABLE:SDCARD}"
+FLASHLAYOUT_TYPE_LABELS:trusted:sdcard = "${@' '.join(d for d in '${DEVICE_BOARD_ENABLE:SDCARD}'.split() if 'stm32mp15' in d)}"
 # SPINAND
 # Set flashlayout file generation for all boards
 FLASHLAYOUT_TYPE_LABELS:spinand-2-128 = "${DEVICE_BOARD_ENABLE:SPINAND}"
+FLASHLAYOUT_TYPE_LABELS:trusted:spinand-2-128 = "${@' '.join(d for d in '${DEVICE_BOARD_ENABLE:SPINAND}'.split() if 'stm32mp15' in d)}"
 
 # -----------------------------------------------------------------------------
 # Define partitions to consider for flashlayout file generation
@@ -133,38 +139,32 @@ FLASHLAYOUT_PARTITION_IMAGES ?= ""
 FLASHLAYOUT_PARTITION_LABELS:optee:emmc = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'emmc').split()])} \
-    ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', ' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'emmc').split()]), d)} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'emmc').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS:optee:nand-4-256 = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nand-4-256').split()])} \
-    ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', ' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'nand-4-256').split()]), d)} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'nand-4-256').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS:optee:nor = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nor').split()])} \
-    ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', ' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'nor').split()]), d)} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'nor').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS:optee:nor-sdcard = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'nor-sdcard').split()])} \
-    ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', ' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'nor-sdcard').split()]), d)} \
     empty \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'nor-sdcard').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS:optee:sdcard  = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'sdcard').split()])} \
-    ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', ' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'sdcard').split()]), d)} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'sdcard').split()])} \
     "
 FLASHLAYOUT_PARTITION_LABELS:optee:spinand-2-128 = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'spinand-2-128').split()])} \
-    ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', ' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_OPTEE_CONFIG', 'spinand-2-128').split()]), d)} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'spinand-2-128').split()])} \
     "
 
