@@ -5,8 +5,9 @@ python archiver_clean_tarball() {
     import os
 
     ar_outdir = d.getVar('ARCHIVER_OUTDIR')
+    compression_method = d.getVarFlag('ARCHIVER_MODE', 'compression')
     #get tarball name
-    tarball_name = [f for f in listdir(ar_outdir) if f.endswith("tar.gz")]
+    tarball_name = [f for f in listdir(ar_outdir) if f.endswith("tar.%s" % compression_method)]
     tmpdir = tempfile.mkdtemp(dir=d.getVar('ARCHIVER_WORKDIR'))
     if tarball_name and tarball_name[0] and len(tarball_name[0]) > 0:
         tar = tarfile.open(os.path.join(ar_outdir,tarball_name[0]))
@@ -29,7 +30,7 @@ do_ar_original[postfuncs] =+ "archiver_clean_tarball"
 ARCHIVER_README = "README.HOW_TO.txt"
 
 archiver_git_uri() {
-    ret=`echo "${SRC_URI}" | grep branch | wc -l`
+    ret=$(echo "${SRC_URI}" | grep branch | wc -l)
     if [ $ret -gt 0 ]; then
         BRANCH=`echo "${SRC_URI}" | sed "s|.*branch=\([^ ;]*\).*|\1|" `
     else
