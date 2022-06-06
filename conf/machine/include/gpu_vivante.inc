@@ -1,6 +1,3 @@
-# create gcnano link (some links are remove by image generation)
-inherit image-gcnano-link
-
 # =========================================================================
 # GPU
 # =========================================================================
