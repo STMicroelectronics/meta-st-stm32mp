@@ -1,7 +1,5 @@
 #@DESCRIPTION: STM32MP machine extlinux file configuration
 
-# Define extlinux console for stm32mp machine
-UBOOT_EXTLINUX_CONSOLE = "console=${@d.getVar('SERIAL_CONSOLE').split()[1]},${@d.getVar('SERIAL_CONSOLE').split()[0]}"
 # Define FIT option for extlinux file generation
 UBOOT_EXTLINUX_FIT = "${@bb.utils.contains('MACHINE_FEATURES', 'fit', '1', '0', d)}"
 # Define default FDTDIR for all configs
