@@ -2,7 +2,7 @@
 #
 # The format to specify it, in the machine, is:
 #
-# PARTITIONS_IMAGE ??= "partition_image_name_1 partition_image_name_2"
+# PARTITIONS_IMAGES ??= "partition_image_name_1 partition_image_name_2"
 #
 # The partition generation might be disabled by resetting ENABLE_PARTITIONS_IMAGE var
 # in an image recipe (for example)
@@ -13,7 +13,7 @@ ENABLE_PARTITIONS_IMAGE ??= "1"
 ENABLE_IMAGE_LICENSE_SUMMARY ??= "0"
 ENABLE_MULTIVOLUME_UBI ??= "0"
 
-PARTITIONS_IMAGE ??= ""
+PARTITIONS_IMAGES ??= ""
 
 python __anonymous () {
     # We check first if it is requested to generate any partition images
@@ -46,7 +46,11 @@ python __anonymous () {
                     # Update IMAGE vars for each partition image
                     if items[1] != '':
                         bb.debug(1, "Set UBI_VOLNAME to %s for %s partition image." % (items[1], items[0]))
-                        d.setVar('UBI_VOLNAME:pn-%s' % d.expand(items[0]), items[1])
+                        if d.getVar('UBI_VOLNAME:pn-%s' % d.expand(items[0])):
+                            bb.debug(1,"UBI_VOLNAME is already configured to '%s' for %s partition image." % (d.getVar('UBI_VOLNAME:pn-%s' % d.expand(items[0])), items[0]))
+                        else:
+                            bb.debug(1, "Set UBI_VOLNAME to %s for %s partition image." % (items[1], items[0]))
+                            d.setVar('UBI_VOLNAME:pn-%s' % d.expand(items[0]), items[1])
                         if d.expand(items[1])[-2:] != 'fs':
                             bb.debug(1, "Set IMAGE_NAME_SUFFIX to '.%sfs' for %s partition image." % (items[1], items[0]))
                             d.setVar('IMAGE_NAME_SUFFIX:pn-%s' % d.expand(items[0]), '.' + items[1] + 'fs')
@@ -133,8 +137,8 @@ python image_rootfs_image_clean_task(){
     machine = d.expand("${MACHINE}")
     distro = d.expand("${DISTRO}")
     img_rootfs = d.getVar('IMAGE_ROOTFS')
-    partitionsconfigflags = d.getVarFlags('PARTITIONS_IMAGE')
-    partitionsconfig = (d.getVar('PARTITIONS_IMAGE') or "").split()
+    partitionsconfigflags = d.getVarFlags('PARTITIONS_IMAGES')
+    partitionsconfig = (d.getVar('PARTITIONS_IMAGES') or "").split()
 
     if len(partitionsconfig) == 0:
         bb.note('No partition image: nothing more to do...')
@@ -196,6 +200,7 @@ python image_rootfs_image_clean_task(){
                 # Use oe-pkgdata-util to find the package providing a file
                 cmd = ["oe-pkgdata-util",
                     "-p", d.getVar('PKGDATA_DIR'), "find-path", f ]
+                package = ""
                 try:
                     package = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode("utf-8").rstrip('\n')
                     package = re.sub(r":.*", "", package)
@@ -222,10 +227,10 @@ python image_rootfs_image_clean_task(){
                             match = True
                             break
                     if not match:
-                        bb.warn("Package %s should belong to %s partition image. Did you add it into the right image?" % (package, _img_partition))
+                        bb.note("Package %s should belong to %s partition image. Did you add it into the right image?" % (package, _img_partition))
 
                 else:
-                    bb.warn("File %s is not in a package" % (os.path.join(root, f)))
+                    bb.note("File %s is not in a package" % (os.path.join(root, f)))
 
             bb.note('Expecting to clean folder: %s' % part_dir)
             shutil.rmtree(part_dir)
@@ -235,19 +240,22 @@ python image_rootfs_image_clean_task(){
 }
 
 # -----------------------------------------------------------------------------
-# Append buildinfo() to allow to export to DEPLOYDIR the buildinfo file itself
+# Manage to export to DEPLOYDIR the buildinfo file itself
 # -----------------------------------------------------------------------------
 DEPLOY_BUILDINFO_FILE ??= "0"
 
-buildinfo:append() {
-    if d.getVar('DEPLOY_BUILDINFO_FILE') != '1':
-        return
-    # Export build information to deploy dir
-    import shutil
-    buildinfo_srcfile=d.expand('${IMAGE_ROOTFS}${IMAGE_BUILDINFO_FILE}')
-    buildinfo_dstfile=os.path.join(d.getVar('IMGDEPLOYDIR'), os.path.basename(d.getVar('IMAGE_BUILDINFO_FILE')) + '-' + d.getVar('IMAGE_LINK_NAME'))
-    if os.path.isfile(buildinfo_srcfile):
-        shutil.copy2(buildinfo_srcfile, buildinfo_dstfile)
-    else:
-        bb.warn('Not able to locate %s file in image rootfs %s' % (d.getVar('IMAGE_BUILDINFO_FILE'), d.getVar('IMAGE_ROOTFS')))
+python extract_buildinfo() {
+    if d.getVar('DEPLOY_BUILDINFO_FILE') == '1' and d.getVar('IMAGE_BUILDINFO_FILE'):
+        # Export build information to deploy dir
+        import shutil
+        buildinfo_origin = d.getVar('IMAGE_BUILDINFO_FILE')
+        rootfs_path = d.getVar('IMAGE_ROOTFS')
+        buildinfo_srcfile = os.path.normpath(rootfs_path + '/' + buildinfo_origin)
+        if os.path.isfile(buildinfo_srcfile):
+            buildinfo_deploy = os.path.basename(d.getVar('IMAGE_BUILDINFO_FILE')) + '-' + d.getVar('IMAGE_LINK_NAME')
+            buildinfo_dstfile = os.path.join(d.getVar('IMGDEPLOYDIR'), buildinfo_deploy)
+            shutil.copy2(buildinfo_srcfile, buildinfo_dstfile)
+        else:
+            bb.warn('Not able to locate %s file in image rootfs %s' % (buildinfo_origin, rootfs_path))
 }
+IMAGE_PREPROCESS_COMMAND += "extract_buildinfo;"
