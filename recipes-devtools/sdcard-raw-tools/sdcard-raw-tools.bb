@@ -30,6 +30,9 @@ do_configure() {
 
         bbnote "Update DEFAULT_SDCARD_PARTUUID to ${DEVICE_PARTUUID_ROOTFS:SDCARD}"
         sed 's/^DEFAULT_SDCARD_PARTUUID=.*$/DEFAULT_SDCARD_PARTUUID='"${DEVICE_PARTUUID_ROOTFS:SDCARD}"'/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
+        sed 's/^DEFAULT_FIP_TYPEUUID=.*$/DEFAULT_FIP_TYPEUUID='"${DEVICE_TYPEUUID_FIP}"'/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
+        sed 's/^DEFAULT_FIP_A_PARTUUID=.*$/DEFAULT_FIP_A_PARTUUID='"${DEVICE_PARTUUID_FIP_A}"'/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
+        sed 's/^DEFAULT_FIP_B_PARTUUID=.*$/DEFAULT_FIP_B_PARTUUID='"${DEVICE_PARTUUID_FIP_B}"'/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
     fi
 }
 
