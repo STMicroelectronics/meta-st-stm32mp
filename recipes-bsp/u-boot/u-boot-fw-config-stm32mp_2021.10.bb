@@ -13,11 +13,6 @@ DEPENDS += "u-boot-fw-utils"
 do_install () {
     install -d ${D}${sysconfdir}
     install -m 0644 ${WORKDIR}/fw_env.config.* ${D}${sysconfdir}/
-    if ${@bb.utils.contains('MACHINE_FEATURES','fip','true','false',d)}; then
-        sed -i 's/ssbl/fip/g' ${D}${sysconfdir}/fw_env.config.mmc
-        sed -i 's/0x280000/0x480000/g' ${D}${sysconfdir}/fw_env.config.nor
-        sed -i 's/0x2C0000/0x4C0000/g' ${D}${sysconfdir}/fw_env.config.nor
-    fi
 }
 
 FILES:${PN} += "${sysconfdir}/"
