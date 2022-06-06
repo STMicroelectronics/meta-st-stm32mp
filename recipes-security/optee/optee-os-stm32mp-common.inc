@@ -13,6 +13,7 @@ DEPENDS += "dtc-native"
 DEPENDS += "python3-pycryptodomex-native"
 DEPENDS += "python3-pyelftools-native"
 DEPENDS += "libgcc python3-cryptography-native"
+DEPENDS += "python3-pillow-native"
 
 inherit deploy python3native
 
@@ -22,17 +23,18 @@ OPTEEOUTPUTMACHINE ?= "${MACHINE}"
 # Default log level
 ST_OPTEE_DEBUG_LOG_LEVEL ??= "2"
 
+# default core debug
+ST_OPTEE_CORE_DEBUG ??="y"
+
 EXTRA_OEMAKE = "PLATFORM=${OPTEEMACHINE}"
 EXTRA_OEMAKE += "CROSS_COMPILE_core=${HOST_PREFIX}"
 EXTRA_OEMAKE += "CROSS_COMPILE_ta_arm64=${HOST_PREFIX}"
 EXTRA_OEMAKE += "${@bb.utils.contains('TUNE_FEATURES', 'aarch64', 'CFG_ARM64_core=y ta-targets=ta_arm64', 'CFG_ARM32_core=y CROSS_COMPILE_ta_arm32=${HOST_PREFIX}', d)}"
 EXTRA_OEMAKE += "NOWERROR=1"
 EXTRA_OEMAKE += "LDFLAGS="
-EXTRA_OEMAKE += "LIBGCC_LOCATE_CFLAGS=--sysroot=${STAGING_DIR_TARGET}"
-EXTRA_OEMAKE += "${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', 'CFG_STM32MP15x_STM32IMAGE=y', d)}"
 
 # debug and trace
-EXTRA_OEMAKE += "${@bb.utils.contains('ST_OPTEE_DEBUG_TRACE', '1', 'CFG_TEE_CORE_LOG_LEVEL=${ST_OPTEE_DEBUG_LOG_LEVEL} CFG_TEE_CORE_DEBUG=n', '', d)}"
+EXTRA_OEMAKE += "${@bb.utils.contains('ST_OPTEE_DEBUG_TRACE', '1', 'CFG_TEE_CORE_LOG_LEVEL=${ST_OPTEE_DEBUG_LOG_LEVEL} CFG_TEE_CORE_DEBUG=${ST_OPTEE_CORE_DEBUG}', '', d)}"
 
 OPTEE_ARCH:armv7a = "arm32"
 OPTEE_ARCH:armv7ve = "arm32"
@@ -77,7 +79,7 @@ do_install() {
 OPTEE_HEADER    = "tee-header_v2"
 OPTEE_PAGEABLE  = "tee-pageable_v2"
 OPTEE_PAGER     = "tee-pager_v2"
-OPTEE_SUFFIX    = "${@bb.utils.contains('MACHINE_FEATURES','fip','bin','stm32',d)}"
+OPTEE_SUFFIX    = "bin"
 # Output the ELF generated
 ELF_DEBUG_ENABLE ?= ""
 OPTEE_ELF = "tee"
