@@ -661,7 +661,7 @@ python do_create_flashlayout_config() {
 
                 if not os.path.exists(flashlayout_file):
                     # The tsv does not exist, so cannot generate the tsv for wrapper4dbg
-                    break
+                    continue
 
                 if d.getVar("ENABLE_FLASHLAYOUT_CONFIG_WRAPPER4DBG") == "1":
                     bb.debug(1, '*** Loop for flashlayout for the wrapper for debug %s' % labeltype)
