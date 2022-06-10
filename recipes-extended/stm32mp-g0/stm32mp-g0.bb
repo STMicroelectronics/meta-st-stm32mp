@@ -8,13 +8,13 @@ LICENSE = " \
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"
 
-LIC_FILES_CHKSUM = "file://${S}/LICENSE.md;md5=f772aa2a812cebaa73f598d19990c9a1"
+LIC_FILES_CHKSUM = "file://${S}/LICENSE.md;md5=57d9005898cfafdad212456569f8397e"
 
-SRC_URI = "git://github.com/STMicroelectronics/STM32CubeG0.git;protocol=ssh;branch=master"
+SRC_URI = "git://github.com/STMicroelectronics/x-cube-ucsi.git;protocol=https;branch=main"
 
-SRCREV = "03cb8e9ec0cbefad623caebe47359df0bab1d05e"
+SRCREV = "43ee1ab68a8573f618417e91eb9b2380fbee2e4d"
 
-PV = "1.0-${SRCPV}"
+PV = "1.0.0-rc6"
 
 S = "${WORKDIR}/git"
 
