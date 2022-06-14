@@ -47,9 +47,6 @@ DISTRO_EXTRA_RRECOMMENDS:remove = " ${@bb.utils.contains('COMBINED_FEATURES', 'i
 # Configure autoresize for any of the 'ext4' storage devices (through InitRD image)
 MACHINE_FEATURES:append = " ${@bb.utils.contains_any('BOOTDEVICE_LABELS',  ['emmc', 'sdcard'], 'autoresize', '', d)} "
 
-# Use FIP image for boot loaders
-MACHINE_FEATURES += "fip"
-
 # Default serial consoles (TTYs) to enable using getty
 # Before kernel 4.18, serial console are ttyS3 but after is ttySTM0
 SERIAL_CONSOLES = "115200;ttySTM0"
