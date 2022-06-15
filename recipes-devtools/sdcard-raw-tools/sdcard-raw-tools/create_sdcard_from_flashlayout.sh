@@ -199,11 +199,15 @@ function get_last_image_path() {
 		elif [ -f "$FLASHLAYOUT_filename_path/../../$last_image" ];
 		then
 			FLASHLAYOUT_prefix_image_path="$FLASHLAYOUT_filename_path/../.."
+		elif [ -f "$FLASHLAYOUT_filename_path/../../../$last_image" ];
+		then
+			FLASHLAYOUT_prefix_image_path="$FLASHLAYOUT_filename_path/../../.."
 		else
 			echo "[ERROR]: do not found image associated to this FLash layout on the directory:"
 			echo "[ERROR]:    $FLASHLAYOUT_filename_path"
 			echo "[ERROR]: or $FLASHLAYOUT_filename_path/.."
 			echo "[ERROR]: or $FLASHLAYOUT_filename_path/../.."
+			echo "[ERROR]: or $FLASHLAYOUT_filename_path/../../.."
 			echo ""
 			exit 0
 		fi
