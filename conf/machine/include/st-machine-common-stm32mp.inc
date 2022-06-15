@@ -668,7 +668,7 @@ UBOOT_MTDPART_CHECK ?= "\
     ${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', 'CONFIG_MTDPARTS_SPINAND0_BOOT=${UBOOT_MTDPART_SPINAND_BOOT}', '', d)} \
     "
 
-PREFERRED_PROVIDER_u-boot-fw-utils:stm32mp1common = "libubootenv"
+PREFERRED_PROVIDER_u-boot-fw-utils:stm32mp1common ??= "libubootenv"
 
 MACHINE_EXTRA_RRECOMMENDS:append:stm32mp1common = " \
     u-boot-fw-config-stm32mp \
@@ -755,7 +755,7 @@ ELF_DEBUG_ENABLE = "1"
 # =========================================================================
 # sysdig
 # =========================================================================
-PREFERRED_PROVIDER_sysdig = "sysdig-stm32mp"
+PREFERRED_PROVIDER_sysdig ??= "sysdig-stm32mp"
 
 # =========================================================================
 # M4 copro
