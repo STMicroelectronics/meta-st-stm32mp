@@ -478,6 +478,7 @@ ST_DEBUG_TRACE ?= "1"
 # =========================================================================
 # Kernel
 # =========================================================================
+
 # Kernel image type
 KERNEL_IMAGETYPE     =  "${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'fitImage', 'uImage', d)}"
 KERNEL_ALT_IMAGETYPE =  " Image "
@@ -558,7 +559,7 @@ UBOOT_MTDPART_CHECK ?= "\
     ${@bb.utils.contains('MACHINE_FEATURES', 'fip', '', '${UBOOT_MTDPART_4LEGACY}', d)} \
     "
 
-PREFERRED_PROVIDER_u-boot-fw-utils_stm32mp1common = "libubootenv"
+PREFERRED_PROVIDER_u-boot-fw-utils_stm32mp1common ??= "libubootenv"
 
 MACHINE_EXTRA_RRECOMMENDS_append_stm32mp1common = " \
     u-boot-fw-config-stm32mp \
@@ -646,7 +647,7 @@ ELF_DEBUG_ENABLE = "1"
 # =========================================================================
 # sysdig
 # =========================================================================
-PREFERRED_PROVIDER_sysdig = "sysdig-stm32mp"
+PREFERRED_PROVIDER_sysdig ??= "sysdig-stm32mp"
 
 # =========================================================================
 # M4 copro

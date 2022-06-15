@@ -1,21 +1,21 @@
 # =========================================================================
 # Kernel
 # =========================================================================
-PREFERRED_PROVIDER_virtual/kernel = "linux-stm32mp"
+PREFERRED_PROVIDER_virtual/kernel ??= "linux-stm32mp"
 
 # =========================================================================
 # u-boot
 # =========================================================================
-PREFERRED_PROVIDER_virtual/bootloader = "u-boot-stm32mp"
-PREFERRED_PROVIDER_u-boot = "u-boot-stm32mp"
+PREFERRED_PROVIDER_virtual/bootloader ??= "u-boot-stm32mp"
+PREFERRED_PROVIDER_u-boot ??= "u-boot-stm32mp"
 
 # =========================================================================
 # trusted-firmware-a
 # =========================================================================
-PREFERRED_PROVIDER_virtual/trusted-firmware-a = "tf-a-stm32mp"
+PREFERRED_PROVIDER_virtual/trusted-firmware-a ??= "tf-a-stm32mp"
 
 # =========================================================================
 # optee-os
 # =========================================================================
-PREFERRED_PROVIDER_virtual/optee-os = "optee-os-stm32mp"
+PREFERRED_PROVIDER_virtual/optee-os ??= "optee-os-stm32mp"
 

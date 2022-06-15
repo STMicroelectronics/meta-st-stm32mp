@@ -42,9 +42,9 @@ def get_gpu_vivante_handler(d):
 
 GPU_USERLAND_LIBRARIES_INSTALL = "${@get_gpu_vivante_handler(d)}"
 
-PREFERRED_PROVIDER_virtual/egl = "${@get_gpu_vivante_handler(d)}"
-PREFERRED_PROVIDER_virtual/libgles1 = "${@get_gpu_vivante_handler(d)}"
-PREFERRED_PROVIDER_virtual/libgles2 = "${@get_gpu_vivante_handler(d)}"
-PREFERRED_PROVIDER_virtual/libgbm = "${@get_gpu_vivante_handler(d)}"
-PREFERRED_PROVIDER_virtual/mesa = "${@bb.utils.contains('PREFERRED_PROVIDER_virtual/egl','mesa','mesa','mesa-gl',d)}"
-PREFERRED_PROVIDER_virtual/libgl = "${@bb.utils.contains('PREFERRED_PROVIDER_virtual/egl','mesa','mesa','mesa-gl',d)}"
+PREFERRED_PROVIDER_virtual/egl ??= "${@get_gpu_vivante_handler(d)}"
+PREFERRED_PROVIDER_virtual/libgles1 ??= "${@get_gpu_vivante_handler(d)}"
+PREFERRED_PROVIDER_virtual/libgles2 ??= "${@get_gpu_vivante_handler(d)}"
+PREFERRED_PROVIDER_virtual/libgbm ??= "${@get_gpu_vivante_handler(d)}"
+PREFERRED_PROVIDER_virtual/mesa ??= "${@bb.utils.contains('PREFERRED_PROVIDER_virtual/egl','mesa','mesa','mesa-gl',d)}"
+PREFERRED_PROVIDER_virtual/libgl ??= "${@bb.utils.contains('PREFERRED_PROVIDER_virtual/egl','mesa','mesa','mesa-gl',d)}"
