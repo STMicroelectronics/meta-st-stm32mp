@@ -104,10 +104,15 @@ Since OpenSTLinux activates FIP by default, FIP_artifacts directory path must be
   - In case of using SOURCES-xxxx.tar.gz of Developer package the FIP_DEPLOYDIR_ROOT must be set as below:
     $> export FIP_DEPLOYDIR_ROOT=$PWD/../../FIP_artifacts
 
-To compile optee-os source code
+To compile optee-os source code with default embedded config:
     $> make -f $PWD/../Makefile.sdk all
-or for a specific config :
-    $ make -f $PWD/../Makefile.sdk CFG_EMBED_DTB_SOURCE_FILE=stm32mp157c-ev1 all
+You can check the configuration throught 'help' target:
+    $ make -f $PWD/../Makefile.sdk help
+
+To compile only one of the provided devicetree:
+    $ make -f $PWD/../Makefile.sdk CFG_EMBED_DTB_SOURCE_FILE=stm32mp157f-ev1 all
+For a specific devicetree file you need to force not only the devicetree but also the DRAM size settings:
+    $ make -f $PWD/../Makefile.sdk CFG_EMBED_DTB_SOURCE_FILE=<your_devicetree> OPTEE_DRAMSIZE=<dram_size_value_in_hexadecimal> all
 
 By default, the build results for this component are available in $PWD/../deploy directory.
 If needed, this deploy directory can be specified by added "DEPLOYDIR=<your_deploy_dir_path>" compilation option to the build command line above.
