@@ -73,42 +73,42 @@ UBOOT_LOCALVERSION = ${UBOOT_LOCALVERSION}
 define uboot-configs
 	echo "  \$(1)" ; \\
 	\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(1))), \\
-		echo "    defconfig      : \$(defconfig)" ; \
-		echo "    for binary     : \$(if \$(UBOOT_BINARY),\$(UBOOT_BINARY),\$(UBOOT_BINARY_\$(defconfig)))" ; \
-		echo "    with devicetree: \$(if \$(DEVICETREE),\$(DEVICETREE),\$(UBOOT_DEVICETREE_\$(defconfig)))" ; \
+		echo "    defconfig      : \$(defconfig)" ; \\
+		echo "    for binary     : \$(if \$(UBOOT_BINARY),\$(UBOOT_BINARY),\$(UBOOT_BINARY_\$(defconfig)))" ; \\
+		echo "    with devicetree: \$(if \$(DEVICETREE),\$(DEVICETREE),\$(UBOOT_DEVICETREE_\$(defconfig)))" ; \\
 	)
 endef
 
-# Configure U-Boot configure rules (configure-DEFCONFIG-CONFIG)
+# Configure U-Boot configure rules (configure-DEFCONFIG)
 define configure-rules
-configure-\$(1)-\$(2): version
+configure-\$(1):: version
 	@mkdir -p \$(BLD_PATH)/\$(1)
 	@echo \$(UBOOT_LOCALVERSION) > \$(BLD_PATH)/\$(1)/.scmversion
-	\$(MAKE) -C \$(SRC_PATH) O=\$(BLD_PATH)/\$(1) \$(1)
+	\$(MAKE) -C \$(SRC_PATH) O=\$(BLD_PATH)/\$(1) \$(1) || exit 1
 endef
 
-# Configure U-Boot make rules (uboot-DEFCONFIG-CONFIG)
+# Configure U-Boot make rules (uboot-DEFCONFIG)
 define uboot-rules
-uboot-\$(1)-\$(2): configure-\$(1)-\$(2)
+uboot-\$(1):: configure-\$(1)
 	@mkdir -p \$(DEPLOYDIR)
 	@\$(foreach dt, \$(if \$(DEVICETREE),\$(DEVICETREE),\$(UBOOT_DEVICETREE_\$(1))), \\
 		\$(MAKE) -C \$(SRC_PATH) ${UBOOT_MAKE_TARGET} \\
 			O=\$(BLD_PATH)/\$(1) \\
 			DEVICE_TREE=\$(dt) \\
-			DEVICE_TREE_EXT=\$(dt).dtb ; \\
-		cp -f \$(BLD_PATH)/\$(1)/\$(3) \$(DEPLOYDIR)/u-boot-\$(dt)-\$(2).\$(shell echo \$(3) | cut -d'.' -f2) ; \\
+			DEVICE_TREE_EXT=\$(dt).dtb || exit 1 ; \\
+		cp -f \$(BLD_PATH)/\$(1)/\$(3) \$(DEPLOYDIR)/u-boot-\$(dt).\$(shell echo \$(3) | cut -d'.' -f2) || exit 1 ; \\
 		if [ -f \$(BLD_PATH)/\$(1)/\$(shell echo \$(3) | cut -d'.' -f1).stm32 ]; then \\
-			cp -f \$(BLD_PATH)/\$(1)/\$(shell echo \$(3) | cut -d'.' -f1).stm32 \$(DEPLOYDIR)/u-boot-\$(dt)-\$(2).stm32 ; \\
+			cp -f \$(BLD_PATH)/\$(1)/\$(shell echo \$(3) | cut -d'.' -f1).stm32 \$(DEPLOYDIR)/u-boot-\$(dt).stm32 ; \\
 		fi ; \\
 		if [ -f \$(BLD_PATH)/\$(1)/${SPL_BINARY_STM32} ]; then \\
-			cp -f \$(BLD_PATH)/\$(1)/${SPL_BINARY_STM32} \$(DEPLOYDIR)/${SPL_BINARYNAME}-\$(dt)-\$(2) ; \\
+			cp -f \$(BLD_PATH)/\$(1)/${SPL_BINARY_STM32} \$(DEPLOYDIR)/${SPL_BINARYNAME}-\$(dt); \\
 		fi ; \\
 	)
 endef
 
-# Configure U-Boot deploy rules (deploy-DEFCONFIG-CONFIG)
+# Configure U-Boot deploy rules (deploy-DEFCONFIG)
 define deploy-rules
-deploy-\$(1)-\$(2): uboot-\$(1)-\$(2)
+deploy-\$(1):: uboot-\$(1)
 	@mkdir -p \$(DEPLOYDIR)
 	@mkdir -p \$(DEPLOYDIR)/debug
 	@\$(foreach dt, \$(if \$(DEVICETREE),\$(DEVICETREE),\$(UBOOT_DEVICETREE_\$(1))), \\
@@ -116,17 +116,17 @@ deploy-\$(1)-\$(2): uboot-\$(1)-\$(2)
 			cp -f \$(BLD_PATH)/\$(1)/u-boot-nodtb.bin \$(DEPLOYDIR)/u-boot-nodtb\$(strip \$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),-\$(soc),))).bin ; \\
 		fi ; \\
 		if [ -f \$(BLD_PATH)/\$(1)/${UBOOT_ELF} ]; then \\
-			cp -f \$(BLD_PATH)/\$(1)/${UBOOT_ELF} \$(DEPLOYDIR)/debug/u-boot\$(strip \$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),-\$(soc),)))-\$(2).${UBOOT_ELF_SUFFIX} ; \\
+			cp -f \$(BLD_PATH)/\$(1)/${UBOOT_ELF} \$(DEPLOYDIR)/debug/u-boot\$(strip \$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),-\$(soc),))).${UBOOT_ELF_SUFFIX} ; \\
 		fi ; \\
 		if [ -f \$(BLD_PATH)/\$(1)/${SPL_ELF} ]; then \\
-			cp -f \$(BLD_PATH)/\$(1)/${SPL_ELF} \$(DEPLOYDIR)/debug/${SPL_ELF_NAME}\$(strip \$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),-\$(soc),)))-\$(2) ; \\
+			cp -f \$(BLD_PATH)/\$(1)/${SPL_ELF} \$(DEPLOYDIR)/debug/${SPL_ELF_NAME}\$(strip \$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),-\$(soc),))); \\
 		fi ; \\
 	)
 endef
 
 # Configure overall deploy rules list
 deploy-targets := \$(foreach config, \$(if \$(UBOOT_CONFIG),\$(UBOOT_CONFIG),\$(UBOOT_CONFIGS)), \\
-					\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(config))), deploy-\$(defconfig)-\$(config)) \\
+					\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(config))), deploy-\$(defconfig)) \\
 					)
 
 # Set dependencies list for building all

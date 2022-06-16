@@ -1,0 +1,1179 @@
+From 86d72a3e8f002145e67aca3906ca663cd43ca059 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Thu, 3 Nov 2022 11:15:44 +0100
+Subject: [PATCH 8/9] ARM v2021.10-stm32mp-r2 MISC-DRIVERS
+
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
+---
+ Makefile                        |   2 +-
+ arch/sandbox/include/asm/gpio.h |   3 +-
+ cmd/pxe_utils.c                 |  74 ++++++++++------
+ cmd/pxe_utils.h                 |   2 +
+ doc/README.pxe                  |   3 +
+ doc/board/st/stm32mp1.rst       |   4 +-
+ drivers/clk/clk-stm32-core.c    | 147 ++++++++++++++++----------------
+ drivers/clk/clk-stm32-core.h    |  17 ++--
+ drivers/clk/clk_scmi.c          |  16 ++--
+ drivers/gpio/gpio-uclass.c      |  19 +++--
+ drivers/gpio/sandbox.c          |  16 +++-
+ drivers/gpio/stm32_gpio.c       |   6 ++
+ drivers/i2c/stm32f7_i2c.c       |  33 ++++---
+ drivers/mmc/stm32_sdmmc2.c      |  20 +++--
+ drivers/pinctrl/pinctrl_stm32.c |   7 +-
+ drivers/usb/host/ehci-generic.c |  97 +++++++--------------
+ drivers/video/stm32/stm32_dsi.c |  25 +++---
+ drivers/video/video_bmp.c       |   6 +-
+ include/asm-generic/gpio.h      |   1 +
+ include/power/stpmic1.h         |   3 -
+ test/dm/gpio.c                  |   5 ++
+ 21 files changed, 266 insertions(+), 240 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 6203f40cb17..9e47e7b0972 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3,7 +3,7 @@
+ VERSION = 2021
+ PATCHLEVEL = 10
+ SUBLEVEL =
+-EXTRAVERSION = -stm32mp-r1
++EXTRAVERSION = -stm32mp-r2
+ NAME =
+ 
+ # *DOCUMENTATION*
+diff --git a/arch/sandbox/include/asm/gpio.h b/arch/sandbox/include/asm/gpio.h
+index 9e10052667d..1d0f83c01e8 100644
+--- a/arch/sandbox/include/asm/gpio.h
++++ b/arch/sandbox/include/asm/gpio.h
+@@ -28,9 +28,10 @@
+ #define GPIOD_EXT_DRIVEN	BIT(30)	/* external source is driven */
+ #define GPIOD_EXT_PULL_UP	BIT(29)	/* GPIO has external pull-up */
+ #define GPIOD_EXT_PULL_DOWN	BIT(28)	/* GPIO has external pull-down */
++#define GPIOD_EXT_PROTECTED	BIT(27)	/* GPIO is access protected */
+ 
+ #define GPIOD_EXT_PULL		(BIT(28) | BIT(29))
+-#define GPIOD_SANDBOX_MASK	GENMASK(31, 28)
++#define GPIOD_SANDBOX_MASK	GENMASK(31, 27)
+ 
+ /**
+  * Return the simulated value of a GPIO (used only in sandbox test code)
+diff --git a/cmd/pxe_utils.c b/cmd/pxe_utils.c
+index 067c24e5ff4..45334fc3c70 100644
+--- a/cmd/pxe_utils.c
++++ b/cmd/pxe_utils.c
+@@ -268,6 +268,9 @@ static void label_destroy(struct pxe_label *label)
+ 	if (label->name)
+ 		free(label->name);
+ 
++	if (label->kernel_label)
++		free(label->kernel_label);
++
+ 	if (label->kernel)
+ 		free(label->kernel);
+ 
+@@ -449,6 +452,7 @@ static int label_boot(struct cmd_tbl *cmdtp, struct pxe_label *label)
+ 	int len = 0;
+ 	ulong kernel_addr;
+ 	void *buf;
++	bool fdt_use_kernel = false, initrd_use_kernel = false;
+ 
+ 	label_print(label);
+ 
+@@ -466,11 +470,39 @@ static int label_boot(struct cmd_tbl *cmdtp, struct pxe_label *label)
+ 		return 1;
+ 	}
+ 
+-	if (label->initrd) {
++	/* For FIT, the label can be identical to kernel one */
++	if (label->fdt && !strcmp(label->kernel_label, label->fdt))
++		fdt_use_kernel = true;
++
++	if (label->initrd && !strcmp(label->kernel_label, label->initrd))
++		initrd_use_kernel = true;
++
++	if (get_relfile_envaddr(cmdtp, label->kernel, "kernel_addr_r") < 0) {
++		printf("Skipping %s for failure retrieving kernel\n",
++		       label->name);
++		return 1;
++	}
++	bootm_argv[1] = env_get("kernel_addr_r");
++	/* for FIT, append the configuration identifier */
++	if (label->config) {
++		int len = strlen(bootm_argv[1]) + strlen(label->config) + 1;
++
++		fit_addr = malloc(len);
++		if (!fit_addr) {
++			printf("malloc fail (FIT address)\n");
++			return 1;
++		}
++		snprintf(fit_addr, len, "%s%s", bootm_argv[1], label->config);
++		bootm_argv[1] = fit_addr;
++	}
++
++	if (initrd_use_kernel) {
++		bootm_argv[2] =  bootm_argv[1];
++	} else if (label->initrd) {
+ 		if (get_relfile_envaddr(cmdtp, label->initrd, "ramdisk_addr_r") < 0) {
+ 			printf("Skipping %s for failure retrieving initrd\n",
+ 			       label->name);
+-			return 1;
++			goto cleanup;
+ 		}
+ 
+ 		bootm_argv[2] = initrd_str;
+@@ -480,12 +512,6 @@ static int label_boot(struct cmd_tbl *cmdtp, struct pxe_label *label)
+ 		bootm_argc = 3;
+ 	}
+ 
+-	if (get_relfile_envaddr(cmdtp, label->kernel, "kernel_addr_r") < 0) {
+-		printf("Skipping %s for failure retrieving kernel\n",
+-		       label->name);
+-		return 1;
+-	}
+-
+ 	if (label->ipappend & 0x1) {
+ 		sprintf(ip_str, " ip=%s:%s:%s:%s",
+ 			env_get("ipaddr"), env_get("serverip"),
+@@ -513,7 +539,7 @@ static int label_boot(struct cmd_tbl *cmdtp, struct pxe_label *label)
+ 			       strlen(label->append ?: ""),
+ 			       strlen(ip_str), strlen(mac_str),
+ 			       sizeof(bootargs));
+-			return 1;
++			goto cleanup;
+ 		}
+ 
+ 		if (label->append)
+@@ -528,20 +554,6 @@ static int label_boot(struct cmd_tbl *cmdtp, struct pxe_label *label)
+ 		printf("append: %s\n", finalbootargs);
+ 	}
+ 
+-	bootm_argv[1] = env_get("kernel_addr_r");
+-	/* for FIT, append the configuration identifier */
+-	if (label->config) {
+-		int len = strlen(bootm_argv[1]) + strlen(label->config) + 1;
+-
+-		fit_addr = malloc(len);
+-		if (!fit_addr) {
+-			printf("malloc fail (FIT address)\n");
+-			return 1;
+-		}
+-		snprintf(fit_addr, len, "%s%s", bootm_argv[1], label->config);
+-		bootm_argv[1] = fit_addr;
+-	}
+-
+ 	/*
+ 	 * fdt usage is optional:
+ 	 * It handles the following scenarios.
+@@ -556,12 +568,17 @@ static int label_boot(struct cmd_tbl *cmdtp, struct pxe_label *label)
+ 	 * Scenario 2: If there is an fdt_addr specified, pass it along to
+ 	 * bootm, and adjust argc appropriately.
+ 	 *
+-	 * Scenario 3: fdt blob is not available.
++	 * Scenario 3: If there is an fdtcontroladdr specified, pass it along to
++	 * bootm, and adjust argc appropriately.
++	 *
++	 * Scenario 4: fdt blob is not available.
+ 	 */
+ 	bootm_argv[3] = env_get("fdt_addr_r");
+ 
+ 	/* if fdt label is defined then get fdt from server */
+-	if (bootm_argv[3]) {
++	if (fdt_use_kernel) {
++		bootm_argv[3] = bootm_argv[1];
++	} else if (bootm_argv[3]) {
+ 		char *fdtfile = NULL;
+ 		char *fdtfilefree = NULL;
+ 
+@@ -646,6 +663,9 @@ static int label_boot(struct cmd_tbl *cmdtp, struct pxe_label *label)
+ 	if (!bootm_argv[3])
+ 		bootm_argv[3] = env_get("fdt_addr");
+ 
++	if (!bootm_argv[3])
++		bootm_argv[3] = env_get("fdtcontroladdr");
++
+ 	if (bootm_argv[3]) {
+ 		if (!bootm_argv[2])
+ 			bootm_argv[2] = "-";
+@@ -1076,6 +1096,10 @@ static int parse_label_kernel(char **c, struct pxe_label *label)
+ 	if (err < 0)
+ 		return err;
+ 
++	/* copy the kernel label to compare with FDT / INITRD when FIT is used */
++	label->kernel_label = strdup(label->kernel);
++	if (!label->kernel_label)
++		return -ENOMEM;
+ 	s = strstr(label->kernel, "#");
+ 	if (!s)
+ 		return 1;
+diff --git a/cmd/pxe_utils.h b/cmd/pxe_utils.h
+index bf58e15347c..4cb55edf3cd 100644
+--- a/cmd/pxe_utils.h
++++ b/cmd/pxe_utils.h
+@@ -28,6 +28,7 @@
+  * Create these with the 'label_create' function given below.
+  *
+  * name - the name of the menu as given on the 'menu label' line.
++ * kernel_label - the kernel label, including FIT config if present.
+  * kernel - the path to the kernel file to use for this label.
+  * append - kernel command line to use when booting this label
+  * initrd - path to the initrd to use for this label.
+@@ -39,6 +40,7 @@ struct pxe_label {
+ 	char num[4];
+ 	char *name;
+ 	char *menu;
++	char *kernel_label;
+ 	char *kernel;
+ 	char *config;
+ 	char *append;
+diff --git a/doc/README.pxe b/doc/README.pxe
+index b67151ca510..ba1ac83d2ae 100644
+--- a/doc/README.pxe
++++ b/doc/README.pxe
+@@ -169,6 +169,9 @@ fdt <path>	    - if this label is chosen, use tftp to retrieve the fdt blob
+ 		      at <path>. it will be stored at the address indicated in
+ 		      the fdt_addr_r environment variable, and that address will
+ 		      be passed to bootm.
++		      For FIT image, the device tree can be provided with the same value
++		      than kernel, including configuration:
++		        <path>#<conf>[#<extra-conf[#...]]
+ 
+ fdtdir <path>	    - if this label is chosen, use tftp to retrieve a fdt blob
+ 		      relative to <path>. If the fdtfile environment variable
+diff --git a/doc/board/st/stm32mp1.rst b/doc/board/st/stm32mp1.rst
+index 09187a2a88d..0414378a507 100644
+--- a/doc/board/st/stm32mp1.rst
++++ b/doc/board/st/stm32mp1.rst
+@@ -92,7 +92,6 @@ The STM32MP13x is a single Cortex-A7 MPU aimed at various applications.
+ 
+ Currently the following boards are supported:
+ 
+- + stm32mp135d-dk.dts
+  + stm32mp135f-dk.dts
+ 
+ 
+@@ -212,7 +211,6 @@ The supported device trees for STM32MP13x (stm32mp13_defconfig) are:
+ 
+ + dk: Discovery board
+ 
+-   + stm32mp135d-dk
+    + stm32mp135f-dk
+ 
+ 
+@@ -274,7 +272,7 @@ Build Procedure
+ 
+      # export KBUILD_OUTPUT=stm32mp13
+      # make stm32mp13_defconfig
+-     # make DEVICE_TREE=stm32mp135d-dk all
++     # make DEVICE_TREE=stm32mp135f-dk all
+ 
+     DEVICE_TEE selection is optional as stm32mp135f-dk is the default board of the defconfig::
+ 
+diff --git a/drivers/clk/clk-stm32-core.c b/drivers/clk/clk-stm32-core.c
+index 9df10250020..22671a0abc3 100644
+--- a/drivers/clk/clk-stm32-core.c
++++ b/drivers/clk/clk-stm32-core.c
+@@ -152,92 +152,112 @@ const struct clk_ops stm32_clk_ops = {
+ 	.set_rate = stm32_clk_set_rate,
+ };
+ 
+-#define UBOOT_DM_CLK_STM32_SETCLR_GATE "clk_stm32_setclr_gate"
+-
+ #define RCC_MP_ENCLRR_OFFSET	4
+ 
+-static void clk_setclr_gate_endisable(struct clk *clk, int enable)
++static void clk_stm32_endisable_gate(const struct stm32_gate_cfg *gate_cfg,
++				     void __iomem *base, u8 *cpt, int enable)
+ {
+-	struct clk_gate *gate = to_clk_gate(clk);
++	void __iomem *addr = base + gate_cfg->reg_off;
++	u8 set_clr = gate_cfg->set_clr ? RCC_MP_ENCLRR_OFFSET : 0;
++
++	if (enable) {
++		if (*cpt++ > 0)
++			return;
++
++		if (set_clr)
++			writel(BIT(gate_cfg->bit_idx), addr);
++		else
++			writel(readl(addr) | BIT(gate_cfg->bit_idx), addr);
++	} else {
++		if (--*cpt > 0)
++			return;
+ 
+-	if (enable)
+-		writel(BIT(gate->bit_idx), gate->reg);
+-	else
+-		writel(BIT(gate->bit_idx), gate->reg + RCC_MP_ENCLRR_OFFSET);
++		if (set_clr)
++			writel(BIT(gate_cfg->bit_idx), addr + set_clr);
++		else
++			writel(readl(addr) & ~BIT(gate_cfg->bit_idx), addr);
++	}
+ }
+ 
+-static int clk_setclr_gate_enable(struct clk *clk)
++static void clk_stm32_gate_endisable(struct clk *clk, int enable)
+ {
+-	clk_setclr_gate_endisable(clk, 1);
++	struct clk_stm32_gate *stm32_gate = to_clk_stm32_gate(clk);
++
++	clk_stm32_endisable_gate(stm32_gate->gate, stm32_gate->base,
++				 &stm32_gate->cpt, enable);
++}
++
++static int clk_stm32_gate_enable(struct clk *clk)
++{
++	clk_stm32_gate_endisable(clk, 1);
+ 
+ 	return 0;
+ }
+ 
+-static int clk_setclr_gate_disable(struct clk *clk)
++static int clk_stm32_gate_disable(struct clk *clk)
+ {
+-	clk_setclr_gate_endisable(clk, 0);
++	clk_stm32_gate_endisable(clk, 0);
+ 
+ 	return 0;
+ }
+ 
+-const struct clk_ops clk_stm32_setclr_gate_ops = {
+-	.enable = clk_setclr_gate_enable,
+-	.disable = clk_setclr_gate_disable,
++static const struct clk_ops clk_stm32_gate_ops = {
++	.enable = clk_stm32_gate_enable,
++	.disable = clk_stm32_gate_disable,
+ 	.get_rate = clk_generic_get_rate,
+ };
+ 
+-struct clk *clk_stm32_register_setclr_gate(struct device *dev,
+-					   const char *name,
+-					   const char *parent_name,
+-					   unsigned long flags,
+-					   void __iomem *reg, u8 bit_idx,
+-					   u8 clk_gate_flags, spinlock_t *lock)
++#define UBOOT_DM_CLK_STM32_GATE "clk_stm32_gate"
++
++U_BOOT_DRIVER(clk_stm32_gate) = {
++	.name	= UBOOT_DM_CLK_STM32_GATE,
++	.id	= UCLASS_CLK,
++	.ops	= &clk_stm32_gate_ops,
++};
++
++struct clk *clk_stm32_gate_register(struct device *dev,
++				    const char *name,
++				    const char *parent_name,
++				    unsigned long flags,
++				    void __iomem *base,
++				    const struct stm32_gate_cfg *gate_cfg,
++				    spinlock_t *lock)
+ {
+-	struct clk_gate *gate;
++	struct clk_stm32_gate *stm32_gate;
+ 	struct clk *clk;
+ 	int ret;
+ 
+-	/* allocate the gate */
+-	gate = kzalloc(sizeof(*gate), GFP_KERNEL);
+-	if (!gate)
++	stm32_gate = kzalloc(sizeof(*stm32_gate), GFP_KERNEL);
++	if (!stm32_gate)
+ 		return ERR_PTR(-ENOMEM);
+ 
+-	/* struct clk_gate assignments */
+-	gate->reg = reg;
+-	gate->bit_idx = bit_idx;
+-	gate->flags = clk_gate_flags;
++	stm32_gate->base = base;
++	stm32_gate->gate = gate_cfg;
+ 
+-	clk = &gate->clk;
++	clk = &stm32_gate->clk;
+ 	clk->flags = flags;
+ 
+-	ret = clk_register(clk, UBOOT_DM_CLK_STM32_SETCLR_GATE, name,
+-			   parent_name);
++	ret = clk_register(clk, UBOOT_DM_CLK_STM32_GATE, name, parent_name);
+ 	if (ret) {
+-		kfree(gate);
++		kfree(stm32_gate);
+ 		return ERR_PTR(ret);
+ 	}
+ 
+ 	return clk;
+ }
+ 
+-U_BOOT_DRIVER(clk_stm32_setclr_gate) = {
+-	.name	= UBOOT_DM_CLK_STM32_SETCLR_GATE,
+-	.id	= UCLASS_CLK,
+-	.ops	= &clk_stm32_setclr_gate_ops,
+-};
+-
+ struct clk *clk_stm32_register_composite(const char *name,
+ 					 const char * const *parent_names,
+ 					 int num_parents,
+ 					 unsigned long flags,
+ 					 void __iomem *base,
+-					 const struct stm32_mux_cfg *pcfg,
++					 const struct stm32_mux_cfg *mcfg,
+ 					 const struct stm32_div_cfg *dcfg,
+ 					 const struct stm32_gate_cfg *gcfg)
+ {
+ 	struct clk *clk = ERR_PTR(-ENOMEM);
+ 	struct clk_mux *mux = NULL;
+-	struct clk_gate *gate = NULL;
++	struct clk_stm32_gate *gate = NULL;
+ 	struct clk_divider *div = NULL;
+ 	struct clk *mux_clk = NULL;
+ 	const struct clk_ops *mux_ops = NULL;
+@@ -246,17 +266,17 @@ struct clk *clk_stm32_register_composite(const char *name,
+ 	struct clk *div_clk = NULL;
+ 	const struct clk_ops *div_ops = NULL;
+ 
+-	if (pcfg) {
++	if (mcfg) {
+ 		mux = kzalloc(sizeof(*mux), GFP_KERNEL);
+ 		if (!mux)
+ 			goto fail;
+ 
+-		mux->reg = base + pcfg->reg_off;
+-		mux->shift = pcfg->shift;
+-		mux->mask = BIT(pcfg->width) - 1;
+-		mux->num_parents = pcfg->num_parents;
++		mux->reg = base + mcfg->reg_off;
++		mux->shift = mcfg->shift;
++		mux->mask = BIT(mcfg->width) - 1;
++		mux->num_parents = mcfg->num_parents;
+ 		mux->flags = 0;
+-		mux->parent_names = pcfg->parent_names;
++		mux->parent_names = mcfg->parent_names;
+ 
+ 		mux_clk = &mux->clk;
+ 		mux_ops = &clk_mux_ops;
+@@ -273,6 +293,9 @@ struct clk *clk_stm32_register_composite(const char *name,
+ 		div->width = dcfg->width;
+ 		div->flags = dcfg->div_flags;
+ 		div->table = dcfg->table;
++
++		div_clk = &div->clk;
++		div_ops = &clk_divider_ops;
+ 	}
+ 
+ 	if (gcfg) {
+@@ -280,15 +303,11 @@ struct clk *clk_stm32_register_composite(const char *name,
+ 		if (!gate)
+ 			goto fail;
+ 
+-		gate->reg = base + gcfg->reg_off;
+-		gate->bit_idx = gcfg->bit_idx;
+-		gate->flags = gcfg->gate_flags;
++		gate->base = base;
++		gate->gate = gcfg;
+ 
+ 		gate_clk = &gate->clk;
+-		gate_ops = &clk_gate_ops;
+-
+-		if (gcfg->set_clr)
+-			gate_ops = &clk_stm32_setclr_gate_ops;
++		gate_ops = &clk_stm32_gate_ops;
+ 	}
+ 
+ 	clk = clk_register_composite(NULL, name,
+@@ -317,25 +336,9 @@ struct clk *_clk_stm32_gate_register(struct device *dev,
+ {
+ 	struct stm32_clk_gate_cfg *clk_cfg = cfg->clock_cfg;
+ 	const struct stm32_gate_cfg *gate_cfg = &data->gates[clk_cfg->gate_id];
+-	struct clk *clk;
+ 
+-	if (gate_cfg->set_clr) {
+-		clk = clk_stm32_register_setclr_gate(dev, cfg->name,
+-						     cfg->parent_name,
+-						     cfg->flags,
+-						     base + gate_cfg->reg_off,
+-						     gate_cfg->bit_idx,
+-						     gate_cfg->gate_flags,
+-						     lock);
+-	} else {
+-		clk = clk_register_gate(dev, cfg->name, cfg->parent_name,
+-					cfg->flags,
+-					base + gate_cfg->reg_off,
+-					gate_cfg->bit_idx,
+-					gate_cfg->gate_flags,
+-					lock);
+-	}
+-	return clk;
++	return clk_stm32_gate_register(dev, cfg->name, cfg->parent_name,
++				       cfg->flags, base, gate_cfg, lock);
+ }
+ 
+ struct clk *
+diff --git a/drivers/clk/clk-stm32-core.h b/drivers/clk/clk-stm32-core.h
+index 9233b02c04e..79ca27fbaa4 100644
+--- a/drivers/clk/clk-stm32-core.h
++++ b/drivers/clk/clk-stm32-core.h
+@@ -74,6 +74,15 @@ int stm32_rcc_init(struct device *dev,
+ #define NO_STM32_DIV	-1
+ #define NO_STM32_GATE	-1
+ 
++struct clk_stm32_gate {
++	struct clk clk;
++	void __iomem *base;
++	const struct stm32_gate_cfg *gate;
++	u8 cpt;
++};
++
++#define to_clk_stm32_gate(_clk) container_of(_clk, struct clk_stm32_gate, clk)
++
+ struct clk *
+ _clk_stm32_gate_register(struct device *dev,
+ 			 const struct stm32_clock_match_data *data,
+@@ -141,13 +150,7 @@ struct stm32_clk_composite_cfg {
+ }
+ 
+ extern const struct clk_ops stm32_clk_ops;
+-extern const struct clk_ops clk_stm32_setclr_gate_ops;
++
+ ulong clk_stm32_get_rate_by_name(const char *name);
+ int clk_stm32_get_by_name(const char *name, struct clk **clkp);
+-struct clk *clk_stm32_register_setclr_gate(struct device *dev,
+-					   const char *name,
+-					   const char *parent_name,
+-					   unsigned long flags,
+-					   void __iomem *reg, u8 bit_idx,
+-					   u8 clk_gate_flags, spinlock_t *lock);
+ 
+diff --git a/drivers/clk/clk_scmi.c b/drivers/clk/clk_scmi.c
+index 57022685e23..aa339f6af2e 100644
+--- a/drivers/clk/clk_scmi.c
++++ b/drivers/clk/clk_scmi.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: GPL-2.0+
+ /*
+- * Copyright (C) 2019-2020 Linaro Limited
++ * Copyright (C) 2019-2022 Linaro Limited
+  */
+ 
+ #define LOG_CATEGORY UCLASS_CLK
+@@ -12,6 +12,7 @@
+ #include <scmi_protocols.h>
+ #include <asm/types.h>
+ #include <linux/clk-provider.h>
++#include <linux/string.h>
+ 
+ static int scmi_clk_get_num_clock(struct udevice *dev, size_t *num_clocks)
+ {
+@@ -53,7 +54,9 @@ static int scmi_clk_get_attibute(struct udevice *dev, int clkid, char **name)
+ 	if (ret)
+ 		return ret;
+ 
+-	*name = out.clock_name;
++	*name = strdup(out.clock_name);
++	if (!*name)
++		return -ENOMEM;
+ 
+ 	return 0;
+ }
+@@ -152,21 +155,20 @@ static int scmi_clk_probe(struct udevice *dev)
+ 		return ret;
+ 
+ 	for (i = 0; i < num_clocks; i++) {
++		/* Clock name is allocated from scmi_clk_get_attibute() */
+ 		char *name;
+ 
+ 		if (!scmi_clk_get_attibute(dev, i, &name)) {
+-			char *clock_name = strdup(name);
+-
+ 			clk = kzalloc(sizeof(*clk), GFP_KERNEL);
+-			if (!clk || !clock_name)
++			if (!clk)
+ 				ret = -ENOMEM;
+ 			else
+ 				ret = clk_register(clk, dev->driver->name,
+-						   clock_name, dev->name);
++						   name, dev->name);
+ 
+ 			if (ret) {
+ 				free(clk);
+-				free(clock_name);
++				free(name);
+ 				return ret;
+ 			}
+ 
+diff --git a/drivers/gpio/gpio-uclass.c b/drivers/gpio/gpio-uclass.c
+index 8c77777dbe3..903648f8731 100644
+--- a/drivers/gpio/gpio-uclass.c
++++ b/drivers/gpio/gpio-uclass.c
+@@ -824,6 +824,7 @@ static const char * const gpio_function[GPIOF_COUNT] = {
+ 	"unused",
+ 	"unknown",
+ 	"func",
++	"protected",
+ };
+ 
+ static int get_function(struct udevice *dev, int offset, bool skip_unused,
+@@ -870,26 +871,31 @@ int gpio_get_status(struct udevice *dev, int offset, char *buf, int buffsize)
+ 	const struct dm_gpio_ops *ops = gpio_get_ops(dev);
+ 	struct gpio_dev_priv *priv;
+ 	char *str = buf;
++	const char *label;
+ 	int func;
+ 	int ret;
+ 	int len;
++	bool used;
+ 
+ 	BUILD_BUG_ON(GPIOF_COUNT != ARRAY_SIZE(gpio_function));
+ 
+ 	*buf = 0;
+ 	priv = dev_get_uclass_priv(dev);
+-	ret = gpio_get_raw_function(dev, offset, NULL);
++	ret = gpio_get_raw_function(dev, offset, &label);
+ 	if (ret < 0)
+ 		return ret;
+ 	func = ret;
+ 	len = snprintf(str, buffsize, "%s%d: %s",
+ 		       priv->bank_name ? priv->bank_name : "",
+ 		       offset, gpio_function[func]);
+-	if (func == GPIOF_INPUT || func == GPIOF_OUTPUT ||
+-	    func == GPIOF_UNUSED) {
+-		const char *label;
+-		bool used;
+ 
++	switch (func) {
++	case GPIOF_FUNC:
++		snprintf(str + len, buffsize - len, " %s", label ? label : "");
++		break;
++	case GPIOF_INPUT:
++	case GPIOF_OUTPUT:
++	case GPIOF_UNUSED:
+ 		ret = ops->get_value(dev, offset);
+ 		if (ret < 0)
+ 			return ret;
+@@ -897,8 +903,9 @@ int gpio_get_status(struct udevice *dev, int offset, char *buf, int buffsize)
+ 		snprintf(str + len, buffsize - len, ": %d [%c]%s%s",
+ 			 ret,
+ 			 used ? 'x' : ' ',
+-			 used ? " " : "",
++			 label ? " " : "",
+ 			 label ? label : "");
++		break;
+ 	}
+ 
+ 	return 0;
+diff --git a/drivers/gpio/sandbox.c b/drivers/gpio/sandbox.c
+index d008fdd2224..cf5dd0e400e 100644
+--- a/drivers/gpio/sandbox.c
++++ b/drivers/gpio/sandbox.c
+@@ -192,12 +192,14 @@ static int sb_gpio_set_value(struct udevice *dev, unsigned offset, int value)
+ 
+ static int sb_gpio_get_function(struct udevice *dev, unsigned offset)
+ {
++	if (get_gpio_flag(dev, offset, GPIOD_EXT_PROTECTED))
++		return GPIOF_PROTECTED;
+ 	if (get_gpio_flag(dev, offset, GPIOD_IS_OUT))
+ 		return GPIOF_OUTPUT;
+ 	if (get_gpio_flag(dev, offset, GPIOD_IS_IN))
+ 		return GPIOF_INPUT;
+ 
+-	return GPIOF_INPUT; /*GPIO is not configurated */
++	return GPIOF_INPUT; /* GPIO is not configured */
+ }
+ 
+ static int sb_gpio_xlate(struct udevice *dev, struct gpio_desc *desc,
+@@ -519,6 +521,14 @@ static int sb_pinctrl_get_pin_muxing(struct udevice *dev,
+ 	unsigned int gpio_idx;
+ 	ulong flags;
+ 	int function;
++	static const char * const gpio_function[GPIOF_COUNT] = {
++		"input",
++		"output",
++		"unused",
++		"unknown",
++		"func",
++		"protected",
++	};
+ 
+ 	/* look up for the bank which owns the requested pin */
+ 	gpio_dev = sb_pinctrl_get_gpio_dev(dev, selector, &gpio_idx);
+@@ -527,9 +537,7 @@ static int sb_pinctrl_get_pin_muxing(struct udevice *dev,
+ 	} else {
+ 		function = sb_gpio_get_function(gpio_dev, gpio_idx);
+ 		flags = *get_gpio_flags(gpio_dev, gpio_idx);
+-
+-		snprintf(buf, size, "gpio %s %s",
+-			 function == GPIOF_OUTPUT ? "output" : "input",
++		snprintf(buf, size, "gpio %s %s", gpio_function[function],
+ 			 get_flags_string(flags));
+ 	}
+ 
+diff --git a/drivers/gpio/stm32_gpio.c b/drivers/gpio/stm32_gpio.c
+index e150fe34296..85271f1dadb 100644
+--- a/drivers/gpio/stm32_gpio.c
++++ b/drivers/gpio/stm32_gpio.c
+@@ -171,6 +171,7 @@ static int stm32_gpio_get_function(struct udevice *dev, unsigned int offset)
+ {
+ 	struct stm32_gpio_priv *priv = dev_get_priv(dev);
+ 	struct stm32_gpio_regs *regs = priv->regs;
++	ulong drv_data = dev_get_driver_data(dev);
+ 	int bits_index;
+ 	int mask;
+ 	u32 mode;
+@@ -178,6 +179,11 @@ static int stm32_gpio_get_function(struct udevice *dev, unsigned int offset)
+ 	if (!stm32_gpio_is_mapped(dev, offset))
+ 		return GPIOF_UNKNOWN;
+ 
++	/* Return 'protected' if the IO is secured */
++	if ((drv_data & STM32_GPIO_FLAG_SEC_CTRL) &&
++	    ((readl(&regs->seccfgr) >> SECCFG_BITS(offset)) & SECCFG_MSK))
++		return GPIOF_PROTECTED;
++
+ 	bits_index = MODE_BITS(offset);
+ 	mask = MODE_BITS_MASK << bits_index;
+ 
+diff --git a/drivers/i2c/stm32f7_i2c.c b/drivers/i2c/stm32f7_i2c.c
+index bf2a6c9b4bd..836148e4c1a 100644
+--- a/drivers/i2c/stm32f7_i2c.c
++++ b/drivers/i2c/stm32f7_i2c.c
+@@ -57,7 +57,6 @@ struct stm32_i2c_regs {
+ #define STM32_I2C_CR1_PE			BIT(0)
+ 
+ /* STM32 I2C control 2 */
+-#define STM32_I2C_CR2_AUTOEND			BIT(25)
+ #define STM32_I2C_CR2_RELOAD			BIT(24)
+ #define STM32_I2C_CR2_NBYTES_MASK		GENMASK(23, 16)
+ #define STM32_I2C_CR2_NBYTES(n)			((n & 0xff) << 16)
+@@ -283,7 +282,7 @@ static int stm32_i2c_check_device_busy(struct stm32_i2c_priv *i2c_priv)
+ }
+ 
+ static void stm32_i2c_message_start(struct stm32_i2c_priv *i2c_priv,
+-				    struct i2c_msg *msg, bool stop)
++				    struct i2c_msg *msg)
+ {
+ 	struct stm32_i2c_regs *regs = i2c_priv->regs;
+ 	u32 cr2 = readl(&regs->cr2);
+@@ -304,9 +303,8 @@ static void stm32_i2c_message_start(struct stm32_i2c_priv *i2c_priv,
+ 		cr2 |= STM32_I2C_CR2_SADD7(msg->addr);
+ 	}
+ 
+-	/* Set nb bytes to transfer and reload or autoend bits */
+-	cr2 &= ~(STM32_I2C_CR2_NBYTES_MASK | STM32_I2C_CR2_RELOAD |
+-		 STM32_I2C_CR2_AUTOEND);
++	/* Set nb bytes to transfer and reload (if needed) */
++	cr2 &= ~(STM32_I2C_CR2_NBYTES_MASK | STM32_I2C_CR2_RELOAD);
+ 	if (msg->len > STM32_I2C_MAX_LEN) {
+ 		cr2 |= STM32_I2C_CR2_NBYTES(STM32_I2C_MAX_LEN);
+ 		cr2 |= STM32_I2C_CR2_RELOAD;
+@@ -327,7 +325,7 @@ static void stm32_i2c_message_start(struct stm32_i2c_priv *i2c_priv,
+  */
+ 
+ static void stm32_i2c_handle_reload(struct stm32_i2c_priv *i2c_priv,
+-				    struct i2c_msg *msg, bool stop)
++				    struct i2c_msg *msg)
+ {
+ 	struct stm32_i2c_regs *regs = i2c_priv->regs;
+ 	u32 cr2 = readl(&regs->cr2);
+@@ -413,7 +411,7 @@ static int stm32_i2c_check_end_of_message(struct stm32_i2c_priv *i2c_priv)
+ 		setbits_le32(&regs->icr, STM32_I2C_ICR_STOPCF);
+ 
+ 		/* Clear control register 2 */
+-		setbits_le32(&regs->cr2, STM32_I2C_CR2_RESET_MASK);
++		clrbits_le32(&regs->cr2, STM32_I2C_CR2_RESET_MASK);
+ 	}
+ 
+ 	return ret;
+@@ -433,7 +431,7 @@ static int stm32_i2c_message_xfer(struct stm32_i2c_priv *i2c_priv,
+ 	/* Add errors */
+ 	mask |= STM32_I2C_ISR_ERRORS;
+ 
+-	stm32_i2c_message_start(i2c_priv, msg, stop);
++	stm32_i2c_message_start(i2c_priv, msg);
+ 
+ 	while (msg->len) {
+ 		/*
+@@ -471,7 +469,7 @@ static int stm32_i2c_message_xfer(struct stm32_i2c_priv *i2c_priv,
+ 			mask = msg->flags & I2C_M_RD ? STM32_I2C_ISR_RXNE :
+ 			       STM32_I2C_ISR_TXIS | STM32_I2C_ISR_NACKF;
+ 
+-			stm32_i2c_handle_reload(i2c_priv, msg, stop);
++			stm32_i2c_handle_reload(i2c_priv, msg);
+ 		} else if (!bytes_to_rw) {
+ 			/* Wait until TC flag is set */
+ 			mask = STM32_I2C_ISR_TC;
+@@ -485,9 +483,9 @@ static int stm32_i2c_message_xfer(struct stm32_i2c_priv *i2c_priv,
+ 		}
+ 	}
+ 
+-	/* End of transfer, send stop condition */
+-	mask = STM32_I2C_CR2_STOP;
+-	setbits_le32(&regs->cr2, mask);
++	/* End of transfer, send stop condition if appropriate */
++	if (!ret && !(status & (STM32_I2C_ISR_NACKF | STM32_I2C_ISR_ERRORS)))
++		setbits_le32(&regs->cr2, STM32_I2C_CR2_STOP);
+ 
+ 	return stm32_i2c_check_end_of_message(i2c_priv);
+ }
+@@ -916,18 +914,19 @@ static int stm32_of_to_plat(struct udevice *dev)
+ {
+ 	const struct stm32_i2c_data *data;
+ 	struct stm32_i2c_priv *i2c_priv = dev_get_priv(dev);
+-	u32 rise_time, fall_time;
+ 	int ret;
+ 
+ 	data = (const struct stm32_i2c_data *)dev_get_driver_data(dev);
+ 	if (!data)
+ 		return -EINVAL;
+ 
+-	rise_time = dev_read_u32_default(dev, "i2c-scl-rising-time-ns",
+-					 STM32_I2C_RISE_TIME_DEFAULT);
++	i2c_priv->setup.rise_time = dev_read_u32_default(dev,
++							 "i2c-scl-rising-time-ns",
++							 STM32_I2C_RISE_TIME_DEFAULT);
+ 
+-	fall_time = dev_read_u32_default(dev, "i2c-scl-falling-time-ns",
+-					 STM32_I2C_FALL_TIME_DEFAULT);
++	i2c_priv->setup.fall_time = dev_read_u32_default(dev,
++							 "i2c-scl-falling-time-ns",
++							 STM32_I2C_FALL_TIME_DEFAULT);
+ 
+ 	i2c_priv->dnf_dt = dev_read_u32_default(dev, "i2c-digital-filter-width-ns", 0);
+ 	if (!dev_read_bool(dev, "i2c-digital-filter"))
+diff --git a/drivers/mmc/stm32_sdmmc2.c b/drivers/mmc/stm32_sdmmc2.c
+index 1bfe82a0ba9..7eede1434da 100644
+--- a/drivers/mmc/stm32_sdmmc2.c
++++ b/drivers/mmc/stm32_sdmmc2.c
+@@ -511,10 +511,12 @@ retry_cmd:
+  */
+ static void stm32_sdmmc2_reset(struct stm32_sdmmc2_plat *plat)
+ {
+-	/* Reset */
+-	reset_assert(&plat->reset_ctl);
+-	udelay(2);
+-	reset_deassert(&plat->reset_ctl);
++	if (reset_valid(&plat->reset_ctl)) {
++		/* Reset */
++		reset_assert(&plat->reset_ctl);
++		udelay(2);
++		reset_deassert(&plat->reset_ctl);
++	}
+ 
+ 	/* init the needed SDMMC register after reset */
+ 	writel(plat->pwr_reg_msk, plat->base + SDMMC_POWER);
+@@ -596,13 +598,16 @@ static int stm32_sdmmc2_set_ios(struct udevice *dev)
+ 	 * clk_div > 0 and NEGEDGE = 1 => command and data generated on
+ 	 * SDMMCCLK falling edge
+ 	 */
+-	if (desired && ((sys_clock > desired) ||
++	if (desired && (sys_clock > desired || mmc->ddr_mode ||
+ 			IS_RISING_EDGE(plat->clk_reg_msk))) {
+ 		clk = DIV_ROUND_UP(sys_clock, 2 * desired);
+ 		if (clk > SDMMC_CLKCR_CLKDIV_MAX)
+ 			clk = SDMMC_CLKCR_CLKDIV_MAX;
+ 	}
+ 
++	if (mmc->ddr_mode)
++		clk |= SDMMC_CLKCR_DDR;
++
+ 	if (mmc->bus_width == 4)
+ 		clk |= SDMMC_CLKCR_WIDBUS_4;
+ 	if (mmc->bus_width == 8)
+@@ -670,14 +675,15 @@ static int stm32_sdmmc2_of_to_plat(struct udevice *dev)
+ 	if (ret)
+ 		return ret;
+ 
++	cfg->host_caps &= ~(UHS_CAPS | MMC_MODE_HS200 | MMC_MODE_HS400 | MMC_MODE_HS400_ES);
++
+ 	ret = clk_get_by_index(dev, 0, &plat->clk);
+ 	if (ret)
+ 		return ret;
+ 
+ 	ret = reset_get_by_index(dev, 0, &plat->reset_ctl);
+ 	if (ret) {
+-		clk_free(&plat->clk);
+-		return ret;
++		dev_dbg(dev, "No reset provided\n");
+ 	}
+ 
+ 	gpio_request_by_name(dev, "cd-gpios", 0, &plat->cd_gpio,
+diff --git a/drivers/pinctrl/pinctrl_stm32.c b/drivers/pinctrl/pinctrl_stm32.c
+index 9c881011458..e98e0a368a5 100644
+--- a/drivers/pinctrl/pinctrl_stm32.c
++++ b/drivers/pinctrl/pinctrl_stm32.c
+@@ -285,7 +285,8 @@ static int stm32_pinctrl_probe(struct udevice *dev)
+ 	return 0;
+ }
+ 
+-static int stm32_gpio_config(struct gpio_desc *desc,
++static int stm32_gpio_config(ofnode node,
++			     struct gpio_desc *desc,
+ 			     const struct stm32_gpio_ctl *ctl)
+ {
+ 	struct stm32_gpio_priv *priv = dev_get_priv(desc->dev);
+@@ -328,6 +329,8 @@ static int stm32_gpio_config(struct gpio_desc *desc,
+ 	index = desc->offset;
+ 	clrsetbits_le32(&regs->otyper, OTYPE_MSK << index, ctl->otype << index);
+ 
++	uc_priv->name[desc->offset] = strdup(ofnode_get_name(node));
++
+ 	hwspinlock_unlock(&ctrl_priv->hws);
+ 
+ 	return 0;
+@@ -422,7 +425,7 @@ static int stm32_pinctrl_config(ofnode node)
+ 			if (rv)
+ 				return rv;
+ 			desc.offset = gpio_dsc.pin;
+-			rv = stm32_gpio_config(&desc, &gpio_ctl);
++			rv = stm32_gpio_config(node, &desc, &gpio_ctl);
+ 			log_debug("rv = %d\n\n", rv);
+ 			if (rv)
+ 				return rv;
+diff --git a/drivers/usb/host/ehci-generic.c b/drivers/usb/host/ehci-generic.c
+index 4c28a69b989..5856e898a8b 100644
+--- a/drivers/usb/host/ehci-generic.c
++++ b/drivers/usb/host/ehci-generic.c
+@@ -23,14 +23,12 @@
+  */
+ struct generic_ehci {
+ 	struct ehci_ctrl ctrl;
+-	struct clk *clocks;
+-	struct reset_ctl *resets;
++	struct clk_bulk clocks;
++	struct reset_ctl_bulk resets;
+ 	struct phy phy;
+ #ifdef CONFIG_DM_REGULATOR
+ 	struct udevice *vbus_supply;
+ #endif
+-	int clock_count;
+-	int reset_count;
+ };
+ 
+ #ifdef CONFIG_DM_REGULATOR
+@@ -81,68 +79,31 @@ static int ehci_usb_probe(struct udevice *dev)
+ 	struct generic_ehci *priv = dev_get_priv(dev);
+ 	struct ehci_hccr *hccr;
+ 	struct ehci_hcor *hcor;
+-	int i, err, ret, clock_nb, reset_nb;
++	int err, ret;
+ 
+ 	err = 0;
+-	priv->clock_count = 0;
+-	clock_nb = ofnode_count_phandle_with_args(dev_ofnode(dev), "clocks",
+-						  "#clock-cells", 0);
+-	if (clock_nb > 0) {
+-		priv->clocks = devm_kcalloc(dev, clock_nb, sizeof(struct clk),
+-					    GFP_KERNEL);
+-		if (!priv->clocks)
+-			return -ENOMEM;
+-
+-		for (i = 0; i < clock_nb; i++) {
+-			err = clk_get_by_index(dev, i, &priv->clocks[i]);
+-
+-			if (err < 0)
+-				break;
+-			err = clk_enable(&priv->clocks[i]);
+-			if (err && err != -ENOSYS) {
+-				dev_err(dev, "failed to enable clock %d\n", i);
+-				clk_free(&priv->clocks[i]);
+-				goto clk_err;
+-			}
+-			priv->clock_count++;
+-		}
+-	} else {
+-		if (clock_nb != -ENOENT) {
+-			dev_err(dev, "failed to get clock phandle(%d)\n",
+-				clock_nb);
+-			return clock_nb;
+-		}
++	ret = clk_get_bulk(dev, &priv->clocks);
++	if (ret) {
++		dev_err(dev, "Failed to get clocks\n");
++		return ret;
+ 	}
+ 
+-	priv->reset_count = 0;
+-	reset_nb = ofnode_count_phandle_with_args(dev_ofnode(dev), "resets",
+-						  "#reset-cells", 0);
+-	if (reset_nb > 0) {
+-		priv->resets = devm_kcalloc(dev, reset_nb,
+-					    sizeof(struct reset_ctl),
+-					    GFP_KERNEL);
+-		if (!priv->resets)
+-			return -ENOMEM;
+-
+-		for (i = 0; i < reset_nb; i++) {
+-			err = reset_get_by_index(dev, i, &priv->resets[i]);
+-			if (err < 0)
+-				break;
+-
+-			if (reset_deassert(&priv->resets[i])) {
+-				dev_err(dev, "failed to deassert reset %d\n",
+-					i);
+-				reset_free(&priv->resets[i]);
+-				goto reset_err;
+-			}
+-			priv->reset_count++;
+-		}
+-	} else {
+-		if (reset_nb != -ENOENT) {
+-			dev_err(dev, "failed to get reset phandle(%d)\n",
+-				reset_nb);
+-			goto clk_err;
+-		}
++	err = clk_enable_bulk(&priv->clocks);
++	if (err) {
++		dev_err(dev, "Failed to enable clocks\n");
++		goto clk_err;
++	}
++
++	err = reset_get_bulk(dev, &priv->resets);
++	if (err) {
++		dev_err(dev, "Failed to get resets\n");
++		goto clk_err;
++	}
++
++	err = reset_deassert_bulk(&priv->resets);
++	if (err) {
++		dev_err(dev, "Failed to get deassert resets\n");
++		goto reset_err;
+ 	}
+ 
+ 	err = ehci_enable_vbus_supply(dev);
+@@ -174,13 +135,13 @@ regulator_err:
+ 		dev_err(dev, "failed to disable VBUS supply\n");
+ 
+ reset_err:
+-	ret = reset_release_all(priv->resets, priv->reset_count);
++	ret = reset_release_bulk(&priv->resets);
+ 	if (ret)
+-		dev_err(dev, "failed to assert all resets\n");
++		dev_err(dev, "failed to release resets\n");
+ clk_err:
+-	ret = clk_release_all(priv->clocks, priv->clock_count);
++	ret = clk_release_bulk(&priv->clocks);
+ 	if (ret)
+-		dev_err(dev, "failed to disable all clocks\n");
++		dev_err(dev, "failed to release clocks\n");
+ 
+ 	return err;
+ }
+@@ -202,11 +163,11 @@ static int ehci_usb_remove(struct udevice *dev)
+ 	if (ret)
+ 		return ret;
+ 
+-	ret =  reset_release_all(priv->resets, priv->reset_count);
++	ret = reset_release_bulk(&priv->resets);
+ 	if (ret)
+ 		return ret;
+ 
+-	return clk_release_all(priv->clocks, priv->clock_count);
++	return clk_release_bulk(&priv->clocks);
+ }
+ 
+ static const struct udevice_id ehci_usb_ids[] = {
+diff --git a/drivers/video/stm32/stm32_dsi.c b/drivers/video/stm32/stm32_dsi.c
+index 134abd93e19..5871ac7c4ff 100644
+--- a/drivers/video/stm32/stm32_dsi.c
++++ b/drivers/video/stm32/stm32_dsi.c
+@@ -433,19 +433,17 @@ static int stm32_dsi_probe(struct udevice *dev)
+ 		return -EINVAL;
+ 	}
+ 
+-	if (IS_ENABLED(CONFIG_DM_REGULATOR)) {
+-		ret =  device_get_supply_regulator(dev, "phy-dsi-supply",
+-						   &priv->vdd_reg);
+-		if (ret && ret != -ENOENT) {
+-			dev_err(dev, "Warning: cannot get phy dsi supply\n");
+-			return -ENODEV;
+-		}
++	ret =  device_get_supply_regulator(dev, "phy-dsi-supply",
++					   &priv->vdd_reg);
++	if (ret && ret != -ENOENT) {
++		dev_err(dev, "Warning: cannot get phy dsi supply\n");
++		return -ENODEV;
++	}
+ 
+-		if (ret != -ENOENT) {
+-			ret = regulator_set_enable(priv->vdd_reg, true);
+-			if (ret)
+-				return ret;
+-		}
++	if (ret != -ENOENT) {
++		ret = regulator_set_enable(priv->vdd_reg, true);
++		if (ret)
++			return ret;
+ 	}
+ 
+ 	ret = clk_get_by_name(device->dev, "pclk", &clk);
+@@ -493,8 +491,7 @@ static int stm32_dsi_probe(struct udevice *dev)
+ err_clk:
+ 	clk_disable(&clk);
+ err_reg:
+-	if (IS_ENABLED(CONFIG_DM_REGULATOR))
+-		regulator_set_enable(priv->vdd_reg, false);
++	regulator_set_enable(priv->vdd_reg, false);
+ 
+ 	return ret;
+ }
+diff --git a/drivers/video/video_bmp.c b/drivers/video/video_bmp.c
+index 1e6f07ff4b0..438627dc36c 100644
+--- a/drivers/video/video_bmp.c
++++ b/drivers/video/video_bmp.c
+@@ -338,9 +338,9 @@ int video_bmp_display(struct udevice *dev, ulong bmp_image, int x, int y,
+ 		for (i = 0; i < height; ++i) {
+ 			for (j = 0; j < width; j++) {
+ 				if (bpix == 16) {
+-					/* 16bit 555RGB format */
+-					*(u16 *)fb = ((bmap[2] >> 3) << 10) |
+-						((bmap[1] >> 3) << 5) |
++					/* 16bit 565RGB format */
++					*(u16 *)fb = ((bmap[2] >> 3) << 11) |
++						((bmap[1] >> 2) << 5) |
+ 						(bmap[0] >> 3);
+ 					bmap += 3;
+ 					fb += 2;
+diff --git a/include/asm-generic/gpio.h b/include/asm-generic/gpio.h
+index e33cde7abdd..f29d231fb65 100644
+--- a/include/asm-generic/gpio.h
++++ b/include/asm-generic/gpio.h
+@@ -110,6 +110,7 @@ enum gpio_func_t {
+ 	GPIOF_UNUSED,		/* Not claimed */
+ 	GPIOF_UNKNOWN,		/* Not known */
+ 	GPIOF_FUNC,		/* Not used as a GPIO */
++	GPIOF_PROTECTED,	/* Protected access */
+ 
+ 	GPIOF_COUNT,
+ };
+diff --git a/include/power/stpmic1.h b/include/power/stpmic1.h
+index d3567df326c..201b1df762e 100644
+--- a/include/power/stpmic1.h
++++ b/include/power/stpmic1.h
+@@ -23,12 +23,9 @@
+ 
+ /* BUCKS_MRST_CR */
+ #define STPMIC1_MRST_BUCK(buck)		BIT(buck)
+-#define STPMIC1_MRST_BUCK_DEBUG		(STPMIC1_MRST_BUCK(STPMIC1_BUCK1) | \
+-					 STPMIC1_MRST_BUCK(STPMIC1_BUCK3))
+ 
+ /* LDOS_MRST_CR */
+ #define STPMIC1_MRST_LDO(ldo)		BIT(ldo)
+-#define STPMIC1_MRST_LDO_DEBUG		0
+ 
+ /* BUCKx_MAIN_CR (x=1...4) */
+ #define STPMIC1_BUCK_ENA		BIT(0)
+diff --git a/test/dm/gpio.c b/test/dm/gpio.c
+index 33ae98701f4..f63c4b99797 100644
+--- a/test/dm/gpio.c
++++ b/test/dm/gpio.c
+@@ -113,6 +113,11 @@ static int dm_test_gpio(struct unit_test_state *uts)
+ 	ut_asserteq_str("a", name);
+ 	ut_asserteq(20, offset_count);
+ 
++	/* Flag a pin as protected, and check its status */
++	ut_assertok(gpio_lookup_name("a1", &dev, &offset, &gpio));
++	sandbox_gpio_set_flags(dev, 1, GPIOD_EXT_PROTECTED);
++	ut_asserteq(GPIOF_PROTECTED, gpio_get_raw_function(dev, 1, NULL));
++
+ 	/* add gpio hog tests */
+ 	ut_assertok(gpio_hog_lookup_name("hog_input_active_low", &desc));
+ 	ut_asserteq(GPIOD_IS_IN | GPIOD_ACTIVE_LOW, desc->flags);
+-- 
+2.17.1
+
