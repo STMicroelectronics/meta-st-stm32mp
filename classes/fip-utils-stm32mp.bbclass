@@ -47,7 +47,6 @@ FIP_UBOOT        ?= "u-boot-nodtb"
 FIP_UBOOT_SUFFIX ?= "bin"
 FIP_UBOOT_DTB        ?= "u-boot"
 FIP_UBOOT_DTB_SUFFIX ?= "dtb"
-FIP_UBOOT_CONFIG ?= "trusted"
 
 # Configure default folder path for binaries to package
 FIP_DEPLOYDIR_FIP    ?= "${DEPLOYDIR}/fip"
@@ -190,8 +189,8 @@ do_deploy:append:class-target() {
             [ -f "${FIP_DEPLOYDIR_FWCONF}/${dt}-${FIP_FW_CONFIG}-${config}.${FIP_FW_CONFIG_SUFFIX}" ] || bbfatal "Missing ${dt}-${FIP_FW_CONFIG}-${config}.${FIP_FW_CONFIG_SUFFIX} file in folder: ${FIP_DEPLOYDIR_FWCONF}"
             FIP_FWCONFIG="--fw-config ${FIP_DEPLOYDIR_FWCONF}/${dt}-${FIP_FW_CONFIG}-${config}.${FIP_FW_CONFIG_SUFFIX}"
             # Init FIP hw-config settings
-            [ -f "${FIP_DEPLOYDIR_UBOOT}/${FIP_UBOOT_DTB}-${dt}-${FIP_UBOOT_CONFIG}.${FIP_UBOOT_DTB_SUFFIX}" ] || bbfatal "Missing ${FIP_UBOOT_DTB}-${dt}-${FIP_UBOOT_CONFIG}.${FIP_UBOOT_DTB_SUFFIX} file in folder: ${FIP_DEPLOYDIR_UBOOT}"
-            FIP_HWCONFIG="--hw-config ${FIP_DEPLOYDIR_UBOOT}/${FIP_UBOOT_DTB}-${dt}-${FIP_UBOOT_CONFIG}.${FIP_UBOOT_DTB_SUFFIX}"
+            [ -f "${FIP_DEPLOYDIR_UBOOT}/${FIP_UBOOT_DTB}-${dt}.${FIP_UBOOT_DTB_SUFFIX}" ] || bbfatal "Missing ${FIP_UBOOT_DTB}-${dt}.${FIP_UBOOT_DTB_SUFFIX} file in folder: ${FIP_DEPLOYDIR_UBOOT}"
+            FIP_HWCONFIG="--hw-config ${FIP_DEPLOYDIR_UBOOT}/${FIP_UBOOT_DTB}-${dt}.${FIP_UBOOT_DTB_SUFFIX}"
             # Init FIP nt-fw config
             [ -f "${FIP_DEPLOYDIR_UBOOT}/${FIP_UBOOT}${soc_suffix}.${FIP_UBOOT_SUFFIX}" ] || bbfatal "Missing ${FIP_UBOOT}${soc_suffix}.${FIP_UBOOT_SUFFIX} file in folder: ${FIP_DEPLOYDIR_UBOOT}"
             FIP_NTFW="--nt-fw ${FIP_DEPLOYDIR_UBOOT}/${FIP_UBOOT}${soc_suffix}.${FIP_UBOOT_SUFFIX}"
@@ -392,8 +391,8 @@ for config in \$FIP_CONFIG; do
         [ -f "\$FIP_DEPLOYDIR_FWCONF/\${dt}-${FIP_FW_CONFIG}-\${config}.${FIP_FW_CONFIG_SUFFIX}" ] || bbfatal "Missing \${dt}-${FIP_FW_CONFIG}-\${config}.${FIP_FW_CONFIG_SUFFIX} file in folder: \\\$FIP_DEPLOYDIR_FWCONF or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/fwconfig'"
         FIP_FWCONFIG="--fw-config \$FIP_DEPLOYDIR_FWCONF/\${dt}-${FIP_FW_CONFIG}-\${config}.${FIP_FW_CONFIG_SUFFIX}"
         # Init FIP hw-config settings
-        [ -f "\$FIP_DEPLOYDIR_UBOOT/${FIP_UBOOT_DTB}-\${dt}-${FIP_UBOOT_CONFIG}.${FIP_UBOOT_DTB_SUFFIX}" ] || bbfatal "Missing ${FIP_UBOOT_DTB}-\${dt}-${FIP_UBOOT_CONFIG}.${FIP_UBOOT_DTB_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_UBOOT' or '\\\$FIP_DEPLOYDIR_ROOT/u-boot'"
-        FIP_HWCONFIG="--hw-config \$FIP_DEPLOYDIR_UBOOT/${FIP_UBOOT_DTB}-\${dt}-${FIP_UBOOT_CONFIG}.${FIP_UBOOT_DTB_SUFFIX}"
+        [ -f "\$FIP_DEPLOYDIR_UBOOT/${FIP_UBOOT_DTB}-\${dt}.${FIP_UBOOT_DTB_SUFFIX}" ] || bbfatal "Missing ${FIP_UBOOT_DTB}-\${dt}.${FIP_UBOOT_DTB_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_UBOOT' or '\\\$FIP_DEPLOYDIR_ROOT/u-boot'"
+        FIP_HWCONFIG="--hw-config \$FIP_DEPLOYDIR_UBOOT/${FIP_UBOOT_DTB}-\${dt}.${FIP_UBOOT_DTB_SUFFIX}"
         # Init FIP nt-fw config
         [ -f "\$FIP_DEPLOYDIR_UBOOT/${FIP_UBOOT}\${soc_suffix}.${FIP_UBOOT_SUFFIX}" ] || bbfatal "Missing ${FIP_UBOOT}\${soc_suffix}.${FIP_UBOOT_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_UBOOT' or '\\\$FIP_DEPLOYDIR_ROOT/u-boot'"
         FIP_NTFW="--nt-fw \$FIP_DEPLOYDIR_UBOOT/${FIP_UBOOT}\${soc_suffix}.${FIP_UBOOT_SUFFIX}"

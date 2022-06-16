@@ -175,14 +175,14 @@ do_compile:append() {
                                 k=$(expr $k + 1);
                                 if [ $k -eq $i ]; then
                                     binarysuffix=$(echo ${binary} | cut -d'.' -f2)
-                                    install -m 644 ${B}/${config}/${binary} ${B}/${config}/u-boot-${devicetree}-${type_suffix}.${binarysuffix}
+                                    install -m 644 ${B}/${config}/${binary} ${B}/${config}/u-boot-${devicetree}.${binarysuffix}
                                 fi
                             done
                             unset k
                             # As soon as SPL binary exists, copy it with specific binary_type name
                             # This allow to mix u-boot configuration, with and without SPL
                             if [ -f "${B}/${config}/${SPL_BINARY_STM32}" ]; then
-                                install -m 644 ${B}/${config}/${SPL_BINARY_STM32} ${B}/${config}/${SPL_BINARYNAME}-${devicetree}-${type_suffix}
+                                install -m 644 ${B}/${config}/${SPL_BINARY_STM32} ${B}/${config}/${SPL_BINARYNAME}-${devicetree}
                             fi
                         done
                     fi
@@ -240,11 +240,11 @@ do_deploy:append() {
                                         fi
                                     fi
                                     # Install u-boot binary
-                                    install -m 644 ${B}/${config}/u-boot-${devicetree}-${type_suffix}.${binarysuffix} ${DEPLOYDIR}${SUBFOLDER}/
+                                    install -m 644 ${B}/${config}/u-boot-${devicetree}.${binarysuffix} ${DEPLOYDIR}${SUBFOLDER}/
                                     # As soon as SPL binary exists, install it
                                     # This allow to mix u-boot configuration, with and without SPL
-                                    if [ -f "${B}/${config}/${SPL_BINARYNAME}-${devicetree}-${type_suffix}" ]; then
-                                        install -m 644 ${B}/${config}/${SPL_BINARYNAME}-${devicetree}-${type_suffix} ${DEPLOYDIR}${SUBFOLDER}/
+                                    if [ -f "${B}/${config}/${SPL_BINARYNAME}-${devicetree}" ]; then
+                                        install -m 644 ${B}/${config}/${SPL_BINARYNAME}-${devicetree} ${DEPLOYDIR}${SUBFOLDER}/
                                     fi
                                     # Init soc suffix
                                     soc_suffix=""
@@ -258,10 +258,10 @@ do_deploy:append() {
                                         install -m 644 ${B}/${config}/u-boot-nodtb.bin ${DEPLOYDIR}${SUBFOLDER}/u-boot-nodtb${soc_suffix}.bin
                                     fi
                                     if [ -n "${UBOOT_ELF}" ]; then
-                                        install -m 644 ${B}/${config}/${UBOOT_ELF} ${DEPLOYDIR}${SUBFOLDER}/debug/u-boot${soc_suffix}-${type_suffix}.${UBOOT_ELF_SUFFIX}
+                                        install -m 644 ${B}/${config}/${UBOOT_ELF} ${DEPLOYDIR}${SUBFOLDER}/debug/u-boot${soc_suffix}.${UBOOT_ELF_SUFFIX}
                                     fi
                                     if [ -n "${SPL_ELF}" ] && [ -f "${B}/${config}/${SPL_ELF}" ]; then
-                                        install -m 644 ${B}/${config}/${SPL_ELF} ${DEPLOYDIR}${SUBFOLDER}/debug/${SPL_ELF_NAME}${soc_suffix}-${type_suffix}
+                                        install -m 644 ${B}/${config}/${SPL_ELF} ${DEPLOYDIR}${SUBFOLDER}/debug/${SPL_ELF_NAME}${soc_suffix}
                                     fi
 
                                     if [ "${UBOOT_SIGN_ENABLE}" = "1" -a -n "${UBOOT_DTB_BINARY}" ] ; then
