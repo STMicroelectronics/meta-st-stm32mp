@@ -49,9 +49,12 @@ do_compile() {
     export OPENSSL_MODULES=${STAGING_LIBDIR_NATIVE}/ossl-modules/
     if [ -n "${OPTEE_CONF}" ]; then
         for conf in ${OPTEE_CONF}; do
+            # Configure SOC switch
+            soc_extra=""
             for soc in ${STM32MP_SOC_NAME}; do
                 if [ "$(echo ${conf} | grep -c ${soc})" -eq 1 ]; then
                     soc_extra="$(echo CFG_${soc} | awk '{print toupper($0)}')=y"
+                    break
                 fi
             done
 
