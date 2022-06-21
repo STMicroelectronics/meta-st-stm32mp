@@ -17,7 +17,7 @@ SRC_URI += " \
      "
 
 TF_A_VERSION = "v2.6"
-TF_A_SUBVERSION = "stm32mp1"
+TF_A_SUBVERSION = "stm32mp"
 TF_A_RELEASE = "r1"
 PV = "${TF_A_VERSION}-${TF_A_SUBVERSION}-${TF_A_RELEASE}"
 

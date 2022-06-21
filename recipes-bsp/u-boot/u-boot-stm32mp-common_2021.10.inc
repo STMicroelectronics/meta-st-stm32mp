@@ -29,7 +29,7 @@ SRC_URI += "\
 SRC_URI += "${@bb.utils.contains('ST_UBOOT_DEBUG_TRACE', '1', '', 'file://0098-silent_mode.patch', d)}"
 
 U_BOOT_VERSION = "v2021.10"
-U_BOOT_SUBVERSION = "stm32mp1"
+U_BOOT_SUBVERSION = "stm32mp"
 U_BOOT_RELEASE = "r1"
 
 PV = "${U_BOOT_VERSION}-${U_BOOT_SUBVERSION}-${U_BOOT_RELEASE}"

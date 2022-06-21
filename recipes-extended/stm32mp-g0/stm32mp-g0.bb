@@ -14,7 +14,7 @@ SRC_URI = "git://github.com/STMicroelectronics/x-cube-ucsi.git;protocol=https;br
 
 SRCREV = "43ee1ab68a8573f618417e91eb9b2380fbee2e4d"
 
-PV = "1.0-${SRCPV}"
+PV = "1.0.0-rc6"
 
 S = "${WORKDIR}/git"
 
