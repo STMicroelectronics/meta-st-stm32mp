@@ -13,7 +13,7 @@ SRC_URI += " \
 SRC_URI[fonts.sha256sum] = "4941e8bb6d8ac377838e27b214bf43008c496a24a8f897e0b06433988cbd53b2"
 
 OPTEE_VERSION = "3.16.0"
-OPTEE_SUBVERSION = "stm32mp1"
+OPTEE_SUBVERSION = "stm32mp"
 OPTEE_RELEASE = "r1"
 
 PV = "${OPTEE_VERSION}-${OPTEE_SUBVERSION}-${OPTEE_RELEASE}"
@@ -49,7 +49,7 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'optee-os-stm3
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/optee_os.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV:class-devupstream = "639a8566de8fa720d2cb7ab7231e8de105e7859d"
+SRCREV:class-devupstream = "4bbca1689f6854f660a80327a0d2959537bea222"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

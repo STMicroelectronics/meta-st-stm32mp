@@ -29,7 +29,7 @@ SRC_URI += "\
 SRC_URI += "${@bb.utils.contains('ST_UBOOT_DEBUG_TRACE', '1', '', 'file://0098-silent_mode.patch', d)}"
 
 U_BOOT_VERSION = "v2021.10"
-U_BOOT_SUBVERSION = "stm32mp1"
+U_BOOT_SUBVERSION = "stm32mp"
 U_BOOT_RELEASE = "r1"
 
 PV = "${U_BOOT_VERSION}-${U_BOOT_SUBVERSION}-${U_BOOT_RELEASE}"
@@ -47,7 +47,7 @@ S = "${WORKDIR}/git"
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/u-boot.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV:class-devupstream = "6fde82adf71ebad4b16d99f76ed69abfd9cfaf42"
+SRCREV:class-devupstream = "ef9715e76295f5f6aae49efdb51617b440b54deb"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

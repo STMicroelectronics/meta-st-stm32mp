@@ -17,7 +17,7 @@ SRC_URI += " \
      "
 
 TF_A_VERSION = "v2.6"
-TF_A_SUBVERSION = "stm32mp1"
+TF_A_SUBVERSION = "stm32mp"
 TF_A_RELEASE = "r1"
 PV = "${TF_A_VERSION}-${TF_A_SUBVERSION}-${TF_A_RELEASE}"
 
@@ -47,7 +47,7 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'tf-a-stm32mp-
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/arm-trusted-firmware.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV:class-devupstream = "3e1e3f0a6149d04946ff5debcd871173e782111c"
+SRCREV:class-devupstream = "c6da17964e4260944af2a703171a3c36b9e3edf8"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

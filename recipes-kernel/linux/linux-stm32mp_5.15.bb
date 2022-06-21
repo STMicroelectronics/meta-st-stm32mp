@@ -40,7 +40,7 @@ SRC_URI += " \
     file://${LINUX_VERSION}/${LINUX_VERSION}.${LINUX_SUBVERSION}/0022-ARM-5.15.24-stm32mp1-r1-CONFIG.patch \
     "
 
-LINUX_TARGET = "stm32mp1"
+LINUX_TARGET = "stm32mp"
 LINUX_RELEASE = "r1"
 
 PV = "${LINUX_VERSION}.${LINUX_SUBVERSION}-${LINUX_TARGET}-${LINUX_RELEASE}"
@@ -59,7 +59,7 @@ S = "${WORKDIR}/linux-${LINUX_VERSION}.${LINUX_SUBVERSION}"
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/linux.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV:class-devupstream = "64e6a220537c5cd7e8cc5b723ef09c6341388c98"
+SRCREV:class-devupstream = "0ea7234e7642a404115908c4688a050cb6cc2503"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github
