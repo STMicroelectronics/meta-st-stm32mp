@@ -155,6 +155,29 @@ do_install() {
                         "${B}/${GCNANO_FLAVOUR}/include"    "${D}${includedir}"                     \
                         "${B}/pkgconfig"                    "${D}${libdir}/pkgconfig"
 
+    # Manage creation of additional symlinks to solve missing libs issue on SDK side
+    # when GCNANO_USERLAND_OUTPUT_LIBDIR differs from libdir
+    if [ "${GCNANO_USERLAND_OUTPUT_LIBDIR}" != "${libdir}" ]; then
+        bbnote "Create symlinks to shared libs in ${libdir} folder (mandatory for SDK)"
+        # Init relative path for symlinks
+        relative_path=$(realpath -m --relative-to=${D}/${libdir} ${D}${GCNANO_USERLAND_OUTPUT_LIBDIR})
+        # Move to libdir for symlinks
+        cwd=${PWD}
+        cd "${D}${libdir}"
+        for sharelib in $(find ${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}/* -type f -name "*.so*"); do
+            # Get SONAME
+            link_name=$(objdump -x ${sharelib} 2>/dev/null | grep SONAME | awk -F' ' '{print $NF}')
+            sharelib_name=$(basename ${sharelib})
+            # Create symlink
+            if [ -e "${relative_path}/${sharelib_name}" ]; then
+                ln -sf ${relative_path}/${sharelib_name} ${link_name}
+            else
+                bbnote "Not able to find share lib: ${relative_path}/${sharelib_name}. No symlink created in ${libdir}."
+            fi
+        done
+        cd "${PWD}"
+    fi
+
     if [ -s "${B}/${GCNANO_USERLAND_LDCONF}" ]; then
         install -d ${D}${sysconfdir}/ld.so.conf.d/
         install -m 0644 "${B}/${GCNANO_USERLAND_LDCONF}" ${D}${sysconfdir}/ld.so.conf.d/
@@ -164,6 +187,8 @@ do_install() {
 # Manage install for gcnano-userland libs into specific folder for sysroot as well
 gcnano_sysroot() {
     if [ "${GCNANO_USERLAND_OUTPUT_LIBDIR}" != "${libdir}" ]; then
+        # Cleanup targeted folder from unexpected symlinks
+        rm -f $(find ${SYSROOT_DESTDIR}${libdir}/* -type l -name "*.so*")
         install -d ${SYSROOT_DESTDIR}${libdir}
         cp -aR ${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}/* ${SYSROOT_DESTDIR}${libdir}/
     fi
@@ -214,11 +239,23 @@ FILES:libgles2-gcnano += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLSLC.so"
 FILES:libopenvg-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libOpenVG*.so*"
 
 FILES:${PN}-dev = ""
+FILES:libgal-gcnano-dev = ""
 FILES:libegl-gcnano-dev = "${includedir}/EGL ${includedir}/KHR ${libdir}/pkgconfig/egl.pc"
 FILES:libgbm-gcnano-dev = "${includedir}/gbm.h ${libdir}/pkgconfig/gbm.pc"
 FILES:libgles1-gcnano-dev = "${includedir}/GLES ${libdir}/pkgconfig/glesv1*.pc"
 FILES:libgles2-gcnano-dev = "${includedir}/GLES2 ${libdir}/pkgconfig/glesv2.pc"
 FILES:libopenvg-gcnano-dev = "${includedir}/VG ${libdir}/pkgconfig/vg.pc"
+# Append additional symlinks to *-dev packages for delivered shared libs
+# when GCNANO_USERLAND_OUTPUT_LIBDIR differs from libdir
+FILES:libgal-gcnano-dev += "${@bb.utils.contains('GCNANO_USERLAND_OUTPUT_LIBDIR', '${libdir}', '', '${libdir}/libGAL.so', d)}"
+FILES:libgal-gcnano-dev += "${@bb.utils.contains('GCNANO_USERLAND_OUTPUT_LIBDIR', '${libdir}', '', '${libdir}/libVSC.so', d)}"
+FILES:libegl-gcnano-dev += "${@bb.utils.contains('GCNANO_USERLAND_OUTPUT_LIBDIR', '${libdir}', '', '${libdir}/libEGL.so*', d)}"
+FILES:libgbm-gcnano-dev += "${@bb.utils.contains('GCNANO_USERLAND_OUTPUT_LIBDIR', '${libdir}', '', '${libdir}/libgbm.so*', d)}"
+FILES:libgbm-gcnano-dev += "${@bb.utils.contains('GCNANO_USERLAND_OUTPUT_LIBDIR', '${libdir}', '', '${libdir}/libgbm_viv.so', d)}"
+FILES:libgles1-gcnano-dev += "${@bb.utils.contains('GCNANO_USERLAND_OUTPUT_LIBDIR', '${libdir}', '', '${libdir}/libGLESv1*.so', d)}"
+FILES:libgles2-gcnano-dev += "${@bb.utils.contains('GCNANO_USERLAND_OUTPUT_LIBDIR', '${libdir}', '', '${libdir}/libGLESv2.so', d)}"
+FILES:libgles2-gcnano-dev += "${@bb.utils.contains('GCNANO_USERLAND_OUTPUT_LIBDIR', '${libdir}', '', '${libdir}/libGLSLC.so', d)}"
+FILES:libopenvg-gcnano-dev += "${@bb.utils.contains('GCNANO_USERLAND_OUTPUT_LIBDIR', '${libdir}', '', '${libdir}/libOpenVG*.so*', d)}"
 
 # Set gcnano-userland package with runtime dependencies on all packages
 RDEPENDS:${PN} += "\
