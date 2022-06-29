@@ -73,11 +73,13 @@ UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG:target-nand += "${STM32MP_DT_FILES_EV}"
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG:target-nor += "${STM32MP_DT_FILES_ED}"
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG:target-nor += "${STM32MP_DT_FILES_EV}"
 # Define extra label configuration
+UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157d-dk1] += "stm32mp157d-dk1-a7-examples"
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157c-dk2] += "stm32mp157c-dk2-a7-examples"
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157f-dk2] += "stm32mp157f-dk2-a7-examples"
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157c-ev1] += "stm32mp157c-ev1-a7-examples"
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157f-ev1] += "stm32mp157f-ev1-a7-examples"
 
+UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157d-dk1] += "stm32mp157d-dk1-m4-examples"
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157c-dk2] += "stm32mp157c-dk2-m4-examples"
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157c-ev1] += "stm32mp157c-ev1-m4-examples"
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157f-dk2] += "stm32mp157f-dk2-m4-examples"
@@ -89,6 +91,7 @@ UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp135f-dk] += "stm32mp135f-dk-a7-exampl
 # Configure A7 examples labels
 # -----------------------------------------------------------------------------
 # Define FDT overrides for new A7 labels
+UBOOT_EXTLINUX_FDT:stm32mp157d-dk1-a7-examples = "/stm32mp157d-dk1-a7-examples.dtb"
 UBOOT_EXTLINUX_FDT:stm32mp157c-dk2-a7-examples = "/stm32mp157c-dk2-a7-examples.dtb"
 UBOOT_EXTLINUX_FDT:stm32mp157c-ev1-a7-examples = "/stm32mp157c-ev1-a7-examples.dtb"
 UBOOT_EXTLINUX_FDT:stm32mp157f-dk2-a7-examples = "/stm32mp157f-dk2-a7-examples.dtb"
@@ -100,6 +103,7 @@ UBOOT_EXTLINUX_FDT:stm32mp135f-dk-a7-examples = "/stm32mp135f-dk-a7-examples.dtb
 # Configure M4 examples labels
 # -----------------------------------------------------------------------------
 # Define FDT overrides for new M4 labels
+UBOOT_EXTLINUX_FDT:stm32mp157d-dk1-m4-examples = "/stm32mp157d-dk1-m4-examples.dtb"
 UBOOT_EXTLINUX_FDT:stm32mp157c-dk2-m4-examples = "/stm32mp157c-dk2-m4-examples.dtb"
 UBOOT_EXTLINUX_FDT:stm32mp157c-ev1-m4-examples = "/stm32mp157c-ev1-m4-examples.dtb"
 UBOOT_EXTLINUX_FDT:stm32mp157f-dk2-m4-examples = "/stm32mp157f-dk2-m4-examples.dtb"
