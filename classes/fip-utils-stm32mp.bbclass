@@ -252,6 +252,7 @@ do_deploy:append:class-target() {
                     --nt-fw-key-cert ${WORKDIR}/nt_fw_key.crt \
                     --tos-fw-cert ${WORKDIR}/tos_fw_content.crt \
                     --tos-fw-key-cert ${WORKDIR}/tos_fw_key.crt \
+                    --stm32mp-cfg-cert ${WORKDIR}/stm32mp_cfg_cert.crt \
                     "
                 # Need fake bl2 binary to generate certificates
                 touch ${WORKDIR}/bl2-fake.bin
