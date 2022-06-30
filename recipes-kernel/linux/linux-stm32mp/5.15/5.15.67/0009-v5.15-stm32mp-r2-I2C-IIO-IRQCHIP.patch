@@ -1,26 +1,28 @@
-From 21a6408507c420ae565837508928fe7795caeb84 Mon Sep 17 00:00:00 2001
-From: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
-Date: Tue, 31 May 2022 11:55:14 +0200
-Subject: [PATCH 08/22] ARM-5.15.24-stm32mp1-r1-I2C-IIO-IRQCHIP
+From e02af9ac4cbbe463217ac8c34eee18170d57e5af Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Thu, 3 Nov 2022 15:36:23 +0100
+Subject: [PATCH 09/22] v5.15-stm32mp-r2 I2C-IIO-IRQCHIP
 
-Signed-off-by: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
 ---
  .../devicetree/bindings/i2c/st,stm32-i2c.yaml |   2 +
  .../iio/adc/sigma-delta-modulator.yaml        |   3 +
- .../bindings/iio/adc/st,stm32-adc.yaml        | 175 ++++-
- drivers/i2c/busses/i2c-stm32f7.c              | 129 ++--
- drivers/iio/adc/sd_adc_modulator.c            |  89 ++-
- drivers/iio/adc/stm32-adc-core.c              | 209 +++++-
- drivers/iio/adc/stm32-adc-core.h              |  72 ++
- drivers/iio/adc/stm32-adc.c                   | 656 +++++++++++++++---
+ .../bindings/iio/adc/st,stm32-adc.yaml        | 175 +++-
+ drivers/i2c/busses/i2c-stm32f7.c              | 265 +++---
+ drivers/iio/adc/sd_adc_modulator.c            |  89 +-
+ drivers/iio/adc/stm32-adc-core.c              | 208 ++++-
+ drivers/iio/adc/stm32-adc-core.h              |  90 ++
+ drivers/iio/adc/stm32-adc.c                   | 861 ++++++++++++++++--
  drivers/iio/adc/stm32-dfsdm-adc.c             | 108 ++-
- drivers/iio/adc/stm32-dfsdm-core.c            |  91 ++-
+ drivers/iio/adc/stm32-dfsdm-core.c            |  91 +-
  drivers/iio/adc/stm32-dfsdm.h                 |  69 +-
- drivers/irqchip/irq-stm32-exti.c              | 146 +++-
- 12 files changed, 1482 insertions(+), 267 deletions(-)
+ drivers/irqchip/irq-stm32-exti.c              | 427 ++++++---
+ include/linux/irqdomain.h                     |   4 +
+ kernel/irq/irqdomain.c                        |   6 +-
+ 14 files changed, 1965 insertions(+), 433 deletions(-)
 
 diff --git a/Documentation/devicetree/bindings/i2c/st,stm32-i2c.yaml b/Documentation/devicetree/bindings/i2c/st,stm32-i2c.yaml
-index d747f4990..5df3dbd60 100644
+index d747f4990ad8..5df3dbd6091f 100644
 --- a/Documentation/devicetree/bindings/i2c/st,stm32-i2c.yaml
 +++ b/Documentation/devicetree/bindings/i2c/st,stm32-i2c.yaml
 @@ -17,6 +17,7 @@ allOf:
@@ -40,7 +42,7 @@ index d747f4990..5df3dbd60 100644
  
    reg:
 diff --git a/Documentation/devicetree/bindings/iio/adc/sigma-delta-modulator.yaml b/Documentation/devicetree/bindings/iio/adc/sigma-delta-modulator.yaml
-index a390343d0..bf5d71fb6 100644
+index a390343d0c2a..bf5d71fb60da 100644
 --- a/Documentation/devicetree/bindings/iio/adc/sigma-delta-modulator.yaml
 +++ b/Documentation/devicetree/bindings/iio/adc/sigma-delta-modulator.yaml
 @@ -21,6 +21,9 @@ properties:
@@ -54,7 +56,7 @@ index a390343d0..bf5d71fb6 100644
    - compatible
    - '#io-channel-cells'
 diff --git a/Documentation/devicetree/bindings/iio/adc/st,stm32-adc.yaml b/Documentation/devicetree/bindings/iio/adc/st,stm32-adc.yaml
-index a58334c3b..0f1fce4c4 100644
+index a58334c3bb76..47883701e331 100644
 --- a/Documentation/devicetree/bindings/iio/adc/st,stm32-adc.yaml
 +++ b/Documentation/devicetree/bindings/iio/adc/st,stm32-adc.yaml
 @@ -27,6 +27,7 @@ properties:
@@ -202,7 +204,7 @@ index a58334c3b..0f1fce4c4 100644
 +          label:
 +            description: |
 +              Unique name to identify which channel this is.
-+              Reserved label names "vddcore", "vrefint" and "vbat"
++              Reserved label names "vddcore", "vddcpu", "vddq_ddr", "vrefint" and "vbat"
 +              are used to identify internal channels with matching names.
 +
 +          diff-channels:
@@ -321,7 +323,7 @@ index a58334c3b..0f1fce4c4 100644
 +
  ...
 diff --git a/drivers/i2c/busses/i2c-stm32f7.c b/drivers/i2c/busses/i2c-stm32f7.c
-index 50d5ae81d..1225172c0 100644
+index 50d5ae81d227..791baea3623b 100644
 --- a/drivers/i2c/busses/i2c-stm32f7.c
 +++ b/drivers/i2c/busses/i2c-stm32f7.c
 @@ -410,6 +410,12 @@ static const struct stm32f7_i2c_setup stm32mp15_setup = {
@@ -365,7 +367,59 @@ index 50d5ae81d..1225172c0 100644
  		/* Disable interrupts */
  		stm32f7_i2c_disable_irq(i2c_dev, STM32F7_I2C_XFER_IRQ_MASK);
  
-@@ -1521,7 +1528,7 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
+@@ -1492,17 +1499,11 @@ static irqreturn_t stm32f7_i2c_slave_isr_event(struct stm32f7_i2c_dev *i2c_dev)
+ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
+ {
+ 	struct stm32f7_i2c_dev *i2c_dev = data;
+-	struct stm32f7_i2c_msg *f7_msg = &i2c_dev->f7_msg;
+-	struct stm32_i2c_dma *dma = i2c_dev->dma;
+-	void __iomem *base = i2c_dev->base;
+-	u32 status, mask;
+-	int ret = IRQ_HANDLED;
++	u32 status;
+ 
+-	/* Check if the interrupt if for a slave device */
+-	if (!i2c_dev->master_mode) {
+-		ret = stm32f7_i2c_slave_isr_event(i2c_dev);
+-		return ret;
+-	}
++	/* Check if the interrupt is for a slave device */
++	if (!i2c_dev->master_mode)
++		return IRQ_WAKE_THREAD;
+ 
+ 	status = readl_relaxed(i2c_dev->base + STM32F7_I2C_ISR);
+ 
+@@ -1514,6 +1515,29 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
+ 	if (status & STM32F7_I2C_ISR_RXNE)
+ 		stm32f7_i2c_read_rx_data(i2c_dev);
+ 
++	/* Wake up the thread if other flags are raised */
++	if (status &
++	    (STM32F7_I2C_ISR_NACKF | STM32F7_I2C_ISR_STOPF |
++	     STM32F7_I2C_ISR_TC | STM32F7_I2C_ISR_TCR))
++		return IRQ_WAKE_THREAD;
++
++	return IRQ_HANDLED;
++}
++
++static irqreturn_t stm32f7_i2c_isr_event_thread(int irq, void *data)
++{
++	struct stm32f7_i2c_dev *i2c_dev = data;
++	struct stm32f7_i2c_msg *f7_msg = &i2c_dev->f7_msg;
++	struct stm32_i2c_dma *dma = i2c_dev->dma;
++	void __iomem *base = i2c_dev->base;
++	u32 status, mask;
++	int ret;
++
++	if (!i2c_dev->master_mode)
++		return stm32f7_i2c_slave_isr_event(i2c_dev);
++
++	status = readl_relaxed(i2c_dev->base + STM32F7_I2C_ISR);
++
+ 	/* NACK received */
+ 	if (status & STM32F7_I2C_ISR_NACKF) {
+ 		dev_dbg(i2c_dev->dev, "<%s>: Receive NACK (addr %x)\n",
+@@ -1521,38 +1545,33 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
  		writel_relaxed(STM32F7_I2C_ICR_NACKCF, base + STM32F7_I2C_ICR);
  		if (i2c_dev->use_dma) {
  			stm32f7_i2c_disable_dma_req(i2c_dev);
@@ -374,16 +428,157 @@ index 50d5ae81d..1225172c0 100644
  		}
  		f7_msg->result = -ENXIO;
  	}
-@@ -1588,7 +1595,7 @@ static irqreturn_t stm32f7_i2c_isr_event_thread(int irq, void *data)
- 	if (!ret) {
- 		dev_dbg(i2c_dev->dev, "<%s>: Timed out\n", __func__);
- 		stm32f7_i2c_disable_dma_req(i2c_dev);
--		dmaengine_terminate_all(dma->chan_using);
-+		dmaengine_terminate_async(dma->chan_using);
- 		f7_msg->result = -ETIMEDOUT;
+ 
+-	/* STOP detection flag */
+-	if (status & STM32F7_I2C_ISR_STOPF) {
+-		/* Disable interrupts */
+-		if (stm32f7_i2c_is_slave_registered(i2c_dev))
+-			mask = STM32F7_I2C_XFER_IRQ_MASK;
++	if (status & STM32F7_I2C_ISR_TCR) {
++		if (f7_msg->smbus)
++			stm32f7_i2c_smbus_reload(i2c_dev);
+ 		else
+-			mask = STM32F7_I2C_ALL_IRQ_MASK;
+-		stm32f7_i2c_disable_irq(i2c_dev, mask);
+-
+-		/* Clear STOP flag */
+-		writel_relaxed(STM32F7_I2C_ICR_STOPCF, base + STM32F7_I2C_ICR);
+-
+-		if (i2c_dev->use_dma && !f7_msg->result) {
+-			ret = IRQ_WAKE_THREAD;
+-		} else {
+-			i2c_dev->master_mode = false;
+-			complete(&i2c_dev->complete);
+-		}
++			stm32f7_i2c_reload(i2c_dev);
  	}
  
-@@ -1665,7 +1672,7 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
+ 	/* Transfer complete */
+ 	if (status & STM32F7_I2C_ISR_TC) {
++		/* Wait for dma transfer completion before sending next message */
++		if (i2c_dev->use_dma && !f7_msg->result) {
++			ret = wait_for_completion_timeout(&i2c_dev->dma->dma_complete, HZ);
++			if (!ret) {
++				dev_dbg(i2c_dev->dev, "<%s>: Timed out\n", __func__);
++				stm32f7_i2c_disable_dma_req(i2c_dev);
++				dmaengine_terminate_async(dma->chan_using);
++				f7_msg->result = -ETIMEDOUT;
++			}
++		}
+ 		if (f7_msg->stop) {
+ 			mask = STM32F7_I2C_CR2_STOP;
+ 			stm32f7_i2c_set_bits(base + STM32F7_I2C_CR2, mask);
+-		} else if (i2c_dev->use_dma && !f7_msg->result) {
+-			ret = IRQ_WAKE_THREAD;
+ 		} else if (f7_msg->smbus) {
+ 			stm32f7_i2c_smbus_rep_start(i2c_dev);
+ 		} else {
+@@ -1562,47 +1581,18 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
+ 		}
+ 	}
+ 
+-	if (status & STM32F7_I2C_ISR_TCR) {
+-		if (f7_msg->smbus)
+-			stm32f7_i2c_smbus_reload(i2c_dev);
++	/* STOP detection flag */
++	if (status & STM32F7_I2C_ISR_STOPF) {
++		/* Disable interrupts */
++		if (stm32f7_i2c_is_slave_registered(i2c_dev))
++			mask = STM32F7_I2C_XFER_IRQ_MASK;
+ 		else
+-			stm32f7_i2c_reload(i2c_dev);
+-	}
+-
+-	return ret;
+-}
+-
+-static irqreturn_t stm32f7_i2c_isr_event_thread(int irq, void *data)
+-{
+-	struct stm32f7_i2c_dev *i2c_dev = data;
+-	struct stm32f7_i2c_msg *f7_msg = &i2c_dev->f7_msg;
+-	struct stm32_i2c_dma *dma = i2c_dev->dma;
+-	u32 status;
+-	int ret;
+-
+-	/*
+-	 * Wait for dma transfer completion before sending next message or
+-	 * notity the end of xfer to the client
+-	 */
+-	ret = wait_for_completion_timeout(&i2c_dev->dma->dma_complete, HZ);
+-	if (!ret) {
+-		dev_dbg(i2c_dev->dev, "<%s>: Timed out\n", __func__);
+-		stm32f7_i2c_disable_dma_req(i2c_dev);
+-		dmaengine_terminate_all(dma->chan_using);
+-		f7_msg->result = -ETIMEDOUT;
+-	}
++			mask = STM32F7_I2C_ALL_IRQ_MASK;
++		stm32f7_i2c_disable_irq(i2c_dev, mask);
+ 
+-	status = readl_relaxed(i2c_dev->base + STM32F7_I2C_ISR);
++		/* Clear STOP flag */
++		writel_relaxed(STM32F7_I2C_ICR_STOPCF, base + STM32F7_I2C_ICR);
+ 
+-	if (status & STM32F7_I2C_ISR_TC) {
+-		if (f7_msg->smbus) {
+-			stm32f7_i2c_smbus_rep_start(i2c_dev);
+-		} else {
+-			i2c_dev->msg_id++;
+-			i2c_dev->msg++;
+-			stm32f7_i2c_xfer_msg(i2c_dev, i2c_dev->msg);
+-		}
+-	} else {
+ 		i2c_dev->master_mode = false;
+ 		complete(&i2c_dev->complete);
+ 	}
+@@ -1610,10 +1600,11 @@ static irqreturn_t stm32f7_i2c_isr_event_thread(int irq, void *data)
+ 	return IRQ_HANDLED;
+ }
+ 
+-static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
++static irqreturn_t stm32f7_i2c_isr_error_thread(int irq, void *data)
+ {
+ 	struct stm32f7_i2c_dev *i2c_dev = data;
+ 	struct stm32f7_i2c_msg *f7_msg = &i2c_dev->f7_msg;
++	u16 addr = f7_msg->addr;
+ 	void __iomem *base = i2c_dev->base;
+ 	struct device *dev = i2c_dev->dev;
+ 	struct stm32_i2c_dma *dma = i2c_dev->dma;
+@@ -1623,8 +1614,7 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
+ 
+ 	/* Bus error */
+ 	if (status & STM32F7_I2C_ISR_BERR) {
+-		dev_err(dev, "<%s>: Bus error accessing addr 0x%x\n",
+-			__func__, f7_msg->addr);
++		dev_err(dev, "Bus error accessing addr 0x%x\n", addr);
+ 		writel_relaxed(STM32F7_I2C_ICR_BERRCF, base + STM32F7_I2C_ICR);
+ 		stm32f7_i2c_release_bus(&i2c_dev->adap);
+ 		f7_msg->result = -EIO;
+@@ -1632,21 +1622,19 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
+ 
+ 	/* Arbitration loss */
+ 	if (status & STM32F7_I2C_ISR_ARLO) {
+-		dev_dbg(dev, "<%s>: Arbitration loss accessing addr 0x%x\n",
+-			__func__, f7_msg->addr);
++		dev_dbg(dev, "Arbitration loss accessing addr 0x%x\n", addr);
+ 		writel_relaxed(STM32F7_I2C_ICR_ARLOCF, base + STM32F7_I2C_ICR);
+ 		f7_msg->result = -EAGAIN;
+ 	}
+ 
+ 	if (status & STM32F7_I2C_ISR_PECERR) {
+-		dev_err(dev, "<%s>: PEC error in reception accessing addr 0x%x\n",
+-			__func__, f7_msg->addr);
++		dev_err(dev, "PEC error in reception accessing addr 0x%x\n", addr);
+ 		writel_relaxed(STM32F7_I2C_ICR_PECCF, base + STM32F7_I2C_ICR);
+ 		f7_msg->result = -EINVAL;
+ 	}
+ 
+ 	if (status & STM32F7_I2C_ISR_ALERT) {
+-		dev_dbg(dev, "<%s>: SMBus alert received\n", __func__);
++		dev_dbg(dev, "SMBus alert received\n");
+ 		writel_relaxed(STM32F7_I2C_ICR_ALERTCF, base + STM32F7_I2C_ICR);
+ 		i2c_handle_smbus_alert(i2c_dev->alert->ara);
+ 		return IRQ_HANDLED;
+@@ -1665,7 +1653,7 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
  	/* Disable dma */
  	if (i2c_dev->use_dma) {
  		stm32f7_i2c_disable_dma_req(i2c_dev);
@@ -392,7 +587,7 @@ index 50d5ae81d..1225172c0 100644
  	}
  
  	i2c_dev->master_mode = false;
-@@ -1702,6 +1709,9 @@ static int stm32f7_i2c_xfer(struct i2c_adapter *i2c_adap,
+@@ -1702,6 +1690,9 @@ static int stm32f7_i2c_xfer(struct i2c_adapter *i2c_adap,
  						i2c_dev->adap.timeout);
  	ret = f7_msg->result;
  	if (ret) {
@@ -402,7 +597,7 @@ index 50d5ae81d..1225172c0 100644
  		/*
  		 * It is possible that some unsent data have already been
  		 * written into TXDR. To avoid sending old data in a
-@@ -1716,7 +1726,7 @@ static int stm32f7_i2c_xfer(struct i2c_adapter *i2c_adap,
+@@ -1716,7 +1707,7 @@ static int stm32f7_i2c_xfer(struct i2c_adapter *i2c_adap,
  		dev_dbg(i2c_dev->dev, "Access to slave 0x%x timed out\n",
  			i2c_dev->msg->addr);
  		if (i2c_dev->use_dma)
@@ -411,7 +606,7 @@ index 50d5ae81d..1225172c0 100644
  		stm32f7_i2c_wait_free_bus(i2c_dev);
  		ret = -ETIMEDOUT;
  	}
-@@ -1761,6 +1771,9 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
+@@ -1761,6 +1752,9 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
  					      i2c_dev->adap.timeout);
  	ret = f7_msg->result;
  	if (ret) {
@@ -421,7 +616,7 @@ index 50d5ae81d..1225172c0 100644
  		/*
  		 * It is possible that some unsent data have already been
  		 * written into TXDR. To avoid sending old data in a
-@@ -1774,7 +1787,7 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
+@@ -1774,7 +1768,7 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
  	if (!timeout) {
  		dev_dbg(dev, "Access to slave 0x%x timed out\n", f7_msg->addr);
  		if (i2c_dev->use_dma)
@@ -430,7 +625,21 @@ index 50d5ae81d..1225172c0 100644
  		stm32f7_i2c_wait_free_bus(i2c_dev);
  		ret = -ETIMEDOUT;
  		goto pm_free;
-@@ -2343,63 +2356,23 @@ static int stm32f7_i2c_remove(struct platform_device *pdev)
+@@ -2163,8 +2157,11 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
+ 		goto clk_free;
+ 	}
+ 
+-	ret = devm_request_irq(&pdev->dev, irq_error, stm32f7_i2c_isr_error, 0,
+-			       pdev->name, i2c_dev);
++	ret = devm_request_threaded_irq(&pdev->dev, irq_error,
++					NULL,
++					stm32f7_i2c_isr_error_thread,
++					IRQF_ONESHOT,
++					pdev->name, i2c_dev);
+ 	if (ret) {
+ 		dev_err(&pdev->dev, "Failed to request irq error %i\n",
+ 			irq_error);
+@@ -2343,63 +2340,23 @@ static int stm32f7_i2c_remove(struct platform_device *pdev)
  	return 0;
  }
  
@@ -445,8 +654,7 @@ index 50d5ae81d..1225172c0 100644
 -}
 -
 -static int __maybe_unused stm32f7_i2c_runtime_resume(struct device *dev)
-+static void __maybe_unused stm32f7_i2c_regs_backup(struct stm32f7_i2c_dev *i2c_dev)
- {
+-{
 -	struct stm32f7_i2c_dev *i2c_dev = dev_get_drvdata(dev);
 -	int ret;
 -
@@ -462,7 +670,8 @@ index 50d5ae81d..1225172c0 100644
 -}
 -
 -static int __maybe_unused stm32f7_i2c_regs_backup(struct stm32f7_i2c_dev *i2c_dev)
--{
++static void __maybe_unused stm32f7_i2c_regs_backup(struct stm32f7_i2c_dev *i2c_dev)
+ {
 -	int ret;
  	struct stm32f7_i2c_regs *backup_regs = &i2c_dev->backup_regs;
  
@@ -496,7 +705,7 @@ index 50d5ae81d..1225172c0 100644
  	cr1 = readl_relaxed(i2c_dev->base + STM32F7_I2C_CR1);
  	if (cr1 & STM32F7_I2C_CR1_PE)
  		stm32f7_i2c_clr_bits(i2c_dev->base + STM32F7_I2C_CR1,
-@@ -2415,29 +2388,48 @@ static int __maybe_unused stm32f7_i2c_regs_restore(struct stm32f7_i2c_dev *i2c_d
+@@ -2415,29 +2372,48 @@ static int __maybe_unused stm32f7_i2c_regs_restore(struct stm32f7_i2c_dev *i2c_d
  	writel_relaxed(backup_regs->oar1, i2c_dev->base + STM32F7_I2C_OAR1);
  	writel_relaxed(backup_regs->oar2, i2c_dev->base + STM32F7_I2C_OAR2);
  	stm32f7_i2c_write_fm_plus_bits(i2c_dev, true);
@@ -556,7 +765,7 @@ index 50d5ae81d..1225172c0 100644
  
  	return 0;
  }
-@@ -2447,16 +2439,12 @@ static int __maybe_unused stm32f7_i2c_resume(struct device *dev)
+@@ -2447,16 +2423,12 @@ static int __maybe_unused stm32f7_i2c_resume(struct device *dev)
  	struct stm32f7_i2c_dev *i2c_dev = dev_get_drvdata(dev);
  	int ret;
  
@@ -578,7 +787,7 @@ index 50d5ae81d..1225172c0 100644
  
  	i2c_mark_adapter_resumed(&i2c_dev->adap);
  
-@@ -2472,6 +2460,7 @@ static const struct dev_pm_ops stm32f7_i2c_pm_ops = {
+@@ -2472,6 +2444,7 @@ static const struct dev_pm_ops stm32f7_i2c_pm_ops = {
  static const struct of_device_id stm32f7_i2c_match[] = {
  	{ .compatible = "st,stm32f7-i2c", .data = &stm32f7_setup},
  	{ .compatible = "st,stm32mp15-i2c", .data = &stm32mp15_setup},
@@ -587,7 +796,7 @@ index 50d5ae81d..1225172c0 100644
  };
  MODULE_DEVICE_TABLE(of, stm32f7_i2c_match);
 diff --git a/drivers/iio/adc/sd_adc_modulator.c b/drivers/iio/adc/sd_adc_modulator.c
-index 327cc2097..ceb150296 100644
+index 327cc2097f6c..ceb15029673c 100644
 --- a/drivers/iio/adc/sd_adc_modulator.c
 +++ b/drivers/iio/adc/sd_adc_modulator.c
 @@ -9,10 +9,8 @@
@@ -713,7 +922,7 @@ index 327cc2097..ceb150296 100644
  
  static struct platform_driver iio_sd_mod_adc = {
 diff --git a/drivers/iio/adc/stm32-adc-core.c b/drivers/iio/adc/stm32-adc-core.c
-index c088cb990..77ac38ae8 100644
+index 42faca457ace..0f4a5dddb892 100644
 --- a/drivers/iio/adc/stm32-adc-core.c
 +++ b/drivers/iio/adc/stm32-adc-core.c
 @@ -9,6 +9,7 @@
@@ -739,15 +948,16 @@ index c088cb990..77ac38ae8 100644
 + * @ipid:	adc identification number
   * @has_syscfg: SYSCFG capability flags
   * @num_irqs:	number of interrupt lines
-  */
-@@ -69,13 +72,17 @@ struct stm32_adc_priv_cfg {
+  * @num_adcs:   maximum number of ADC instances in the common registers
+@@ -70,6 +73,7 @@ struct stm32_adc_priv_cfg {
  	const struct stm32_adc_common_regs *regs;
  	int (*clk_sel)(struct platform_device *, struct stm32_adc_priv *);
  	u32 max_clk_rate_hz;
 +	u32 ipid;
  	unsigned int has_syscfg;
  	unsigned int num_irqs;
- };
+ 	unsigned int num_adcs;
+@@ -77,7 +81,10 @@ struct stm32_adc_priv_cfg {
  
  /**
   * struct stm32_adc_priv - stm32 ADC core private data
@@ -758,7 +968,7 @@ index c088cb990..77ac38ae8 100644
   * @domain:		irq domain reference
   * @aclk:		clock reference for the analog circuitry
   * @bclk:		bus clock common for all ADCs, depends on part used
-@@ -92,7 +99,10 @@ struct stm32_adc_priv_cfg {
+@@ -94,7 +101,10 @@ struct stm32_adc_priv_cfg {
   * @syscfg:		reference to syscon, system control registers
   */
  struct stm32_adc_priv {
@@ -769,7 +979,7 @@ index c088cb990..77ac38ae8 100644
  	struct irq_domain		*domain;
  	struct clk			*aclk;
  	struct clk			*bclk;
-@@ -315,6 +325,16 @@ static const struct stm32_adc_common_regs stm32h7_adc_common_regs = {
+@@ -317,6 +327,16 @@ static const struct stm32_adc_common_regs stm32h7_adc_common_regs = {
  	.eocie_msk = STM32H7_EOCIE,
  };
  
@@ -786,11 +996,11 @@ index c088cb990..77ac38ae8 100644
  static const unsigned int stm32_adc_offset[STM32_ADC_MAX_ADCS] = {
  	0, STM32_ADC_OFFSET, STM32_ADC_OFFSET * 2,
  };
-@@ -352,34 +372,94 @@ static void stm32_adc_irq_handler(struct irq_desc *desc)
+@@ -354,34 +374,94 @@ static void stm32_adc_irq_handler(struct irq_desc *desc)
  	 * before invoking the interrupt handler (e.g. call ISR only for
  	 * IRQ-enabled ADCs).
  	 */
--	for (i = 0; i < priv->cfg->num_irqs; i++) {
+-	for (i = 0; i < priv->cfg->num_adcs; i++) {
 +	for (i = 0; i < priv->nb_adc_max; i++) {
  		if ((status & priv->cfg->regs->eoc_msk[i] &&
  		     stm32_adc_eoc_enabled(priv, i)) ||
@@ -829,7 +1039,9 @@ index c088cb990..77ac38ae8 100644
 +
 +static int stm32_adc_core_domain_alloc(struct irq_domain *dm, unsigned int virq,
 +				       unsigned int nr_irqs, void *data)
-+{
+ {
+-	irq_set_chip_and_handler(irq, NULL, NULL);
+-	irq_set_chip_data(irq, NULL);
 +	irq_hw_number_t hwirq;
 +	struct stm32_adc_priv *priv = dm->host_data;
 +	struct irq_fwspec *fwspec = data;
@@ -870,9 +1082,7 @@ index c088cb990..77ac38ae8 100644
 +
 +static void stm32_adc_core_domain_free(struct irq_domain *domain, unsigned int virq,
 +				       unsigned int nr_irqs)
- {
--	irq_set_chip_and_handler(irq, NULL, NULL);
--	irq_set_chip_data(irq, NULL);
++{
 +	struct irq_data *irq_data;
 +
 +	irq_set_chip_and_handler(virq, NULL, NULL);
@@ -893,7 +1103,7 @@ index c088cb990..77ac38ae8 100644
  	.xlate = irq_domain_xlate_onecell,
  };
  
-@@ -387,22 +467,49 @@ static int stm32_adc_irq_probe(struct platform_device *pdev,
+@@ -389,22 +469,49 @@ static int stm32_adc_irq_probe(struct platform_device *pdev,
  			       struct stm32_adc_priv *priv)
  {
  	struct device_node *np = pdev->dev.of_node;
@@ -947,7 +1157,7 @@ index c088cb990..77ac38ae8 100644
  	if (!priv->domain) {
  		dev_err(&pdev->dev, "Failed to add irq domain\n");
  		return -ENOMEM;
-@@ -422,12 +529,14 @@ static void stm32_adc_irq_remove(struct platform_device *pdev,
+@@ -424,12 +531,14 @@ static void stm32_adc_irq_remove(struct platform_device *pdev,
  	int hwirq;
  	unsigned int i;
  
@@ -964,7 +1174,7 @@ index c088cb990..77ac38ae8 100644
  }
  
  static int stm32_adc_core_switches_supply_en(struct stm32_adc_priv *priv,
-@@ -640,6 +749,49 @@ static int stm32_adc_core_switches_probe(struct device *dev,
+@@ -642,6 +751,49 @@ static int stm32_adc_core_switches_probe(struct device *dev,
  	return 0;
  }
  
@@ -1014,19 +1224,19 @@ index c088cb990..77ac38ae8 100644
  static int stm32_adc_probe(struct platform_device *pdev)
  {
  	struct stm32_adc_priv *priv;
-@@ -657,8 +809,11 @@ static int stm32_adc_probe(struct platform_device *pdev)
+@@ -659,8 +811,11 @@ static int stm32_adc_probe(struct platform_device *pdev)
  		return -ENOMEM;
  	platform_set_drvdata(pdev, &priv->common);
  
 +	priv->dev = dev;
-+	priv->nb_adc_max = STM32_ADC_MAX_ADCS;
  	priv->cfg = (const struct stm32_adc_priv_cfg *)
  		of_match_device(dev->driver->of_match_table, dev)->data;
++	priv->nb_adc_max = priv->cfg->num_adcs;
 +	spin_lock_init(&priv->common.lock);
  
  	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
  	priv->common.base = devm_ioremap_resource(&pdev->dev, res);
-@@ -700,6 +855,10 @@ static int stm32_adc_probe(struct platform_device *pdev)
+@@ -702,6 +857,10 @@ static int stm32_adc_probe(struct platform_device *pdev)
  	if (ret)
  		goto err_pm_stop;
  
@@ -1037,29 +1247,25 @@ index c088cb990..77ac38ae8 100644
  	ret = regulator_get_voltage(priv->vref);
  	if (ret < 0) {
  		dev_err(&pdev->dev, "vref get voltage failed, %d\n", ret);
-@@ -809,11 +968,20 @@ static const struct stm32_adc_priv_cfg stm32h7_adc_priv_cfg = {
- static const struct stm32_adc_priv_cfg stm32mp1_adc_priv_cfg = {
- 	.regs = &stm32h7_adc_common_regs,
+@@ -815,8 +974,16 @@ static const struct stm32_adc_priv_cfg stm32mp1_adc_priv_cfg = {
  	.clk_sel = stm32h7_adc_clk_sel,
--	.max_clk_rate_hz = 40000000,
-+	.max_clk_rate_hz = 36000000,
+ 	.max_clk_rate_hz = 36000000,
  	.has_syscfg = HAS_VBOOSTER | HAS_ANASWVDD,
 +	.ipid = STM32MP15_IPIDR_NUMBER,
  	.num_irqs = 2,
- };
- 
+-	.num_adcs = 2,
++};
++
 +static const struct stm32_adc_priv_cfg stm32mp13_adc_priv_cfg = {
 +	.regs = &stm32mp13_adc_common_regs,
 +	.clk_sel = stm32h7_adc_clk_sel,
 +	.max_clk_rate_hz = 75000000,
 +	.ipid = STM32MP13_IPIDR_NUMBER,
 +	.num_irqs = 1,
-+};
-+
+ };
+ 
  static const struct of_device_id stm32_adc_of_match[] = {
- 	{
- 		.compatible = "st,stm32f4-adc-core",
-@@ -824,6 +992,9 @@ static const struct of_device_id stm32_adc_of_match[] = {
+@@ -829,6 +996,9 @@ static const struct of_device_id stm32_adc_of_match[] = {
  	}, {
  		.compatible = "st,stm32mp1-adc-core",
  		.data = (void *)&stm32mp1_adc_priv_cfg
@@ -1070,7 +1276,7 @@ index c088cb990..77ac38ae8 100644
  	},
  };
 diff --git a/drivers/iio/adc/stm32-adc-core.h b/drivers/iio/adc/stm32-adc-core.h
-index 2322809bf..e94c3df10 100644
+index 2322809bfd2f..850d98949827 100644
 --- a/drivers/iio/adc/stm32-adc-core.h
 +++ b/drivers/iio/adc/stm32-adc-core.h
 @@ -24,6 +24,7 @@
@@ -1081,7 +1287,15 @@ index 2322809bf..e94c3df10 100644
  #define STM32_ADC_MAX_ADCS		3
  #define STM32_ADC_OFFSET		0x100
  #define STM32_ADCX_COMN_OFFSET		0x300
-@@ -102,6 +103,12 @@
+@@ -90,6 +91,7 @@
+ #define STM32H7_ADC_IER			0x04
+ #define STM32H7_ADC_CR			0x08
+ #define STM32H7_ADC_CFGR		0x0C
++#define STM32H7_ADC_CFGR2		0x10
+ #define STM32H7_ADC_SMPR1		0x14
+ #define STM32H7_ADC_SMPR2		0x18
+ #define STM32H7_ADC_PCSEL		0x1C
+@@ -102,6 +104,12 @@
  #define STM32H7_ADC_CALFACT		0xC4
  #define STM32H7_ADC_CALFACT2		0xC8
  
@@ -1094,7 +1308,7 @@ index 2322809bf..e94c3df10 100644
  /* STM32H7 - common registers for all ADC instances */
  #define STM32H7_ADC_CSR			(STM32_ADCX_COMN_OFFSET + 0x00)
  #define STM32H7_ADC_CCR			(STM32_ADCX_COMN_OFFSET + 0x08)
-@@ -127,6 +134,7 @@
+@@ -127,6 +135,7 @@
  #define STM32H7_LINCALRDYW3		BIT(24)
  #define STM32H7_LINCALRDYW2		BIT(23)
  #define STM32H7_LINCALRDYW1		BIT(22)
@@ -1102,7 +1316,22 @@ index 2322809bf..e94c3df10 100644
  #define STM32H7_ADCALLIN		BIT(16)
  #define STM32H7_BOOST			BIT(8)
  #define STM32H7_ADSTP			BIT(4)
-@@ -151,6 +159,10 @@ enum stm32h7_adc_dmngt {
+@@ -144,6 +153,14 @@
+ #define STM32H7_DMNGT_SHIFT		0
+ #define STM32H7_DMNGT_MASK		GENMASK(1, 0)
+ 
++/* STM32H7_ADC_CFGR2 bit fields */
++#define STM32H7_OVSR_SHIFT		16 /* Correspond to OSVR field in datasheet */
++#define STM32H7_OVSR_MASK		GENMASK(25, 16)
++#define STM32H7_OVSR_BITS		10
++#define STM32H7_OVSS_SHIFT		5
++#define STM32H7_OVSS_MASK		GENMASK(8, 5)
++#define STM32H7_ROVSE			BIT(0)
++
+ enum stm32h7_adc_dmngt {
+ 	STM32H7_DMNGT_DR_ONLY,		/* Regular data in DR only */
+ 	STM32H7_DMNGT_DMA_ONESHOT,	/* DMA one shot mode */
+@@ -151,6 +168,10 @@ enum stm32h7_adc_dmngt {
  	STM32H7_DMNGT_DMA_CIRC,		/* DMA circular mode */
  };
  
@@ -1113,7 +1342,7 @@ index 2322809bf..e94c3df10 100644
  /* STM32H7_ADC_CALFACT - bit fields */
  #define STM32H7_CALFACT_D_SHIFT		16
  #define STM32H7_CALFACT_D_MASK		GENMASK(26, 16)
-@@ -168,23 +180,83 @@ enum stm32h7_adc_dmngt {
+@@ -168,23 +189,92 @@ enum stm32h7_adc_dmngt {
  #define STM32H7_EOC_MST			BIT(2)
  
  /* STM32H7_ADC_CCR - bit fields */
@@ -1142,6 +1371,13 @@ index 2322809bf..e94c3df10 100644
 +#define STM32MP13_RES_SHIFT		3
 +#define STM32MP13_RES_MASK		GENMASK(4, 3)
 +
++/* STM32MP13_ADC_CFGR2 bit fields */
++#define STM32MP13_OVSR_SHIFT		2
++#define STM32MP13_OVSR_MASK		GENMASK(4, 2)
++#define STM32MP13_OVSR_BITS		3
++#define STM32MP13_OVSS_SHIFT		5
++#define STM32MP13_OVSS_MASK		GENMASK(8, 5)
++
 +/* STM32MP13_ADC_DIFSEL - bit fields */
 +#define STM32MP13_DIFSEL_SHIFT		0
 +#define STM32MP13_DIFSEL_MASK		GENMASK(18, 0)
@@ -1153,7 +1389,9 @@ index 2322809bf..e94c3df10 100644
 +#define STM32MP13_CALFACT_S_MASK	GENMASK(6, 0)
 +
 +/* STM32MP13_ADC2_OR - bit fields */
-+#define STM32MP13_VDDCOREEN		BIT(0)
++#define STM32MP13_OP2			BIT(2)
++#define STM32MP13_OP1			BIT(1)
++#define STM32MP13_OP0			BIT(0)
 +
 +/* STM32MP13_ADC_HWCFGR0 - bit fields */
 +#define STM32MP13_ADCNUM_SHIFT		0
@@ -1198,18 +1436,26 @@ index 2322809bf..e94c3df10 100644
  
  #endif
 diff --git a/drivers/iio/adc/stm32-adc.c b/drivers/iio/adc/stm32-adc.c
-index e3e75413b..d4492ce0d 100644
+index ef5b54ed9661..d05e081e1009 100644
 --- a/drivers/iio/adc/stm32-adc.c
 +++ b/drivers/iio/adc/stm32-adc.c
-@@ -7,6 +7,7 @@
+@@ -6,12 +6,15 @@
+  * Author: Fabrice Gasnier <fabrice.gasnier@st.com>.
   */
  
++#include <linux/bitfield.h>
  #include <linux/clk.h>
 +#include <linux/debugfs.h>
  #include <linux/delay.h>
  #include <linux/dma-mapping.h>
  #include <linux/dmaengine.h>
-@@ -21,6 +22,7 @@
+ #include <linux/iio/iio.h>
+ #include <linux/iio/buffer.h>
++#include <linux/iio/sysfs.h>
+ #include <linux/iio/timer/stm32-lptim-trigger.h>
+ #include <linux/iio/timer/stm32-timer-trigger.h>
+ #include <linux/iio/trigger.h>
+@@ -21,10 +24,12 @@
  #include <linux/io.h>
  #include <linux/iopoll.h>
  #include <linux/module.h>
@@ -1217,7 +1463,12 @@ index e3e75413b..d4492ce0d 100644
  #include <linux/platform_device.h>
  #include <linux/pm_runtime.h>
  #include <linux/of.h>
-@@ -35,12 +37,13 @@
+ #include <linux/of_device.h>
++#include <linux/util_macros.h>
+ 
+ #include "stm32-adc-core.h"
+ 
+@@ -35,12 +40,13 @@
  #define STM32H7_BOOST_CLKRATE		20000000UL
  
  #define STM32_ADC_CH_MAX		20	/* max number of channels */
@@ -1232,13 +1483,15 @@ index e3e75413b..d4492ce0d 100644
  
  #define STM32_DMA_BUFFER_SIZE		PAGE_SIZE
  
-@@ -77,6 +80,30 @@ enum stm32_adc_extsel {
+@@ -77,6 +83,34 @@ enum stm32_adc_extsel {
  	STM32_EXT20,
  };
  
 +enum stm32_adc_int_ch {
 +	STM32_ADC_INT_CH_NONE = -1,
 +	STM32_ADC_INT_CH_VDDCORE,
++	STM32_ADC_INT_CH_VDDCPU,
++	STM32_ADC_INT_CH_VDDQ_DDR,
 +	STM32_ADC_INT_CH_VREFINT,
 +	STM32_ADC_INT_CH_VBAT,
 +	STM32_ADC_INT_CH_NB,
@@ -1256,6 +1509,8 @@ index e3e75413b..d4492ce0d 100644
 +
 +static const struct stm32_adc_ic stm32_adc_ic[STM32_ADC_INT_CH_NB] = {
 +	{ "vddcore", STM32_ADC_INT_CH_VDDCORE },
++	{ "vddcpu", STM32_ADC_INT_CH_VDDCPU },
++	{ "vddq_ddr", STM32_ADC_INT_CH_VDDQ_DDR },
 +	{ "vrefint", STM32_ADC_INT_CH_VREFINT },
 +	{ "vbat", STM32_ADC_INT_CH_VBAT },
 +};
@@ -1263,7 +1518,7 @@ index e3e75413b..d4492ce0d 100644
  /**
   * struct stm32_adc_trig_info - ADC trigger info
   * @name:		name of the trigger, corresponding to its source
-@@ -89,16 +116,12 @@ struct stm32_adc_trig_info {
+@@ -89,16 +123,12 @@ struct stm32_adc_trig_info {
  
  /**
   * struct stm32_adc_calib - optional adc calibration data
@@ -1282,7 +1537,7 @@ index e3e75413b..d4492ce0d 100644
  };
  
  /**
-@@ -113,6 +136,16 @@ struct stm32_adc_regs {
+@@ -113,6 +143,16 @@ struct stm32_adc_regs {
  	int shift;
  };
  
@@ -1299,67 +1554,75 @@ index e3e75413b..d4492ce0d 100644
  /**
   * struct stm32_adc_regspec - stm32 registers definition
   * @dr:			data register offset
-@@ -124,8 +157,12 @@ struct stm32_adc_regs {
+@@ -124,8 +164,14 @@ struct stm32_adc_regs {
   * @exten:		trigger control register & bitfield
   * @extsel:		trigger selection register & bitfield
   * @res:		resolution selection register & bitfield
 + * @difsel:		differential mode selection register & bitfield
   * @smpr:		smpr1 & smpr2 registers offset array
   * @smp_bits:		smpr1 & smpr2 index and bitfields
-+ * @or_vdd:		option register & vddcore bitfield
++ * @or_vddcore:		option register & vddcore bitfield
++ * @or_vddcpu:		option register & vddcpu bitfield
++ * @or_vddq_ddr:	option register & vddq_ddr bitfield
 + * @ccr_vbat:		common register & vbat bitfield
 + * @ccr_vref:		common register & vrefint bitfield
   */
  struct stm32_adc_regspec {
  	const u32 dr;
-@@ -137,8 +174,12 @@ struct stm32_adc_regspec {
+@@ -137,8 +183,14 @@ struct stm32_adc_regspec {
  	const struct stm32_adc_regs exten;
  	const struct stm32_adc_regs extsel;
  	const struct stm32_adc_regs res;
 +	const struct stm32_adc_regs difsel;
  	const u32 smpr[2];
  	const struct stm32_adc_regs *smp_bits;
-+	const struct stm32_adc_regs or_vdd;
++	const struct stm32_adc_regs or_vddcore;
++	const struct stm32_adc_regs or_vddcpu;
++	const struct stm32_adc_regs or_vddq_ddr;
 +	const struct stm32_adc_regs ccr_vbat;
 +	const struct stm32_adc_regs ccr_vref;
  };
  
  struct stm32_adc;
-@@ -150,12 +191,16 @@ struct stm32_adc;
+@@ -150,12 +202,18 @@ struct stm32_adc;
   * @trigs:		external trigger sources
   * @clk_required:	clock is required
   * @has_vregready:	vregready status flag presence
 + * @has_boostmode:	boost mode support flag
 + * @has_linearcal:	linear calibration support flag
 + * @has_presel:		channel preselection support flag
++ * @has_oversampling:	oversampling support flag
   * @prepare:		optional prepare routine (power-up, enable)
   * @start_conv:		routine to start conversions
   * @stop_conv:		routine to stop conversions
   * @unprepare:		optional unprepare routine (disable, power-down)
   * @irq_clear:		routine to clear irqs
++ * @set_ovs:		routine to set oversampling configuration
   * @smp_cycles:		programmable sampling time (ADC clock cycles)
-+ * @ts_vrefint_ns:	vrefint minimum sampling time in ns
++ * @ts_int_ch:		pointer to array of internal channels minimum sampling time in ns
   */
  struct stm32_adc_cfg {
  	const struct stm32_adc_regspec	*regs;
-@@ -163,12 +208,16 @@ struct stm32_adc_cfg {
+@@ -163,12 +221,18 @@ struct stm32_adc_cfg {
  	struct stm32_adc_trig_info	*trigs;
  	bool clk_required;
  	bool has_vregready;
 +	bool has_boostmode;
 +	bool has_linearcal;
 +	bool has_presel;
++	bool has_oversampling;
  	int (*prepare)(struct iio_dev *);
  	void (*start_conv)(struct iio_dev *, bool dma);
  	void (*stop_conv)(struct iio_dev *);
  	void (*unprepare)(struct iio_dev *);
  	void (*irq_clear)(struct iio_dev *indio_dev, u32 msk);
++	void (*set_ovs)(struct iio_dev *indio_dev, u32 ovs_idx);
  	const unsigned int *smp_cycles;
-+	const unsigned int ts_vrefint_ns;
++	const unsigned int *ts_int_ch;
  };
  
  /**
-@@ -193,7 +242,10 @@ struct stm32_adc_cfg {
+@@ -193,7 +257,11 @@ struct stm32_adc_cfg {
   * @pcsel:		bitmask to preselect channels on some devices
   * @smpr_val:		sampling time settings (e.g. smpr1 / smpr2)
   * @cal:		optional calibration data on some devices
@@ -1367,10 +1630,11 @@ index e3e75413b..d4492ce0d 100644
   * @chan_name:		channel name array
 + * @num_diff:		number of differential channels
 + * @int_ch:		internal channel indexes array
++ * @ovs_idx:		current oversampling ratio index (in oversampling array)
   */
  struct stm32_adc {
  	struct stm32_adc_common	*common;
-@@ -216,7 +268,10 @@ struct stm32_adc {
+@@ -216,7 +284,11 @@ struct stm32_adc {
  	u32			pcsel;
  	u32			smpr_val[2];
  	struct stm32_adc_calib	cal;
@@ -1378,32 +1642,63 @@ index e3e75413b..d4492ce0d 100644
  	char			chan_name[STM32_ADC_CH_MAX][STM32_ADC_CH_SZ];
 +	u32			num_diff;
 +	int			int_ch[STM32_ADC_INT_CH_NB];
++	int			ovs_idx;
  };
  
  struct stm32_adc_diff_channel {
-@@ -260,6 +315,13 @@ static const struct stm32_adc_info stm32h7_adc_info = {
- 	.num_res = ARRAY_SIZE(stm32h7_adc_resolutions),
+@@ -228,12 +300,24 @@ struct stm32_adc_diff_channel {
+  * struct stm32_adc_info - stm32 ADC, per instance config data
+  * @max_channels:	Number of channels
+  * @resolutions:	available resolutions
++ * @oversampling:	available oversampling ratios
+  * @num_res:		number of available resolutions
++ * @num_ovs:		number of available oversampling ratios
+  */
+ struct stm32_adc_info {
+ 	int max_channels;
+ 	const unsigned int *resolutions;
++	const unsigned int *oversampling;
+ 	const unsigned int num_res;
++	const unsigned int num_ovs;
++};
++
++static const unsigned int stm32h7_adc_oversampling_avail[] = {
++1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024
++};
++
++static const unsigned int stm32mp13_adc_oversampling_avail[] = {
++1, 2, 4, 8, 16, 32, 64, 128, 256
  };
  
+ static const unsigned int stm32f4_adc_resolutions[] = {
+@@ -257,7 +341,18 @@ static const unsigned int stm32h7_adc_resolutions[] = {
+ static const struct stm32_adc_info stm32h7_adc_info = {
+ 	.max_channels = STM32_ADC_CH_MAX,
+ 	.resolutions = stm32h7_adc_resolutions,
++	.oversampling = stm32h7_adc_oversampling_avail,
+ 	.num_res = ARRAY_SIZE(stm32h7_adc_resolutions),
++	.num_ovs = ARRAY_SIZE(stm32h7_adc_oversampling_avail),
++};
++
 +/* stm32mp13 can have up to 19 channels */
 +static const struct stm32_adc_info stm32mp13_adc_info = {
 +	.max_channels = 19,
 +	.resolutions = stm32f4_adc_resolutions,
++	.oversampling = stm32mp13_adc_oversampling_avail,
 +	.num_res = ARRAY_SIZE(stm32f4_adc_resolutions),
-+};
-+
++	.num_ovs = ARRAY_SIZE(stm32mp13_adc_oversampling_avail),
+ };
+ 
  /*
-  * stm32f4_sq - describe regular sequence registers
-  * - L: sequence len (register & bit field)
-@@ -445,8 +507,52 @@ static const struct stm32_adc_regspec stm32h7_adc_regspec = {
+@@ -445,10 +540,56 @@ static const struct stm32_adc_regspec stm32h7_adc_regspec = {
  	.extsel = { STM32H7_ADC_CFGR, STM32H7_EXTSEL_MASK,
  		    STM32H7_EXTSEL_SHIFT },
  	.res = { STM32H7_ADC_CFGR, STM32H7_RES_MASK, STM32H7_RES_SHIFT },
 +	.difsel = { STM32H7_ADC_DIFSEL, STM32H7_DIFSEL_MASK},
-+	.smpr = { STM32H7_ADC_SMPR1, STM32H7_ADC_SMPR2 },
-+	.smp_bits = stm32h7_smp_bits,
-+};
-+
+ 	.smpr = { STM32H7_ADC_SMPR1, STM32H7_ADC_SMPR2 },
+ 	.smp_bits = stm32h7_smp_bits,
+ };
+ 
 +/* STM32MP13 programmable sampling time (ADC clock cycles, rounded down) */
 +static const unsigned int stm32mp13_adc_smp_cycles[STM32_ADC_MAX_SMP + 1] = {
 +	2, 6, 12, 24, 47, 92, 247, 640,
@@ -1423,7 +1718,9 @@ index e3e75413b..d4492ce0d 100644
 +	.difsel = { STM32MP13_ADC_DIFSEL, STM32MP13_DIFSEL_MASK},
 +	.smpr = { STM32H7_ADC_SMPR1, STM32H7_ADC_SMPR2 },
 +	.smp_bits = stm32h7_smp_bits,
-+	.or_vdd = { STM32MP13_ADC2_OR, STM32MP13_VDDCOREEN },
++	.or_vddcore = { STM32MP13_ADC2_OR, STM32MP13_OP0 },
++	.or_vddcpu = { STM32MP13_ADC2_OR, STM32MP13_OP1 },
++	.or_vddq_ddr = { STM32MP13_ADC2_OR, STM32MP13_OP2 },
 +	.ccr_vbat = { STM32H7_ADC_CCR, STM32H7_VBATEN },
 +	.ccr_vref = { STM32H7_ADC_CCR, STM32H7_VREFEN },
 +};
@@ -1440,15 +1737,17 @@ index e3e75413b..d4492ce0d 100644
 +		    STM32H7_EXTSEL_SHIFT },
 +	.res = { STM32H7_ADC_CFGR, STM32H7_RES_MASK, STM32H7_RES_SHIFT },
 +	.difsel = { STM32H7_ADC_DIFSEL, STM32H7_DIFSEL_MASK},
- 	.smpr = { STM32H7_ADC_SMPR1, STM32H7_ADC_SMPR2 },
- 	.smp_bits = stm32h7_smp_bits,
-+	.or_vdd = { STM32MP1_ADC2_OR, STM32MP1_VDDCOREEN },
++	.smpr = { STM32H7_ADC_SMPR1, STM32H7_ADC_SMPR2 },
++	.smp_bits = stm32h7_smp_bits,
++	.or_vddcore = { STM32MP1_ADC2_OR, STM32MP1_VDDCOREEN },
 +	.ccr_vbat = { STM32H7_ADC_CCR, STM32H7_VBATEN },
 +	.ccr_vref = { STM32H7_ADC_CCR, STM32H7_VREFEN },
- };
- 
++};
++
  /*
-@@ -487,6 +593,14 @@ static void stm32_adc_set_bits(struct stm32_adc *adc, u32 reg, u32 bits)
+  * STM32 ADC registers access routines
+  * @adc: stm32 adc instance
+@@ -487,6 +628,14 @@ static void stm32_adc_set_bits(struct stm32_adc *adc, u32 reg, u32 bits)
  	spin_unlock_irqrestore(&adc->lock, flags);
  }
  
@@ -1463,7 +1762,7 @@ index e3e75413b..d4492ce0d 100644
  static void stm32_adc_clr_bits(struct stm32_adc *adc, u32 reg, u32 bits)
  {
  	unsigned long flags;
-@@ -496,6 +610,14 @@ static void stm32_adc_clr_bits(struct stm32_adc *adc, u32 reg, u32 bits)
+@@ -496,6 +645,14 @@ static void stm32_adc_clr_bits(struct stm32_adc *adc, u32 reg, u32 bits)
  	spin_unlock_irqrestore(&adc->lock, flags);
  }
  
@@ -1478,7 +1777,7 @@ index e3e75413b..d4492ce0d 100644
  /**
   * stm32_adc_conv_irq_enable() - Enable end of conversion interrupt
   * @adc: stm32 adc instance
-@@ -577,6 +699,60 @@ static int stm32_adc_hw_start(struct device *dev)
+@@ -577,6 +734,78 @@ static int stm32_adc_hw_start(struct device *dev)
  	return ret;
  }
  
@@ -1494,8 +1793,18 @@ index e3e75413b..d4492ce0d 100644
 +		switch (i) {
 +		case STM32_ADC_INT_CH_VDDCORE:
 +			dev_dbg(&indio_dev->dev, "Enable VDDCore\n");
-+			stm32_adc_set_bits(adc, adc->cfg->regs->or_vdd.reg,
-+					   adc->cfg->regs->or_vdd.mask);
++			stm32_adc_set_bits(adc, adc->cfg->regs->or_vddcore.reg,
++					   adc->cfg->regs->or_vddcore.mask);
++			break;
++		case STM32_ADC_INT_CH_VDDCPU:
++			dev_dbg(&indio_dev->dev, "Enable VDDCPU\n");
++			stm32_adc_set_bits(adc, adc->cfg->regs->or_vddcpu.reg,
++					   adc->cfg->regs->or_vddcpu.mask);
++			break;
++		case STM32_ADC_INT_CH_VDDQ_DDR:
++			dev_dbg(&indio_dev->dev, "Enable VDDQ_DDR\n");
++			stm32_adc_set_bits(adc, adc->cfg->regs->or_vddq_ddr.reg,
++					   adc->cfg->regs->or_vddq_ddr.mask);
 +			break;
 +		case STM32_ADC_INT_CH_VREFINT:
 +			dev_dbg(&indio_dev->dev, "Enable VREFInt\n");
@@ -1521,8 +1830,16 @@ index e3e75413b..d4492ce0d 100644
 +
 +		switch (i) {
 +		case STM32_ADC_INT_CH_VDDCORE:
-+			stm32_adc_clr_bits(adc, adc->cfg->regs->or_vdd.reg,
-+					   adc->cfg->regs->or_vdd.mask);
++			stm32_adc_clr_bits(adc, adc->cfg->regs->or_vddcore.reg,
++					   adc->cfg->regs->or_vddcore.mask);
++			break;
++		case STM32_ADC_INT_CH_VDDCPU:
++			stm32_adc_clr_bits(adc, adc->cfg->regs->or_vddcpu.reg,
++					   adc->cfg->regs->or_vddcpu.mask);
++			break;
++		case STM32_ADC_INT_CH_VDDQ_DDR:
++			stm32_adc_clr_bits(adc, adc->cfg->regs->or_vddq_ddr.reg,
++					   adc->cfg->regs->or_vddq_ddr.mask);
 +			break;
 +		case STM32_ADC_INT_CH_VREFINT:
 +			stm32_adc_clr_bits_common(adc, adc->cfg->regs->ccr_vref.reg,
@@ -1539,7 +1856,7 @@ index e3e75413b..d4492ce0d 100644
  /**
   * stm32f4_adc_start_conv() - Start conversions for regular channels.
   * @indio_dev: IIO device instance
-@@ -661,6 +837,7 @@ static void stm32h7_adc_stop_conv(struct iio_dev *indio_dev)
+@@ -661,6 +890,7 @@ static void stm32h7_adc_stop_conv(struct iio_dev *indio_dev)
  	if (ret)
  		dev_warn(&indio_dev->dev, "stop failed\n");
  
@@ -1547,7 +1864,7 @@ index e3e75413b..d4492ce0d 100644
  	stm32_adc_clr_bits(adc, STM32H7_ADC_CFGR, STM32H7_DMNGT_MASK);
  }
  
-@@ -671,6 +848,17 @@ static void stm32h7_adc_irq_clear(struct iio_dev *indio_dev, u32 msk)
+@@ -671,6 +901,55 @@ static void stm32h7_adc_irq_clear(struct iio_dev *indio_dev, u32 msk)
  	stm32_adc_set_bits(adc, adc->cfg->regs->isr_eoc.reg, msk);
  }
  
@@ -1562,10 +1879,48 @@ index e3e75413b..d4492ce0d 100644
 +	stm32_adc_set_bits(adc, STM32H7_ADC_CR, STM32H7_ADSTART);
 +}
 +
++static void stm32h7_adc_set_ovs(struct iio_dev *indio_dev, u32 ovs_idx)
++{
++	struct stm32_adc *adc = iio_priv(indio_dev);
++	u32 ovsr_bits, bits, msk = STM32H7_ROVSE;
++
++	msk |= STM32H7_OVSR_MASK | STM32H7_OVSS_MASK;
++	stm32_adc_clr_bits(adc, STM32H7_ADC_CFGR2, msk);
++
++	if (!ovs_idx)
++		return;
++
++	bits = STM32H7_ROVSE;
++	ovsr_bits = (1 << ovs_idx) - 1;
++	bits |= ovsr_bits << STM32H7_OVSR_SHIFT;
++	bits |= ovs_idx << STM32H7_OVSS_SHIFT;
++
++	stm32_adc_set_bits(adc, STM32H7_ADC_CFGR2, bits & msk);
++}
++
++static void stm32mp13_adc_set_ovs(struct iio_dev *indio_dev, u32 ovs_idx)
++{
++	struct stm32_adc *adc = iio_priv(indio_dev);
++	u32 bits, msk = STM32H7_ROVSE;
++
++	msk |= STM32MP13_OVSR_MASK | STM32MP13_OVSS_MASK;
++	stm32_adc_clr_bits(adc, STM32H7_ADC_CFGR2, msk);
++
++	if (!ovs_idx)
++		return;
++
++	bits = STM32H7_ROVSE;
++	if (ovs_idx - 1)
++		bits |= (ovs_idx - 1) << STM32MP13_OVSR_SHIFT;
++	bits |= ovs_idx << STM32MP13_OVSS_SHIFT;
++
++	stm32_adc_set_bits(adc, STM32H7_ADC_CFGR2, bits & msk);
++}
++
  static int stm32h7_adc_exit_pwr_down(struct iio_dev *indio_dev)
  {
  	struct stm32_adc *adc = iio_priv(indio_dev);
-@@ -681,7 +869,8 @@ static int stm32h7_adc_exit_pwr_down(struct iio_dev *indio_dev)
+@@ -681,7 +960,8 @@ static int stm32h7_adc_exit_pwr_down(struct iio_dev *indio_dev)
  	stm32_adc_clr_bits(adc, STM32H7_ADC_CR, STM32H7_DEEPPWD);
  	stm32_adc_set_bits(adc, STM32H7_ADC_CR, STM32H7_ADVREGEN);
  
@@ -1575,7 +1930,7 @@ index e3e75413b..d4492ce0d 100644
  		stm32_adc_set_bits(adc, STM32H7_ADC_CR, STM32H7_BOOST);
  
  	/* Wait for startup time */
-@@ -703,7 +892,8 @@ static int stm32h7_adc_exit_pwr_down(struct iio_dev *indio_dev)
+@@ -703,7 +983,8 @@ static int stm32h7_adc_exit_pwr_down(struct iio_dev *indio_dev)
  
  static void stm32h7_adc_enter_pwr_down(struct stm32_adc *adc)
  {
@@ -1585,7 +1940,7 @@ index e3e75413b..d4492ce0d 100644
  
  	/* Setting DEEPPWD disables ADC vreg and clears ADVREGEN */
  	stm32_adc_set_bits(adc, STM32H7_ADC_CR, STM32H7_DEEPPWD);
-@@ -738,6 +928,9 @@ static void stm32h7_adc_disable(struct iio_dev *indio_dev)
+@@ -738,6 +1019,9 @@ static void stm32h7_adc_disable(struct iio_dev *indio_dev)
  	int ret;
  	u32 val;
  
@@ -1595,7 +1950,7 @@ index e3e75413b..d4492ce0d 100644
  	/* Disable ADC and wait until it's effectively disabled */
  	stm32_adc_set_bits(adc, STM32H7_ADC_CR, STM32H7_ADDIS);
  	ret = stm32_adc_readl_poll_timeout(STM32H7_ADC_CR, val,
-@@ -779,14 +972,7 @@ static int stm32h7_adc_read_selfcalib(struct iio_dev *indio_dev)
+@@ -779,14 +1063,7 @@ static int stm32h7_adc_read_selfcalib(struct iio_dev *indio_dev)
  
  		lincalrdyw_mask >>= 1;
  	}
@@ -1611,7 +1966,7 @@ index e3e75413b..d4492ce0d 100644
  
  	return 0;
  }
-@@ -802,10 +988,6 @@ static int stm32h7_adc_restore_selfcalib(struct iio_dev *indio_dev)
+@@ -802,10 +1079,6 @@ static int stm32h7_adc_restore_selfcalib(struct iio_dev *indio_dev)
  	int i, ret;
  	u32 lincalrdyw_mask, val;
  
@@ -1622,7 +1977,7 @@ index e3e75413b..d4492ce0d 100644
  	lincalrdyw_mask = STM32H7_LINCALRDYW6;
  	for (i = STM32H7_LINCALFACT_NUM - 1; i >= 0; i--) {
  		/*
-@@ -867,24 +1049,30 @@ static int stm32h7_adc_restore_selfcalib(struct iio_dev *indio_dev)
+@@ -867,24 +1140,30 @@ static int stm32h7_adc_restore_selfcalib(struct iio_dev *indio_dev)
  /**
   * stm32h7_adc_selfcalib() - Procedure to calibrate ADC
   * @indio_dev: IIO device instance
@@ -1659,7 +2014,7 @@ index e3e75413b..d4492ce0d 100644
  
  	/* Start calibration, then wait for completion */
  	stm32_adc_set_bits(adc, STM32H7_ADC_CR, STM32H7_ADCAL);
-@@ -892,7 +1080,7 @@ static int stm32h7_adc_selfcalib(struct iio_dev *indio_dev)
+@@ -892,7 +1171,7 @@ static int stm32h7_adc_selfcalib(struct iio_dev *indio_dev)
  					   !(val & STM32H7_ADCAL), 100,
  					   STM32H7_ADC_CALIB_TIMEOUT_US);
  	if (ret) {
@@ -1668,7 +2023,7 @@ index e3e75413b..d4492ce0d 100644
  		goto out;
  	}
  
-@@ -902,24 +1090,50 @@ static int stm32h7_adc_selfcalib(struct iio_dev *indio_dev)
+@@ -902,24 +1181,50 @@ static int stm32h7_adc_selfcalib(struct iio_dev *indio_dev)
  	 * - Linearity calibration (needs to be done only once for single/diff)
  	 *   will run simultaneously with offset calibration.
  	 */
@@ -1724,7 +2079,7 @@ index e3e75413b..d4492ce0d 100644
  /**
   * stm32h7_adc_prepare() - Leave power down mode to enable ADC.
   * @indio_dev: IIO device instance
-@@ -934,37 +1148,48 @@ static int stm32h7_adc_selfcalib(struct iio_dev *indio_dev)
+@@ -934,37 +1239,48 @@ static int stm32h7_adc_selfcalib(struct iio_dev *indio_dev)
  static int stm32h7_adc_prepare(struct iio_dev *indio_dev)
  {
  	struct stm32_adc *adc = iio_priv(indio_dev);
@@ -1786,7 +2141,7 @@ index e3e75413b..d4492ce0d 100644
  pwr_dwn:
  	stm32h7_adc_enter_pwr_down(adc);
  
-@@ -975,8 +1200,10 @@ static void stm32h7_adc_unprepare(struct iio_dev *indio_dev)
+@@ -975,8 +1291,10 @@ static void stm32h7_adc_unprepare(struct iio_dev *indio_dev)
  {
  	struct stm32_adc *adc = iio_priv(indio_dev);
  
@@ -1798,7 +2153,79 @@ index e3e75413b..d4492ce0d 100644
  	stm32h7_adc_enter_pwr_down(adc);
  }
  
-@@ -1213,6 +1440,7 @@ static int stm32_adc_read_raw(struct iio_dev *indio_dev,
+@@ -1204,6 +1522,71 @@ static int stm32_adc_single_conv(struct iio_dev *indio_dev,
+ 	return ret;
+ }
+ 
++static int stm32_adc_write_raw(struct iio_dev *indio_dev, struct iio_chan_spec const *chan,
++			       int val, int val2, long mask)
++{
++	struct stm32_adc *adc = iio_priv(indio_dev);
++	struct device *dev = indio_dev->dev.parent;
++	int nb = adc->cfg->adc_info->num_ovs;
++	u32 idx;
++	int ret;
++
++	switch (mask) {
++	case IIO_CHAN_INFO_OVERSAMPLING_RATIO:
++		ret = iio_device_claim_direct_mode(indio_dev);
++		if (ret)
++			return ret;
++
++		if (val2) {
++			ret = -EINVAL;
++			goto err;
++		}
++
++		for (idx = 0; idx < nb; idx++)
++			if (adc->cfg->adc_info->oversampling[idx] == val)
++				break;
++
++		if (idx >= nb) {
++			ret = -EINVAL;
++			goto err;
++		}
++
++		ret = pm_runtime_resume_and_get(dev);
++		if (ret < 0)
++			goto err;
++
++		adc->cfg->set_ovs(indio_dev, idx);
++
++		pm_runtime_mark_last_busy(dev);
++		pm_runtime_put_autosuspend(dev);
++
++		adc->ovs_idx = idx;
++
++err:
++		iio_device_release_direct_mode(indio_dev);
++
++		return ret;
++	default:
++		return -EINVAL;
++	}
++}
++
++static int stm32_adc_read_avail(struct iio_dev *indio_dev, struct iio_chan_spec const *chan,
++				const int **vals, int *type, int *length, long m)
++{
++	struct stm32_adc *adc = iio_priv(indio_dev);
++
++	switch (m) {
++	case IIO_CHAN_INFO_OVERSAMPLING_RATIO:
++		*type = IIO_VAL_INT;
++		*length = adc->cfg->adc_info->num_ovs;
++		*vals = adc->cfg->adc_info->oversampling;
++		return IIO_AVAIL_LIST;
++	default:
++		return -EINVAL;
++	}
++}
++
+ static int stm32_adc_read_raw(struct iio_dev *indio_dev,
+ 			      struct iio_chan_spec const *chan,
+ 			      int *val, int *val2, long mask)
+@@ -1213,6 +1596,7 @@ static int stm32_adc_read_raw(struct iio_dev *indio_dev,
  
  	switch (mask) {
  	case IIO_CHAN_INFO_RAW:
@@ -1806,7 +2233,7 @@ index e3e75413b..d4492ce0d 100644
  		ret = iio_device_claim_direct_mode(indio_dev);
  		if (ret)
  			return ret;
-@@ -1220,6 +1448,10 @@ static int stm32_adc_read_raw(struct iio_dev *indio_dev,
+@@ -1220,6 +1604,10 @@ static int stm32_adc_read_raw(struct iio_dev *indio_dev,
  			ret = stm32_adc_single_conv(indio_dev, chan, val);
  		else
  			ret = -EINVAL;
@@ -1817,38 +2244,27 @@ index e3e75413b..d4492ce0d 100644
  		iio_device_release_direct_mode(indio_dev);
  		return ret;
  
-@@ -1259,7 +1491,6 @@ static irqreturn_t stm32_adc_threaded_isr(int irq, void *data)
- 	struct stm32_adc *adc = iio_priv(indio_dev);
- 	const struct stm32_adc_regspec *regs = adc->cfg->regs;
- 	u32 status = stm32_adc_readl(adc, regs->isr_eoc.reg);
--	u32 mask = stm32_adc_readl(adc, regs->ier_eoc.reg);
+@@ -1241,6 +1629,10 @@ static int stm32_adc_read_raw(struct iio_dev *indio_dev,
+ 			*val = 0;
+ 		return IIO_VAL_INT;
  
- 	/* Check ovr status right now, as ovr mask should be already disabled */
- 	if (status & regs->isr_ovr.mask) {
-@@ -1274,11 +1505,6 @@ static irqreturn_t stm32_adc_threaded_isr(int irq, void *data)
- 		return IRQ_HANDLED;
++	case IIO_CHAN_INFO_OVERSAMPLING_RATIO:
++		*val = adc->cfg->adc_info->oversampling[adc->ovs_idx];
++		return IIO_VAL_INT;
++
+ 	default:
+ 		return -EINVAL;
  	}
+@@ -1417,6 +1809,8 @@ static int stm32_adc_debugfs_reg_access(struct iio_dev *indio_dev,
  
--	if (!(status & mask))
--		dev_err_ratelimited(&indio_dev->dev,
--				    "Unexpected IRQ: IER=0x%08x, ISR=0x%08x\n",
--				    mask, status);
--
- 	return IRQ_NONE;
- }
- 
-@@ -1288,10 +1514,6 @@ static irqreturn_t stm32_adc_isr(int irq, void *data)
- 	struct stm32_adc *adc = iio_priv(indio_dev);
- 	const struct stm32_adc_regspec *regs = adc->cfg->regs;
- 	u32 status = stm32_adc_readl(adc, regs->isr_eoc.reg);
--	u32 mask = stm32_adc_readl(adc, regs->ier_eoc.reg);
--
--	if (!(status & mask))
--		return IRQ_WAKE_THREAD;
- 
- 	if (status & regs->isr_ovr.mask) {
- 		/*
-@@ -1628,6 +1850,23 @@ static const struct iio_chan_spec_ext_info stm32_adc_ext_info[] = {
+ static const struct iio_info stm32_adc_iio_info = {
+ 	.read_raw = stm32_adc_read_raw,
++	.write_raw = stm32_adc_write_raw,
++	.read_avail = stm32_adc_read_avail,
+ 	.validate_trigger = stm32_adc_validate_trigger,
+ 	.hwfifo_set_watermark = stm32_adc_set_watermark,
+ 	.update_scan_mode = stm32_adc_update_scan_mode,
+@@ -1618,6 +2012,23 @@ static const struct iio_chan_spec_ext_info stm32_adc_ext_info[] = {
  	{},
  };
  
@@ -1872,21 +2288,24 @@ index e3e75413b..d4492ce0d 100644
  static int stm32_adc_of_get_resolution(struct iio_dev *indio_dev)
  {
  	struct device_node *node = indio_dev->dev.of_node;
-@@ -1658,6 +1897,13 @@ static void stm32_adc_smpr_init(struct stm32_adc *adc, int channel, u32 smp_ns)
+@@ -1646,7 +2057,15 @@ static void stm32_adc_smpr_init(struct stm32_adc *adc, int channel, u32 smp_ns)
+ {
+ 	const struct stm32_adc_regs *smpr = &adc->cfg->regs->smp_bits[channel];
  	u32 period_ns, shift = smpr->shift, mask = smpr->mask;
- 	unsigned int smp, r = smpr->reg;
- 
+-	unsigned int smp, r = smpr->reg;
++	unsigned int i, smp, r = smpr->reg;
++
 +	/*
-+	 * For vrefint channel, ensure that the sampling time cannot
++	 * For internal channels, ensure that the sampling time cannot
 +	 * be lower than the one specified in the datasheet
 +	 */
-+	if (channel == adc->int_ch[STM32_ADC_INT_CH_VREFINT])
-+		smp_ns = max(smp_ns, adc->cfg->ts_vrefint_ns);
-+
++	for (i = 0; i < STM32_ADC_INT_CH_NB; i++)
++		if (channel == adc->int_ch[i] && adc->int_ch[i] != STM32_ADC_INT_CH_NONE)
++			smp_ns = max(smp_ns, adc->cfg->ts_int_ch[i]);
+ 
  	/* Determine sampling time (ADC clock cycles) */
  	period_ns = NSEC_PER_SEC / adc->common->rate;
- 	for (smp = 0; smp <= STM32_ADC_MAX_SMP; smp++)
-@@ -1689,7 +1935,10 @@ static void stm32_adc_chan_init_one(struct iio_dev *indio_dev,
+@@ -1679,9 +2098,16 @@ static void stm32_adc_chan_init_one(struct iio_dev *indio_dev,
  	chan->datasheet_name = name;
  	chan->scan_index = scan_index;
  	chan->indexed = 1;
@@ -1897,8 +2316,14 @@ index e3e75413b..d4492ce0d 100644
 +		chan->info_mask_separate = BIT(IIO_CHAN_INFO_RAW);
  	chan->info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE) |
  					 BIT(IIO_CHAN_INFO_OFFSET);
++	if (adc->cfg->has_oversampling) {
++		chan->info_mask_shared_by_all |= BIT(IIO_CHAN_INFO_OVERSAMPLING_RATIO);
++		chan->info_mask_shared_by_all_available = BIT(IIO_CHAN_INFO_OVERSAMPLING_RATIO);
++	}
  	chan->scan_type.sign = 'u';
-@@ -1701,23 +1950,17 @@ static void stm32_adc_chan_init_one(struct iio_dev *indio_dev,
+ 	chan->scan_type.realbits = adc->cfg->adc_info->resolutions[adc->res];
+ 	chan->scan_type.storagebits = 16;
+@@ -1691,23 +2117,17 @@ static void stm32_adc_chan_init_one(struct iio_dev *indio_dev,
  	adc->pcsel |= BIT(chan->channel);
  	if (differential) {
  		/* pre-build diff channels mask */
@@ -1925,7 +2350,7 @@ index e3e75413b..d4492ce0d 100644
  
  	ret = of_property_count_u32_elems(node, "st,adc-channels");
  	if (ret > adc_info->max_channels) {
-@@ -1728,24 +1971,13 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev, bool timestamping)
+@@ -1718,24 +2138,13 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev, bool timestamping)
  	}
  
  	ret = of_property_count_elems_of_size(node, "st,adc-diff-channels",
@@ -1952,7 +2377,7 @@ index e3e75413b..d4492ce0d 100644
  	}
  
  	/* Optional sample time is provided either for each, or all channels */
-@@ -1755,13 +1987,45 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev, bool timestamping)
+@@ -1745,13 +2154,45 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev, bool timestamping)
  		return -EINVAL;
  	}
  
@@ -2004,7 +2429,7 @@ index e3e75413b..d4492ce0d 100644
  
  	of_property_for_each_u32(node, "st,adc-channels", prop, cur, val) {
  		if (val >= adc_info->max_channels) {
-@@ -1772,8 +2036,7 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev, bool timestamping)
+@@ -1762,8 +2203,7 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev, bool timestamping)
  		/* Channel can't be configured both as single-ended & diff */
  		for (i = 0; i < num_diff; i++) {
  			if (val == diff[i].vinp) {
@@ -2014,7 +2439,7 @@ index e3e75413b..d4492ce0d 100644
  				return -EINVAL;
  			}
  		}
-@@ -1782,19 +2045,6 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev, bool timestamping)
+@@ -1772,19 +2212,6 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev, bool timestamping)
  		scan_index++;
  	}
  
@@ -2034,7 +2459,7 @@ index e3e75413b..d4492ce0d 100644
  	for (i = 0; i < scan_index; i++) {
  		/*
  		 * Using of_property_read_u32_index(), smp value will only be
-@@ -1802,12 +2052,185 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev, bool timestamping)
+@@ -1792,12 +2219,215 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev, bool timestamping)
  		 * get either no value, 1 shared value for all indexes, or one
  		 * value per channel.
  		 */
@@ -2058,6 +2483,35 @@ index e3e75413b..d4492ce0d 100644
 +
 +	for (i = 0; i < STM32_ADC_INT_CH_NB; i++) {
 +		if (!strncmp(stm32_adc_ic[i].name, ch_name, STM32_ADC_CH_SZ)) {
++			/* Check internal channel availability */
++			switch (i) {
++			case STM32_ADC_INT_CH_VDDCORE:
++				if (!adc->cfg->regs->or_vddcore.reg)
++					dev_warn(&indio_dev->dev,
++						 "%s channel not available\n", ch_name);
++				break;
++			case STM32_ADC_INT_CH_VDDCPU:
++				if (!adc->cfg->regs->or_vddcpu.reg)
++					dev_warn(&indio_dev->dev,
++						 "%s channel not available\n", ch_name);
++				break;
++			case STM32_ADC_INT_CH_VDDQ_DDR:
++				if (!adc->cfg->regs->or_vddq_ddr.reg)
++					dev_warn(&indio_dev->dev,
++						 "%s channel not available\n", ch_name);
++				break;
++			case STM32_ADC_INT_CH_VREFINT:
++				if (!adc->cfg->regs->ccr_vref.reg)
++					dev_warn(&indio_dev->dev,
++						 "%s channel not available\n", ch_name);
++				break;
++			case STM32_ADC_INT_CH_VBAT:
++				if (!adc->cfg->regs->ccr_vbat.reg)
++					dev_warn(&indio_dev->dev,
++						 "%s channel not available\n", ch_name);
++				break;
++			}
++
 +			if (stm32_adc_ic[i].idx != STM32_ADC_INT_CH_VREFINT) {
 +				adc->int_ch[i] = chan;
 +				break;
@@ -2146,17 +2600,18 @@ index e3e75413b..d4492ce0d 100644
 +		stm32_adc_chan_init_one(indio_dev, &channels[scan_index], val,
 +					vin[1], scan_index, differential);
 +
++		val = 0;
 +		ret = of_property_read_u32(child, "st,min-sample-time-ns", &val);
 +		/* st,min-sample-time-ns is optional */
-+		if (!ret) {
-+			stm32_adc_smpr_init(adc, channels[scan_index].channel, val);
-+			if (differential)
-+				stm32_adc_smpr_init(adc, vin[1], val);
-+		} else if (ret != -EINVAL) {
++		if (ret && ret != -EINVAL) {
 +			dev_err(&indio_dev->dev, "Invalid st,min-sample-time-ns property %d\n",
 +				ret);
 +			goto err;
 +		}
++
++		stm32_adc_smpr_init(adc, channels[scan_index].channel, val);
++		if (differential)
++			stm32_adc_smpr_init(adc, vin[1], val);
 +
 +		scan_index++;
 +	}
@@ -2222,7 +2677,7 @@ index e3e75413b..d4492ce0d 100644
  	if (timestamping) {
  		struct iio_chan_spec *timestamp = &channels[scan_index];
  
-@@ -1982,6 +2405,9 @@ static int stm32_adc_probe(struct platform_device *pdev)
+@@ -1972,6 +2602,9 @@ static int stm32_adc_probe(struct platform_device *pdev)
  	pm_runtime_mark_last_busy(dev);
  	pm_runtime_put_autosuspend(dev);
  
@@ -2232,7 +2687,7 @@ index e3e75413b..d4492ce0d 100644
  	return 0;
  
  err_hw_stop:
-@@ -2010,6 +2436,7 @@ static int stm32_adc_remove(struct platform_device *pdev)
+@@ -2000,6 +2633,7 @@ static int stm32_adc_remove(struct platform_device *pdev)
  	struct stm32_adc *adc = iio_priv(indio_dev);
  
  	pm_runtime_get_sync(&pdev->dev);
@@ -2240,19 +2695,34 @@ index e3e75413b..d4492ce0d 100644
  	iio_device_unregister(indio_dev);
  	stm32_adc_hw_stop(&pdev->dev);
  	pm_runtime_disable(&pdev->dev);
-@@ -2091,6 +2518,9 @@ static const struct stm32_adc_cfg stm32h7_adc_cfg = {
+@@ -2077,35 +2711,72 @@ static const struct stm32_adc_cfg stm32f4_adc_cfg = {
+ 	.irq_clear = stm32f4_adc_irq_clear,
+ };
+ 
++const unsigned int stm32_adc_min_ts_h7[] = { 0, 0, 0, 4300, 9000 };
++static_assert(ARRAY_SIZE(stm32_adc_min_ts_h7) == STM32_ADC_INT_CH_NB);
++
+ static const struct stm32_adc_cfg stm32h7_adc_cfg = {
  	.regs = &stm32h7_adc_regspec,
  	.adc_info = &stm32h7_adc_info,
  	.trigs = stm32h7_adc_trigs,
 +	.has_boostmode = true,
 +	.has_linearcal = true,
 +	.has_presel = true,
++	.has_oversampling = true,
  	.start_conv = stm32h7_adc_start_conv,
  	.stop_conv = stm32h7_adc_stop_conv,
  	.prepare = stm32h7_adc_prepare,
-@@ -2100,22 +2530,40 @@ static const struct stm32_adc_cfg stm32h7_adc_cfg = {
+ 	.unprepare = stm32h7_adc_unprepare,
+ 	.smp_cycles = stm32h7_adc_smp_cycles,
+ 	.irq_clear = stm32h7_adc_irq_clear,
++	.set_ovs = stm32h7_adc_set_ovs,
++	.ts_int_ch = stm32_adc_min_ts_h7,
  };
  
++const unsigned int stm32_adc_min_ts_mp1[] = { 100, 100, 100, 4300, 9800 };
++static_assert(ARRAY_SIZE(stm32_adc_min_ts_mp1) == STM32_ADC_INT_CH_NB);
++
  static const struct stm32_adc_cfg stm32mp1_adc_cfg = {
 -	.regs = &stm32h7_adc_regspec,
 +	.regs = &stm32mp1_adc_regspec,
@@ -2262,38 +2732,45 @@ index e3e75413b..d4492ce0d 100644
 +	.has_boostmode = true,
 +	.has_linearcal = true,
 +	.has_presel = true,
++	.has_oversampling = true,
  	.start_conv = stm32h7_adc_start_conv,
  	.stop_conv = stm32h7_adc_stop_conv,
  	.prepare = stm32h7_adc_prepare,
  	.unprepare = stm32h7_adc_unprepare,
  	.smp_cycles = stm32h7_adc_smp_cycles,
  	.irq_clear = stm32h7_adc_irq_clear,
-+	.ts_vrefint_ns = 4300,
++	.set_ovs = stm32h7_adc_set_ovs,
++	.ts_int_ch = stm32_adc_min_ts_mp1,
 +};
++
++const unsigned int stm32_adc_min_ts_mp13[] = { 100, 0, 0, 4300, 9800 };
++static_assert(ARRAY_SIZE(stm32_adc_min_ts_mp13) == STM32_ADC_INT_CH_NB);
 +
 +static const struct stm32_adc_cfg stm32mp13_adc_cfg = {
 +	.regs = &stm32mp13_adc_regspec,
 +	.adc_info = &stm32mp13_adc_info,
 +	.trigs = stm32h7_adc_trigs,
++	.has_oversampling = true,
 +	.start_conv = stm32mp13_adc_start_conv,
 +	.stop_conv = stm32h7_adc_stop_conv,
 +	.prepare = stm32h7_adc_prepare,
 +	.unprepare = stm32h7_adc_unprepare,
 +	.smp_cycles = stm32mp13_adc_smp_cycles,
 +	.irq_clear = stm32h7_adc_irq_clear,
++	.set_ovs = stm32mp13_adc_set_ovs,
++	.ts_int_ch = stm32_adc_min_ts_mp13,
  };
  
  static const struct of_device_id stm32_adc_of_match[] = {
  	{ .compatible = "st,stm32f4-adc", .data = (void *)&stm32f4_adc_cfg },
  	{ .compatible = "st,stm32h7-adc", .data = (void *)&stm32h7_adc_cfg },
  	{ .compatible = "st,stm32mp1-adc", .data = (void *)&stm32mp1_adc_cfg },
-+	{ .compatible = "st,stm32mp13-adc",
-+	  .data = (void *)&stm32mp13_adc_cfg },
++	{ .compatible = "st,stm32mp13-adc", .data = (void *)&stm32mp13_adc_cfg },
  	{},
  };
  MODULE_DEVICE_TABLE(of, stm32_adc_of_match);
 diff --git a/drivers/iio/adc/stm32-dfsdm-adc.c b/drivers/iio/adc/stm32-dfsdm-adc.c
-index 1cfefb3b5..997f1f387 100644
+index 1cfefb3b5e56..997f1f387a04 100644
 --- a/drivers/iio/adc/stm32-dfsdm-adc.c
 +++ b/drivers/iio/adc/stm32-dfsdm-adc.c
 @@ -10,6 +10,7 @@
@@ -2483,7 +2960,7 @@ index 1cfefb3b5..997f1f387 100644
  static int stm32_dfsdm_adc_probe(struct platform_device *pdev)
  {
 diff --git a/drivers/iio/adc/stm32-dfsdm-core.c b/drivers/iio/adc/stm32-dfsdm-core.c
-index a627af9a8..65c01d522 100644
+index a627af9a825e..65c01d522ce3 100644
 --- a/drivers/iio/adc/stm32-dfsdm-core.c
 +++ b/drivers/iio/adc/stm32-dfsdm-core.c
 @@ -6,6 +6,7 @@
@@ -2627,7 +3104,7 @@ index a627af9a8..65c01d522 100644
  
  	ret = stm32_dfsdm_clk_prepare_enable(dfsdm);
 diff --git a/drivers/iio/adc/stm32-dfsdm.h b/drivers/iio/adc/stm32-dfsdm.h
-index 4afc1f528..4f230e2a7 100644
+index 4afc1f528b78..4f230e2a7692 100644
 --- a/drivers/iio/adc/stm32-dfsdm.h
 +++ b/drivers/iio/adc/stm32-dfsdm.h
 @@ -13,25 +13,28 @@
@@ -2714,10 +3191,91 @@ index 4afc1f528..4f230e2a7 100644
  enum stm32_dfsdm_sinc_order {
  	DFSDM_FASTSINC_ORDER, /* FastSinc filter type */
 diff --git a/drivers/irqchip/irq-stm32-exti.c b/drivers/irqchip/irq-stm32-exti.c
-index 33c76710f..d99d4b4b0 100644
+index 33c76710f845..78bc38d1f5a9 100644
 --- a/drivers/irqchip/irq-stm32-exti.c
 +++ b/drivers/irqchip/irq-stm32-exti.c
-@@ -132,7 +132,6 @@ static const struct stm32_exti_drv_data stm32h7xx_drv_data = {
+@@ -14,6 +14,7 @@
+ #include <linux/irqchip.h>
+ #include <linux/irqchip/chained_irq.h>
+ #include <linux/irqdomain.h>
++#include <linux/list.h>
+ #include <linux/module.h>
+ #include <linux/of_address.h>
+ #include <linux/of_irq.h>
+@@ -34,21 +35,15 @@ struct stm32_exti_bank {
+ 	u32 swier_ofst;
+ 	u32 rpr_ofst;
+ 	u32 fpr_ofst;
++	u32 trg_ofst;
+ };
+ 
+ #define UNDEF_REG ~0
+ 
+-struct stm32_desc_irq {
+-	u32 exti;
+-	u32 irq_parent;
+-	struct irq_chip *chip;
+-};
+-
+ struct stm32_exti_drv_data {
+ 	const struct stm32_exti_bank **exti_banks;
+-	const struct stm32_desc_irq *desc_irqs;
++	const u8 *desc_irqs;
+ 	u32 bank_nr;
+-	u32 irq_nr;
+ };
+ 
+ struct stm32_exti_chip_data {
+@@ -62,13 +57,15 @@ struct stm32_exti_chip_data {
+ };
+ 
+ struct stm32_exti_host_data {
++	struct list_head lh;
+ 	void __iomem *base;
+ 	struct stm32_exti_chip_data *chips_data;
+ 	const struct stm32_exti_drv_data *drv_data;
+ 	struct hwspinlock *hwlock;
++	struct device_node *irq_map_node;
+ };
+ 
+-static struct stm32_exti_host_data *stm32_host_data;
++static LIST_HEAD(stm32_host_data_list);
+ 
+ static const struct stm32_exti_bank stm32f4xx_exti_b1 = {
+ 	.imr_ofst	= 0x00,
+@@ -78,6 +75,7 @@ static const struct stm32_exti_bank stm32f4xx_exti_b1 = {
+ 	.swier_ofst	= 0x10,
+ 	.rpr_ofst	= 0x14,
+ 	.fpr_ofst	= UNDEF_REG,
++	.trg_ofst	= UNDEF_REG,
+ };
+ 
+ static const struct stm32_exti_bank *stm32f4xx_exti_banks[] = {
+@@ -97,6 +95,7 @@ static const struct stm32_exti_bank stm32h7xx_exti_b1 = {
+ 	.swier_ofst	= 0x08,
+ 	.rpr_ofst	= 0x88,
+ 	.fpr_ofst	= UNDEF_REG,
++	.trg_ofst	= UNDEF_REG,
+ };
+ 
+ static const struct stm32_exti_bank stm32h7xx_exti_b2 = {
+@@ -107,6 +106,7 @@ static const struct stm32_exti_bank stm32h7xx_exti_b2 = {
+ 	.swier_ofst	= 0x28,
+ 	.rpr_ofst	= 0x98,
+ 	.fpr_ofst	= UNDEF_REG,
++	.trg_ofst	= UNDEF_REG,
+ };
+ 
+ static const struct stm32_exti_bank stm32h7xx_exti_b3 = {
+@@ -117,6 +117,7 @@ static const struct stm32_exti_bank stm32h7xx_exti_b3 = {
+ 	.swier_ofst	= 0x48,
+ 	.rpr_ofst	= 0xA8,
+ 	.fpr_ofst	= UNDEF_REG,
++	.trg_ofst	= UNDEF_REG,
+ };
+ 
+ static const struct stm32_exti_bank *stm32h7xx_exti_banks[] = {
+@@ -132,32 +133,32 @@ static const struct stm32_exti_drv_data stm32h7xx_drv_data = {
  
  static const struct stm32_exti_bank stm32mp1_exti_b1 = {
  	.imr_ofst	= 0x80,
@@ -2725,7 +3283,10 @@ index 33c76710f..d99d4b4b0 100644
  	.rtsr_ofst	= 0x00,
  	.ftsr_ofst	= 0x04,
  	.swier_ofst	= 0x08,
-@@ -142,7 +141,6 @@ static const struct stm32_exti_bank stm32mp1_exti_b1 = {
+ 	.rpr_ofst	= 0x0C,
+ 	.fpr_ofst	= 0x10,
++	.trg_ofst	= 0x3EC,
+ };
  
  static const struct stm32_exti_bank stm32mp1_exti_b2 = {
  	.imr_ofst	= 0x90,
@@ -2733,7 +3294,10 @@ index 33c76710f..d99d4b4b0 100644
  	.rtsr_ofst	= 0x20,
  	.ftsr_ofst	= 0x24,
  	.swier_ofst	= 0x28,
-@@ -152,7 +150,6 @@ static const struct stm32_exti_bank stm32mp1_exti_b2 = {
+ 	.rpr_ofst	= 0x2C,
+ 	.fpr_ofst	= 0x30,
++	.trg_ofst	= 0x3E8,
+ };
  
  static const struct stm32_exti_bank stm32mp1_exti_b3 = {
  	.imr_ofst	= 0xA0,
@@ -2741,79 +3305,191 @@ index 33c76710f..d99d4b4b0 100644
  	.rtsr_ofst	= 0x40,
  	.ftsr_ofst	= 0x44,
  	.swier_ofst	= 0x48,
-@@ -201,6 +198,8 @@ static const struct stm32_desc_irq stm32mp1_desc_irq[] = {
- 	{ .exti = 31, .irq_parent = 53, .chip = &stm32_exti_h_chip_direct },
- 	{ .exti = 32, .irq_parent = 82, .chip = &stm32_exti_h_chip_direct },
- 	{ .exti = 33, .irq_parent = 83, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 43, .irq_parent = 75, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 44, .irq_parent = 98, .chip = &stm32_exti_h_chip_direct },
- 	{ .exti = 47, .irq_parent = 93, .chip = &stm32_exti_h_chip_direct },
- 	{ .exti = 48, .irq_parent = 138, .chip = &stm32_exti_h_chip_direct },
- 	{ .exti = 50, .irq_parent = 139, .chip = &stm32_exti_h_chip_direct },
-@@ -214,6 +213,48 @@ static const struct stm32_desc_irq stm32mp1_desc_irq[] = {
- 	{ .exti = 73, .irq_parent = 129, .chip = &stm32_exti_h_chip },
+ 	.rpr_ofst	= 0x4C,
+ 	.fpr_ofst	= 0x50,
++	.trg_ofst	= 0x3E4,
  };
  
-+static const struct stm32_desc_irq stm32mp13_desc_irq[] = {
-+	{ .exti = 0, .irq_parent = 6, .chip = &stm32_exti_h_chip },
-+	{ .exti = 1, .irq_parent = 7, .chip = &stm32_exti_h_chip },
-+	{ .exti = 2, .irq_parent = 8, .chip = &stm32_exti_h_chip },
-+	{ .exti = 3, .irq_parent = 9, .chip = &stm32_exti_h_chip },
-+	{ .exti = 4, .irq_parent = 10, .chip = &stm32_exti_h_chip },
-+	{ .exti = 5, .irq_parent = 24, .chip = &stm32_exti_h_chip },
-+	{ .exti = 6, .irq_parent = 65, .chip = &stm32_exti_h_chip },
-+	{ .exti = 7, .irq_parent = 66, .chip = &stm32_exti_h_chip },
-+	{ .exti = 8, .irq_parent = 67, .chip = &stm32_exti_h_chip },
-+	{ .exti = 9, .irq_parent = 68, .chip = &stm32_exti_h_chip },
-+	{ .exti = 10, .irq_parent = 41, .chip = &stm32_exti_h_chip },
-+	{ .exti = 11, .irq_parent = 43, .chip = &stm32_exti_h_chip },
-+	{ .exti = 12, .irq_parent = 77, .chip = &stm32_exti_h_chip },
-+	{ .exti = 13, .irq_parent = 78, .chip = &stm32_exti_h_chip },
-+	{ .exti = 14, .irq_parent = 106, .chip = &stm32_exti_h_chip },
-+	{ .exti = 15, .irq_parent = 109, .chip = &stm32_exti_h_chip },
-+	{ .exti = 16, .irq_parent = 1, .chip = &stm32_exti_h_chip },
-+	{ .exti = 19, .irq_parent = 3, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 21, .irq_parent = 32, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 22, .irq_parent = 34, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 23, .irq_parent = 73, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 24, .irq_parent = 93, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 25, .irq_parent = 114, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 26, .irq_parent = 38, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 27, .irq_parent = 39, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 28, .irq_parent = 40, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 29, .irq_parent = 72, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 30, .irq_parent = 53, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 31, .irq_parent = 54, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 32, .irq_parent = 83, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 33, .irq_parent = 84, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 44, .irq_parent = 96, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 47, .irq_parent = 92, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 48, .irq_parent = 116, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 50, .irq_parent = 117, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 52, .irq_parent = 118, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 53, .irq_parent = 119, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 68, .irq_parent = 63, .chip = &stm32_exti_h_chip_direct },
-+	{ .exti = 70, .irq_parent = 98, .chip = &stm32_exti_h_chip_direct },
+ static const struct stm32_exti_bank *stm32mp1_exti_banks[] = {
+@@ -169,76 +170,115 @@ static const struct stm32_exti_bank *stm32mp1_exti_banks[] = {
+ static struct irq_chip stm32_exti_h_chip;
+ static struct irq_chip stm32_exti_h_chip_direct;
+ 
+-static const struct stm32_desc_irq stm32mp1_desc_irq[] = {
+-	{ .exti = 0, .irq_parent = 6, .chip = &stm32_exti_h_chip },
+-	{ .exti = 1, .irq_parent = 7, .chip = &stm32_exti_h_chip },
+-	{ .exti = 2, .irq_parent = 8, .chip = &stm32_exti_h_chip },
+-	{ .exti = 3, .irq_parent = 9, .chip = &stm32_exti_h_chip },
+-	{ .exti = 4, .irq_parent = 10, .chip = &stm32_exti_h_chip },
+-	{ .exti = 5, .irq_parent = 23, .chip = &stm32_exti_h_chip },
+-	{ .exti = 6, .irq_parent = 64, .chip = &stm32_exti_h_chip },
+-	{ .exti = 7, .irq_parent = 65, .chip = &stm32_exti_h_chip },
+-	{ .exti = 8, .irq_parent = 66, .chip = &stm32_exti_h_chip },
+-	{ .exti = 9, .irq_parent = 67, .chip = &stm32_exti_h_chip },
+-	{ .exti = 10, .irq_parent = 40, .chip = &stm32_exti_h_chip },
+-	{ .exti = 11, .irq_parent = 42, .chip = &stm32_exti_h_chip },
+-	{ .exti = 12, .irq_parent = 76, .chip = &stm32_exti_h_chip },
+-	{ .exti = 13, .irq_parent = 77, .chip = &stm32_exti_h_chip },
+-	{ .exti = 14, .irq_parent = 121, .chip = &stm32_exti_h_chip },
+-	{ .exti = 15, .irq_parent = 127, .chip = &stm32_exti_h_chip },
+-	{ .exti = 16, .irq_parent = 1, .chip = &stm32_exti_h_chip },
+-	{ .exti = 19, .irq_parent = 3, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 21, .irq_parent = 31, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 22, .irq_parent = 33, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 23, .irq_parent = 72, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 24, .irq_parent = 95, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 25, .irq_parent = 107, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 26, .irq_parent = 37, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 27, .irq_parent = 38, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 28, .irq_parent = 39, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 29, .irq_parent = 71, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 30, .irq_parent = 52, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 31, .irq_parent = 53, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 32, .irq_parent = 82, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 33, .irq_parent = 83, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 47, .irq_parent = 93, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 48, .irq_parent = 138, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 50, .irq_parent = 139, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 52, .irq_parent = 140, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 53, .irq_parent = 141, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 54, .irq_parent = 135, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 61, .irq_parent = 100, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 65, .irq_parent = 144, .chip = &stm32_exti_h_chip },
+-	{ .exti = 68, .irq_parent = 143, .chip = &stm32_exti_h_chip },
+-	{ .exti = 70, .irq_parent = 62, .chip = &stm32_exti_h_chip_direct },
+-	{ .exti = 73, .irq_parent = 129, .chip = &stm32_exti_h_chip },
++#define EXTI_INVALID_IRQ       U8_MAX
++#define STM32MP1_DESC_IRQ_SIZE (ARRAY_SIZE(stm32mp1_exti_banks) * IRQS_PER_BANK)
++
++static const u8 stm32mp1_desc_irq[] = {
++	/* default value */
++	[0 ... (STM32MP1_DESC_IRQ_SIZE - 1)] = EXTI_INVALID_IRQ,
++
++	[0] = 6,
++	[1] = 7,
++	[2] = 8,
++	[3] = 9,
++	[4] = 10,
++	[5] = 23,
++	[6] = 64,
++	[7] = 65,
++	[8] = 66,
++	[9] = 67,
++	[10] = 40,
++	[11] = 42,
++	[12] = 76,
++	[13] = 77,
++	[14] = 121,
++	[15] = 127,
++	[16] = 1,
++	[19] = 3,
++	[21] = 31,
++	[22] = 33,
++	[23] = 72,
++	[24] = 95,
++	[25] = 107,
++	[26] = 37,
++	[27] = 38,
++	[28] = 39,
++	[29] = 71,
++	[30] = 52,
++	[31] = 53,
++	[32] = 82,
++	[33] = 83,
++	[43] = 75,
++	[44] = 98,
++	[47] = 93,
++	[48] = 138,
++	[50] = 139,
++	[52] = 140,
++	[53] = 141,
++	[54] = 135,
++	[61] = 100,
++	[65] = 144,
++	[68] = 143,
++	[70] = 62,
++	[73] = 129,
 +};
 +
++static const u8 stm32mp13_desc_irq[] = {
++	/* default value */
++	[0 ... (STM32MP1_DESC_IRQ_SIZE - 1)] = EXTI_INVALID_IRQ,
++
++	[0] = 6,
++	[1] = 7,
++	[2] = 8,
++	[3] = 9,
++	[4] = 10,
++	[5] = 24,
++	[6] = 65,
++	[7] = 66,
++	[8] = 67,
++	[9] = 68,
++	[10] = 41,
++	[11] = 43,
++	[12] = 77,
++	[13] = 78,
++	[14] = 106,
++	[15] = 109,
++	[16] = 1,
++	[19] = 3,
++	[21] = 32,
++	[22] = 34,
++	[23] = 73,
++	[24] = 93,
++	[25] = 114,
++	[26] = 38,
++	[27] = 39,
++	[28] = 40,
++	[29] = 72,
++	[30] = 53,
++	[31] = 54,
++	[32] = 83,
++	[33] = 84,
++	[44] = 96,
++	[47] = 92,
++	[48] = 116,
++	[50] = 117,
++	[52] = 118,
++	[53] = 119,
++	[68] = 63,
++	[70] = 98,
+ };
+ 
  static const struct stm32_exti_drv_data stm32mp1_drv_data = {
  	.exti_banks = stm32mp1_exti_banks,
  	.bank_nr = ARRAY_SIZE(stm32mp1_exti_banks),
-@@ -221,6 +262,13 @@ static const struct stm32_exti_drv_data stm32mp1_drv_data = {
- 	.irq_nr = ARRAY_SIZE(stm32mp1_desc_irq),
+ 	.desc_irqs = stm32mp1_desc_irq,
+-	.irq_nr = ARRAY_SIZE(stm32mp1_desc_irq),
  };
  
+-static const struct
+-stm32_desc_irq *stm32_exti_get_desc(const struct stm32_exti_drv_data *drv_data,
+-				    irq_hw_number_t hwirq)
+-{
+-	const struct stm32_desc_irq *desc = NULL;
+-	int i;
+-
+-	if (!drv_data->desc_irqs)
+-		return NULL;
+-
+-	for (i = 0; i < drv_data->irq_nr; i++) {
+-		desc = &drv_data->desc_irqs[i];
+-		if (desc->exti == hwirq)
+-			break;
+-	}
+-
+-	return desc;
+-}
 +static const struct stm32_exti_drv_data stm32mp13_drv_data = {
 +	.exti_banks = stm32mp1_exti_banks,
 +	.bank_nr = ARRAY_SIZE(stm32mp1_exti_banks),
 +	.desc_irqs = stm32mp13_desc_irq,
-+	.irq_nr = ARRAY_SIZE(stm32mp13_desc_irq),
 +};
-+
- static const struct
- stm32_desc_irq *stm32_exti_get_desc(const struct stm32_exti_drv_data *drv_data,
- 				    irq_hw_number_t hwirq)
-@@ -504,6 +552,16 @@ static void stm32_exti_h_unmask(struct irq_data *d)
+ 
+ static unsigned long stm32_exti_pending(struct irq_chip_generic *gc)
+ {
+@@ -504,6 +544,16 @@ static void stm32_exti_h_unmask(struct irq_data *d)
  		irq_chip_unmask_parent(d);
  }
  
@@ -2830,7 +3506,7 @@ index 33c76710f..d99d4b4b0 100644
  static int stm32_exti_h_set_type(struct irq_data *d, unsigned int type)
  {
  	struct stm32_exti_chip_data *chip_data = irq_data_get_irq_chip_data(d);
-@@ -539,6 +597,9 @@ static int stm32_exti_h_set_type(struct irq_data *d, unsigned int type)
+@@ -539,6 +589,9 @@ static int stm32_exti_h_set_type(struct irq_data *d, unsigned int type)
  unlock:
  	raw_spin_unlock(&chip_data->rlock);
  
@@ -2840,7 +3516,7 @@ index 33c76710f..d99d4b4b0 100644
  	return err;
  }
  
-@@ -556,6 +617,9 @@ static int stm32_exti_h_set_wake(struct irq_data *d, unsigned int on)
+@@ -556,6 +609,9 @@ static int stm32_exti_h_set_wake(struct irq_data *d, unsigned int on)
  
  	raw_spin_unlock(&chip_data->rlock);
  
@@ -2850,22 +3526,101 @@ index 33c76710f..d99d4b4b0 100644
  	return 0;
  }
  
-@@ -565,7 +629,13 @@ static int stm32_exti_h_set_affinity(struct irq_data *d,
+@@ -565,53 +621,74 @@ static int stm32_exti_h_set_affinity(struct irq_data *d,
  	if (d->parent_data->chip)
  		return irq_chip_set_affinity_parent(d, dest, force);
  
 -	return -EINVAL;
 +	return IRQ_SET_MASK_OK_DONE;
-+}
-+
+ }
+ 
+-static int __maybe_unused stm32_exti_h_suspend(void)
 +static void stm32_exti_h_ack(struct irq_data *d)
 +{
 +	if (d->parent_data->chip)
 +		irq_chip_ack_parent(d);
++}
++
++static int stm32_exti_h_suspend(void)
+ {
+ 	struct stm32_exti_chip_data *chip_data;
++	struct stm32_exti_host_data *host_data;
+ 	int i;
+ 
+-	for (i = 0; i < stm32_host_data->drv_data->bank_nr; i++) {
+-		chip_data = &stm32_host_data->chips_data[i];
+-		raw_spin_lock(&chip_data->rlock);
+-		stm32_chip_suspend(chip_data, chip_data->wake_active);
+-		raw_spin_unlock(&chip_data->rlock);
++	list_for_each_entry(host_data, &stm32_host_data_list, lh) {
++		for (i = 0; i < host_data->drv_data->bank_nr; i++) {
++			chip_data = &host_data->chips_data[i];
++			raw_spin_lock(&chip_data->rlock);
++			stm32_chip_suspend(chip_data, chip_data->wake_active);
++			raw_spin_unlock(&chip_data->rlock);
++		}
+ 	}
+ 
+ 	return 0;
  }
  
- static int __maybe_unused stm32_exti_h_suspend(void)
-@@ -629,8 +699,11 @@ static int stm32_exti_h_retrigger(struct irq_data *d)
+-static void __maybe_unused stm32_exti_h_resume(void)
++static void stm32_exti_h_resume(void)
+ {
+ 	struct stm32_exti_chip_data *chip_data;
++	struct stm32_exti_host_data *host_data;
+ 	int i;
+ 
+-	for (i = 0; i < stm32_host_data->drv_data->bank_nr; i++) {
+-		chip_data = &stm32_host_data->chips_data[i];
+-		raw_spin_lock(&chip_data->rlock);
+-		stm32_chip_resume(chip_data, chip_data->mask_cache);
+-		raw_spin_unlock(&chip_data->rlock);
++	list_for_each_entry(host_data, &stm32_host_data_list, lh) {
++		for (i = 0; i < host_data->drv_data->bank_nr; i++) {
++			chip_data = &host_data->chips_data[i];
++			raw_spin_lock(&chip_data->rlock);
++			stm32_chip_resume(chip_data, chip_data->mask_cache);
++			raw_spin_unlock(&chip_data->rlock);
++		}
+ 	}
+ }
+ 
+ static struct syscore_ops stm32_exti_h_syscore_ops = {
+-#ifdef CONFIG_PM_SLEEP
+ 	.suspend	= stm32_exti_h_suspend,
+ 	.resume		= stm32_exti_h_resume,
+-#endif
+ };
+ 
+ static void stm32_exti_h_syscore_init(struct stm32_exti_host_data *host_data)
+ {
+-	stm32_host_data = host_data;
+-	register_syscore_ops(&stm32_exti_h_syscore_ops);
++	if (IS_ENABLED(CONFIG_PM_SLEEP)) {
++		if (list_empty(&stm32_host_data_list))
++			register_syscore_ops(&stm32_exti_h_syscore_ops);
++
++		list_add_tail(&host_data->lh, &stm32_host_data_list);
++	}
+ }
+ 
+-static void stm32_exti_h_syscore_deinit(void)
++static void stm32_exti_h_syscore_deinit(struct platform_device *pdev)
+ {
+-	unregister_syscore_ops(&stm32_exti_h_syscore_ops);
++	struct stm32_exti_host_data *host_data = platform_get_drvdata(pdev);
++
++	if (IS_ENABLED(CONFIG_PM_SLEEP)) {
++		list_del(&host_data->lh);
++
++		if (list_empty(&stm32_host_data_list))
++			unregister_syscore_ops(&stm32_exti_h_syscore_ops);
++	}
+ }
+ 
+ static int stm32_exti_h_retrigger(struct irq_data *d)
+@@ -629,8 +706,11 @@ static int stm32_exti_h_retrigger(struct irq_data *d)
  static struct irq_chip stm32_exti_h_chip = {
  	.name			= "stm32-exti-h",
  	.irq_eoi		= stm32_exti_h_eoi,
@@ -2877,7 +3632,7 @@ index 33c76710f..d99d4b4b0 100644
  	.irq_retrigger		= stm32_exti_h_retrigger,
  	.irq_set_type		= stm32_exti_h_set_type,
  	.irq_set_wake		= stm32_exti_h_set_wake,
-@@ -642,8 +715,10 @@ static struct irq_chip stm32_exti_h_chip_direct = {
+@@ -642,8 +722,10 @@ static struct irq_chip stm32_exti_h_chip_direct = {
  	.name			= "stm32-exti-h-direct",
  	.irq_eoi		= irq_chip_eoi_parent,
  	.irq_ack		= irq_chip_ack_parent,
@@ -2890,41 +3645,134 @@ index 33c76710f..d99d4b4b0 100644
  	.irq_retrigger		= irq_chip_retrigger_hierarchy,
  	.irq_set_type		= irq_chip_set_type_parent,
  	.irq_set_wake		= stm32_exti_h_set_wake,
-@@ -674,14 +749,28 @@ static int stm32_exti_h_domain_alloc(struct irq_domain *dm,
+@@ -651,34 +733,109 @@ static struct irq_chip stm32_exti_h_chip_direct = {
+ 	.irq_set_affinity	= IS_ENABLED(CONFIG_SMP) ? irq_chip_set_affinity_parent : NULL,
+ };
  
- 	irq_domain_set_hwirq_and_chip(dm, virq, hwirq, desc->chip,
- 				      chip_data);
++static int stm32_exti_h_domain_match(struct irq_domain *dm,
++				     struct device_node *node,
++				     enum irq_domain_bus_token bus_token)
++{
++	struct stm32_exti_host_data *host_data = dm->host_data;
++
++	if (!node ||
++	    (bus_token != DOMAIN_BUS_ANY && dm->bus_token != bus_token))
++		return 0;
++
++	if (!host_data->irq_map_node)
++		return (to_of_node(dm->fwnode) == node);
++
++	if (node != host_data->irq_map_node->parent)
++		return 0;
++
++	return (to_of_node(dm->parent->fwnode) == of_irq_find_parent(host_data->irq_map_node->parent));
++}
++
++static int stm32_exti_h_domain_select(struct irq_domain *dm,
++				      struct irq_fwspec *fwspec,
++				      enum irq_domain_bus_token bus_token)
++{
++	struct fwnode_handle *fwnode = fwspec->fwnode;
++	struct stm32_exti_host_data *host_data = dm->host_data;
++	struct of_phandle_args out_irq;
++	int ret;
++
++	if (!fwnode ||
++	    (bus_token != DOMAIN_BUS_ANY && dm->bus_token != bus_token))
++		return 0;
++
++	if (!host_data->irq_map_node)
++		return (dm->fwnode == fwnode);
++
++	if (fwnode != of_node_to_fwnode(host_data->irq_map_node->parent))
++		return 0;
++
++	out_irq.np = host_data->irq_map_node;
++	out_irq.args_count = 2;
++	out_irq.args[0] = fwspec->param[0];
++	out_irq.args[1] = fwspec->param[1];
++
++	ret = of_irq_parse_raw(NULL, &out_irq);
++	if (ret)
++		return ret;
++
++	return (dm->parent->fwnode == of_node_to_fwnode(out_irq.np));
++}
++
+ static int stm32_exti_h_domain_alloc(struct irq_domain *dm,
+ 				     unsigned int virq,
+ 				     unsigned int nr_irqs, void *data)
+ {
+ 	struct stm32_exti_host_data *host_data = dm->host_data;
+ 	struct stm32_exti_chip_data *chip_data;
+-	const struct stm32_desc_irq *desc;
++	u8 desc_irq;
+ 	struct irq_fwspec *fwspec = data;
+ 	struct irq_fwspec p_fwspec;
++	struct of_phandle_args out_irq;
+ 	irq_hw_number_t hwirq;
+-	int bank;
++	int bank, ret;
++	u32 event_trg;
++	struct irq_chip *chip;
+ 
+ 	hwirq = fwspec->param[0];
++	if (hwirq >= host_data->drv_data->bank_nr * IRQS_PER_BANK)
++		return -EINVAL;
++
+ 	bank  = hwirq / IRQS_PER_BANK;
+ 	chip_data = &host_data->chips_data[bank];
+ 
++	event_trg = readl_relaxed(host_data->base + chip_data->reg_bank->trg_ofst);
++	chip = (event_trg & BIT(hwirq % IRQS_PER_BANK)) ?
++	       &stm32_exti_h_chip : &stm32_exti_h_chip_direct;
++
++	irq_domain_set_hwirq_and_chip(dm, virq, hwirq, chip, chip_data);
++
++	if (host_data->irq_map_node) {
++		out_irq.np = host_data->irq_map_node;
++		out_irq.args_count = 2;
++		out_irq.args[0] = fwspec->param[0];
++		out_irq.args[1] = fwspec->param[1];
++
++		ret = of_irq_parse_raw(NULL, &out_irq);
++		if (ret)
++			return ret;
++
++		of_phandle_args_to_fwspec(out_irq.np, out_irq.args,
++					  out_irq.args_count, &p_fwspec);
++
++		return irq_domain_alloc_irqs_parent(dm, virq, 1, &p_fwspec);
++	}
+ 
+-	desc = stm32_exti_get_desc(host_data->drv_data, hwirq);
+-	if (!desc)
++	if (!host_data->drv_data || !host_data->drv_data->desc_irqs)
+ 		return -EINVAL;
+ 
+-	irq_domain_set_hwirq_and_chip(dm, virq, hwirq, desc->chip,
+-				      chip_data);
 -	if (desc->irq_parent) {
-+	/*
-+	 * EXTI 55 to 60 are mapped to PWR interrupt controller.
-+	 * The hwirq translation is done diferently than for GIC.
-+	 */
-+	if (hwirq >= 55 && hwirq <= 60) {
++	desc_irq = host_data->drv_data->desc_irqs[hwirq];
++	if (desc_irq != EXTI_INVALID_IRQ) {
  		p_fwspec.fwnode = dm->parent->fwnode;
--		p_fwspec.param_count = 3;
--		p_fwspec.param[0] = GIC_SPI;
+ 		p_fwspec.param_count = 3;
+ 		p_fwspec.param[0] = GIC_SPI;
 -		p_fwspec.param[1] = desc->irq_parent;
--		p_fwspec.param[2] = IRQ_TYPE_LEVEL_HIGH;
-+		p_fwspec.param_count = 2;
-+		p_fwspec.param[0] = hwirq - 55;
-+		p_fwspec.param[1] = fwspec->param[1];
++		p_fwspec.param[1] = desc_irq;
+ 		p_fwspec.param[2] = IRQ_TYPE_LEVEL_HIGH;
  
  		return irq_domain_alloc_irqs_parent(dm, virq, 1, &p_fwspec);
-+	} else {
-+		if (desc->irq_parent) {
-+			p_fwspec.fwnode = dm->parent->fwnode;
-+			p_fwspec.param_count = 3;
-+			p_fwspec.param[0] = GIC_SPI;
-+			p_fwspec.param[1] = desc->irq_parent;
-+			p_fwspec.param[2] = IRQ_TYPE_LEVEL_HIGH;
-+
-+			return irq_domain_alloc_irqs_parent(dm, virq, 1,
-+							    &p_fwspec);
-+		}
+@@ -710,8 +867,6 @@ stm32_exti_host_data *stm32_exti_host_init(const struct stm32_exti_drv_data *dd,
+ 		goto free_chips_data;
  	}
  
- 	return 0;
-@@ -743,7 +832,8 @@ stm32_exti_chip_data *stm32_exti_chip_init(struct stm32_exti_host_data *h_data,
+-	stm32_host_data = host_data;
+-
+ 	return host_data;
+ 
+ free_chips_data:
+@@ -743,7 +898,8 @@ stm32_exti_chip_data *stm32_exti_chip_init(struct stm32_exti_host_data *h_data,
  	 * clear registers to avoid residue
  	 */
  	writel_relaxed(0, base + stm32_bank->imr_ofst);
@@ -2934,48 +3782,99 @@ index 33c76710f..d99d4b4b0 100644
  
  	pr_info("%pOF: bank%d\n", node, bank_idx);
  
-@@ -846,11 +936,12 @@ static int stm32_exti_probe(struct platform_device *pdev)
+@@ -824,6 +980,8 @@ static int __init stm32_exti_init(const struct stm32_exti_drv_data *drv_data,
+ }
+ 
+ static const struct irq_domain_ops stm32_exti_h_domain_ops = {
++	.match	= stm32_exti_h_domain_match,
++	.select = stm32_exti_h_domain_select,
+ 	.alloc	= stm32_exti_h_domain_alloc,
+ 	.free	= irq_domain_free_irqs_common,
+ 	.xlate = irq_domain_xlate_twocell,
+@@ -832,13 +990,17 @@ static const struct irq_domain_ops stm32_exti_h_domain_ops = {
+ static void stm32_exti_remove_irq(void *data)
+ {
+ 	struct irq_domain *domain = data;
++	struct fwnode_handle *fwnode = domain->fwnode;
+ 
+ 	irq_domain_remove(domain);
++
++	if (is_fwnode_irqchip(fwnode))
++		irq_domain_free_fwnode(fwnode);
+ }
+ 
+ static int stm32_exti_remove(struct platform_device *pdev)
+ {
+-	stm32_exti_h_syscore_deinit();
++	stm32_exti_h_syscore_deinit(pdev);
+ 	return 0;
+ }
+ 
+@@ -846,16 +1008,20 @@ static int stm32_exti_probe(struct platform_device *pdev)
  {
  	int ret, i;
  	struct device *dev = &pdev->dev;
 -	struct device_node *np = dev->of_node;
-+	struct device_node *child, *np = dev->of_node;
- 	struct irq_domain *parent_domain, *domain;
+-	struct irq_domain *parent_domain, *domain;
++	struct device_node *child, *np = dev->of_node, *wakeup_np;
++	struct irq_domain *parent_domain, *domain, *wakeup_domain;
++	struct fwnode_handle *fwnode;
  	struct stm32_exti_host_data *host_data;
  	const struct stm32_exti_drv_data *drv_data;
  	struct resource *res;
-+	u32 nirqs;
++	char *name;
  
  	host_data = devm_kzalloc(dev, sizeof(*host_data), GFP_KERNEL);
  	if (!host_data)
-@@ -916,6 +1007,34 @@ static int stm32_exti_probe(struct platform_device *pdev)
+ 		return -ENOMEM;
+ 
++	platform_set_drvdata(pdev, host_data);
++
+ 	/* check for optional hwspinlock which may be not available yet */
+ 	ret = of_hwspin_lock_get_id(np, 0);
+ 	if (ret == -EPROBE_DEFER)
+@@ -916,6 +1082,48 @@ static int stm32_exti_probe(struct platform_device *pdev)
  	if (ret)
  		return ret;
  
-+	for_each_child_of_node(np, child) {
-+		parent_domain = irq_find_host(of_irq_find_parent(child));
-+		if (!parent_domain) {
-+			dev_err(dev, "child interrupt-parent not found\n");
-+			return -EINVAL;
-+		}
++	child = of_get_child_by_name(np, "exti-interrupt-map");
++	if (child && of_property_read_bool(child, "interrupt-map"))
++		host_data->irq_map_node = child;
 +
-+		ret = of_property_read_u32(child, "st,irq-number", &nirqs);
-+		if (ret || !nirqs) {
-+			dev_err(dev, "Missing or bad irq-number property\n");
-+			return -EINVAL;
-+		}
++	wakeup_np = of_parse_phandle(np, "wakeup-parent", 0);
++	if (wakeup_np && !host_data->irq_map_node) {
++		dev_warn(dev, "wakeup-parent ignored due to missing interrupt-map nexus node");
++		of_node_put(wakeup_np);
++		wakeup_np = NULL;
++	}
++	if (wakeup_np) {
++		wakeup_domain = irq_find_host(wakeup_np);
++		of_node_put(wakeup_np);
++		if (!wakeup_domain)
++			return -EPROBE_DEFER;
 +
-+		domain = irq_domain_add_hierarchy(parent_domain, 0, nirqs,
-+						  child,
-+						  &stm32_exti_h_domain_ops,
-+						  host_data);
++		/* as in __irq_domain_add() */
++		name = kasprintf(GFP_KERNEL, "%pOF-wakeup", np);
++		if (!name)
++			return -ENOMEM;
++		strreplace(name, '/', ':');
++
++		fwnode = irq_domain_alloc_named_fwnode(name);
++		kfree(name);
++		if (!fwnode)
++			return -ENOMEM;
++
++		domain = irq_domain_create_hierarchy(wakeup_domain, 0,
++						     drv_data->bank_nr * IRQS_PER_BANK,
++						     fwnode, &stm32_exti_h_domain_ops,
++						     host_data);
 +		if (!domain) {
 +			dev_err(dev, "Could not register exti domain\n");
++			irq_domain_free_fwnode(fwnode);
 +			return -ENOMEM;
 +		}
 +
-+		ret = devm_add_action_or_reset(dev, stm32_exti_remove_irq,
-+					       domain);
++		ret = devm_add_action_or_reset(dev, stm32_exti_remove_irq, domain);
 +		if (ret)
 +			return ret;
 +	}
@@ -2983,7 +3882,7 @@ index 33c76710f..d99d4b4b0 100644
  	stm32_exti_h_syscore_init(host_data);
  
  	return 0;
-@@ -924,6 +1043,7 @@ static int stm32_exti_probe(struct platform_device *pdev)
+@@ -924,6 +1132,7 @@ static int stm32_exti_probe(struct platform_device *pdev)
  /* platform driver only for MP1 */
  static const struct of_device_id stm32_exti_ids[] = {
  	{ .compatible = "st,stm32mp1-exti", .data = &stm32mp1_drv_data},
@@ -2991,6 +3890,45 @@ index 33c76710f..d99d4b4b0 100644
  	{},
  };
  MODULE_DEVICE_TABLE(of, stm32_exti_ids);
+diff --git a/include/linux/irqdomain.h b/include/linux/irqdomain.h
+index 9ee238ad29ce..553da4899f55 100644
+--- a/include/linux/irqdomain.h
++++ b/include/linux/irqdomain.h
+@@ -64,6 +64,10 @@ struct irq_fwspec {
+ 	u32 param[IRQ_DOMAIN_IRQ_SPEC_PARAMS];
+ };
+ 
++/* Conversion function from of_phandle_args fields to fwspec  */
++void of_phandle_args_to_fwspec(struct device_node *np, const u32 *args,
++			       unsigned int count, struct irq_fwspec *fwspec);
++
+ /*
+  * Should several domains have the same device node, but serve
+  * different purposes (for example one domain is for PCI/MSI, and the
+diff --git a/kernel/irq/irqdomain.c b/kernel/irq/irqdomain.c
+index 035e3038c4de..5c74ebb13a77 100644
+--- a/kernel/irq/irqdomain.c
++++ b/kernel/irq/irqdomain.c
+@@ -744,9 +744,8 @@ static int irq_domain_translate(struct irq_domain *d,
+ 	return 0;
+ }
+ 
+-static void of_phandle_args_to_fwspec(struct device_node *np, const u32 *args,
+-				      unsigned int count,
+-				      struct irq_fwspec *fwspec)
++void of_phandle_args_to_fwspec(struct device_node *np, const u32 *args,
++			       unsigned int count, struct irq_fwspec *fwspec)
+ {
+ 	int i;
+ 
+@@ -756,6 +755,7 @@ static void of_phandle_args_to_fwspec(struct device_node *np, const u32 *args,
+ 	for (i = 0; i < count; i++)
+ 		fwspec->param[i] = args[i];
+ }
++EXPORT_SYMBOL_GPL(of_phandle_args_to_fwspec);
+ 
+ unsigned int irq_create_fwspec_mapping(struct irq_fwspec *fwspec)
+ {
 -- 
-2.25.1
+2.17.1
 

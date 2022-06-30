@@ -1,0 +1,341 @@
+From 99e2eb7f37c25b7e9a5e0b18af405d8bae95df12 Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Thu, 3 Nov 2022 15:56:26 +0100
+Subject: [PATCH 13/22] v5.15-stm32mp-r2 MMC
+
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
+---
+ .../devicetree/bindings/mmc/arm,pl18x.yaml    |  6 ++
+ drivers/mmc/host/mmci.c                       |  7 +-
+ drivers/mmc/host/mmci_stm32_sdmmc.c           | 93 +++++++++++++++----
+ drivers/mtd/nand/raw/stm32_fmc2_nand.c        | 40 +++++++-
+ 4 files changed, 125 insertions(+), 21 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/mmc/arm,pl18x.yaml b/Documentation/devicetree/bindings/mmc/arm,pl18x.yaml
+index 47595cb483be..eed54bee7665 100644
+--- a/Documentation/devicetree/bindings/mmc/arm,pl18x.yaml
++++ b/Documentation/devicetree/bindings/mmc/arm,pl18x.yaml
+@@ -53,6 +53,12 @@ properties:
+         items:
+           - const: arm,pl18x
+           - const: arm,primecell
++      - description: Entry for STMicroelectronics variant of PL18x.
++          This dedicated compatible is used by bootloaders.
++        items:
++          - const: st,stm32-sdmmc2
++          - const: arm,pl18x
++          - const: arm,primecell
+ 
+   clocks:
+     description: One or two clocks, the "apb_pclk" and the "MCLK"
+diff --git a/drivers/mmc/host/mmci.c b/drivers/mmc/host/mmci.c
+index 3765e2f4ad98..3d416c4edc7c 100644
+--- a/drivers/mmc/host/mmci.c
++++ b/drivers/mmc/host/mmci.c
+@@ -280,7 +280,7 @@ static struct variant_data variant_stm32_sdmmc = {
+ static struct variant_data variant_stm32_sdmmcv2 = {
+ 	.fifosize		= 16 * 4,
+ 	.fifohalfsize		= 8 * 4,
+-	.f_max			= 208000000,
++	.f_max			= 267000000,
+ 	.stm32_clkdiv		= true,
+ 	.cmdreg_cpsm_enable	= MCI_CPSM_STM32_ENABLE,
+ 	.cmdreg_lrsp_crc	= MCI_CPSM_STM32_LRSP_CRC,
+@@ -2431,6 +2431,11 @@ static const struct amba_id mmci_ids[] = {
+ 		.mask	= 0xf0ffffff,
+ 		.data	= &variant_stm32_sdmmcv2,
+ 	},
++	{
++		.id     = 0x20253180,
++		.mask	= 0xf0ffffff,
++		.data	= &variant_stm32_sdmmcv2,
++	},
+ 	/* Qualcomm variants */
+ 	{
+ 		.id     = 0x00051180,
+diff --git a/drivers/mmc/host/mmci_stm32_sdmmc.c b/drivers/mmc/host/mmci_stm32_sdmmc.c
+index 4cceb9bab036..60bca78a72b1 100644
+--- a/drivers/mmc/host/mmci_stm32_sdmmc.c
++++ b/drivers/mmc/host/mmci_stm32_sdmmc.c
+@@ -43,6 +43,9 @@ struct sdmmc_lli_desc {
+ struct sdmmc_idma {
+ 	dma_addr_t sg_dma;
+ 	void *sg_cpu;
++	dma_addr_t bounce_dma_addr;
++	void *bounce_buf;
++	bool use_bounce_buffer;
+ };
+ 
+ struct sdmmc_dlyb {
+@@ -54,6 +57,8 @@ struct sdmmc_dlyb {
+ static int sdmmc_idma_validate_data(struct mmci_host *host,
+ 				    struct mmc_data *data)
+ {
++	struct sdmmc_idma *idma = host->dma_priv;
++	struct device *dev = mmc_dev(host->mmc);
+ 	struct scatterlist *sg;
+ 	int i;
+ 
+@@ -61,41 +66,69 @@ static int sdmmc_idma_validate_data(struct mmci_host *host,
+ 	 * idma has constraints on idmabase & idmasize for each element
+ 	 * excepted the last element which has no constraint on idmasize
+ 	 */
++	idma->use_bounce_buffer = false;
+ 	for_each_sg(data->sg, sg, data->sg_len - 1, i) {
+ 		if (!IS_ALIGNED(sg->offset, sizeof(u32)) ||
+ 		    !IS_ALIGNED(sg->length, SDMMC_IDMA_BURST)) {
+-			dev_err(mmc_dev(host->mmc),
++			dev_dbg(mmc_dev(host->mmc),
+ 				"unaligned scatterlist: ofst:%x length:%d\n",
+ 				data->sg->offset, data->sg->length);
+-			return -EINVAL;
++			goto use_bounce_buffer;
+ 		}
+ 	}
+ 
+ 	if (!IS_ALIGNED(sg->offset, sizeof(u32))) {
+-		dev_err(mmc_dev(host->mmc),
++		dev_dbg(mmc_dev(host->mmc),
+ 			"unaligned last scatterlist: ofst:%x length:%d\n",
+ 			data->sg->offset, data->sg->length);
+-		return -EINVAL;
++		goto use_bounce_buffer;
+ 	}
+ 
++	return 0;
++
++use_bounce_buffer:
++	if (!idma->bounce_buf) {
++		idma->bounce_buf = dmam_alloc_coherent(dev,
++						       host->mmc->max_req_size,
++						       &idma->bounce_dma_addr,
++						       GFP_KERNEL);
++		if (!idma->bounce_buf) {
++			dev_err(dev, "Unable to map allocate DMA bounce buffer.\n");
++			return -ENOMEM;
++		}
++	}
++
++	idma->use_bounce_buffer = true;
++
+ 	return 0;
+ }
+ 
+ static int _sdmmc_idma_prep_data(struct mmci_host *host,
+ 				 struct mmc_data *data)
+ {
+-	int n_elem;
++	struct sdmmc_idma *idma = host->dma_priv;
+ 
+-	n_elem = dma_map_sg(mmc_dev(host->mmc),
+-			    data->sg,
+-			    data->sg_len,
+-			    mmc_get_dma_dir(data));
++	if (idma->use_bounce_buffer) {
++		if (data->flags & MMC_DATA_WRITE) {
++			unsigned int xfer_bytes = data->blksz * data->blocks;
+ 
+-	if (!n_elem) {
+-		dev_err(mmc_dev(host->mmc), "dma_map_sg failed\n");
+-		return -EINVAL;
+-	}
++			sg_copy_to_buffer(data->sg, data->sg_len,
++					  idma->bounce_buf, xfer_bytes);
++			dma_wmb();
++		}
++	} else {
++		int n_elem;
++
++		n_elem = dma_map_sg(mmc_dev(host->mmc),
++				    data->sg,
++				    data->sg_len,
++				    mmc_get_dma_dir(data));
+ 
++		if (!n_elem) {
++			dev_err(mmc_dev(host->mmc), "dma_map_sg failed\n");
++			return -EINVAL;
++		}
++	}
+ 	return 0;
+ }
+ 
+@@ -112,8 +145,19 @@ static int sdmmc_idma_prep_data(struct mmci_host *host,
+ static void sdmmc_idma_unprep_data(struct mmci_host *host,
+ 				   struct mmc_data *data, int err)
+ {
+-	dma_unmap_sg(mmc_dev(host->mmc), data->sg, data->sg_len,
+-		     mmc_get_dma_dir(data));
++	struct sdmmc_idma *idma = host->dma_priv;
++
++	if (idma->use_bounce_buffer) {
++		if (data->flags & MMC_DATA_READ) {
++			unsigned int xfer_bytes = data->blksz * data->blocks;
++
++			sg_copy_from_buffer(data->sg, data->sg_len,
++					    idma->bounce_buf, xfer_bytes);
++		}
++	} else {
++		dma_unmap_sg(mmc_dev(host->mmc), data->sg, data->sg_len,
++			     mmc_get_dma_dir(data));
++	}
+ }
+ 
+ static int sdmmc_idma_setup(struct mmci_host *host)
+@@ -137,6 +181,8 @@ static int sdmmc_idma_setup(struct mmci_host *host)
+ 		host->mmc->max_segs = SDMMC_LLI_BUF_LEN /
+ 			sizeof(struct sdmmc_lli_desc);
+ 		host->mmc->max_seg_size = host->variant->stm32_idmabsize_mask;
++
++		host->mmc->max_req_size = SZ_1M;
+ 	} else {
+ 		host->mmc->max_segs = 1;
+ 		host->mmc->max_seg_size = host->mmc->max_req_size;
+@@ -154,8 +200,16 @@ static int sdmmc_idma_start(struct mmci_host *host, unsigned int *datactrl)
+ 	struct scatterlist *sg;
+ 	int i;
+ 
+-	if (!host->variant->dma_lli || data->sg_len == 1) {
+-		writel_relaxed(sg_dma_address(data->sg),
++	if (!host->variant->dma_lli || data->sg_len == 1 ||
++	    idma->use_bounce_buffer) {
++		u32 dma_addr;
++
++		if (idma->use_bounce_buffer)
++			dma_addr = idma->bounce_dma_addr;
++		else
++			dma_addr = sg_dma_address(data->sg);
++
++		writel_relaxed(dma_addr,
+ 			       host->base + MMCI_STM32_IDMABASE0R);
+ 		writel_relaxed(MMCI_STM32_IDMAEN,
+ 			       host->base + MMCI_STM32_IDMACTRLR);
+@@ -241,11 +295,12 @@ static void mmci_sdmmc_set_clkreg(struct mmci_host *host, unsigned int desired)
+ 
+ 	/*
+ 	 * SDMMC_FBCK is selected when an external Delay Block is needed
+-	 * with SDR104.
++	 * with SDR104 or HS200.
+ 	 */
+ 	if (host->mmc->ios.timing >= MMC_TIMING_UHS_SDR50) {
+ 		clk |= MCI_STM32_CLK_BUSSPEED;
+-		if (host->mmc->ios.timing == MMC_TIMING_UHS_SDR104) {
++		if (host->mmc->ios.timing == MMC_TIMING_UHS_SDR104 ||
++		    host->mmc->ios.timing == MMC_TIMING_MMC_HS200) {
+ 			clk &= ~MCI_STM32_CLK_SEL_MSK;
+ 			clk |= MCI_STM32_CLK_SELFBCK;
+ 		}
+diff --git a/drivers/mtd/nand/raw/stm32_fmc2_nand.c b/drivers/mtd/nand/raw/stm32_fmc2_nand.c
+index 1c277fbb91f2..733f9857e801 100644
+--- a/drivers/mtd/nand/raw/stm32_fmc2_nand.c
++++ b/drivers/mtd/nand/raw/stm32_fmc2_nand.c
+@@ -9,6 +9,7 @@
+ #include <linux/dmaengine.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/errno.h>
++#include <linux/gpio/consumer.h>
+ #include <linux/interrupt.h>
+ #include <linux/iopoll.h>
+ #include <linux/mfd/syscon.h>
+@@ -231,6 +232,7 @@ struct stm32_fmc2_timings {
+ 
+ struct stm32_fmc2_nand {
+ 	struct nand_chip chip;
++	struct gpio_desc *wp_gpio;
+ 	struct stm32_fmc2_timings timings;
+ 	int ncs;
+ 	int cs_used[FMC2_MAX_CE];
+@@ -1747,6 +1749,18 @@ static const struct nand_controller_ops stm32_fmc2_nfc_controller_ops = {
+ 	.setup_interface = stm32_fmc2_nfc_setup_interface,
+ };
+ 
++static void stm32_fmc2_nfc_wp_enable(struct stm32_fmc2_nand *nand)
++{
++	if (nand->wp_gpio)
++		gpiod_set_value(nand->wp_gpio, 1);
++}
++
++static void stm32_fmc2_nfc_wp_disable(struct stm32_fmc2_nand *nand)
++{
++	if (nand->wp_gpio)
++		gpiod_set_value(nand->wp_gpio, 0);
++}
++
+ static int stm32_fmc2_nfc_parse_child(struct stm32_fmc2_nfc *nfc,
+ 				      struct device_node *dn)
+ {
+@@ -1785,6 +1799,18 @@ static int stm32_fmc2_nfc_parse_child(struct stm32_fmc2_nfc *nfc,
+ 		nand->cs_used[i] = cs;
+ 	}
+ 
++	nand->wp_gpio = devm_gpiod_get_from_of_node(nfc->dev, dn,
++						    "wp-gpios", 0,
++						    GPIOD_OUT_HIGH, "wp");
++	if (IS_ERR(nand->wp_gpio)) {
++		ret = PTR_ERR(nand->wp_gpio);
++		if (ret != -ENOENT)
++			return dev_err_probe(nfc->dev, ret,
++					     "failed to request WP GPIO\n");
++
++		nand->wp_gpio = NULL;
++	}
++
+ 	nand_set_flash_node(&nand->chip, dn);
+ 
+ 	return 0;
+@@ -1960,10 +1986,12 @@ static int stm32_fmc2_nfc_probe(struct platform_device *pdev)
+ 	chip->options |= NAND_BUSWIDTH_AUTO | NAND_NO_SUBPAGE_WRITE |
+ 			 NAND_USES_DMA;
+ 
++	stm32_fmc2_nfc_wp_disable(nand);
++
+ 	/* Scan to find existence of the device */
+ 	ret = nand_scan(chip, nand->ncs);
+ 	if (ret)
+-		goto err_release_dma;
++		goto err_wp_enable;
+ 
+ 	ret = mtd_device_register(mtd, NULL, 0);
+ 	if (ret)
+@@ -1976,6 +2004,9 @@ static int stm32_fmc2_nfc_probe(struct platform_device *pdev)
+ err_nand_cleanup:
+ 	nand_cleanup(chip);
+ 
++err_wp_enable:
++	stm32_fmc2_nfc_wp_enable(nand);
++
+ err_release_dma:
+ 	if (nfc->dma_ecc_ch)
+ 		dma_release_channel(nfc->dma_ecc_ch);
+@@ -2016,15 +2047,20 @@ static int stm32_fmc2_nfc_remove(struct platform_device *pdev)
+ 
+ 	clk_disable_unprepare(nfc->clk);
+ 
++	stm32_fmc2_nfc_wp_enable(nand);
++
+ 	return 0;
+ }
+ 
+ static int __maybe_unused stm32_fmc2_nfc_suspend(struct device *dev)
+ {
+ 	struct stm32_fmc2_nfc *nfc = dev_get_drvdata(dev);
++	struct stm32_fmc2_nand *nand = &nfc->nand;
+ 
+ 	clk_disable_unprepare(nfc->clk);
+ 
++	stm32_fmc2_nfc_wp_enable(nand);
++
+ 	pinctrl_pm_select_sleep_state(dev);
+ 
+ 	return 0;
+@@ -2046,6 +2082,8 @@ static int __maybe_unused stm32_fmc2_nfc_resume(struct device *dev)
+ 
+ 	stm32_fmc2_nfc_init(nfc);
+ 
++	stm32_fmc2_nfc_wp_disable(nand);
++
+ 	for (chip_cs = 0; chip_cs < FMC2_MAX_CE; chip_cs++) {
+ 		if (!(nfc->cs_assigned & BIT(chip_cs)))
+ 			continue;
+-- 
+2.17.1
+
