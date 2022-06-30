@@ -1,25 +1,30 @@
-From edb75d8544f2a81271e24ce887c07fda229bd30b Mon Sep 17 00:00:00 2001
-From: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
-Date: Tue, 31 May 2022 12:00:39 +0200
-Subject: [PATCH 13/22] ARM-5.15.24-stm32mp1-r1-NET-TTY
+From 24528431ff2487e385cb19c78b1708b356b82c2f Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Thu, 3 Nov 2022 15:57:48 +0100
+Subject: [PATCH 14/22] v5.15-stm32mp-r2 NET-TTY
 
-Signed-off-by: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
 ---
  .../net/ethernet/stmicro/stmmac/dwmac-stm32.c | 231 ++++--
+ drivers/net/phy/phy_device.c                  |   2 +-
  drivers/net/phy/realtek.c                     |  12 +-
- drivers/net/phy/smsc.c                        |  27 +
+ drivers/net/phy/smsc.c                        | 102 +++
+ .../broadcom/brcm80211/brcmfmac/bcmsdh.c      |  39 +-
  drivers/tty/Kconfig                           |  12 +
  drivers/tty/Makefile                          |   1 +
+ drivers/tty/rpmsg_tty.c                       | 287 +++++++
+ drivers/tty/serial/Kconfig                    |   1 +
  drivers/tty/serial/serial_core.c              |  10 +
  drivers/tty/serial/serial_mctrl_gpio.c        |  38 +
  drivers/tty/serial/serial_mctrl_gpio.h        |  18 +
- drivers/tty/serial/stm32-usart.c              | 758 ++++++++++++++----
+ drivers/tty/serial/stm32-usart.c              | 759 ++++++++++++++----
  drivers/tty/serial/stm32-usart.h              |  18 +-
  include/uapi/linux/serial.h                   |   4 +-
- 11 files changed, 892 insertions(+), 237 deletions(-)
+ 15 files changed, 1278 insertions(+), 256 deletions(-)
+ create mode 100644 drivers/tty/rpmsg_tty.c
 
 diff --git a/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c b/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
-index 2b38a499a..f0849cf42 100644
+index 2b38a499a404..f0849cf4266f 100644
 --- a/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
 +++ b/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
 @@ -15,6 +15,7 @@
@@ -446,8 +451,21 @@ index 2b38a499a..f0849cf42 100644
  	{ }
  };
  MODULE_DEVICE_TABLE(of, stm32_dwmac_match);
+diff --git a/drivers/net/phy/phy_device.c b/drivers/net/phy/phy_device.c
+index b616f55ea222..891fc76fe4c5 100644
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -319,7 +319,7 @@ static __maybe_unused int mdio_bus_phy_resume(struct device *dev)
+ 	 * PHY_HALTED nor PHY_READY this is an indication that something went wrong
+ 	 * and we should most likely be using MAC managed PM and we are not.
+ 	 */
+-	WARN_ON(phydev->state != PHY_HALTED && phydev->state != PHY_READY);
++//	WARN_ON(phydev->state != PHY_HALTED && phydev->state != PHY_READY);
+ 
+ 	ret = phy_init_hw(phydev);
+ 	if (ret < 0)
 diff --git a/drivers/net/phy/realtek.c b/drivers/net/phy/realtek.c
-index 11be60333..c61c37294 100644
+index 11be60333fa8..c61c37294c67 100644
 --- a/drivers/net/phy/realtek.c
 +++ b/drivers/net/phy/realtek.c
 @@ -336,14 +336,10 @@ static int rtl8211f_config_init(struct phy_device *phydev)
@@ -470,15 +488,139 @@ index 11be60333..c61c37294 100644
  	switch (phydev->interface) {
  	case PHY_INTERFACE_MODE_RGMII:
 diff --git a/drivers/net/phy/smsc.c b/drivers/net/phy/smsc.c
-index d8cac02a7..b7d65470b 100644
+index 636b0907a598..634dd7f85274 100644
 --- a/drivers/net/phy/smsc.c
 +++ b/drivers/net/phy/smsc.c
-@@ -481,6 +481,32 @@ static struct phy_driver smsc_phy_driver[] = {
- 	.get_strings	= smsc_get_strings,
- 	.get_stats	= smsc_get_stats,
+@@ -45,6 +45,7 @@ static struct smsc_hw_stat smsc_hw_stats[] = {
  
-+	.suspend	= genphy_suspend,
-+	.resume		= genphy_resume,
+ struct smsc_phy_priv {
+ 	bool energy_enable;
++	bool wakeup_enable;
+ 	struct clk *refclk;
+ };
+ 
+@@ -69,6 +70,8 @@ static int smsc_phy_config_intr(struct phy_device *phydev)
+ 		intmask = MII_LAN83C185_ISF_INT4 | MII_LAN83C185_ISF_INT6;
+ 		if (priv->energy_enable)
+ 			intmask |= MII_LAN83C185_ISF_INT7;
++		if (priv->wakeup_enable)
++			intmask |= MII_LAN83C185_ISF_INT8;
+ 		rc = phy_write(phydev, MII_LAN83C185_IM, intmask);
+ 	} else {
+ 		rc = phy_write(phydev, MII_LAN83C185_IM, intmask);
+@@ -105,11 +108,52 @@ static irqreturn_t smsc_phy_handle_interrupt(struct phy_device *phydev)
+ 	return IRQ_HANDLED;
+ }
+ 
++static int smsc_phy_config_wol(struct phy_device *phydev)
++{
++	int i, wol_ctrl, wol_filter;
++	u16 pwd[3] = {0, 0, 0};
++
++	/* Write @MAC in LAN8742_MMD3_MAC_ADDRA/B/C registers */
++	u8 *mac_addr = phydev->attached_dev->dev_addr;
++	/* Store the device address for the magic packet */
++	for (i = 0; i < ARRAY_SIZE(pwd); i++)
++		pwd[i] = mac_addr[5 - i * 2] << 8 | mac_addr[5 - (i * 2 + 1)];
++
++	phy_write_mmd(phydev, 3, LAN8742_MMD3_MAC_ADDRA,
++		      pwd[0]);
++
++	phy_write_mmd(phydev, 3, LAN8742_MMD3_MAC_ADDRB,
++		      pwd[1]);
++
++	phy_write_mmd(phydev, 3, LAN8742_MMD3_MAC_ADDRC,
++		      pwd[2]);
++
++	/* Configure WoL */
++	wol_ctrl = phy_read_mmd(phydev, 3, LAN8742_MMD3_WAKEUP_CTRL);
++
++	/* Configure LED2 functions as nPME, WoL Configured, Magic Packet Enable */
++	wol_ctrl |= (LAN8742_MMD3_WUCSR_LED2_AS_NPME | LAN8742_MMD3_WUCSR_WOL | LAN8742_MMD3_WUCSR_MPEN);
++	phy_write_mmd(phydev, 3, LAN8742_MMD3_WAKEUP_CTRL,
++		      wol_ctrl);
++
++	wol_filter = phy_read_mmd(phydev, 3, LAN8742_MMD3_WAKEUP_FILTER);
++
++	/* Configure Filter enabled, Address Match Enable */
++	wol_filter |= (LAN8742_MMD3_WUF_CFGA_FE | LAN8742_MMD3_WUF_CFGA_AME);
++	phy_write_mmd(phydev, 3, LAN8742_MMD3_WAKEUP_FILTER,
++		      wol_filter);
++
++	return 0;
++}
++
+ static int smsc_phy_config_init(struct phy_device *phydev)
+ {
+ 	struct smsc_phy_priv *priv = phydev->priv;
+ 	int rc;
+ 
++	if (priv->wakeup_enable)
++		smsc_phy_config_wol(phydev);
++
+ 	if (!priv->energy_enable || phydev->irq != PHY_POLL)
+ 		return 0;
+ 
+@@ -146,6 +190,17 @@ static int smsc_phy_reset(struct phy_device *phydev)
+ 	return genphy_soft_reset(phydev);
+ }
+ 
++static int smsc_phy_suspend(struct phy_device *phydev)
++{
++	struct device *dev = &phydev->mdio.dev;
++
++	/* do not power down PHY when PHY enable power/wakeup */
++	if (!device_may_wakeup(dev))
++		return genphy_suspend(phydev);
++
++	return 0;
++}
++
+ static int lan911x_config_init(struct phy_device *phydev)
+ {
+ 	return smsc_phy_ack_interrupt(phydev);
+@@ -251,6 +306,20 @@ static int lan87xx_read_status(struct phy_device *phydev)
+ 			return rc;
+ 	}
+ 
++	if (priv->wakeup_enable) {
++		/* Check status of WUCSR bits 7:4 : Perfect DA Frame, Remote Wakeup
++		 * Frame, Magic Packet, Broadcast Frame Received, if one of these bits
++		 * are 1, clearing them*/
++		int wol_ctrl = phy_read_mmd(phydev, 3, LAN8742_MMD3_WAKEUP_CTRL);
++
++		if ((wol_ctrl & (LAN8742_MMD3_WUCSR_PFDA_FR | LAN8742_MMD3_WUCSR_WUFR |
++				 LAN8742_MMD3_WUCSR_MPR | LAN8742_MMD3_WUCSR_BCAST_FR)) > 0) {
++			wol_ctrl |= (LAN8742_MMD3_WUCSR_PFDA_FR | LAN8742_MMD3_WUCSR_WUFR |
++				     LAN8742_MMD3_WUCSR_MPR | LAN8742_MMD3_WUCSR_BCAST_FR);
++			phy_write_mmd(phydev, 3, LAN8742_MMD3_WAKEUP_CTRL,
++				      wol_ctrl);
++		}
++	}
+ 	return err;
+ }
+ 
+@@ -313,10 +382,16 @@ static int smsc_phy_probe(struct phy_device *phydev)
+ 		return -ENOMEM;
+ 
+ 	priv->energy_enable = true;
++	priv->wakeup_enable = false;
+ 
+ 	if (of_property_read_bool(of_node, "smsc,disable-energy-detect"))
+ 		priv->energy_enable = false;
+ 
++	if (of_property_read_bool(of_node, "wakeup-source")) {
++		device_set_wakeup_capable(dev, true);
++		priv->wakeup_enable = true;
++	}
++
+ 	phydev->priv = priv;
+ 
+ 	/* Make clk optional to keep DTB backward compatibility. */
+@@ -485,6 +560,32 @@ static struct phy_driver smsc_phy_driver[] = {
+ 
+ 	.suspend	= genphy_suspend,
+ 	.resume		= genphy_resume,
 +}, {
 +	.phy_id		= 0x0007c130,
 +	.phy_id_mask	= 0xfffffff0,
@@ -503,10 +645,12 @@ index d8cac02a7..b7d65470b 100644
 +	.get_strings	= smsc_get_strings,
 +	.get_stats	= smsc_get_stats,
 +
- 	.suspend	= genphy_suspend,
- 	.resume		= genphy_resume,
++	.suspend	= smsc_phy_suspend,
++	.resume		= genphy_resume,
  } };
-@@ -498,6 +524,7 @@ static struct mdio_device_id __maybe_unused smsc_tbl[] = {
+ 
+ module_phy_driver(smsc_phy_driver);
+@@ -500,6 +601,7 @@ static struct mdio_device_id __maybe_unused smsc_tbl[] = {
  	{ 0x0007c0d0, 0xfffffff0 },
  	{ 0x0007c0f0, 0xfffffff0 },
  	{ 0x0007c110, 0xfffffff0 },
@@ -514,8 +658,95 @@ index d8cac02a7..b7d65470b 100644
  	{ }
  };
  
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c
+index ac02244a6fdf..9c598ea97499 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c
+@@ -1119,9 +1119,21 @@ void brcmf_sdio_wowl_config(struct device *dev, bool enabled)
+ {
+ 	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
+ 	struct brcmf_sdio_dev *sdiodev = bus_if->bus_priv.sdio;
++	mmc_pm_flag_t pm_caps = sdio_get_host_pm_caps(sdiodev->func1);
+ 
+-	brcmf_dbg(SDIO, "Configuring WOWL, enabled=%d\n", enabled);
+-	sdiodev->wowl_enabled = enabled;
++	/* Power must be preserved to be able to support WOWL. */
++	if (!(pm_caps & MMC_PM_KEEP_POWER))
++		goto notsup;
++
++	if (sdiodev->settings->bus.sdio.oob_irq_supported ||
++	    pm_caps & MMC_PM_WAKE_SDIO_IRQ) {
++		sdiodev->wowl_enabled = enabled;
++		brcmf_dbg(SDIO, "Configuring WOWL, enabled=%d\n", enabled);
++		return;
++	}
++
++notsup:
++	brcmf_dbg(SDIO, "WOWL not supported\n");
+ }
+ 
+ #ifdef CONFIG_PM_SLEEP
+@@ -1130,7 +1142,7 @@ static int brcmf_ops_sdio_suspend(struct device *dev)
+ 	struct sdio_func *func;
+ 	struct brcmf_bus *bus_if;
+ 	struct brcmf_sdio_dev *sdiodev;
+-	mmc_pm_flag_t pm_caps, sdio_flags;
++	mmc_pm_flag_t sdio_flags;
+ 	int ret = 0;
+ 
+ 	func = container_of(dev, struct sdio_func, dev);
+@@ -1142,20 +1154,15 @@ static int brcmf_ops_sdio_suspend(struct device *dev)
+ 	bus_if = dev_get_drvdata(dev);
+ 	sdiodev = bus_if->bus_priv.sdio;
+ 
+-	pm_caps = sdio_get_host_pm_caps(func);
+-
+-	if (pm_caps & MMC_PM_KEEP_POWER) {
+-		/* preserve card power during suspend */
++	if (sdiodev->wowl_enabled) {
+ 		brcmf_sdiod_freezer_on(sdiodev);
+ 		brcmf_sdio_wd_timer(sdiodev->bus, 0);
+ 
+ 		sdio_flags = MMC_PM_KEEP_POWER;
+-		if (sdiodev->wowl_enabled) {
+-			if (sdiodev->settings->bus.sdio.oob_irq_supported)
+-				enable_irq_wake(sdiodev->settings->bus.sdio.oob_irq_nr);
+-			else
+-				sdio_flags |= MMC_PM_WAKE_SDIO_IRQ;
+-		}
++		if (sdiodev->settings->bus.sdio.oob_irq_supported)
++			enable_irq_wake(sdiodev->settings->bus.sdio.oob_irq_nr);
++		else
++			sdio_flags |= MMC_PM_WAKE_SDIO_IRQ;
+ 
+ 		if (sdio_set_host_pm_flags(sdiodev->func1, sdio_flags))
+ 			brcmf_err("Failed to set pm_flags %x\n", sdio_flags);
+@@ -1176,21 +1183,19 @@ static int brcmf_ops_sdio_resume(struct device *dev)
+ 	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
+ 	struct brcmf_sdio_dev *sdiodev = bus_if->bus_priv.sdio;
+ 	struct sdio_func *func = container_of(dev, struct sdio_func, dev);
+-	mmc_pm_flag_t pm_caps = sdio_get_host_pm_caps(func);
+ 	int ret = 0;
+ 
+ 	brcmf_dbg(SDIO, "Enter: F%d\n", func->num);
+ 	if (func->num != 2)
+ 		return 0;
+ 
+-	if (!(pm_caps & MMC_PM_KEEP_POWER)) {
++	if (!sdiodev->wowl_enabled) {
+ 		/* bus was powered off and device removed, probe again */
+ 		ret = brcmf_sdiod_probe(sdiodev);
+ 		if (ret)
+ 			brcmf_err("Failed to probe device on resume\n");
+ 	} else {
+-		if (sdiodev->wowl_enabled &&
+-		    sdiodev->settings->bus.sdio.oob_irq_supported)
++		if (sdiodev->settings->bus.sdio.oob_irq_supported)
+ 			disable_irq_wake(sdiodev->settings->bus.sdio.oob_irq_nr);
+ 
+ 		brcmf_sdiod_freezer_off(sdiodev);
 diff --git a/drivers/tty/Kconfig b/drivers/tty/Kconfig
-index 23cc988c6..cc30ff93e 100644
+index 23cc988c68a4..cc30ff93e2e4 100644
 --- a/drivers/tty/Kconfig
 +++ b/drivers/tty/Kconfig
 @@ -368,6 +368,18 @@ config VCC
@@ -538,7 +769,7 @@ index 23cc988c6..cc30ff93e 100644
  
  source "drivers/tty/serdev/Kconfig"
 diff --git a/drivers/tty/Makefile b/drivers/tty/Makefile
-index a2bd75fba..07aca5184 100644
+index a2bd75fbaaa4..07aca5184a55 100644
 --- a/drivers/tty/Makefile
 +++ b/drivers/tty/Makefile
 @@ -26,5 +26,6 @@ obj-$(CONFIG_PPC_EPAPR_HV_BYTECHAN) += ehv_bytechan.o
@@ -548,11 +779,316 @@ index a2bd75fba..07aca5184 100644
 +obj-$(CONFIG_RPMSG_TTY)		+= rpmsg_tty.o
  
  obj-y += ipwireless/
+diff --git a/drivers/tty/rpmsg_tty.c b/drivers/tty/rpmsg_tty.c
+new file mode 100644
+index 000000000000..29db413bbc03
+--- /dev/null
++++ b/drivers/tty/rpmsg_tty.c
+@@ -0,0 +1,287 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) 2021 STMicroelectronics - All Rights Reserved
++ *
++ * The rpmsg tty driver implements serial communication on the RPMsg bus to makes
++ * possible for user-space programs to send and receive rpmsg messages as a standard
++ * tty protocol.
++ *
++ * The remote processor can instantiate a new tty by requesting a "rpmsg-tty" RPMsg service.
++ * The "rpmsg-tty" service is directly used for data exchange. No flow control is implemented yet.
++ */
++
++#define pr_fmt(fmt)		KBUILD_MODNAME ": " fmt
++
++#include <linux/module.h>
++#include <linux/rpmsg.h>
++#include <linux/slab.h>
++#include <linux/tty.h>
++#include <linux/tty_flip.h>
++
++#define RPMSG_TTY_NAME	"ttyRPMSG"
++#define MAX_TTY_RPMSG	32
++
++static DEFINE_IDR(tty_idr);	/* tty instance id */
++static DEFINE_MUTEX(idr_lock);	/* protects tty_idr */
++
++static struct tty_driver *rpmsg_tty_driver;
++
++struct rpmsg_tty_port {
++	struct tty_port		port;	 /* TTY port data */
++	int			id;	 /* TTY rpmsg index */
++	struct rpmsg_device	*rpdev;	 /* rpmsg device */
++};
++
++static int rpmsg_tty_cb(struct rpmsg_device *rpdev, void *data, int len, void *priv, u32 src)
++{
++	struct rpmsg_tty_port *cport = dev_get_drvdata(&rpdev->dev);
++	int copied;
++
++	if (!len)
++		return -EINVAL;
++	copied = tty_insert_flip_string(&cport->port, data, len);
++	if (copied != len)
++		dev_err_ratelimited(&rpdev->dev, "Trunc buffer: available space is %d\n", copied);
++	tty_flip_buffer_push(&cport->port);
++
++	return 0;
++}
++
++static int rpmsg_tty_install(struct tty_driver *driver, struct tty_struct *tty)
++{
++	struct rpmsg_tty_port *cport = idr_find(&tty_idr, tty->index);
++	struct tty_port *port;
++
++	tty->driver_data = cport;
++
++	port = tty_port_get(&cport->port);
++	return tty_port_install(port, driver, tty);
++}
++
++static void rpmsg_tty_cleanup(struct tty_struct *tty)
++{
++	tty_port_put(tty->port);
++}
++
++static int rpmsg_tty_open(struct tty_struct *tty, struct file *filp)
++{
++	return tty_port_open(tty->port, tty, filp);
++}
++
++static void rpmsg_tty_close(struct tty_struct *tty, struct file *filp)
++{
++	return tty_port_close(tty->port, tty, filp);
++}
++
++static int rpmsg_tty_write(struct tty_struct *tty, const u8 *buf, int len)
++{
++	struct rpmsg_tty_port *cport = tty->driver_data;
++	struct rpmsg_device *rpdev;
++	int msg_max_size, msg_size;
++	int ret;
++
++	rpdev = cport->rpdev;
++
++	msg_max_size = rpmsg_get_mtu(rpdev->ept);
++	if (msg_max_size < 0)
++		return msg_max_size;
++
++	msg_size = min(len, msg_max_size);
++
++	/*
++	 * Use rpmsg_trysend instead of rpmsg_send to send the message so the caller is not
++	 * hung until a rpmsg buffer is available. In such case rpmsg_trysend returns -ENOMEM.
++	 */
++	ret = rpmsg_trysend(rpdev->ept, (void *)buf, msg_size);
++	if (ret) {
++		dev_dbg_ratelimited(&rpdev->dev, "rpmsg_send failed: %d\n", ret);
++		return ret;
++	}
++
++	return msg_size;
++}
++
++static unsigned int rpmsg_tty_write_room(struct tty_struct *tty)
++{
++	struct rpmsg_tty_port *cport = tty->driver_data;
++	int size;
++
++	size = rpmsg_get_mtu(cport->rpdev->ept);
++	if (size < 0)
++		return 0;
++
++	return size;
++}
++
++static void rpmsg_tty_hangup(struct tty_struct *tty)
++{
++	tty_port_hangup(tty->port);
++}
++
++static const struct tty_operations rpmsg_tty_ops = {
++	.install	= rpmsg_tty_install,
++	.open		= rpmsg_tty_open,
++	.close		= rpmsg_tty_close,
++	.write		= rpmsg_tty_write,
++	.write_room	= rpmsg_tty_write_room,
++	.hangup		= rpmsg_tty_hangup,
++	.cleanup	= rpmsg_tty_cleanup,
++};
++
++static struct rpmsg_tty_port *rpmsg_tty_alloc_cport(void)
++{
++	struct rpmsg_tty_port *cport;
++	int ret;
++
++	cport = kzalloc(sizeof(*cport), GFP_KERNEL);
++	if (!cport)
++		return ERR_PTR(-ENOMEM);
++
++	mutex_lock(&idr_lock);
++	ret = idr_alloc(&tty_idr, cport, 0, MAX_TTY_RPMSG, GFP_KERNEL);
++	mutex_unlock(&idr_lock);
++
++	if (ret < 0) {
++		kfree(cport);
++		return ERR_PTR(ret);
++	}
++
++	cport->id = ret;
++
++	return cport;
++}
++
++static void rpmsg_tty_destruct_port(struct tty_port *port)
++{
++	struct rpmsg_tty_port *cport = container_of(port, struct rpmsg_tty_port, port);
++
++	mutex_lock(&idr_lock);
++	idr_remove(&tty_idr, cport->id);
++	mutex_unlock(&idr_lock);
++
++	kfree(cport);
++}
++
++static const struct tty_port_operations rpmsg_tty_port_ops = {
++	.destruct = rpmsg_tty_destruct_port,
++};
++
++
++static int rpmsg_tty_probe(struct rpmsg_device *rpdev)
++{
++	struct rpmsg_tty_port *cport;
++	struct device *dev = &rpdev->dev;
++	struct device *tty_dev;
++	int ret;
++
++	cport = rpmsg_tty_alloc_cport();
++	if (IS_ERR(cport))
++		return dev_err_probe(dev, PTR_ERR(cport), "Failed to alloc tty port\n");
++
++	tty_port_init(&cport->port);
++	cport->port.ops = &rpmsg_tty_port_ops;
++
++	tty_dev = tty_port_register_device(&cport->port, rpmsg_tty_driver,
++					   cport->id, dev);
++	if (IS_ERR(tty_dev)) {
++		ret = dev_err_probe(dev, PTR_ERR(tty_dev), "Failed to register tty port\n");
++		tty_port_put(&cport->port);
++		return ret;
++	}
++
++	cport->rpdev = rpdev;
++
++	dev_set_drvdata(dev, cport);
++
++	dev_dbg(dev, "New channel: 0x%x -> 0x%x: " RPMSG_TTY_NAME "%d\n",
++		rpdev->src, rpdev->dst, cport->id);
++
++	return 0;
++}
++
++static void rpmsg_tty_remove(struct rpmsg_device *rpdev)
++{
++	struct rpmsg_tty_port *cport = dev_get_drvdata(&rpdev->dev);
++
++	dev_dbg(&rpdev->dev, "Removing rpmsg tty device %d\n", cport->id);
++
++	/* User hang up to release the tty */
++	tty_port_tty_hangup(&cport->port, false);
++
++	tty_unregister_device(rpmsg_tty_driver, cport->id);
++
++	tty_port_put(&cport->port);
++}
++
++static struct rpmsg_device_id rpmsg_driver_tty_id_table[] = {
++	{ .name	= "rpmsg-tty" },
++	{ },
++};
++MODULE_DEVICE_TABLE(rpmsg, rpmsg_driver_tty_id_table);
++
++static struct rpmsg_driver rpmsg_tty_rpmsg_drv = {
++	.drv.name	= KBUILD_MODNAME,
++	.id_table	= rpmsg_driver_tty_id_table,
++	.probe		= rpmsg_tty_probe,
++	.callback	= rpmsg_tty_cb,
++	.remove		= rpmsg_tty_remove,
++};
++
++static int __init rpmsg_tty_init(void)
++{
++	int ret;
++
++	rpmsg_tty_driver = tty_alloc_driver(MAX_TTY_RPMSG, TTY_DRIVER_REAL_RAW |
++					    TTY_DRIVER_DYNAMIC_DEV);
++	if (IS_ERR(rpmsg_tty_driver))
++		return PTR_ERR(rpmsg_tty_driver);
++
++	rpmsg_tty_driver->driver_name = "rpmsg_tty";
++	rpmsg_tty_driver->name = RPMSG_TTY_NAME;
++	rpmsg_tty_driver->major = 0;
++	rpmsg_tty_driver->type = TTY_DRIVER_TYPE_CONSOLE;
++
++	/* Disable unused mode by default */
++	rpmsg_tty_driver->init_termios = tty_std_termios;
++	rpmsg_tty_driver->init_termios.c_lflag &= ~(ECHO | ICANON);
++	rpmsg_tty_driver->init_termios.c_oflag &= ~(OPOST | ONLCR);
++
++	tty_set_operations(rpmsg_tty_driver, &rpmsg_tty_ops);
++
++	ret = tty_register_driver(rpmsg_tty_driver);
++	if (ret < 0) {
++		pr_err("Couldn't install driver: %d\n", ret);
++		goto error_put;
++	}
++
++	ret = register_rpmsg_driver(&rpmsg_tty_rpmsg_drv);
++	if (ret < 0) {
++		pr_err("Couldn't register driver: %d\n", ret);
++		goto error_unregister;
++	}
++
++	return 0;
++
++error_unregister:
++	tty_unregister_driver(rpmsg_tty_driver);
++
++error_put:
++	tty_driver_kref_put(rpmsg_tty_driver);
++
++	return ret;
++}
++
++static void __exit rpmsg_tty_exit(void)
++{
++	unregister_rpmsg_driver(&rpmsg_tty_rpmsg_drv);
++	tty_unregister_driver(rpmsg_tty_driver);
++	tty_driver_kref_put(rpmsg_tty_driver);
++	idr_destroy(&tty_idr);
++}
++
++module_init(rpmsg_tty_init);
++module_exit(rpmsg_tty_exit);
++
++MODULE_AUTHOR("Arnaud Pouliquen <arnaud.pouliquen@foss.st.com>");
++MODULE_DESCRIPTION("remote processor messaging tty driver");
++MODULE_LICENSE("GPL v2");
+diff --git a/drivers/tty/serial/Kconfig b/drivers/tty/serial/Kconfig
+index 131a6a587acd..a1dea5888110 100644
+--- a/drivers/tty/serial/Kconfig
++++ b/drivers/tty/serial/Kconfig
+@@ -1440,6 +1440,7 @@ config SERIAL_STM32_CONSOLE
+ 	bool "Support for console on STM32"
+ 	depends on SERIAL_STM32=y
+ 	select SERIAL_CORE_CONSOLE
++	select SERIAL_EARLYCON
+ 
+ config SERIAL_MVEBU_UART
+ 	bool "Marvell EBU serial port support"
 diff --git a/drivers/tty/serial/serial_core.c b/drivers/tty/serial/serial_core.c
-index dc6129dde..bde6c62e6 100644
+index 82ddbb92d07d..596e76f49c60 100644
 --- a/drivers/tty/serial/serial_core.c
 +++ b/drivers/tty/serial/serial_core.c
-@@ -3238,6 +3238,16 @@ int uart_get_rs485_mode(struct uart_port *port)
+@@ -3237,6 +3237,16 @@ int uart_get_rs485_mode(struct uart_port *port)
  	u32 rs485_delay[2];
  	int ret;
  
@@ -570,7 +1106,7 @@ index dc6129dde..bde6c62e6 100644
  					     rs485_delay, 2);
  	if (!ret) {
 diff --git a/drivers/tty/serial/serial_mctrl_gpio.c b/drivers/tty/serial/serial_mctrl_gpio.c
-index c41d8911c..1663b3afc 100644
+index c41d8911ce95..1663b3afc3a0 100644
 --- a/drivers/tty/serial/serial_mctrl_gpio.c
 +++ b/drivers/tty/serial/serial_mctrl_gpio.c
 @@ -299,4 +299,42 @@ void mctrl_gpio_disable_ms(struct mctrl_gpios *gpios)
@@ -617,7 +1153,7 @@ index c41d8911c..1663b3afc 100644
 +
  MODULE_LICENSE("GPL");
 diff --git a/drivers/tty/serial/serial_mctrl_gpio.h b/drivers/tty/serial/serial_mctrl_gpio.h
-index b134a0ffc..fc76910fb 100644
+index b134a0ffc894..fc76910fb105 100644
 --- a/drivers/tty/serial/serial_mctrl_gpio.h
 +++ b/drivers/tty/serial/serial_mctrl_gpio.h
 @@ -91,6 +91,16 @@ void mctrl_gpio_enable_ms(struct mctrl_gpios *gpios);
@@ -653,10 +1189,10 @@ index b134a0ffc..fc76910fb 100644
  
  #endif
 diff --git a/drivers/tty/serial/stm32-usart.c b/drivers/tty/serial/stm32-usart.c
-index 200cd293d..f8c048443 100644
+index fc166cc2c856..4d7a316649c1 100644
 --- a/drivers/tty/serial/stm32-usart.c
 +++ b/drivers/tty/serial/stm32-usart.c
-@@ -61,38 +61,65 @@ static void stm32_usart_clr_bits(struct uart_port *port, u32 reg, u32 bits)
+@@ -61,40 +61,67 @@ static void stm32_usart_clr_bits(struct uart_port *port, u32 reg, u32 bits)
  	writel_relaxed(val, port->membase + reg);
  }
  
@@ -712,6 +1248,8 @@ index 200cd293d..f8c048443 100644
  	*cr3 |= USART_CR3_DEM;
  	over8 = *cr1 & USART_CR1_OVER8;
  
+ 	*cr1 &= ~(USART_CR1_DEDT_MASK | USART_CR1_DEAT_MASK);
+ 
 -	if (over8)
 -		rs485_deat_dedt = delay_ADE * baud * 8;
 -	else
@@ -745,7 +1283,7 @@ index 200cd293d..f8c048443 100644
  	*cr1 |= rs485_deat_dedt;
  }
  
-@@ -123,10 +150,7 @@ static int stm32_usart_config_rs485(struct uart_port *port,
+@@ -125,10 +152,7 @@ static int stm32_usart_config_rs485(struct uart_port *port,
  				   << USART_BRR_04_R_SHIFT;
  
  		baud = DIV_ROUND_CLOSEST(port->uartclk, usartdiv);
@@ -757,7 +1295,7 @@ index 200cd293d..f8c048443 100644
  
  		if (rs485conf->flags & SER_RS485_RTS_ON_SEND) {
  			cr3 &= ~USART_CR3_DEP;
-@@ -165,63 +189,103 @@ static int stm32_usart_init_rs485(struct uart_port *port,
+@@ -167,63 +191,103 @@ static int stm32_usart_init_rs485(struct uart_port *port,
  	return uart_get_rs485_mode(port);
  }
  
@@ -894,7 +1432,7 @@ index 200cd293d..f8c048443 100644
  		sr |= USART_SR_DUMMY_RX;
  		flag = TTY_NORMAL;
  
-@@ -240,8 +304,9 @@ static void stm32_usart_receive_chars(struct uart_port *port, bool threaded)
+@@ -242,8 +306,9 @@ static void stm32_usart_receive_chars(struct uart_port *port, bool threaded)
  			writel_relaxed(sr & USART_SR_ERR_MASK,
  				       port->membase + ofs->icr);
  
@@ -905,7 +1443,7 @@ index 200cd293d..f8c048443 100644
  		if (sr & USART_SR_ERR_MASK) {
  			if (sr & USART_SR_ORE) {
  				port->icount.overrun++;
-@@ -275,21 +340,208 @@ static void stm32_usart_receive_chars(struct uart_port *port, bool threaded)
+@@ -277,21 +342,208 @@ static void stm32_usart_receive_chars(struct uart_port *port, bool threaded)
  		uart_insert_char(port, sr, USART_SR_ORE, c, flag);
  	}
  
@@ -921,8 +1459,7 @@ index 200cd293d..f8c048443 100644
 +	int dma_count, i;
 +
 +	dma_start = stm32_port->rx_buf + (RX_BUF_L - stm32_port->last_res);
- 
--	tty_flip_buffer_push(tport);
++
 +	/*
 +	 * Apply rdr_mask on buffer in order to mask parity bit.
 +	 * This loop is useless in cs8 mode because DMA copies only
@@ -1008,7 +1545,8 @@ index 200cd293d..f8c048443 100644
 +	struct tty_port *tport = &port->state->port;
 +	unsigned int size;
 +	unsigned long flags;
-+
+ 
+-	tty_flip_buffer_push(tport);
 +	spin_lock_irqsave(&port->lock, flags);
 +	size = stm32_usart_receive_chars(port, false);
 +	uart_unlock_and_check_sysrq_irqrestore(port, flags);
@@ -1120,7 +1658,7 @@ index 200cd293d..f8c048443 100644
  
  	/* Let's see if we have pending data to send */
  	spin_lock_irqsave(&port->lock, flags);
-@@ -329,11 +581,6 @@ static void stm32_usart_transmit_chars_pio(struct uart_port *port)
+@@ -331,11 +583,6 @@ static void stm32_usart_transmit_chars_pio(struct uart_port *port)
  	const struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
  	struct circ_buf *xmit = &port->state->xmit;
  
@@ -1132,7 +1670,7 @@ index 200cd293d..f8c048443 100644
  	while (!uart_circ_empty(xmit)) {
  		/* Check that TDR is empty before filling FIFO */
  		if (!(readl_relaxed(port->membase + ofs->isr) & USART_SR_TXE))
-@@ -353,15 +600,17 @@ static void stm32_usart_transmit_chars_pio(struct uart_port *port)
+@@ -355,15 +602,17 @@ static void stm32_usart_transmit_chars_pio(struct uart_port *port)
  static void stm32_usart_transmit_chars_dma(struct uart_port *port)
  {
  	struct stm32_port *stm32port = to_stm32_port(port);
@@ -1155,7 +1693,7 @@ index 200cd293d..f8c048443 100644
  
  	count = uart_circ_chars_pending(xmit);
  
-@@ -392,28 +641,35 @@ static void stm32_usart_transmit_chars_dma(struct uart_port *port)
+@@ -394,28 +643,35 @@ static void stm32_usart_transmit_chars_dma(struct uart_port *port)
  	if (!desc)
  		goto fallback_err;
  
@@ -1198,28 +1736,18 @@ index 200cd293d..f8c048443 100644
  }
  
  static void stm32_usart_transmit_chars(struct uart_port *port)
-@@ -421,15 +677,28 @@ static void stm32_usart_transmit_chars(struct uart_port *port)
- 	struct stm32_port *stm32_port = to_stm32_port(port);
- 	const struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
- 	struct circ_buf *xmit = &port->state->xmit;
-+	u32 isr;
-+	int ret;
+@@ -427,8 +683,8 @@ static void stm32_usart_transmit_chars(struct uart_port *port)
+ 	int ret;
  
  	if (port->x_char) {
 -		if (stm32_port->tx_dma_busy)
 -			stm32_usart_clr_bits(port, ofs->cr3, USART_CR3_DMAT);
 +		/* dma terminate may have been called in case of dma pause failure */
 +		stm32_usart_tx_dma_pause(stm32_port);
-+
-+		/* Check that TDR is empty before filling FIFO */
-+		ret =
-+		readl_relaxed_poll_timeout_atomic(port->membase + ofs->isr,
-+						  isr,
-+						  (isr & USART_SR_TXE),
-+						  10, 1000);
-+		if (ret)
-+			dev_warn(port->dev, "1 character may be erased\n");
-+
+ 
+ 		/* Check that TDR is empty before filling FIFO */
+ 		ret =
+@@ -442,8 +698,9 @@ static void stm32_usart_transmit_chars(struct uart_port *port)
  		writel_relaxed(port->x_char, port->membase + ofs->tdr);
  		port->x_char = 0;
  		port->icount.tx++;
@@ -1231,7 +1759,7 @@ index 200cd293d..f8c048443 100644
  		return;
  	}
  
-@@ -462,6 +731,7 @@ static irqreturn_t stm32_usart_interrupt(int irq, void *ptr)
+@@ -476,6 +733,7 @@ static irqreturn_t stm32_usart_interrupt(int irq, void *ptr)
  	struct stm32_port *stm32_port = to_stm32_port(port);
  	const struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
  	u32 sr;
@@ -1239,7 +1767,7 @@ index 200cd293d..f8c048443 100644
  
  	sr = readl_relaxed(port->membase + ofs->isr);
  
-@@ -478,8 +748,20 @@ static irqreturn_t stm32_usart_interrupt(int irq, void *ptr)
+@@ -492,8 +750,20 @@ static irqreturn_t stm32_usart_interrupt(int irq, void *ptr)
  			pm_wakeup_event(tport->tty->dev, 0);
  	}
  
@@ -1262,7 +1790,7 @@ index 200cd293d..f8c048443 100644
  
  	if ((sr & USART_SR_TXE) && !(stm32_port->tx_ch)) {
  		spin_lock(&port->lock);
-@@ -487,7 +769,8 @@ static irqreturn_t stm32_usart_interrupt(int irq, void *ptr)
+@@ -501,7 +771,8 @@ static irqreturn_t stm32_usart_interrupt(int irq, void *ptr)
  		spin_unlock(&port->lock);
  	}
  
@@ -1272,7 +1800,7 @@ index 200cd293d..f8c048443 100644
  		return IRQ_WAKE_THREAD;
  	else
  		return IRQ_HANDLED;
-@@ -496,10 +779,16 @@ static irqreturn_t stm32_usart_interrupt(int irq, void *ptr)
+@@ -510,10 +781,16 @@ static irqreturn_t stm32_usart_interrupt(int irq, void *ptr)
  static irqreturn_t stm32_usart_threaded_interrupt(int irq, void *ptr)
  {
  	struct uart_port *port = ptr;
@@ -1292,7 +1820,7 @@ index 200cd293d..f8c048443 100644
  
  	return IRQ_HANDLED;
  }
-@@ -557,6 +846,9 @@ static void stm32_usart_stop_tx(struct uart_port *port)
+@@ -571,6 +848,9 @@ static void stm32_usart_stop_tx(struct uart_port *port)
  
  	stm32_usart_tx_interrupt_disable(port);
  
@@ -1302,7 +1830,7 @@ index 200cd293d..f8c048443 100644
  	if (rs485conf->flags & SER_RS485_ENABLED) {
  		if (rs485conf->flags & SER_RS485_RTS_ON_SEND) {
  			mctrl_gpio_set(stm32_port->gpios,
-@@ -595,13 +887,9 @@ static void stm32_usart_start_tx(struct uart_port *port)
+@@ -609,13 +889,9 @@ static void stm32_usart_start_tx(struct uart_port *port)
  static void stm32_usart_flush_buffer(struct uart_port *port)
  {
  	struct stm32_port *stm32_port = to_stm32_port(port);
@@ -1318,7 +1846,7 @@ index 200cd293d..f8c048443 100644
  }
  
  /* Throttle the remote when input buffer is about to overflow. */
-@@ -612,10 +900,18 @@ static void stm32_usart_throttle(struct uart_port *port)
+@@ -626,10 +902,18 @@ static void stm32_usart_throttle(struct uart_port *port)
  	unsigned long flags;
  
  	spin_lock_irqsave(&port->lock, flags);
@@ -1337,7 +1865,7 @@ index 200cd293d..f8c048443 100644
  	spin_unlock_irqrestore(&port->lock, flags);
  }
  
-@@ -631,6 +927,15 @@ static void stm32_usart_unthrottle(struct uart_port *port)
+@@ -645,6 +929,15 @@ static void stm32_usart_unthrottle(struct uart_port *port)
  	if (stm32_port->cr3_irq)
  		stm32_usart_set_bits(port, ofs->cr3, stm32_port->cr3_irq);
  
@@ -1353,7 +1881,7 @@ index 200cd293d..f8c048443 100644
  	spin_unlock_irqrestore(&port->lock, flags);
  }
  
-@@ -640,6 +945,9 @@ static void stm32_usart_stop_rx(struct uart_port *port)
+@@ -654,14 +947,28 @@ static void stm32_usart_stop_rx(struct uart_port *port)
  	struct stm32_port *stm32_port = to_stm32_port(port);
  	const struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
  
@@ -1363,7 +1891,27 @@ index 200cd293d..f8c048443 100644
  	stm32_usart_clr_bits(port, ofs->cr1, stm32_port->cr1_irq);
  	if (stm32_port->cr3_irq)
  		stm32_usart_clr_bits(port, ofs->cr3, stm32_port->cr3_irq);
-@@ -676,6 +984,14 @@ static int stm32_usart_startup(struct uart_port *port)
+ }
+ 
+-/* Handle breaks - ignored by us */
+ static void stm32_usart_break_ctl(struct uart_port *port, int break_state)
+ {
++	struct stm32_port *stm32_port = to_stm32_port(port);
++	const struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
++	unsigned long flags;
++
++	spin_lock_irqsave(&port->lock, flags);
++
++	if (break_state)
++		stm32_usart_set_bits(port, ofs->rqr, USART_RQR_SBKRQ);
++	else
++		stm32_usart_clr_bits(port, ofs->rqr, USART_RQR_SBKRQ);
++
++	spin_unlock_irqrestore(&port->lock, flags);
+ }
+ 
+ static int stm32_usart_startup(struct uart_port *port)
+@@ -690,6 +997,14 @@ static int stm32_usart_startup(struct uart_port *port)
  	if (ofs->rqr != UNDEF_REG)
  		writel_relaxed(USART_RQR_RXFRQ, port->membase + ofs->rqr);
  
@@ -1378,7 +1926,7 @@ index 200cd293d..f8c048443 100644
  	/* RX enabling */
  	val = stm32_port->cr1_irq | USART_CR1_RE | BIT(cfg->uart_enable_bit);
  	stm32_usart_set_bits(port, ofs->cr1, val);
-@@ -691,10 +1007,11 @@ static void stm32_usart_shutdown(struct uart_port *port)
+@@ -705,10 +1020,11 @@ static void stm32_usart_shutdown(struct uart_port *port)
  	u32 val, isr;
  	int ret;
  
@@ -1393,7 +1941,7 @@ index 200cd293d..f8c048443 100644
  
  	/* Disable modem control interrupts */
  	stm32_usart_disable_ms(port);
-@@ -713,6 +1030,12 @@ static void stm32_usart_shutdown(struct uart_port *port)
+@@ -727,6 +1043,12 @@ static void stm32_usart_shutdown(struct uart_port *port)
  	if (ret)
  		dev_err(port->dev, "Transmission is not complete\n");
  
@@ -1406,7 +1954,7 @@ index 200cd293d..f8c048443 100644
  	/* flush RX & TX FIFO */
  	if (ofs->rqr != UNDEF_REG)
  		writel_relaxed(USART_RQR_TXFRQ | USART_RQR_RXFRQ,
-@@ -815,9 +1138,11 @@ static void stm32_usart_set_termios(struct uart_port *port,
+@@ -838,9 +1160,11 @@ static void stm32_usart_set_termios(struct uart_port *port,
  		stm32_port->cr1_irq = USART_CR1_RTOIE;
  		writel_relaxed(bits, port->membase + ofs->rtor);
  		cr2 |= USART_CR2_RTOEN;
@@ -1421,7 +1969,7 @@ index 200cd293d..f8c048443 100644
  	}
  
  	cr1 |= stm32_port->cr1_irq;
-@@ -880,14 +1205,22 @@ static void stm32_usart_set_termios(struct uart_port *port,
+@@ -903,14 +1227,22 @@ static void stm32_usart_set_termios(struct uart_port *port,
  	if ((termios->c_cflag & CREAD) == 0)
  		port->ignore_status_mask |= USART_SR_DUMMY_RX;
  
@@ -1449,7 +1997,7 @@ index 200cd293d..f8c048443 100644
  		if (rs485conf->flags & SER_RS485_RTS_ON_SEND) {
  			cr3 &= ~USART_CR3_DEP;
  			rs485conf->flags &= ~SER_RS485_RTS_AFTER_SEND;
-@@ -970,6 +1303,40 @@ static void stm32_usart_pm(struct uart_port *port, unsigned int state,
+@@ -993,6 +1325,40 @@ static void stm32_usart_pm(struct uart_port *port, unsigned int state,
  	}
  }
  
@@ -1490,7 +2038,7 @@ index 200cd293d..f8c048443 100644
  static const struct uart_ops stm32_uart_ops = {
  	.tx_empty	= stm32_usart_tx_empty,
  	.set_mctrl	= stm32_usart_set_mctrl,
-@@ -991,6 +1358,12 @@ static const struct uart_ops stm32_uart_ops = {
+@@ -1014,6 +1380,12 @@ static const struct uart_ops stm32_uart_ops = {
  	.request_port	= stm32_usart_request_port,
  	.config_port	= stm32_usart_config_port,
  	.verify_port	= stm32_usart_verify_port,
@@ -1503,7 +2051,7 @@ index 200cd293d..f8c048443 100644
  };
  
  /*
-@@ -1171,7 +1544,6 @@ static int stm32_usart_of_dma_rx_probe(struct stm32_port *stm32port,
+@@ -1194,7 +1566,6 @@ static int stm32_usart_of_dma_rx_probe(struct stm32_port *stm32port,
  	struct uart_port *port = &stm32port->port;
  	struct device *dev = &pdev->dev;
  	struct dma_slave_config config;
@@ -1511,7 +2059,7 @@ index 200cd293d..f8c048443 100644
  	int ret;
  
  	/*
-@@ -1199,32 +1571,6 @@ static int stm32_usart_of_dma_rx_probe(struct stm32_port *stm32port,
+@@ -1222,32 +1593,6 @@ static int stm32_usart_of_dma_rx_probe(struct stm32_port *stm32port,
  		return ret;
  	}
  
@@ -1544,7 +2092,7 @@ index 200cd293d..f8c048443 100644
  	return 0;
  }
  
-@@ -1245,8 +1591,6 @@ static int stm32_usart_of_dma_tx_probe(struct stm32_port *stm32port,
+@@ -1268,8 +1613,6 @@ static int stm32_usart_of_dma_tx_probe(struct stm32_port *stm32port,
  	struct dma_slave_config config;
  	int ret;
  
@@ -1553,7 +2101,7 @@ index 200cd293d..f8c048443 100644
  	stm32port->tx_buf = dma_alloc_coherent(dev, TX_BUF_L,
  					       &stm32port->tx_dma_buf,
  					       GFP_KERNEL);
-@@ -1377,6 +1721,7 @@ static int stm32_usart_serial_remove(struct platform_device *pdev)
+@@ -1400,6 +1743,7 @@ static int stm32_usart_serial_remove(struct platform_device *pdev)
  	struct stm32_port *stm32_port = to_stm32_port(port);
  	const struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
  	int err;
@@ -1561,7 +2109,7 @@ index 200cd293d..f8c048443 100644
  
  	pm_runtime_get_sync(&pdev->dev);
  	err = uart_remove_one_port(&stm32_usart_driver, port);
-@@ -1387,7 +1732,7 @@ static int stm32_usart_serial_remove(struct platform_device *pdev)
+@@ -1410,7 +1754,7 @@ static int stm32_usart_serial_remove(struct platform_device *pdev)
  	pm_runtime_set_suspended(&pdev->dev);
  	pm_runtime_put_noidle(&pdev->dev);
  
@@ -1570,7 +2118,7 @@ index 200cd293d..f8c048443 100644
  
  	if (stm32_port->tx_ch) {
  		stm32_usart_of_dma_tx_remove(stm32_port, pdev);
-@@ -1395,12 +1740,16 @@ static int stm32_usart_serial_remove(struct platform_device *pdev)
+@@ -1418,12 +1762,16 @@ static int stm32_usart_serial_remove(struct platform_device *pdev)
  	}
  
  	if (stm32_port->rx_ch) {
@@ -1589,7 +2137,7 @@ index 200cd293d..f8c048443 100644
  
  	if (stm32_port->wakeup_src) {
  		dev_pm_clear_wake_irq(&pdev->dev);
-@@ -1412,18 +1761,24 @@ static int stm32_usart_serial_remove(struct platform_device *pdev)
+@@ -1435,18 +1783,24 @@ static int stm32_usart_serial_remove(struct platform_device *pdev)
  	return 0;
  }
  
@@ -1619,7 +2167,7 @@ index 200cd293d..f8c048443 100644
  static void stm32_usart_console_write(struct console *co, const char *s,
  				      unsigned int cnt)
  {
-@@ -1499,6 +1854,57 @@ static struct console stm32_console = {
+@@ -1522,6 +1876,57 @@ static struct console stm32_console = {
  #define STM32_SERIAL_CONSOLE NULL
  #endif /* CONFIG_SERIAL_STM32_CONSOLE */
  
@@ -1677,7 +2225,7 @@ index 200cd293d..f8c048443 100644
  static struct uart_driver stm32_usart_driver = {
  	.driver_name	= DRIVER_NAME,
  	.dev_name	= STM32_SERIAL_NAME,
-@@ -1508,14 +1914,18 @@ static struct uart_driver stm32_usart_driver = {
+@@ -1531,14 +1936,18 @@ static struct uart_driver stm32_usart_driver = {
  	.cons		= STM32_SERIAL_CONSOLE,
  };
  
@@ -1700,7 +2248,7 @@ index 200cd293d..f8c048443 100644
  
  	/*
  	 * Enable low-power wake-up and wake-up irq if argument is set to
-@@ -1524,20 +1934,52 @@ static void __maybe_unused stm32_usart_serial_en_wakeup(struct uart_port *port,
+@@ -1547,20 +1956,52 @@ static void __maybe_unused stm32_usart_serial_en_wakeup(struct uart_port *port,
  	if (enable) {
  		stm32_usart_set_bits(port, ofs->cr1, USART_CR1_UESM);
  		stm32_usart_set_bits(port, ofs->cr3, USART_CR3_WUFIE);
@@ -1755,7 +2303,7 @@ index 200cd293d..f8c048443 100644
  
  	/*
  	 * When "no_console_suspend" is enabled, keep the pinctrl default state
-@@ -1558,11 +2000,15 @@ static int __maybe_unused stm32_usart_serial_suspend(struct device *dev)
+@@ -1581,11 +2022,15 @@ static int __maybe_unused stm32_usart_serial_suspend(struct device *dev)
  static int __maybe_unused stm32_usart_serial_resume(struct device *dev)
  {
  	struct uart_port *port = dev_get_drvdata(dev);
@@ -1774,7 +2322,7 @@ index 200cd293d..f8c048443 100644
  	return uart_resume_port(&stm32_usart_driver, port);
  }
 diff --git a/drivers/tty/serial/stm32-usart.h b/drivers/tty/serial/stm32-usart.h
-index 07ac29132..9c7ddb906 100644
+index 07ac291328cd..9c7ddb906d3c 100644
 --- a/drivers/tty/serial/stm32-usart.h
 +++ b/drivers/tty/serial/stm32-usart.h
 @@ -109,7 +109,7 @@ struct stm32_usart_info stm32h7_info = {
@@ -1831,7 +2379,7 @@ index 07ac29132..9c7ddb906 100644
  
  static struct stm32_port stm32_ports[STM32_MAX_PORTS];
 diff --git a/include/uapi/linux/serial.h b/include/uapi/linux/serial.h
-index fa6b16e5f..e79080578 100644
+index fa6b16e5fdd8..e79080578bd8 100644
 --- a/include/uapi/linux/serial.h
 +++ b/include/uapi/linux/serial.h
 @@ -128,7 +128,9 @@ struct serial_rs485 {
@@ -1846,5 +2394,5 @@ index fa6b16e5f..e79080578 100644
  };
  
 -- 
-2.25.1
+2.17.1
 
