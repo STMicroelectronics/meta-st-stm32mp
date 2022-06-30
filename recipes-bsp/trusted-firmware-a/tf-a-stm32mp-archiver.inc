@@ -82,7 +82,7 @@ tf-\$(1)-\$(2): \$3
 				DTB_FILE_NAME=\$(dt).dtb \\
 				\$(if \$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS_\$(1))) \\
 				\$(if \$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET_\$(1))) \\
-				\$(shell echo \$(2) | tr a-z A-Z)=1 ; \\
+				\$(shell echo \$(2) | tr a-z A-Z)=1 || exit 1; \\
 		,) \\
 	)
 endef
