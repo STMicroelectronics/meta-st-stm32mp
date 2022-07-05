@@ -17,8 +17,8 @@ FIP_CONFIG ?= ""
 # Default FIP config:
 #   There are two options implemented to select two different firmware and each
 #   FIP_CONFIG should configure one: 'tfa' or 'optee'
-FIP_CONFIG[tfa-fw] ?= "tfa"
-FIP_CONFIG[tee-fw] ?= "optee"
+FIP_CONFIG_FW_TFA = "tfa"
+FIP_CONFIG_FW_TEE = "optee"
 
 # Init BL31 config
 FIP_BL31_ENABLE ?= ""
@@ -72,6 +72,59 @@ FIP_DEPENDS:class-nativesdk = ""
 # -----------------------------------------------
 # Handle FIP config and set internal vars
 #   FIP_BL32_CONF
+python () {
+    import re
+
+    # Make sure that deploy class is configured
+    if not bb.data.inherits_class('deploy', d):
+         bb.fatal("The st-fip-utils class needs the deploy class to be configured on recipe side.")
+
+    # Manage FIP binary dependencies
+    fip_depends = (d.getVar('FIP_DEPENDS') or "").split()
+    if len(fip_depends) > 0:
+        for depend in fip_depends:
+            d.appendVarFlag('do_deploy', 'depends', ' %s:do_deploy' % depend)
+
+    # Manage FIP config settings
+    fipconfigflags = d.getVarFlags('FIP_CONFIG')
+    if fipconfigflags is not None:
+        # The "doc" varflag is special, we don't want to see it here
+        fipconfigflags.pop('doc', None)
+    fipconfig = (d.getVar('FIP_CONFIG') or "").split()
+    if not fipconfig:
+        raise bb.parse.SkipRecipe("FIP_CONFIG must be set in the %s machine configuration." % d.getVar("MACHINE"))
+    if (d.getVar('FIP_BL32_CONF') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use FIP_BL32_CONF as it is internal to FIP_CONFIG var expansion.")
+    if (d.getVar('FIP_DEVICETREE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use FIP_DEVICETREE as it is internal to FIP_CONFIG var expansion.")
+    if len(fipconfig) > 0:
+        # Init internal fip firmware config
+        fip_config_fw_tfa = d.getVar('FIP_CONFIG_FW_TFA') or ""
+        fip_config_fw_tee = d.getVar('FIP_CONFIG_FW_TEE') or ""
+        for config in fipconfig:
+            for f, v in fipconfigflags.items():
+                if config == f:
+                    # Make sure to get var flag properly expanded
+                    v = d.getVarFlag('FIP_CONFIG', config)
+                    if not v.strip():
+                        bb.fatal('[FIP_CONFIG] Missing configuration for %s config' % config)
+                    items = v.split(',')
+                    if items[0] and len(items) > 2:
+                        raise bb.parse.SkipRecipe('Only <BL32_CONF> and <DT_CONFIG> can be specified!')
+                    # Set internal vars
+                    if items[0] == fip_config_fw_tfa or items[0] == fip_config_fw_tee:
+                        bb.debug(1, "Appending '%s' to FIP_BL32_CONF" % items[0])
+                        d.appendVar('FIP_BL32_CONF', items[0] + ',')
+                    else:
+                        bb.fatal('[FIP_CONFIG] Wrong configuration for %s config: %s should be one of %s or %s' % (config,items[0],fip_config_fw_tfa,fip_config_fw_tee))
+                    bb.debug(1, "Appending '%s' to FIP_DEVICETREE" % items[1])
+                    d.appendVar('FIP_DEVICETREE', items[1] + ',')
+                    break
+}
+
+# -----------------------------------------------
+# Handle FIP signing config and set internal vars
+#   FIP_SIGN_KEY_PATH_SOC_LIST
 def get_sign_key_path(d, relative_path):
     if relative_path != None:
         for p in d.getVar("BBPATH").split(":"):
@@ -80,7 +133,8 @@ def get_sign_key_path(d, relative_path):
                 bb.debug(1, "Set FIP_SIGN_KEY to '%s' path." % file_path)
                 return file_path
     return None
-def generate_sign_key_path(d):
+
+python generate_sign_key_path() {
     default_fip_signingkey = d.getVar('FIP_SIGN_KEY')
     if not default_fip_signingkey:
         bb.note("Please make sure to configure \"FIP_SIGN_KEY\" var to signing key file.")
@@ -111,52 +165,9 @@ def generate_sign_key_path(d):
                     bb.fatal('\nNot able to find "%s" (socname %s) path from current BBPATH var:\n\t%s.' % (fip_signingkey, socname, bbpaths))
             else:
                 d.appendVar('FIP_SIGN_KEY_PATH_SOC_LIST', fip_signingkey + ',')
-
-python () {
-    import re
-
-    # Make sure that deploy class is configured
-    if not bb.data.inherits_class('deploy', d):
-         bb.fatal("The st-fip-utils class needs the deploy class to be configured on recipe side.")
-
-    # Manage FIP binary dependencies
-    fip_depends = (d.getVar('FIP_DEPENDS') or "").split()
-    if len(fip_depends) > 0:
-        for depend in fip_depends:
-            d.appendVarFlag('do_deploy', 'depends', ' %s:do_deploy' % depend)
-
-    # Manage FIP config settings
-    fipconfigflags = d.getVarFlags('FIP_CONFIG')
-    # The "doc" varflag is special, we don't want to see it here
-    fipconfigflags.pop('doc', None)
-    fipconfig = (d.getVar('FIP_CONFIG') or "").split()
-    if not fipconfig:
-        raise bb.parse.SkipRecipe("FIP_CONFIG must be set in the %s machine configuration." % d.getVar("MACHINE"))
-    if (d.getVar('FIP_BL32_CONF') or "").split():
-        raise bb.parse.SkipRecipe("You cannot use FIP_BL32_CONF as it is internal to FIP_CONFIG var expansion.")
-    if (d.getVar('FIP_DEVICETREE') or "").split():
-        raise bb.parse.SkipRecipe("You cannot use FIP_DEVICETREE as it is internal to FIP_CONFIG var expansion.")
-    if len(fipconfig) > 0:
-        for config in fipconfig:
-            for f, v in fipconfigflags.items():
-                if config == f:
-                    # Make sure to get var flag properly expanded
-                    v = d.getVarFlag('FIP_CONFIG', config)
-                    if not v.strip():
-                        bb.fatal('[FIP_CONFIG] Missing configuration for %s config' % config)
-                    items = v.split(',')
-                    if items[0] and len(items) > 2:
-                        raise bb.parse.SkipRecipe('Only <BL32_CONF> and <DT_CONFIG> can be specified!')
-                    # Set internal vars
-                    bb.debug(1, "Appending '%s' to FIP_BL32_CONF" % items[0])
-                    d.appendVar('FIP_BL32_CONF', items[0] + ',')
-                    bb.debug(1, "Appending '%s' to FIP_DEVICETREE" % items[1])
-                    d.appendVar('FIP_DEVICETREE', items[1] + ',')
-                    break
-    if d.getVar('FIP_SIGN_ENABLE') == '1':
-        generate_sign_key_path(d)
 }
 
+do_deploy[prefuncs] += "${@bb.utils.contains('FIP_SIGN_ENABLE', '1', 'generate_sign_key_path', '', d)}"
 # Deploy the fip binary for current target
 do_deploy:append:class-target() {
     install -d ${DEPLOYDIR}
@@ -194,7 +205,7 @@ do_deploy:append:class-target() {
                 FIP_BL31CONF=""
             fi
             # Init FIP extra conf settings
-            if [ "${bl32_conf}" = "tfa" ]; then
+            if [ "${bl32_conf}" = "${FIP_CONFIG_FW_TFA}" ]; then
                 # Check for files
                 [ -f "${FIP_DEPLOYDIR_TFA}/${FIP_TFA}${soc_suffix}.${FIP_TFA_SUFFIX}" ] || bbfatal "No ${FIP_TFA}${soc_suffix}.${FIP_TFA_SUFFIX} file in folder: ${FIP_DEPLOYDIR_TFA}"
                 [ -f "${FIP_DEPLOYDIR_TFA}/${dt}-${FIP_TFA_DTB}.${FIP_TFA_DTB_SUFFIX}" ] || bbfatal "No ${dt}-${FIP_TFA_DTB}.${FIP_TFA_DTB_SUFFIX} file in folder: ${FIP_DEPLOYDIR_TFA}"
@@ -203,7 +214,7 @@ do_deploy:append:class-target() {
                     --tos-fw ${FIP_DEPLOYDIR_TFA}/${FIP_TFA}${soc_suffix}.${FIP_TFA_SUFFIX} \
                     --tos-fw-config ${FIP_DEPLOYDIR_TFA}/${dt}-${FIP_TFA_DTB}.${FIP_TFA_DTB_SUFFIX} \
                     "
-            elif [ "${bl32_conf}" = "optee" ]; then
+            elif [ "${bl32_conf}" = "${FIP_CONFIG_FW_TEE}" ]; then
                 # Check for files
                 [ -f "${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_HEADER}-${dt}.${FIP_OPTEE_SUFFIX}" ] || bbfatal "Missing ${FIP_OPTEE_HEADER}-${dt}.${FIP_OPTEE_SUFFIX} file in folder: ${FIP_DEPLOYDIR_OPTEE}"
                 [ -f "${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_PAGER}-${dt}.${FIP_OPTEE_SUFFIX}" ] || bbfatal "Missing ${FIP_OPTEE_PAGER}-${dt}.${FIP_OPTEE_SUFFIX} file in folder: ${FIP_DEPLOYDIR_OPTEE}"
@@ -293,8 +304,50 @@ function bbfatal() { echo "\$*" ; exit 1 ; }
 
 # Set default TF-A FIP config
 FIP_CONFIG="\${FIP_CONFIG:-${FIP_CONFIG}}"
-FIP_BL32_CONF="\${FIP_BL32_CONF:-${FIP_BL32_CONF}}"
-FIP_DEVICETREE="\${FIP_DEVICETREE:-${FIP_DEVICETREE}}"
+FIP_BL32_CONF=""
+FIP_DEVICETREE="\${FIP_DEVICETREE:-}"
+
+# Set default supported configuration for devicetree and bl32 configuration
+declare -A FIP_BL32_CONF_ARRAY
+declare -A FIP_DEVICETREE_ARRAY
+EOF
+    for config in ${FIP_CONFIG}; do
+        i=$(expr $i + 1)
+        cat << EOF >> ${WORKDIR}/${FIPTOOL_WRAPPER}
+FIP_BL32_CONF_ARRAY[${config}]="$(echo ${FIP_BL32_CONF} | cut -d',' -f${i})"
+FIP_DEVICETREE_ARRAY[${config}]="$(echo ${FIP_DEVICETREE} | cut -d',' -f${i})"
+EOF
+    done
+    unset i
+    cat << EOF >> ${WORKDIR}/${FIPTOOL_WRAPPER}
+
+# Make sure about FIP_CONFIG value
+if [ -z "\$FIP_CONFIG" ]; then
+    bbfatal "Wrong configuration 'FIP_CONFIG' is empty."
+else
+    # Check that configuration match any of the supported ones
+    for config in \$FIP_CONFIG; do
+        CONFIG_FOUND=NO
+        for fip_config in ${FIP_CONFIG}; do
+            [ "\${config}" = "\${fip_config}" ] && { CONFIG_FOUND="YES" ; break; }
+        done
+        [ "\${CONFIG_FOUND}" = "NO" ] && bbfatal "Wrong 'FIP_CONFIG' configuration : \${config} is not one of the supported one (${FIP_CONFIG})"
+    done
+fi
+# Manage FIP_BL32_CONF default init
+if [ -z "\$FIP_BL32_CONF" ]; then
+    # Assigned default supported value
+    for config in \$FIP_CONFIG; do
+        FIP_BL32_CONF+="\${FIP_BL32_CONF_ARRAY[\${config}]},"
+    done
+fi
+# Manage FIP_DEVICETREE default init
+if [ -z "\$FIP_DEVICETREE" ]; then
+    # Assigned default supported value
+    for config in \$FIP_CONFIG; do
+        FIP_DEVICETREE+="\${FIP_DEVICETREE_ARRAY[\${config}]},"
+    done
+fi
 
 # Configure default folder path for binaries to package
 FIP_DEPLOYDIR_ROOT="\${FIP_DEPLOYDIR_ROOT:-}"
@@ -321,7 +374,6 @@ echo "  FIP_DEPLOYDIR_FWCONF: \$FIP_DEPLOYDIR_FWCONF"
 echo "  FIP_DEPLOYDIR_OPTEE : \$FIP_DEPLOYDIR_OPTEE"
 echo "  FIP_DEPLOYDIR_UBOOT : \$FIP_DEPLOYDIR_UBOOT"
 echo ""
-
 unset i
 for config in \$FIP_CONFIG; do
     i=\$(expr \$i + 1)
@@ -345,7 +397,7 @@ for config in \$FIP_CONFIG; do
         [ -f "\$FIP_DEPLOYDIR_UBOOT/${FIP_UBOOT}\${soc_suffix}.${FIP_UBOOT_SUFFIX}" ] || bbfatal "Missing ${FIP_UBOOT}\${soc_suffix}.${FIP_UBOOT_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_UBOOT' or '\\\$FIP_DEPLOYDIR_ROOT/u-boot'"
         FIP_NTFW="--nt-fw \$FIP_DEPLOYDIR_UBOOT/${FIP_UBOOT}\${soc_suffix}.${FIP_UBOOT_SUFFIX}"
         # Init FIP extra conf settings
-        if [ "\${bl32_conf}" = "tfa" ]; then
+        if [ "\${bl32_conf}" = "${FIP_CONFIG_FW_TFA}" ]; then
             # Check for files
             [ -f "\$FIP_DEPLOYDIR_TFA/${FIP_TFA}\${soc_suffix}.${FIP_TFA_SUFFIX}" ] || bbfatal "No ${FIP_TFA}\${soc_suffix}.${FIP_TFA_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_TFA' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl32'"
             [ -f "\$FIP_DEPLOYDIR_TFA/\${dt}-${FIP_TFA_DTB}.${FIP_TFA_DTB_SUFFIX}" ] || bbfatal "No \${dt}-${FIP_TFA_DTB}.${FIP_TFA_DTB_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_TFA' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl32'"
@@ -354,7 +406,7 @@ for config in \$FIP_CONFIG; do
                 --tos-fw \$FIP_DEPLOYDIR_TFA/${FIP_TFA}\${soc_suffix}.${FIP_TFA_SUFFIX} \\
                 --tos-fw-config \$FIP_DEPLOYDIR_TFA/\${dt}-${FIP_TFA_DTB}.${FIP_TFA_DTB_SUFFIX} \\
                 "
-        elif [ "\${bl32_conf}" = "optee" ]; then
+        elif [ "\${bl32_conf}" = "${FIP_CONFIG_FW_TEE}" ]; then
             # Check for files
             [ -f "\$FIP_DEPLOYDIR_OPTEE/${FIP_OPTEE_HEADER}-\${dt}.${FIP_OPTEE_SUFFIX}" ] || bbfatal "Missing ${FIP_OPTEE_HEADER}-\${dt}.${FIP_OPTEE_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_OPTEE' or '\\\$FIP_DEPLOYDIR_ROOT/optee'"
             [ -f "\$FIP_DEPLOYDIR_OPTEE/${FIP_OPTEE_PAGER}-\${dt}.${FIP_OPTEE_SUFFIX}" ] || bbfatal "Missing ${FIP_OPTEE_PAGER}-\${dt}.${FIP_OPTEE_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_OPTEE' or '\\\$FIP_DEPLOYDIR_ROOT/optee'"
