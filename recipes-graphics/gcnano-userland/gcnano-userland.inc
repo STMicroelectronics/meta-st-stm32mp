@@ -202,8 +202,8 @@ python __anonymous() {
     pkgconfig = (d.getVar('GCNANO_PACKAGECONFIG') or "").split()
     for p in (("gbm", "libgbm", "libgbm"),
               ("egl", "libegl", "libegl1"),
-              ("gles", "libgles1", "libglesv1-cm1"),
-              ("gles", "libgles2", "libglesv2-2"),
+              ("glesv1", "libgles1", "libglesv1-cm1"),
+              ("glesv2", "libgles2", "libglesv2-2"),
               ("vg", "libopenvg", "libopenvg")):
         if not p[0] in pkgconfig:
             continue
