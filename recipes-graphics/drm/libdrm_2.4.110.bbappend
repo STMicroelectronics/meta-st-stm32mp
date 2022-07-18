@@ -1,5 +1,5 @@
 # We don't want etnaviv drm package
-PACKAGECONFIG = "libkms install-test-programs"
+PACKAGECONFIG:stm32mpcommon = "libkms install-test-programs"
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}/:"
 
