@@ -122,6 +122,8 @@ gcnano_install_lib() {
                 install -m 0555 ${gcnano_libdir}/libGLSLC.so ${gcnano_libdir_install}/
                 find ${gcnano_libdir}/* -type f -name libGLESv2.so* -exec install -m 0555 '{}' ${gcnano_libdir_install}/ \;
                 find ${gcnano_libdir}/* -type l -name libGLESv2.so* -exec cp -d '{}' ${gcnano_libdir_install}/ \;
+                # Create symlink for compatibility with third-party software
+                ln -srf ${gcnano_libdir_install}/libGLESv2.so ${gcnano_libdir_install}/libGLESv2.so.2
                 # Install includes
                 install -m 0755 -d ${gcnano_incdir_install}/GLES2
                 install -m 0644 ${gcnano_incdir}/GLES2/* ${gcnano_incdir_install}/GLES2
@@ -234,7 +236,7 @@ FILES:libegl-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libEGL.so*"
 FILES:libgbm-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm.so*"
 FILES:libgbm-gcnano += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm_viv.so"
 FILES:libgles1-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv1*.so"
-FILES:libgles2-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv2.so"
+FILES:libgles2-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv2.so*"
 FILES:libgles2-gcnano += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLSLC.so"
 FILES:libopenvg-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libOpenVG*.so*"
 
