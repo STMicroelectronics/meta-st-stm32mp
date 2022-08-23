@@ -2,31 +2,30 @@ SUMMARY = "Cert_create & Fiptool for fip generation for Trusted Firmware-A"
 LICENSE = "BSD-3-Clause"
 LIC_FILES_CHKSUM = "file://license.rst;md5=1dd070c98a281d18d9eefd938729b031"
 
-SRC_URI = "git://github.com/ARM-software/arm-trusted-firmware.git;protocol=https;nobranch=1"
-#SRCREV corresponds to v2.6
+SRC_URI = "git://github.com/ARM-software/arm-trusted-firmware.git;protocol=https;branch=master \
+           file://0001-tools-allow-to-use-a-root-key-password-from-command-.patch \
+           file://0002-fix-fiptool-respect-OPENSSL_DIR.patch \
+           "
+
 SRCREV = "a1f02f4f3daae7e21ee58b4c93ec3e46b8f28d15"
 
-# Mandatory fix to allow feeding password through command line
-SRC_URI += "file://0099-tools-allow-to-use-a-root-key-password-from-command-.patch"
+DEPENDS = "openssl"
 
-DEPENDS:class-nativesdk = "nativesdk-openssl"
+COMPATIBLE_HOST:class-target = "null"
 
 S = "${WORKDIR}/git"
 
-do_compile() {
-    oe_runmake certtool fiptool
-}
+EXTRA_OEMAKE += "V=1 HOSTCC='${BUILD_CC}' OPENSSL_DIR='${STAGING_EXECPREFIXDIR}'"
+EXTRA_OEMAKE += "certtool fiptool"
+
+do_configure[noexec] = "1"
 
 do_install() {
     install -d ${D}${bindir}
-    # cert_create
-    install -m 0755 ${B}/tools/cert_create/cert_create ${D}${bindir}/cert_create
-    # fiptool
-    install -m 0755 ${B}/tools/fiptool/fiptool ${D}${bindir}/fiptool
+    install -m 0755 \
+        ${B}/tools/fiptool/fiptool \
+        ${B}/tools/cert_create/cert_create \
+        ${D}${bindir}
 }
-
-FILES:${PN}:class-nativesdk = "${bindir}/cert_create ${bindir}/fiptool"
-
-RDEPENDS:${PN}:class-nativesdk += "nativesdk-libcrypto"
 
 BBCLASSEXTEND += "native nativesdk"
