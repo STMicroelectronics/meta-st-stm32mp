@@ -4,10 +4,9 @@ LIC_FILES_CHKSUM = "file://license.rst;md5=1dd070c98a281d18d9eefd938729b031"
 
 SRC_URI = "git://github.com/ARM-software/arm-trusted-firmware.git;protocol=https;branch=master \
            file://0001-tools-allow-to-use-a-root-key-password-from-command-.patch \
-           file://0002-fix-fiptool-respect-OPENSSL_DIR.patch \
            "
 
-SRCREV = "a1f02f4f3daae7e21ee58b4c93ec3e46b8f28d15"
+SRCREV = "35f4c7295bafeb32c8bcbdfb6a3f2e74a57e732b"
 
 DEPENDS = "openssl"
 
