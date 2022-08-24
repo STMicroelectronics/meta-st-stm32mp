@@ -20,6 +20,14 @@ EXTRA_OEMAKE += "certtool fiptool"
 
 do_configure[noexec] = "1"
 
+do_compile:prepend () {
+    # This is still needed to have the native fiptool executing properly by
+    # setting the RPATH
+    sed -e '/^LDLIBS/ s,$, \$\{BUILD_LDFLAGS},' \
+        -e '/^INCLUDE_PATHS/ s,$, \$\{BUILD_CFLAGS},' \
+        -i ${S}/tools/fiptool/Makefile
+}
+
 do_install() {
     install -d ${D}${bindir}
     install -m 0755 \
