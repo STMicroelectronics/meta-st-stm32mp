@@ -1,24 +1,15 @@
 FILESEXTRAPATHS:prepend:stm32mpcommon := "${THISDIR}/${PN}:"
 
 SRC_URI:append:stm32mpcommon = " \
-       file://${BUSYBOX_CONFIG_FRAGMENT} \
+       file://busybox-stm32mp.cfg \
        file://0001-miscutils-watchdog-Add-gettimeleft.patch \
        file://ifplugd.conf \
        file://ifplugd.action \
        file://ifplugd.sh \
        "
 
-BUSYBOX_CONFIG_FRAGMENT:stm32mpcommon = "busybox-stm32mp.cfg"
-
 #inherit update-rc.d
 DEPENDS:append:stm32mpcommon = " ${@bb.utils.contains('DISTRO_FEATURES', 'systemd', '', 'update-rc.d-native', d)}"
-
-do_configure:append:stm32mpcommon () {
-    # merge specific configuration to newly generated .config
-    merge_config.sh -m -r -O ${B} ${B}/.config ${WORKDIR}/${BUSYBOX_CONFIG_FRAGMENT} 1>&2
-    # make sure to generate proper config file for busybox
-    cml1_do_configure
-}
 
 do_install:append:stm32mpcommon () {
     if [ "${@bb.utils.contains('DISTRO_FEATURES', 'systemd', '1', '0', d)}" = "0" ]; then
