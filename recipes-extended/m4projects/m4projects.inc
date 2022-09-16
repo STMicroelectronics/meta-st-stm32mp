@@ -37,7 +37,7 @@ BUILD_CONFIG ?= "Debug"
 
 # Init default installation path
 M4_FOLDER ?= "Cube-M4-examples"
-M4_INSTALLDIR ?= "${prefix}local"
+M4_INSTALLDIR ?= "${prefix}/local"
 M4_OUTPUT_4USERFS = "${M4_INSTALLDIR}/${M4_FOLDER}"
 
 # Use gcc bare toolchain
