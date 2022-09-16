@@ -1,7 +1,7 @@
 #!/bin/sh -
 
 # test if we are a stm32mp1
-if ! $(grep -q "stm32mp157[acdf]-dk\|ev" /proc/device-tree/compatible) ;
+if ! $(grep -q "stm32mp157[acdf]-\(dk\|ev\)" /proc/device-tree/compatible) ;
 then
     exit 0
 fi
