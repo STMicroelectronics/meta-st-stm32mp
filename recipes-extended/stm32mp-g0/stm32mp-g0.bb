@@ -12,9 +12,9 @@ LIC_FILES_CHKSUM = "file://${S}/LICENSE.md;md5=57d9005898cfafdad212456569f8397e"
 
 SRC_URI = "git://github.com/STMicroelectronics/x-cube-ucsi.git;protocol=https;branch=main"
 
-SRCREV = "43ee1ab68a8573f618417e91eb9b2380fbee2e4d"
+SRCREV = "9644ad72c9a3760c56bd967dc5c490a5a8373446"
 
-PV = "1.0.0-rc6"
+PV = "v1.0.0"
 
 S = "${WORKDIR}/git"
 
