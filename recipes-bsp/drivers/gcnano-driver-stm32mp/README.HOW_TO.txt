@@ -18,9 +18,9 @@ OpenSTLinux SDK must be installed.
 * Compile and install the gcnano kernel module
     $> tar xf ##BP##-##PR##.tar.xz
     $> cd ##GCNANO_TARNAME##
-    $> KERNEL_BUILDDIR="../../kernel/kernel-sources"
+    $> KERNEL_BUILDDIR="../../linux-stm32mp-<KERNELVERSION>-stm32mp-<RELEASE>/build"
     * Build kernel module
-    $> make ARCH=arm SOC_PLATFORM=st-st DEBUG=0 O="${KERNEL_BUILDDIR}" M="${PWD}" AQROOT="${PWD}" -C ${KERNEL_BUILDDIR}
+    $> make ARCH=arm SOC_PLATFORM=st-mp1 DEBUG=0 O="${KERNEL_BUILDDIR}" M="${PWD}" AQROOT="${PWD}" -C ${KERNEL_BUILDDIR}
 
 ---------------------------
 3. Update software on board
