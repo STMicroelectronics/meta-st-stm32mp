@@ -389,6 +389,7 @@ ST_TOOLS_FOR_SDK_PERL = " \
 ST_TOOLS_FOR_SDK_PERL:append = " \
     nativesdk-perl-module-file-spec-functions \
     nativesdk-perl-module-integer \
+    nativesdk-perl-module-pod-text \
 "
 
 ST_TOOLS_FOR_SDK:append = " ${ST_TOOLS_FOR_SDK_PERL} "
