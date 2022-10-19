@@ -157,3 +157,8 @@ FILES:${PN} += "${nonarch_base_libdir}/firmware ${sysconfdir}/init.d ${systemd_u
 FILES:${PN} += "${@bb.utils.contains('M4_PACKAGE_4USERFS', '1', '', '${M4_OUTPUT_4USERFS}', d)}"
 FILES:${PN}-userfs = "${@bb.utils.contains('M4_PACKAGE_4USERFS', '1', '${M4_OUTPUT_4USERFS}', '', d)}"
 RDEPENDS:${PN}-userfs += "busybox"
+
+# ---------------------------------------------------------------------
+# Avoid QA Issue: contains reference to TMPDIR [buildpaths]
+INSANE_SKIP:${PN} += "buildpaths"
+INSANE_SKIP:${PN}-userfs += "buildpaths"
