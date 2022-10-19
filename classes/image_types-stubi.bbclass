@@ -30,16 +30,62 @@ python stmultiub_environment () {
 
 IMAGE_PREPROCESS_COMMAND += "stmultiub_environment;"
 
+st_multiubi_mkfs() {
+	local mkubifs_args="$1"
+	local ubinize_args="$2"
+	local name="$3"
+	bbnote "mkubifs_args="$mkubifs_args
+	bbnote "ubinize_args="$ubinize_args
+	bbnote "name="$3
+
+	# Added prompt error message for ubi and ubifs image creation.
+	if [ -z "$mkubifs_args" ] || [ -z "$ubinize_args" ]; then
+		bbfatal "MKUBIFS_ARGS and UBINIZE_ARGS have to be set, see http://www.linux-mtd.infradead.org/faq/ubifs.html for details"
+	fi
+	write_ubi_config "$name"
+
+	if [ -n "$name" ]; then
+		bbnote "ST: mkfs.ubifs -r ${IMAGE_ROOTFS} -o ${IMGDEPLOYDIR}/${IMAGE_NAME}_${name}${IMAGE_NAME_SUFFIX}.ubifs ${mkubifs_args}"
+		mkfs.ubifs -r ${IMAGE_ROOTFS} -o ${IMGDEPLOYDIR}/${IMAGE_NAME}_${name}${IMAGE_NAME_SUFFIX}.ubifs ${mkubifs_args}
+	fi
+	bbnote "ST: ubinize -o ${IMGDEPLOYDIR}/${IMAGE_NAME}_${name}${IMAGE_NAME_SUFFIX}.ubi ${ubinize_args} ubinize_${name}-${IMAGE_NAME}.cfg"
+	ubinize -o ${IMGDEPLOYDIR}/${IMAGE_NAME}_${name}${IMAGE_NAME_SUFFIX}.ubi ${ubinize_args} ubinize_${name}-${IMAGE_NAME}.cfg
+
+	# Cleanup cfg file
+	mv ubinize_${name}-${IMAGE_NAME}.cfg ${IMGDEPLOYDIR}/
+
+	# Create own symlinks for 'named' volumes
+	if [ -n "$name" ]; then
+		cd ${IMGDEPLOYDIR}
+		if [ -e ${IMAGE_NAME}_${name}${IMAGE_NAME_SUFFIX}.ubifs ]; then
+			ln -sf ${IMAGE_NAME}_${name}${IMAGE_NAME_SUFFIX}.ubifs \
+			${IMAGE_LINK_NAME}_${name}.ubifs
+		fi
+		if [ -e ${IMAGE_NAME}_${name}${IMAGE_NAME_SUFFIX}.ubi ]; then
+			ln -sf ${IMAGE_NAME}_${name}${IMAGE_NAME_SUFFIX}.ubi \
+			${IMAGE_LINK_NAME}_${name}.ubi
+		fi
+		cd -
+	fi
+}
+
+
 IMAGE_CMD:stmultiubi () {
     . ${T}/stmultiubi_environment
 
+    cd ${WORKDIR}
     # Split MKUBIFS_ARGS_<name> and UBINIZE_ARGS_<name>
     for name in ${MULTIUBI_BUILD}; do
         bbnote "Process multiubi for ${name}"
         eval local mkubifs_args=\"\$MKUBIFS_ARGS_${name}\"
         eval local ubinize_args=\"\$UBINIZE_ARGS_${name}\"
 
-        if multiubi_mkfs "${mkubifs_args}" "${ubinize_args}" "${name}"; then
+        bbnote "multiubi_mkfs >${mkubifs_args}< >${ubinize_args}< >${name}<"
+
+        if st_multiubi_mkfs "${mkubifs_args}" "${ubinize_args}" "${name}"; then
+            if [ -e ${TOPDIR}/ubinize_${name}-${IMAGE_NAME}.cfg ]; then
+                mv ${TOPDIR}/ubinize_${name}-${IMAGE_NAME}.cfg ${IMGDEPLOYDIR}/
+            fi
             if [ -e ${IMGDEPLOYDIR}/ubinize_${name}-${IMAGE_NAME}.cfg ]; then
                 # Set correct name for cfg file to allow automatic cleanup
                 mv ${IMGDEPLOYDIR}/ubinize_${name}-${IMAGE_NAME}.cfg ${IMGDEPLOYDIR}/${IMAGE_NAME}_${name}.ubinize.cfg.ubi
