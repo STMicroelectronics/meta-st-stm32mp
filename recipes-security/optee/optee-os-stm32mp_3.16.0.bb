@@ -8,6 +8,8 @@ SRCREV = "d0b742d1564834dac903f906168d7357063d5459"
 SRC_URI += " \
     file://fonts.tar.gz;subdir=git;name=fonts  \
     file://0001-3.16.0-stm32mp-r1.patch        \
+    \
+    file://0001-GCC12-correct-warning.patch    \
     "
 
 SRC_URI[fonts.sha256sum] = "4941e8bb6d8ac377838e27b214bf43008c496a24a8f897e0b06433988cbd53b2"

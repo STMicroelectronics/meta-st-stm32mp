@@ -114,3 +114,7 @@ FILES:${PN}-dev = "/usr/include/optee"
 INSANE_SKIP:${PN}-dev = "staticdev"
 
 INHIBIT_PACKAGE_STRIP = "1"
+# ---------------------------------------------------------------------
+# Avoid QA Issue: contains reference to TMPDIR [buildpaths]
+INSANE_SKIP:${PN} += "buildpaths"
+INSANE_SKIP:${PN}-dev += "buildpaths"
