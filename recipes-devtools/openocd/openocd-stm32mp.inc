@@ -2,6 +2,8 @@ DEPENDS = "hidapi-stm32mp"
 
 RDEPENDS:${PN} += "libusb1 hidapi-stm32mp"
 
+CVE_PRODUCT = "openocd:open_on-chip_debugger"
+
 inherit pkgconfig autotools-brokensep gettext
 
 SRC_URI:append = " \

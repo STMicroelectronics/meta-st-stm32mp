@@ -4,6 +4,7 @@ SECTION = "bootloaders"
 
 LICENSE = "BSD-3-Clause"
 LIC_FILES_CHKSUM = "file://license.rst;md5=1dd070c98a281d18d9eefd938729b031"
+CVE_PRODUCT = "arm:trusted_firmware-a"
 
 SRC_URI = "git://github.com/ARM-software/arm-trusted-firmware.git;protocol=https;branch=master"
 SRCREV = "a1f02f4f3daae7e21ee58b4c93ec3e46b8f28d15"

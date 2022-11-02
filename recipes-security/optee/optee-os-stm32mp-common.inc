@@ -5,6 +5,8 @@ PACKAGE_ARCH = "${MACHINE_ARCH}"
 PROVIDES += "virtual/optee-os"
 RPROVIDES:${PN} += "virtual/optee-os virtual/systemd-bootconf"
 
+CVE_PRODUCT = "op-tee:op-tee_os"
+
 B = "${WORKDIR}/build"
 # Configure build dir for externalsrc class usage through devtool
 EXTERNALSRC_BUILD:pn-${PN} = "${WORKDIR}/build"
