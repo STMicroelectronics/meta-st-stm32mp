@@ -2,6 +2,7 @@ Compilation of the gcnano kernel module:
 1. Pre-requisite
 2. Compile the gcnano kernel module
 3. Update software on board
+4. Update Starter Package with gcnano kernel module compilation outputs
 
 ----------------
 1. Pre-requisite
@@ -37,3 +38,19 @@ OpenSTLinux SDK must be installed.
     $ ssh root@<ip of board> sync
     Reboot the board in order to take update into account
     $ ssh root@<ip of board> reboot
+
+---------------------------
+4. Update Starter Package with gcnano kernel module compilation outputs
+---------------------------
+
+<-- Section under construction -->
+
+If not already done, extract the artifacts from Starter Package tarball, for example:
+    # tar xf en.FLASH-stm32mp1-*.tar.xz
+
+Move to Starter Package root folder,
+    #> cd <your_starter_package_dir_path>
+Cleanup Starter Package from original gcnano kernel module artifacts first
+    #> echo "*** Section under construction ***"
+
+<-- Section under construction -->
