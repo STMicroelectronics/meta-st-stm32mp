@@ -5,6 +5,7 @@ Compilation of U-Boot:
 4. Manage of U-Boot source code with GIT
 5. Compile U-Boot source code
 6. Update software on board
+7. Update starter package with U-Boot compilation outputs
 
 ----------------
 1. Pre-requisite
@@ -40,7 +41,7 @@ Warning: the environment are valid only on the shell session where you have
 3. Prepare U-Boot source
 ------------------------
 If not already done, extract the sources from Developer Package tarball, for example:
-$ tar xfJ en.SOURCES-stm32mp1-*.tar.xz
+    $ tar xf en.SOURCES-stm32mp1-*.tar.xz
 
 In the U-Boot source directory (sources/*/##BP##-##PR##),
 you have one U-Boot source tarball, the patches and one Makefile:
@@ -137,41 +138,42 @@ To compile U-Boot source code, first move to U-Boot source:
 
 5.2 Compilation for several targets: use Makefile.sdk (with FIP)
 ----------------------------------------------------------------
-Calls the specific 'Makefile.sdk' provided to compile U-Boot:
-  - Display 'Makefile.sdk' file default configuration and targets:
-    $  make -f $PWD/../Makefile.sdk help
 Since OpenSTLinux activates FIP by default, FIP_artifacts directory path must be specified before launching compilation
   - In case of using SOURCES-xxxx.tar.gz of Developer package the FIP_DEPLOYDIR_ROOT must be set as below:
     $> export FIP_DEPLOYDIR_ROOT=$PWD/../../FIP_artifacts
 
-  - Compile default U-Boot configuration:
-    $> make -f $PWD/../Makefile.sdk all
-
-Default U-Boot configuration is done in 'Makefile.sdk' file through specific variables
-'BOOT_CONFIG', 'UBOOT_DEFCONFIG', 'UBOOT_BINARY' and 'UBOOT_DEVICETREE':
-  - 'UBOOT_CONFIG' is the name to append to U-boot binaries (ex: 'trusted', etc).
-    ex: UBOOT_CONFIG=trusted
-  - 'UBOOT_DEFCONFIG' is the name of U-Boot defconfig to build
-    ex: UBOOT_DEFCONFIG=stm32mp15_trusted_defconfig
-  - 'UBOOT_BINARY' is the U-Boot binary to export (ex: 'u-boot.dtb', 'u-boot.img', etc)
-    ex: UBOOT_BINARY=u-boot.dtb
-  - 'UBOOT_DEVICETREE' is a list of device tree to build, using 'space' as separator.
-    ex: UBOOT_DEVICETREE="<devicetree1> <devicetree2>"
-
-By default, the build results for this component are available in $PWD/../deploy directory.
-If needed, this deploy directory can be specified by added "DEPLOYDIR=<your_deploy_dir_path>" compilation option to the build command line above.
-In case DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot it overwrites files directly in FIP artifacts directory.
-
+The build results for this component are available in DEPLOYDIR (Default: $PWD/../deploy).
+If needed, this deploy directory can be specified by adding "DEPLOYDIR=<your_deploy_dir_path>" compilation option to the build command line below.
 The generated FIP images are available in $FIP_DEPLOYDIR_ROOT/fip
 
-You can override the default U-Boot configuration if you specify these variables:
+To list U-Boot source code compilation configurations:
+    $ make -f $PWD/../Makefile.sdk help
+To compile U-Boot source code:
+    $ make -f $PWD/../Makefile.sdk all
+To compile U-Boot source code for a specific config:
   - Compile default U-Boot configuration but applying specific devicetree(s):
-    $ make -f $PWD/../Makefile.sdk all DEVICETREE="<devicetree1> <devicetree2>"
+    $ make -f $PWD/../Makefile.sdk DEVICETREE="<devicetree1> <devicetree2>" all
   - Compile for a specific U-Boot configuration:
-    $ make -f $PWD/../Makefile.sdk all UBOOT_CONFIG=trusted UBOOT_DEFCONFIG=stm32mp15_trusted_defconfig UBOOT_BINARY=u-boot.dtb DEVICETREE=stm32mp157f-dk2
+    $ make -f $PWD/../Makefile.sdk UBOOT_CONFIG=trusted UBOOT_DEFCONFIG=stm32mp15_defconfig UBOOT_BINARY=u-boot.dtb DEVICETREE=stm32mp157f-dk2 all
+To compile U-Boot source code and overwrite the default FIP artifacts with built artifacts:
+    $> make -f $PWD/../Makefile.sdk DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot all
 
 ---------------------------
 6. Update software on board
 ---------------------------
 Please use STM32CubeProgrammer and only tick the ssbl-boot and fip partition (more informations on the wiki website http://wiki.st.com/stm32mpu)
 
+---------------------------
+7. Update Starter Package with U-Boot compilation outputs
+---------------------------
+If not already done, extract the artifacts from Starter Package tarball, for example:
+    # tar xf en.FLASH-stm32mp1-*.tar.xz
+
+Move to Starter Package root folder,
+    #> cd <your_starter_package_dir_path>
+Cleanup Starter Package from original U-Boot artifacts first
+    #> rm -rf images/stm32mp1/fip/*
+Update Starter Package with new fip artifacts from <FIP_DEPLOYDIR_ROOT>/fip folder:
+    #> cp -rvf $FIP_DEPLOYDIR_ROOT/fip/* images/stm32mp1/fip/
+
+Then the new Starter Package is ready to use for "Image flashing" on board (more information on wiki website https://wiki.st.com/stm32mpu).

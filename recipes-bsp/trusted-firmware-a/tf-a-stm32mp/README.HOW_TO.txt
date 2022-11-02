@@ -5,6 +5,7 @@ Compilation of TF-A (Trusted Firmware-A):
 4. Manage TF-A source code with GIT
 5. Compile TF-A source code
 6. Update software on board
+7. Update starter package with TF-A compilation outputs
 
 ----------------
 1. Pre-requisite
@@ -37,7 +38,7 @@ sourced the sdk environment.
 3. Prepare TF-A source
 ----------------------
 If not already done, extract the sources from Developer Package tarball, for example:
-$ tar xfJ en.SOURCES-stm32mp1-*.tar.xz
+    $ tar xf en.SOURCES-stm32mp1-*.tar.xz
 
 In the TF-A source directory (sources/*/##BP##-##PR##),
 you have one TF-A source tarball, the patches and one Makefile:
@@ -74,7 +75,8 @@ have 3 solutions to use git:
 
 4.2 Create Git from tarball
 ---------------------------
-    $ cd <directory to tf-a source code>
+    $ tar xf ##BP##-##PR##.tar.xz
+    $ cd ##BP##
     $ test -d .git || git init . && git add . && git commit -m "tf-a source code" && git gc
     $ git checkout -b WORKING
     $ for p in `ls -1 ../*.patch`; do git am $p; done
@@ -97,21 +99,40 @@ Since OpenSTLinux activates FIP by default, FIP_artifacts directory path must be
   - In case of using SOURCES-xxxx.tar.gz of Developer package the FIP_DEPLOYDIR_ROOT must be set as below:
     $> export FIP_DEPLOYDIR_ROOT=$PWD/../../FIP_artifacts
 
-To compile TF-A source code
-    $> make -f $PWD/../Makefile.sdk all
-or for a specific config :
+The build results for this component are available in DEPLOYDIR (Default: $PWD/../deploy).
+If needed, this deploy directory can be specified by adding "DEPLOYDIR=<your_deploy_dir_path>" compilation option to the build command line below.
+The generated FIP images are available in <FIP_DEPLOYDIR_ROOT>/fip
+
+To list TF-A source code compilation configurations:
+    $ make -f $PWD/../Makefile.sdk help
+To compile TF-A source code:
+    $ make -f $PWD/../Makefile.sdk all
+To compile TF-A source code for a specific config:
     $ make -f $PWD/../Makefile.sdk TF_A_DEVICETREE=stm32mp157c-ev1 TF_A_CONFIG=trusted ELF_DEBUG_ENABLE='1' all
-
-NB: TF_A_DEVICETREE flag must be set to switch to correct board configuration.
-
-By default, the build results for this component are available in $PWD/../deploy directory.
-If needed, this deploy directory can be specified by added "DEPLOYDIR=<your_deploy_dir_path>" compilation option to the build command line above.
-In case DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware it overwrites files directly in FIP artifacts directory.
-
-The generated FIP images are available in $FIP_DEPLOYDIR_ROOT/fip
+        NB: TF_A_DEVICETREE flag must be set to switch to correct board configuration.
+To compile TF-A source code and overwrite the default FIP artifacts with built artifacts:
+    $> make -f $PWD/../Makefile.sdk DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware all
 
 ---------------------------
 6. Update software on board
 ---------------------------
-Please use STM32CubeProgrammer then only tick the boot partitions means patitions 0x1 to 0x6 (more informations on the wiki website http://wiki.st.com/stm32mpu)
+Please use STM32CubeProgrammer to update the boot partitions, find more informations on the wiki website https://wiki.st.com/stm32mpu
 
+---------------------------
+7. Update Starter Package with TF-A compilation outputs
+---------------------------
+If not already done, extract the artifacts from Starter Package tarball, for example:
+    # tar xf en.FLASH-stm32mp1-*.tar.xz
+
+Move to Starter Package root folder,
+    #> cd <your_starter_package_dir_path>
+Cleanup Starter Package from original TF-A artifacts first
+    #> rm -rf images/stm32mp1/arm-trusted-firmware/*
+    #> rm -rf images/stm32mp1/fip/*
+Update Starter Package with new FSBL binaries from <DEPLOYDIR> folder
+    #> DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware && cp -rvf $DEPLOYDIR/* images/stm32mp1/arm-trusted-firmware/
+        NB: if <DEPLOYDIR> has not been overide at compilation step, use default path: <tf-a source code folder>/../deploy
+Update Starter Package with new fip artifacts from <FIP_DEPLOYDIR_ROOT>/fip folder:
+    #> cp -rvf $FIP_DEPLOYDIR_ROOT/fip/* images/stm32mp1/fip/
+
+Then the new Starter Package is ready to use for "Image flashing" on board (more information on wiki website https://wiki.st.com/stm32mpu).

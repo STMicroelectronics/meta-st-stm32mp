@@ -6,6 +6,7 @@ Compilation of kernel:
 5. Configure kernel source code
 6. Compile kernel source code
 7. Update software on board
+8. Update Starter Package with kernel compilation outputs
 
 ----------------
 1. Pre-requisite
@@ -51,7 +52,7 @@ sourced the SDK environment.
 3. Prepare kernel source
 ------------------------
 If not already done, extract the sources from Developer Package tarball, for example:
-$ tar xfJ en.SOURCES-stm32mp1-*.tar.xz
+    $ tar xf en.SOURCES-stm32mp1-*.tar.xz
 
 In the kernel source directory (sources/*/##BP##-##PR##),
 you have one kernel source tarball, the patches and one Makefile:
@@ -65,7 +66,7 @@ to section 4 [Management of kernel source code with GIT].
 Otherwise, to manage kernel source code without git, you must extract the
 tarball now and apply the patch:
 
-    $> tar xfJ ##LINUX_TARNAME##.tar.xz
+    $> tar xf ##LINUX_TARNAME##.tar.xz
     $> cd ##LINUX_TARNAME##
     $> for p in `ls -1 ../*.patch`; do patch -p1 < $p; done
 
@@ -227,8 +228,8 @@ inside the dedicated build directory).
     $ cp $PWD/arch/arm/boot/dts/st*.dtb $PWD/install_artifact/boot/
 
 Generated files are :
- #> $PWD/install_artifact/boot/uImage
- #> $PWD/install_artifact/boot/<stm32-boards>.dtb
+- $PWD/install_artifact/boot/uImage
+- $PWD/install_artifact/boot/<stm32-boards>.dtb
 
 ---------------------------
 7. Update software on board
@@ -355,8 +356,7 @@ For USB Disk:  ums 0 usb 0
     Reboot the board in order to take update into account
     $on board> reboot
 
----------------------
-8. Useful information
+7.5 Useful information
 ---------------------
 * How to re-generate kernel database on board:
     $on board> depmod -a
@@ -377,3 +377,18 @@ intree:         Y
 name:           led_class_flash
 vermagic:       5.4.31 SMP preempt mod_unload modversions ARMv7 p2v8 
 
+---------------------------
+8. Update Starter Package with kernel compilation outputs
+---------------------------
+
+<-- Section under construction -->
+
+If not already done, extract the artifacts from Starter Package tarball, for example:
+    # tar xf en.FLASH-stm32mp1-*.tar.xz
+
+Move to Starter Package root folder,
+    #> cd <your_starter_package_dir_path>
+Cleanup Starter Package from original kernel artifacts first
+    #> echo "*** Section under construction ***"
+
+<-- Section under construction -->
