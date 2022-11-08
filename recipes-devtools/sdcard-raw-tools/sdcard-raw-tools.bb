@@ -33,6 +33,8 @@ do_configure() {
         sed 's/^DEFAULT_FIP_TYPEUUID=.*$/DEFAULT_FIP_TYPEUUID='"${DEVICE_TYPEUUID_FIP}"'/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
         sed 's/^DEFAULT_FIP_A_PARTUUID=.*$/DEFAULT_FIP_A_PARTUUID='"${DEVICE_PARTUUID_FIP_A}"'/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
         sed 's/^DEFAULT_FIP_B_PARTUUID=.*$/DEFAULT_FIP_B_PARTUUID='"${DEVICE_PARTUUID_FIP_B}"'/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
+        sed 's/^DEFAULT_FWU_MDATA_TYPEUUID=.*$/DEFAULT_FWU_MDATA_TYPEUUID='"${DEVICE_PARTUUID_FWU_MDATA}"'/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
+        sed 's/^DEFAULT_UBOOT_ENV_TYPEUUID=.*$/DEFAULT_UBOOT_ENV_TYPEUUID='"${DEVICE_PARTUUID_UBOOT_ENV}"'/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
     fi
 }
 
