@@ -203,6 +203,10 @@ IMAGE_ROOTFS_ALIGNMENT ?= "4"
 
 # Enable licence summary and configure License content generation
 ENABLE_IMAGE_LICENSE_SUMMARY ?= "1"
+# Enable cve summary
+ENABLE_IMAGE_CVE_SUMMARY ?= "1"
+
+ST_MAIN_COMPONENTS:stm32mp1common = "tf-a-stm32mp, optee-os-stm32mp, u-boot-stm32mp, linux-stm32mp"
 
 # Define image partition size (supposed to be set as max size in image recipe)
 
