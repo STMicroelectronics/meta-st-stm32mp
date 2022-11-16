@@ -130,7 +130,7 @@ tf-\$(1): \$2
 			DTB_FILE_NAME=\$(dt).dtb \\
 			\$(if \$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS_\$(1))) \\
 			\$(if \$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET_\$(1))) \\
-			\$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),\$(shell echo \$(soc) | tr a-z A-Z)=1,)) ; \\
+			\$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),\$(shell echo \$(soc) | tr a-z A-Z)=1,)) || exit 1; \\
 	)
 endef
 
