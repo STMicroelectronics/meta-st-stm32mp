@@ -76,9 +76,9 @@ ENABLE_FIP ?= ${@bb.utils.contains('MACHINE_FEATURES','fip','1','',d)}
 define uboot-configs
 	echo "  \$(1)" ; \\
 	\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(1))), \\
-		echo "    defconfig      : \$(defconfig)" ; \
-		echo "    for binary     : \$(if \$(UBOOT_BINARY),\$(UBOOT_BINARY),\$(UBOOT_BINARY_\$(defconfig)))" ; \
-		echo "    with devicetree: \$(if \$(DEVICETREE),\$(DEVICETREE),\$(UBOOT_DEVICETREE_\$(defconfig)))" ; \
+		echo "    defconfig      : \$(defconfig)" ; \\
+		echo "    for binary     : \$(if \$(UBOOT_BINARY),\$(UBOOT_BINARY),\$(UBOOT_BINARY_\$(defconfig)))" ; \\
+		echo "    with devicetree: \$(if \$(DEVICETREE),\$(DEVICETREE),\$(UBOOT_DEVICETREE_\$(defconfig)))" ; \\
 	)
 endef
 
@@ -92,7 +92,7 @@ ifeq (\$(ENABLE_FIP),0)
 endif
 	@mkdir -p \$(BLD_PATH)/\$(1)
 	@echo \$(UBOOT_LOCALVERSION) > \$(BLD_PATH)/\$(1)/.scmversion
-	\$(MAKE) -C \$(SRC_PATH) O=\$(BLD_PATH)/\$(1) \$(1)
+	\$(MAKE) -C \$(SRC_PATH) O=\$(BLD_PATH)/\$(1) \$(1) || exit 1
 endef
 
 # Configure U-Boot make rules (uboot-DEFCONFIG-CONFIG)
@@ -103,8 +103,8 @@ uboot-\$(1)-\$(2): configure-\$(1)-\$(2)
 		\$(MAKE) -C \$(SRC_PATH) ${UBOOT_MAKE_TARGET} \\
 			O=\$(BLD_PATH)/\$(1) \\
 			DEVICE_TREE=\$(dt) \\
-			DEVICE_TREE_EXT=\$(dt).dtb ; \\
-		cp -f \$(BLD_PATH)/\$(1)/\$(3) \$(DEPLOYDIR)/u-boot-\$(dt)-\$(2).\$(shell echo \$(3) | cut -d'.' -f2) ; \\
+			DEVICE_TREE_EXT=\$(dt).dtb || exit 1 ; \\
+		cp -f \$(BLD_PATH)/\$(1)/\$(3) \$(DEPLOYDIR)/u-boot-\$(dt)-\$(2).\$(shell echo \$(3) | cut -d'.' -f2) || exit 1 ; \\
 		if [ -f \$(BLD_PATH)/\$(1)/\$(shell echo \$(3) | cut -d'.' -f1).stm32 ]; then \\
 			cp -f \$(BLD_PATH)/\$(1)/\$(shell echo \$(3) | cut -d'.' -f1).stm32 \$(DEPLOYDIR)/u-boot-\$(dt)-\$(2).stm32 ; \\
 		fi ; \\
