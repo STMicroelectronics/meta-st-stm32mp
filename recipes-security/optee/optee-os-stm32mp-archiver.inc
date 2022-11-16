@@ -64,7 +64,9 @@ ifeq (\$(ENABLE_FIP),1)
 endif
 	@echo
 	@echo "Available targets:"
-	@echo "  all   : build OPTEE-OS binaries for defined config(s)"
+	@echo "  all   : default target to build all binaries for defined config(s)"
+	@echo "  fip   : build FIP binaries for defined config(s)"
+	@echo "  optee : build OPTEE-OS binaries for defined config(s)"
 	@echo "  clean : clean build directories from generated files"
 	@echo
 
@@ -92,7 +94,7 @@ optee:
 	fi
 
 fip: optee
-	FIP_DEPLOYDIR_OPTEE=\$(DEPLOYDIR) FIP_DEVICETREE="\$(CFG_EMBED_DTB_SOURCE_FILE)" fiptool-stm32mp
+	FIP_DEPLOYDIR_OPTEE=\$(DEPLOYDIR) FIP_DEVICETREE="\$(CFG_EMBED_DTB_SOURCE_FILE)" FIP_CONFIG="optee" FIP_BL32_CONF="optee" fiptool-stm32mp
 
 clean:
 	@echo "Removing \$(BLD_PATH) ..."
