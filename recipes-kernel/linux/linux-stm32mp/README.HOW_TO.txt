@@ -6,6 +6,7 @@ Compilation of kernel:
 5. Configure kernel source code
 6. Compile kernel source code
 7. Update software on board
+8. Update Starter Package with kernel compilation outputs
 
 ----------------
 1. Pre-requisite
@@ -51,7 +52,7 @@ sourced the SDK environment.
 3. Prepare kernel source code
 -----------------------------
 If not already done, extract the sources from Developer Package tarball, for example:
-$ tar xfJ en.SOURCES-kernel-stm32mp1-*.tar.xz
+    $ tar xf en.SOURCES-kernel-stm32mp1-*.tar.xz
 
 In the kernel source directory (sources/*/##BP##-##PR##),
 you have one kernel source tarball, the patches and one Makefile:
@@ -65,7 +66,7 @@ to section 4 [Management of kernel source code with GIT].
 Otherwise, to manage kernel source code without git, you must extract the
 tarball now and apply the patch:
 
-    $> tar xfJ ##LINUX_TARNAME##.tar.xz
+    $> tar xf ##LINUX_TARNAME##.tar.xz
     $> cd ##LINUX_TARNAME##
     $> for p in `ls -1 ../*.patch`; do patch -p1 < $p; done
 
@@ -88,8 +89,7 @@ have 3 solutions to use git.
 
 4.2 Create Git from tarball
 ---------------------------
-    $ tar xfJ ##LINUX_TARNAME##.tar.xz
-    $ cd ##LINUX_TARNAME##
+    $ cd <directory to kernel source code>
     $ test -d .git || git init . && git add . && git commit -m "new kernel" && git gc
     $ git checkout -b WORKING
     Apply patches:
@@ -152,10 +152,10 @@ We highly preconized the build is a build directory method as:
     $ scripts/kconfig/merge_config.sh -m -r -O $PWD/../build $PWD/../build/.config ../fragment-01-xxx.config
     $ scripts/kconfig/merge_config.sh -m -r -O $PWD/../build $PWD/../build/.config ../fragment-02-xxx.config
     ...
-    $ yes '' | make ARCH=arm oldconfig O="$PWD/../build"
+    $ (yes '' || true) | make ARCH=arm oldconfig O="$PWD/../build"
     * or, by loop:
     $> for f in `ls -1 ../fragment*.config`; do scripts/kconfig/merge_config.sh -m -r -O $PWD/../build $PWD/../build/.config $f; done
-    $> yes '' | make ARCH=arm oldconfig O="$PWD/../build"
+    $> (yes '' || true) | make ARCH=arm oldconfig O="$PWD/../build"
 
 * Configure on the current source code directory
     $ cd <directory to kernel source code>
@@ -166,10 +166,10 @@ We highly preconized the build is a build directory method as:
     $ scripts/kconfig/merge_config.sh -m -r .config ../fragment-01-xxxx.config
     $ scripts/kconfig/merge_config.sh -m -r .config ../fragment-02-xxxx.config
     ...
-    $ yes '' | make oldconfig
+    $ (yes '' || true) | make oldconfig
     * or, by loop:
     $ for f in `ls -1 ../fragment*.config`; do scripts/kconfig/merge_config.sh -m -r .config $f; done
-    $ yes '' | make ARCH=arm oldconfig
+    $ (yes '' || true) | make ARCH=arm oldconfig
 
 NB: Two types of fragments are provided:
     * official fragments (fragment-xxx.config)
@@ -228,8 +228,8 @@ inside the dedicated build directory).
     $ cp $PWD/arch/arm/boot/dts/st*.dtb $PWD/install_artifact/boot/
 
 Generated files are :
- #> $PWD/install_artifact/boot/uImage
- #> $PWD/install_artifact/boot/<stm32-boards>.dtb
+- $PWD/install_artifact/boot/uImage
+- $PWD/install_artifact/boot/<stm32-boards>.dtb
 
 ---------------------------
 7. Update software on board
@@ -356,8 +356,7 @@ For USB Disk:  ums 0 usb 0
     Reboot the board in order to take update into account
     $on board> reboot
 
----------------------
-8. Useful information
+7.5 Useful information
 ---------------------
 * How to re-generate kernel database on board:
     $on board> depmod -a
@@ -378,3 +377,18 @@ intree:         Y
 name:           led_class_flash
 vermagic:       5.4.31 SMP preempt mod_unload modversions ARMv7 p2v8 
 
+---------------------------
+8. Update Starter Package with kernel compilation outputs
+---------------------------
+
+<-- Section under construction -->
+
+If not already done, extract the artifacts from Starter Package tarball, for example:
+    # tar xf en.FLASH-stm32mp1-*.tar.xz
+
+Move to Starter Package root folder,
+    #> cd <your_starter_package_dir_path>
+Cleanup Starter Package from original kernel artifacts first
+    #> echo "*** Section under construction ***"
+
+<-- Section under construction -->
