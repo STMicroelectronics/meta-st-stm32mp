@@ -1,8 +1,9 @@
-From 81dd9bfc6439efa4b289ea730ec62c27215afdbb Mon Sep 17 00:00:00 2001
+From 15ffe6a7ea2ec6d32ecfa48f92a8282d5a033685 Mon Sep 17 00:00:00 2001
 From: Romuald JEANNE <romuald.jeanne@st.com>
-Date: Wed, 1 Jun 2022 09:24:32 +0200
-Subject: [PATCH 16/23] ARM 5.10.116-stm32mp1-r2.1 PINCTRL-REGULATOR-SPI
+Date: Fri, 18 Nov 2022 16:28:02 +0100
+Subject: [PATCH 17/23] ARM 5.10.153-stm32mp1-r2.2 PINCTRL-REGULATOR-SPI
 
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
 ---
  drivers/mtd/nand/spi/core.c                 | 157 ++++++++----
  drivers/pinctrl/stm32/pinctrl-stm32.c       | 121 +++++----
@@ -14,12 +15,12 @@ Subject: [PATCH 16/23] ARM 5.10.116-stm32mp1-r2.1 PINCTRL-REGULATOR-SPI
  drivers/regulator/stpmic1_regulator.c       | 182 ++++++++++++-
  drivers/spi/Kconfig                         |   1 +
  drivers/spi/spi-mem.c                       |  86 +++++++
- drivers/spi/spi-stm32-qspi.c                | 187 +++++++++++---
+ drivers/spi/spi-stm32-qspi.c                | 184 +++++++++++---
  drivers/spi/spi-stm32.c                     | 267 +++++++++-----------
  include/dt-bindings/pinctrl/stm32-pinfunc.h |   1 +
  include/linux/mtd/spinand.h                 |  22 ++
  include/linux/spi/spi-mem.h                 |  16 ++
- 15 files changed, 842 insertions(+), 309 deletions(-)
+ 15 files changed, 840 insertions(+), 308 deletions(-)
 
 diff --git a/drivers/mtd/nand/spi/core.c b/drivers/mtd/nand/spi/core.c
 index 8794a1f6eacd..08ea50e4c648 100644
@@ -278,7 +279,7 @@ index 8794a1f6eacd..08ea50e4c648 100644
  	if (spinand->eccinfo.ooblayout)
  		mtd_set_ooblayout(mtd, spinand->eccinfo.ooblayout);
 diff --git a/drivers/pinctrl/stm32/pinctrl-stm32.c b/drivers/pinctrl/stm32/pinctrl-stm32.c
-index b017dd400c46..e439f7820d7a 100644
+index 60406f1f8337..e8e7d232e5f9 100644
 --- a/drivers/pinctrl/stm32/pinctrl-stm32.c
 +++ b/drivers/pinctrl/stm32/pinctrl-stm32.c
 @@ -73,6 +73,7 @@ static const char * const stm32_gpio_functions[] = {
@@ -493,7 +494,7 @@ index b017dd400c46..e439f7820d7a 100644
  			   drive ? "open drain" : "push pull",
  			   biasing[bias],
  			   speeds[speed], "speed");
-@@ -1428,7 +1461,8 @@ static int stm32_pctrl_create_pins_tab(struct stm32_pinctrl *pctl,
+@@ -1430,7 +1463,8 @@ static int stm32_pctrl_create_pins_tab(struct stm32_pinctrl *pctl,
  		if (pctl->pkg && !(pctl->pkg & p->pkg))
  			continue;
  		pins->pin = p->pin;
@@ -503,7 +504,7 @@ index b017dd400c46..e439f7820d7a 100644
  		pins++;
  		nb_pins_available++;
  	}
-@@ -1537,6 +1571,7 @@ int stm32_pctl_probe(struct platform_device *pdev)
+@@ -1541,6 +1575,7 @@ int stm32_pctl_probe(struct platform_device *pdev)
  	pctl->pctl_desc.pctlops = &stm32_pctrl_ops;
  	pctl->pctl_desc.pmxops = &stm32_pmx_ops;
  	pctl->dev = &pdev->dev;
@@ -1162,7 +1163,7 @@ index 4682f49dc733..1325db7f5314 100644
  {
  	struct spi_mem_driver *memdrv = to_spi_mem_drv(spi->dev.driver);
 diff --git a/drivers/spi/spi-stm32-qspi.c b/drivers/spi/spi-stm32-qspi.c
-index 4f24f6392212..d895e1548790 100644
+index 9c58dcd7b324..d895e1548790 100644
 --- a/drivers/spi/spi-stm32-qspi.c
 +++ b/drivers/spi/spi-stm32-qspi.c
 @@ -36,6 +36,7 @@
@@ -1239,20 +1240,17 @@ index 4f24f6392212..d895e1548790 100644
  		if (!stm32_qspi_tx_dma(qspi, op))
  			return 0;
  
-@@ -292,10 +305,8 @@ static int stm32_qspi_wait_cmd(struct stm32_qspi *qspi,
+@@ -292,9 +305,6 @@ static int stm32_qspi_wait_cmd(struct stm32_qspi *qspi,
  	u32 cr, sr;
  	int err = 0;
  
 -	if (!op->data.nbytes)
 -		goto wait_nobusy;
 -
--	if (readl_relaxed(qspi->io_base + QSPI_SR) & SR_TCF)
-+	if ((readl_relaxed(qspi->io_base + QSPI_SR) & SR_TCF) ||
-+	    qspi->fmode == CCR_FMODE_APM)
+ 	if ((readl_relaxed(qspi->io_base + QSPI_SR) & SR_TCF) ||
+ 	    qspi->fmode == CCR_FMODE_APM)
  		goto out;
- 
- 	reinit_completion(&qspi->data_completion);
-@@ -314,13 +325,30 @@ static int stm32_qspi_wait_cmd(struct stm32_qspi *qspi,
+@@ -315,13 +325,30 @@ static int stm32_qspi_wait_cmd(struct stm32_qspi *qspi,
  out:
  	/* clear flags */
  	writel_relaxed(FCR_CTCF | FCR_CTEF, qspi->io_base + QSPI_FCR);
@@ -1284,7 +1282,7 @@ index 4f24f6392212..d895e1548790 100644
  static int stm32_qspi_get_mode(struct stm32_qspi *qspi, u8 buswidth)
  {
  	if (buswidth == 4)
-@@ -333,30 +361,14 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
+@@ -334,30 +361,14 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
  {
  	struct stm32_qspi *qspi = spi_controller_get_devdata(mem->spi->master);
  	struct stm32_qspi_flash *flash = &qspi->flash[mem->spi->chip_select];
@@ -1317,7 +1315,7 @@ index 4f24f6392212..d895e1548790 100644
  	cr = readl_relaxed(qspi->io_base + QSPI_CR);
  	cr &= ~CR_PRESC_MASK & ~CR_FSEL;
  	cr |= FIELD_PREP(CR_PRESC_MASK, flash->presc);
-@@ -366,8 +378,6 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
+@@ -367,8 +378,6 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
  	if (op->data.nbytes)
  		writel_relaxed(op->data.nbytes - 1,
  			       qspi->io_base + QSPI_DLR);
@@ -1326,7 +1324,7 @@ index 4f24f6392212..d895e1548790 100644
  
  	ccr = qspi->fmode;
  	ccr |= FIELD_PREP(CCR_INST_MASK, op->cmd.opcode);
-@@ -394,6 +404,9 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
+@@ -395,6 +404,9 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
  	if (op->addr.nbytes && qspi->fmode != CCR_FMODE_MM)
  		writel_relaxed(op->addr.val, qspi->io_base + QSPI_AR);
  
@@ -1336,7 +1334,7 @@ index 4f24f6392212..d895e1548790 100644
  	err = stm32_qspi_tx(qspi, op);
  
  	/*
-@@ -403,7 +416,7 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
+@@ -404,7 +416,7 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
  	 *  byte of device (device size - fifo size). like device size is not
  	 *  knows, the prefetching is always stop.
  	 */
@@ -1345,7 +1343,7 @@ index 4f24f6392212..d895e1548790 100644
  		goto abort;
  
  	/* wait end of tx in indirect mode */
-@@ -422,15 +435,49 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
+@@ -423,15 +435,49 @@ static int stm32_qspi_send(struct spi_mem *mem, const struct spi_mem_op *op)
  						    cr, !(cr & CR_ABORT), 1,
  						    STM32_ABT_TIMEOUT_US);
  
@@ -1399,7 +1397,7 @@ index 4f24f6392212..d895e1548790 100644
  static int stm32_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
  {
  	struct stm32_qspi *qspi = spi_controller_get_devdata(mem->spi->master);
-@@ -443,6 +490,11 @@ static int stm32_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
+@@ -444,6 +490,11 @@ static int stm32_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
  	}
  
  	mutex_lock(&qspi->lock);
@@ -1411,7 +1409,7 @@ index 4f24f6392212..d895e1548790 100644
  	ret = stm32_qspi_send(mem, op);
  	mutex_unlock(&qspi->lock);
  
-@@ -452,6 +504,64 @@ static int stm32_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
+@@ -453,6 +504,64 @@ static int stm32_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
  	return ret;
  }
  
@@ -1476,7 +1474,7 @@ index 4f24f6392212..d895e1548790 100644
  static int stm32_qspi_setup(struct spi_device *spi)
  {
  	struct spi_controller *ctrl = spi->master;
-@@ -475,12 +585,11 @@ static int stm32_qspi_setup(struct spi_device *spi)
+@@ -476,12 +585,11 @@ static int stm32_qspi_setup(struct spi_device *spi)
  	presc = DIV_ROUND_UP(qspi->clk_rate, spi->max_speed_hz) - 1;
  
  	flash = &qspi->flash[spi->chip_select];
@@ -1490,7 +1488,7 @@ index 4f24f6392212..d895e1548790 100644
  	writel_relaxed(qspi->cr_reg, qspi->io_base + QSPI_CR);
  
  	/* set dcr fsize to max address */
-@@ -557,7 +666,10 @@ static void stm32_qspi_dma_free(struct stm32_qspi *qspi)
+@@ -558,7 +666,10 @@ static void stm32_qspi_dma_free(struct stm32_qspi *qspi)
   * to check supported mode.
   */
  static const struct spi_controller_mem_ops stm32_qspi_mem_ops = {
@@ -1502,7 +1500,7 @@ index 4f24f6392212..d895e1548790 100644
  };
  
  static int stm32_qspi_probe(struct platform_device *pdev)
-@@ -612,6 +724,7 @@ static int stm32_qspi_probe(struct platform_device *pdev)
+@@ -613,6 +724,7 @@ static int stm32_qspi_probe(struct platform_device *pdev)
  	}
  
  	init_completion(&qspi->data_completion);

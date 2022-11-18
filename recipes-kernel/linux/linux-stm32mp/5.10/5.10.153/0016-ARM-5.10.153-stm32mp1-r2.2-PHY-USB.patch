@@ -1,8 +1,9 @@
-From 0aab8dbaf42337ad9393577b75b8465b6476b95e Mon Sep 17 00:00:00 2001
+From 6f8519c543e242372ff8d6b387299a4bd8952cce Mon Sep 17 00:00:00 2001
 From: Romuald JEANNE <romuald.jeanne@st.com>
-Date: Wed, 1 Jun 2022 09:06:18 +0200
-Subject: [PATCH 15/23] ARM 5.10.116-stm32mp1-r2.1 PHY-USB
+Date: Fri, 18 Nov 2022 16:21:52 +0100
+Subject: [PATCH 16/23] ARM 5.10.153-stm32mp1-r2.2 PHY-USB
 
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
 ---
  drivers/phy/st/phy-stm32-usbphyc.c | 509 +++++++++++++++++++++++++----
  drivers/usb/core/hcd.c             |   9 +-
@@ -11,12 +12,12 @@ Subject: [PATCH 15/23] ARM 5.10.116-stm32mp1-r2.1 PHY-USB
  drivers/usb/dwc2/core.c            | 123 ++++---
  drivers/usb/dwc2/core.h            |  14 +
  drivers/usb/dwc2/drd.c             |  14 +
- drivers/usb/dwc2/gadget.c          |   4 +-
+ drivers/usb/dwc2/gadget.c          |   1 +
  drivers/usb/dwc2/hcd.c             |   7 +-
  drivers/usb/dwc2/params.c          |  24 ++
  drivers/usb/dwc2/platform.c        |  47 ++-
  drivers/usb/host/ehci-platform.c   |  16 +-
- 12 files changed, 640 insertions(+), 155 deletions(-)
+ 12 files changed, 638 insertions(+), 154 deletions(-)
 
 diff --git a/drivers/phy/st/phy-stm32-usbphyc.c b/drivers/phy/st/phy-stm32-usbphyc.c
 index 2b3639cba51a..f21160659eb3 100644
@@ -720,10 +721,10 @@ index 2b3639cba51a..f21160659eb3 100644
  };
  module_platform_driver(stm32_usbphyc_driver);
 diff --git a/drivers/usb/core/hcd.c b/drivers/usb/core/hcd.c
-index ddd1d3eef912..8c59b3b26392 100644
+index ac347f9d5ef0..6f87b28c0b98 100644
 --- a/drivers/usb/core/hcd.c
 +++ b/drivers/usb/core/hcd.c
-@@ -2159,7 +2159,8 @@ int hcd_bus_suspend(struct usb_device *rhdev, pm_message_t msg)
+@@ -2162,7 +2162,8 @@ int hcd_bus_suspend(struct usb_device *rhdev, pm_message_t msg)
  
  		if (!PMSG_IS_AUTO(msg))
  			usb_phy_roothub_suspend(hcd->self.sysdev,
@@ -733,7 +734,7 @@ index ddd1d3eef912..8c59b3b26392 100644
  
  		/* Did we race with a root-hub wakeup event? */
  		if (rhdev->do_remote_wakeup) {
-@@ -2200,7 +2201,8 @@ int hcd_bus_resume(struct usb_device *rhdev, pm_message_t msg)
+@@ -2203,7 +2204,8 @@ int hcd_bus_resume(struct usb_device *rhdev, pm_message_t msg)
  
  	if (!PMSG_IS_AUTO(msg)) {
  		status = usb_phy_roothub_resume(hcd->self.sysdev,
@@ -743,7 +744,7 @@ index ddd1d3eef912..8c59b3b26392 100644
  		if (status)
  			return status;
  	}
-@@ -2245,7 +2247,8 @@ int hcd_bus_resume(struct usb_device *rhdev, pm_message_t msg)
+@@ -2248,7 +2250,8 @@ int hcd_bus_resume(struct usb_device *rhdev, pm_message_t msg)
  		}
  	} else {
  		hcd->state = old_state;
@@ -1128,20 +1129,10 @@ index 36f2c38416e5..02ff07592ed2 100644
  	role_sw_desc.fwnode = dev_fwnode(hsotg->dev);
  	role_sw_desc.set = dwc2_drd_role_sw_set;
 diff --git a/drivers/usb/dwc2/gadget.c b/drivers/usb/dwc2/gadget.c
-index ec54971063f8..94ddddc6d6b2 100644
+index da0df69cc234..99d470aedf02 100644
 --- a/drivers/usb/dwc2/gadget.c
 +++ b/drivers/usb/dwc2/gadget.c
-@@ -3593,7 +3593,8 @@ void dwc2_hsotg_core_disconnect(struct dwc2_hsotg *hsotg)
- void dwc2_hsotg_core_connect(struct dwc2_hsotg *hsotg)
- {
- 	/* remove the soft-disconnect and let's go */
--	dwc2_clear_bit(hsotg, DCTL, DCTL_SFTDISCON);
-+	if (!hsotg->role_sw || (dwc2_readl(hsotg, GOTGCTL) & GOTGCTL_BSESVLD))
-+		dwc2_clear_bit(hsotg, DCTL, DCTL_SFTDISCON);
- }
- 
- /**
-@@ -4924,6 +4925,7 @@ int dwc2_gadget_init(struct dwc2_hsotg *hsotg)
+@@ -4924,6 +4924,7 @@ int dwc2_gadget_init(struct dwc2_hsotg *hsotg)
  	hsotg->gadget.max_speed = USB_SPEED_HIGH;
  	hsotg->gadget.ops = &dwc2_hsotg_gadget_ops;
  	hsotg->gadget.name = dev_name(dev);
@@ -1150,7 +1141,7 @@ index ec54971063f8..94ddddc6d6b2 100644
  
  	if (hsotg->params.lpm)
 diff --git a/drivers/usb/dwc2/hcd.c b/drivers/usb/dwc2/hcd.c
-index 30919f741b7f..8c882d587db8 100644
+index 9279d3d3698c..44035d973632 100644
 --- a/drivers/usb/dwc2/hcd.c
 +++ b/drivers/usb/dwc2/hcd.c
 @@ -1736,7 +1736,8 @@ static void dwc2_hcd_cleanup_channels(struct dwc2_hsotg *hsotg)
@@ -1284,7 +1275,7 @@ index 267543c3dc38..49a677ba6f84 100644
  	default:
  		valid = 0;
 diff --git a/drivers/usb/dwc2/platform.c b/drivers/usb/dwc2/platform.c
-index 49d333f02af4..ada09815b621 100644
+index 8851db646ef5..5fc2a3945bdb 100644
 --- a/drivers/usb/dwc2/platform.c
 +++ b/drivers/usb/dwc2/platform.c
 @@ -224,8 +224,7 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
