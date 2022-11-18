@@ -1,0 +1,92 @@
+From 2c2323789406b274a6a38944095be87be1caec5e Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Fri, 18 Nov 2022 15:46:13 +0100
+Subject: [PATCH] 3.12.0-stm32mp-r2.2-rc1
+
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
+---
+ core/arch/arm/tee/entry_std.c | 25 +++++++++++++++++++------
+ 1 file changed, 19 insertions(+), 6 deletions(-)
+
+diff --git a/core/arch/arm/tee/entry_std.c b/core/arch/arm/tee/entry_std.c
+index 92db391d48..aa777c17ad 100644
+--- a/core/arch/arm/tee/entry_std.c
++++ b/core/arch/arm/tee/entry_std.c
+@@ -357,6 +357,7 @@ static void entry_open_session(struct optee_msg_arg *arg, uint32_t num_params)
+ 	TEE_UUID uuid;
+ 	struct tee_ta_param param;
+ 	size_t num_meta;
++	size_t num_sess_params = 0;
+ 	uint64_t saved_attr[TEE_NUM_PARAMS] = { 0 };
+ 
+ 	res = get_open_session_meta(num_params, arg->params, &num_meta, &uuid,
+@@ -364,7 +365,13 @@ static void entry_open_session(struct optee_msg_arg *arg, uint32_t num_params)
+ 	if (res != TEE_SUCCESS)
+ 		goto out;
+ 
+-	res = copy_in_params(arg->params + num_meta, num_params - num_meta,
++	if (SUB_OVERFLOW(num_params, num_meta, &num_sess_params) ||
++	    num_sess_params > TEE_NUM_PARAMS) {
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++	res = copy_in_params(arg->params + num_meta, num_sess_params,
+ 			     &param, saved_attr);
+ 	if (res != TEE_SUCCESS)
+ 		goto cleanup_shm_refs;
+@@ -373,7 +380,7 @@ static void entry_open_session(struct optee_msg_arg *arg, uint32_t num_params)
+ 				  &clnt_id, TEE_TIMEOUT_INFINITE, &param);
+ 	if (res != TEE_SUCCESS)
+ 		s = NULL;
+-	copy_out_param(&param, num_params - num_meta, arg->params + num_meta,
++	copy_out_param(&param, num_sess_params, arg->params + num_meta,
+ 		       saved_attr);
+ 
+ 	/*
+@@ -385,7 +392,7 @@ static void entry_open_session(struct optee_msg_arg *arg, uint32_t num_params)
+ 				     &session_pnum);
+ 
+ cleanup_shm_refs:
+-	cleanup_shm_refs(saved_attr, &param, num_params - num_meta);
++	cleanup_shm_refs(saved_attr, &param, num_sess_params);
+ 
+ out:
+ 	if (s)
+@@ -426,14 +433,19 @@ static void entry_invoke_command(struct optee_msg_arg *arg, uint32_t num_params)
+ 
+ 	bm_timestamp();
+ 
++	if (num_params > TEE_NUM_PARAMS) {
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
+ 	res = copy_in_params(arg->params, num_params, &param, saved_attr);
+ 	if (res != TEE_SUCCESS)
+-		goto out;
++		goto cleanup_shm_refs;
+ 
+ 	s = tee_ta_get_session(arg->session, true, &tee_open_sessions);
+ 	if (!s) {
+ 		res = TEE_ERROR_BAD_PARAMETERS;
+-		goto out;
++		goto cleanup_shm_refs;
+ 	}
+ 
+ 	res = tee_ta_invoke_command(&err_orig, s, NSAPP_IDENTITY,
+@@ -445,9 +457,10 @@ static void entry_invoke_command(struct optee_msg_arg *arg, uint32_t num_params)
+ 
+ 	copy_out_param(&param, num_params, arg->params, saved_attr);
+ 
+-out:
++cleanup_shm_refs:
+ 	cleanup_shm_refs(saved_attr, &param, num_params);
+ 
++out:
+ 	arg->ret = res;
+ 	arg->ret_origin = err_orig;
+ }
+-- 
+2.17.1
+
