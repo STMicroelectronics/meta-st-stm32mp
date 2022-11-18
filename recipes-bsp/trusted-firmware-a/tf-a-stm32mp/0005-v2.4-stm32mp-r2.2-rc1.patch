@@ -1,0 +1,199 @@
+From d76bded5711a53a6bc0cb18f6edded29f1814e0b Mon Sep 17 00:00:00 2001
+From: Romuald JEANNE <romuald.jeanne@st.com>
+Date: Fri, 18 Nov 2022 15:39:06 +0100
+Subject: [PATCH] v2.4-stm32mp-r2.2-rc1
+
+Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
+---
+ include/drivers/st/stm32mp1_pwr.h     |  3 ++
+ plat/st/stm32mp1/platform.mk          |  2 +-
+ plat/st/stm32mp1/services/bsec_svc.c  | 77 +--------------------------
+ plat/st/stm32mp1/stm32mp1_def.h       |  7 +--
+ plat/st/stm32mp1/stm32mp1_low_power.c |  4 ++
+ 5 files changed, 11 insertions(+), 82 deletions(-)
+
+diff --git a/include/drivers/st/stm32mp1_pwr.h b/include/drivers/st/stm32mp1_pwr.h
+index 9b662f2d1c..44a42b6b20 100644
+--- a/include/drivers/st/stm32mp1_pwr.h
++++ b/include/drivers/st/stm32mp1_pwr.h
+@@ -38,6 +38,9 @@
+ #define PWR_CR3_REG18EN		BIT(28)
+ #define PWR_CR3_REG11EN		BIT(30)
+ 
++#define PWR_CR3_POPL_SHIFT	17
++#define PWR_CR3_POPL_MASK	GENMASK_32(21, 17)
++
+ #define PWR_MPUCR_PDDS		BIT(0)
+ #define PWR_MPUCR_CSTDBYDIS	BIT(3)
+ #define PWR_MPUCR_CSSF		BIT(9)
+diff --git a/plat/st/stm32mp1/platform.mk b/plat/st/stm32mp1/platform.mk
+index 17a089c1af..54a677a589 100644
+--- a/plat/st/stm32mp1/platform.mk
++++ b/plat/st/stm32mp1/platform.mk
+@@ -15,7 +15,7 @@ USE_COHERENT_MEM	:=	0
+ STM32MP_USE_STM32IMAGE	?=	0
+ 
+ # Add specific ST version
+-ST_VERSION 		:=	r2.1
++ST_VERSION 		:=	r2.2
+ ifeq ($(STM32MP_USE_STM32IMAGE),1)
+ ST_VERSION 		:=	${ST_VERSION}-nofip
+ endif
+diff --git a/plat/st/stm32mp1/services/bsec_svc.c b/plat/st/stm32mp1/services/bsec_svc.c
+index 633e63eb31..8b78cc18df 100644
+--- a/plat/st/stm32mp1/services/bsec_svc.c
++++ b/plat/st/stm32mp1/services/bsec_svc.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2016-2020, STMicroelectronics - All Rights Reserved
++ * Copyright (c) 2016-2022, STMicroelectronics - All Rights Reserved
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -28,12 +28,6 @@
+ 
+ #include "bsec_svc.h"
+ 
+-enum bsec_ssp_status {
+-	BSEC_NO_SSP = 0,
+-	BSEC_SSP_SET,
+-	BSEC_SSP_ERROR
+-};
+-
+ struct otp_exchange {
+ 	uint32_t version;
+ 	uint32_t configuration;
+@@ -62,51 +56,6 @@ struct otp_exchange {
+ 	uint32_t ip_magic_id;
+ };
+ 
+-static enum bsec_ssp_status bsec_check_ssp(uint32_t otp, uint32_t update)
+-{
+-	boot_api_context_t *boot_context =
+-		(boot_api_context_t *)BOOT_PARAM_ADDR;
+-
+-	/* No SSP update or SSP already done*/
+-	if ((((otp & SSP_OTP_MASK) == 0U) && ((update & SSP_OTP_MASK) == 0U)) ||
+-	    (((otp & SSP_OTP_MASK) == SSP_OTP_MASK) &&
+-	     ((update & SSP_OTP_MASK) == SSP_OTP_MASK))) {
+-		return BSEC_NO_SSP;
+-	}
+-
+-	/* SSP update */
+-	if ((update & SSP_OTP_MASK) != 0U) {
+-		if ((update & SSP_OTP_SUCCESS) != 0U) {
+-			return BSEC_SSP_ERROR;
+-		}
+-
+-		/* SSP boot process */
+-		boot_context->p_ssp_config->ssp_cmd =
+-			BOOT_API_CTX_SSP_CMD_CALC_CHIP_PUBK;
+-#ifndef DCACHE_OFF
+-		flush_dcache_range((uintptr_t)boot_context->p_ssp_config,
+-				   sizeof(boot_api_ssp_config_t));
+-#endif
+-		if (dt_pmic_status() > 0) {
+-			struct rdev *regul;
+-
+-			initialize_pmic();
+-
+-			regul = dt_get_cpu_regulator();
+-			if (regul == NULL) {
+-				return BSEC_SSP_ERROR;
+-			}
+-
+-			if (regulator_set_flag(regul, REGUL_MASK_RESET) < 0) {
+-				return BSEC_SSP_ERROR;
+-			}
+-		}
+-
+-		return BSEC_SSP_SET;
+-	}
+-	return BSEC_NO_SSP;
+-}
+-
+ static uint32_t bsec_read_all_bsec(struct otp_exchange *exchange)
+ {
+ 	uint32_t i;
+@@ -244,20 +193,10 @@ static uint32_t bsec_write_all_bsec(struct otp_exchange *exchange,
+ 			return ret;
+ 		}
+ 
+-		if ((value ==  exchange->otp_value[i]) &&
+-		    (i != BOOT_API_OTP_SSP_WORD_NB)) {
++		if (value == exchange->otp_value[i]) {
+ 			continue;
+ 		}
+ 
+-		if (i == BOOT_API_OTP_SSP_WORD_NB) {
+-			*ret_otp_value = (uint32_t)bsec_check_ssp(value,
+-							exchange->otp_value[i]);
+-			VERBOSE("Result OTP SSP %d\n", *ret_otp_value);
+-			if (*ret_otp_value == (uint32_t)BSEC_SSP_ERROR) {
+-				continue;
+-			}
+-		}
+-
+ 		ret = bsec_program_otp(exchange->otp_value[i], i);
+ 		if (ret != BSEC_OK) {
+ 			return ret;
+@@ -449,18 +388,6 @@ uint32_t bsec_main(uint32_t x1, uint32_t x2, uint32_t x3,
+ 		break;
+ 	case STM32_SMC_PROG_OTP:
+ 		*ret_otp_value = 0U;
+-		if (x2 == BOOT_API_OTP_SSP_WORD_NB) {
+-			result = bsec_read_otp(&tmp_data, x2);
+-			if (result != BSEC_OK) {
+-				break;
+-			}
+-
+-			*ret_otp_value = (uint32_t)bsec_check_ssp(tmp_data, x3);
+-			if (*ret_otp_value == (uint32_t)BSEC_SSP_ERROR) {
+-				result = BSEC_OK;
+-				break;
+-			}
+-		}
+ 		result = bsec_program_otp(x3, x2);
+ 		break;
+ 	case STM32_SMC_WRITE_SHADOW:
+diff --git a/plat/st/stm32mp1/stm32mp1_def.h b/plat/st/stm32mp1/stm32mp1_def.h
+index 780d124d17..3d90966ba8 100644
+--- a/plat/st/stm32mp1/stm32mp1_def.h
++++ b/plat/st/stm32mp1/stm32mp1_def.h
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2015-2021, ARM Limited and Contributors. All rights reserved.
++ * Copyright (c) 2015-2022, ARM Limited and Contributors. All rights reserved.
+  *
+  * SPDX-License-Identifier: BSD-3-Clause
+  */
+@@ -61,11 +61,6 @@
+ #define PKG_AC_TFBGA361		U(2)
+ #define PKG_AD_TFBGA257		U(1)
+ 
+-/*******************************************************************************
+- * BOOT PARAM
+- ******************************************************************************/
+-#define BOOT_PARAM_ADDR			U(0x2FFC0078)
+-
+ /*******************************************************************************
+  * STM32MP1 memory map related constants
+  ******************************************************************************/
+diff --git a/plat/st/stm32mp1/stm32mp1_low_power.c b/plat/st/stm32mp1/stm32mp1_low_power.c
+index 82e2de710c..eaf00b8c20 100644
+--- a/plat/st/stm32mp1/stm32mp1_low_power.c
++++ b/plat/st/stm32mp1/stm32mp1_low_power.c
+@@ -214,6 +214,10 @@ static void enter_cstop(uint32_t mode, uint32_t nsec_addr)
+ 			panic();
+ 		}
+ 
++		/* set POPL to 20ms */
++		mmio_clrsetbits_32(pwr_base + PWR_CR3, PWR_CR3_POPL_MASK,
++				   20U << PWR_CR3_POPL_SHIFT);
++
+ 		if (stm32mp1_get_retram_enabled()) {
+ 			mmio_setbits_32(pwr_base + PWR_CR2, PWR_CR2_RREN);
+ 			while ((mmio_read_32(pwr_base + PWR_CR2) &
+-- 
+2.17.1
+
