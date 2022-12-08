@@ -1,5 +1,5 @@
 # Generate boot.scr.uimg:
-# ./tools/mkimage -C none -A arm -T script -d boot.src.cmd boot.scr.uimg
+# ./tools/mkimage -C none -A arm -T script -d boot.scr.cmd boot.scr.uimg
 #
 #########################################################################
 # SAMPLE BOOT SCRIPT: PLEASE DON'T USE this SCRIPT in REAL PRODUCT
@@ -66,8 +66,16 @@ env delete bootfile
 # save the boot config the 2nd boot (boot_prefixes/boot_extlinux)
 env save
 
-# start the correct exlinux.conf
-run bootcmd_${target}
+if test ${target} = ubifs0; then
+    # avoid ubifsmount before the next distro boot with 'run bootcmd_${target}'
+    # solve reentrant issue in U-Boot v2022.10 with 2 ubifsmount, one to found
+    # script and one for distro cmd called in this OpenSTLinux boot script
+    env set prefix ${boot_prefixes}
+    run scan_dev_for_extlinux;
+else
+    # start the correct exlinux.conf
+    run bootcmd_${target}
+fi
 
 echo SCRIPT FAILED... ${boot_prefixes}${boot_syslinux_conf} not found !
 
