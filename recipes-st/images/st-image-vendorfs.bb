@@ -2,6 +2,7 @@ SUMMARY = "STM32MP vendorfs Image"
 LICENSE = "MIT"
 
 include recipes-st/images/st-image-partitions.inc
+EXTRA_IMAGECMD:ext4 = "-i 4096 -L ${@d.getVar('IMAGE_NAME_SUFFIX').replace('.', '', 1)[:16]} -O metadata_csum,64bit,^dir_index"
 
 # Set ROOTFS_MAXSIZE to expected ROOTFS_SIZE to use the whole disk partition and leave extra space to user
 IMAGE_ROOTFS_MAXSIZE     = "${IMAGE_ROOTFS_SIZE}"
