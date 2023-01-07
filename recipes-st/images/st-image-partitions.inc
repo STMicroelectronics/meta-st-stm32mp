@@ -65,3 +65,6 @@ reformat_rootfs() {
         bbnote "${IMAGE_PARTITION_MOUNTPOINT} folder not available in rootfs folder, no reformat done..."
     fi
 }
+
+# noexec do_image_wic task to avoid circular references
+do_image_wic[noexec] = "1"
