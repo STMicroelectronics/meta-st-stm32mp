@@ -92,7 +92,7 @@ TF_A_SIGN_ENABLE ??= "0"
 TF_A_ENCRYPTED_ENABLE ??= "0"
 
 # Set metadata generation
-TF_A_ENABLE_METADATA ??= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', '1', '0', 'd')}"
+TF_A_ENABLE_METADATA ??= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', '1', '0', d)}"
 TF_A_METADATA_NAME ?= "metadata"
 TF_A_METADATA_SUFFIX ?= "bin"
 TF_A_METADATA_BINARY ??= "${TF_A_METADATA_NAME}.${TF_A_METADATA_SUFFIX}"
