@@ -19,5 +19,5 @@ SRC_URI += ""
 # To be removed after a new jimtcl release get used by openocd.
 do_configure:prepend() {
 	git add jimtcl
-	git commit -m "Update jimtcl"
+	git commit --allow-empty -m "Update jimtcl"
 }
