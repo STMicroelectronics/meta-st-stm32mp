@@ -104,11 +104,6 @@ FLASHLAYOUT_BASENAME ??= "FlashLayout"
 FLASHLAYOUT_SUFFIX   ??= "tsv"
 # Configure flashlayout file generation for stm32wrapper4dbg
 ENABLE_FLASHLAYOUT_CONFIG_WRAPPER4DBG ??= "0"
-# Configure flashlayout file generation with multiple binary copy within partition
-ENABLE_FLASHLAYOUT_PARTITION_BINCOPY ??= "0"
-
-# Configure partition file extension
-PARTITION_SUFFIX ??= ".ext4"
 
 # Configure folders for flashlayout file generation
 FLASHLAYOUT_DEPLOYDIR ?= "${DEPLOY_DIR}/images/${MACHINE}"
@@ -153,6 +148,10 @@ FLASHLAYOUT_PARTITION_ID_START_BINARY ??= "0x04"
 FLASHLAYOUT_PARTITION_ID_LIMIT_BINARY ??= "0x0F"
 FLASHLAYOUT_PARTITION_ID_START_OTHERS ??= "0x10"
 FLASHLAYOUT_PARTITION_ID_LIMIT_OTHERS ??= "0xF0"
+
+# Init list of "binary" types partition that should get FLASHLAYOUT_PARTITION_ID
+# in range FLASHLAYOUT_PARTITION_ID_START_BINARY to FLASHLAYOUT_PARTITION_ID_LIMIT_BINARY
+FLASHLAYOUT_BINARY_TYPES ??= ""
 
 # Init default config for empty or used partition for STM32CubeProgrammer
 FLASHLAYOUT_PARTITION_ENABLE_PROGRAMM_EMPTY ??= "PED"
@@ -551,6 +550,8 @@ python do_create_flashlayout_config() {
                         partition_id_binmax = int(d.getVar("FLASHLAYOUT_PARTITION_ID_LIMIT_BINARY"), 16)
                         partition_id_oth = int(d.getVar("FLASHLAYOUT_PARTITION_ID_START_OTHERS"), 16)
                         partition_id_othmax = int(d.getVar("FLASHLAYOUT_PARTITION_ID_LIMIT_OTHERS"), 16)
+                        # Init binary types list
+                        binary_types = d.getVar("FLASHLAYOUT_BINARY_TYPES")
                         # Init partition next offset to 'none'
                         partition_nextoffset = "none"
                         # Init partition previous device to 'none'
@@ -573,7 +574,7 @@ python do_create_flashlayout_config() {
                                 partition_id = expand_var('FLASHLAYOUT_PARTITION_ID', bootscheme, config, partition, d)
                                 if partition_id == "none":
                                     # Compute partition_id
-                                    if partition_type == 'Binary' or partition_type == 'FIP':
+                                    if partition_type in binary_types:
                                         # Make sure we're not getting wrong partition_id
                                         if partition_id_bin > partition_id_binmax:
                                             bb.fatal('Partition ID exceed %s limit for %s type: FLASHLAYOUT_PARTITION_ID = %s (bootscheme: %s, config: %s, partition: %s)' % (d.getVar("FLASHLAYOUT_PARTITION_ID_LIMIT_BINARY"), partition_type, partition_id, bootscheme, config, partition))
@@ -711,26 +712,6 @@ python do_create_flashlayout_config_setscene () {
 }
 addtask do_create_flashlayout_config_setscene
 
-def partImage2partConfig(config, fstype, d):
-    """
-    Convert PARTTIONS_IMAGES['config'] setting format to format expected to feed
-    PARTITIONS_CONFIG[xxx].
-    Manage <image_name> update respect to 'fstype' provided and apply the rootfs
-    namming or standard partition image one.
-        FROM: <image_name>,<partition_label>,<mountpoint>,<size>,<type>
-        TO  : <binary_name>,<partition_label>,<size>,<type>
-    """
-    items = d.getVarFlag('PARTITIONS_IMAGES', config).split(',') or ""
-    if len(items) != 5:
-        bb.fatal('Wrong settings for PARTTIONS_IMAGES[%s] : %s' % (config, items))
-    if items[2] != '':
-        bin_name = items[0] + '-${DISTRO}-${MACHINE}' + '.' + fstype
-    else:
-        bin_name = items[0] + '-${MACHINE}' + '.' + fstype
-    # Set string for PARTITIONS_CONFIG item: <binary_name>,<partlabel>,<size>,<type>
-    part_format = bin_name + ',' + items[1] + ',' + items[3] + ',' + items[4]
-    return part_format
-
 python flashlayout_partition_config() {
     """
     Set the different flashlayout partition vars for the configure partition
@@ -779,19 +760,15 @@ python flashlayout_partition_config() {
                             partition_enable = d.getVar('FLASHLAYOUT_PARTITION_ENABLE')
 
                             # Init for partition duplication
-                            if d.getVar('ENABLE_FLASHLAYOUT_PARTITION_BINCOPY') == '0':
-                                if len(items) == 5 and items[4] != '':
-                                    if d.getVar('FLASHLAYOUT_PARTITION_DUPLICATION:%s:%s' % (config, fl_label)):
-                                        bb.debug(1,"FLASHLAYOUT_PARTITION_DUPLICATION:%s:%s is already set to: %s" % (config, fl_label, d.getVar('FLASHLAYOUT_PARTITION_DUPLICATION:%s:%s' % (config, fl_label))))
-                                    else:
-                                        bb.debug(1,"Set FLASHLAYOUT_PARTITION_DUPLICATION:%s:%s to %s" % (config, fl_label, items[4]))
-                                        d.setVar('FLASHLAYOUT_PARTITION_DUPLICATION:%s:%s' % (config, fl_label), items[4])
+                            if len(items) == 5 and items[4] != '':
+                                if d.getVar('FLASHLAYOUT_PARTITION_DUPLICATION:%s:%s' % (config, fl_label)):
+                                    bb.debug(1,"FLASHLAYOUT_PARTITION_DUPLICATION:%s:%s is already set to: %s" % (config, fl_label, d.getVar('FLASHLAYOUT_PARTITION_DUPLICATION:%s:%s' % (config, fl_label))))
                                 else:
-                                    bb.debug(1, "No partition duplication setting for %s label : default setting would applied..." % fl_label)
-                                    duplicate_max = d.getVar('FLASHLAYOUT_PARTITION_DUPLICATION')
+                                    bb.debug(1,"Set FLASHLAYOUT_PARTITION_DUPLICATION:%s:%s to %s" % (config, fl_label, items[4]))
+                                    d.setVar('FLASHLAYOUT_PARTITION_DUPLICATION:%s:%s' % (config, fl_label), items[4])
                             else:
-                                bb.debug(1,"Set FLASHLAYOUT_PARTITION_DUPLICATION to 1")
-                                d.setVar('FLASHLAYOUT_PARTITION_DUPLICATION', '1')
+                                bb.debug(1, "No partition duplication setting for %s label : default setting would applied..." % fl_label)
+                                duplicate_max = d.getVar('FLASHLAYOUT_PARTITION_DUPLICATION')
 
                             duplicate_max = expand_var('FLASHLAYOUT_PARTITION_DUPLICATION', '', config, fl_label, d)
                             if not duplicate_max.isdigit():
@@ -849,12 +826,8 @@ python flashlayout_partition_config() {
                                     if d.getVar('FLASHLAYOUT_PARTITION_COPY:%s:%s' % (config, fl_label)):
                                         bb.debug(1, "FLASHLAYOUT_PARTITION_COPY:%s:%s is already set to: %s." % (config, fl_label, d.getVar('FLASHLAYOUT_PARTITION_COPY:%s:%s' % (config, fl_label))))
                                     else:
-                                        if d.getVar('ENABLE_FLASHLAYOUT_PARTITION_BINCOPY') == '0':
-                                            bb.debug(1, "Set FLASHLAYOUT_PARTITION_COPY:%s:%s to %s." % (config, fl_label, '1'))
-                                            d.setVar('FLASHLAYOUT_PARTITION_COPY:%s:%s' % (config, fl_label), '1')
-                                        else:
-                                            bb.debug(1, "Set FLASHLAYOUT_PARTITION_COPY:%s:%s to %s." % (config, fl_label_ori, items[4]))
-                                            d.setVar('FLASHLAYOUT_PARTITION_COPY:%s:%s' % (config, fl_label_ori), items[4])
+                                        bb.debug(1, "Set FLASHLAYOUT_PARTITION_COPY:%s:%s to %s." % (config, fl_label, '1'))
+                                        d.setVar('FLASHLAYOUT_PARTITION_COPY:%s:%s' % (config, fl_label), '1')
                                 else:
                                     bb.debug(1, "No PARTITION_COPY setting for %s label : default setting would applied..." % fl_label)
                                 if d.getVar('FLASHLAYOUT_PARTITION_OFFSET:%s:%s' % (config, fl_label)):

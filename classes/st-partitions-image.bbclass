@@ -21,6 +21,8 @@ python __anonymous () {
         bb.note('ENABLE_PARTITIONS_IMAGE not enabled')
         return
 
+    import re
+
     # -----------------------------------------------------------------------------
     # Update the partition configuration set by user
     # -----------------------------------------------------------------------------
@@ -43,35 +45,38 @@ python __anonymous () {
                         bb.fatal('[PARTITIONS_IMAGES] Only image,label,mountpoint,size,type can be specified!')
                     if items[0] == '':
                         bb.fatal('[PARTITIONS_IMAGES] Missing image setting')
-                    # Update IMAGE vars for each partition image
-                    if items[1] != '':
-                        bb.debug(1, "Set UBI_VOLNAME to %s for %s partition image." % (items[1], items[0]))
-                        if d.getVar('UBI_VOLNAME:pn-%s' % d.expand(items[0])):
-                            bb.debug(1,"UBI_VOLNAME is already configured to '%s' for %s partition image." % (d.getVar('UBI_VOLNAME:pn-%s' % d.expand(items[0])), items[0]))
-                        else:
-                            bb.debug(1, "Set UBI_VOLNAME to %s for %s partition image." % (items[1], items[0]))
-                            d.setVar('UBI_VOLNAME:pn-%s' % d.expand(items[0]), items[1])
-                        if d.expand(items[1])[-2:] != 'fs':
-                            bb.debug(1, "Set IMAGE_NAME_SUFFIX to '.%sfs' for %s partition image." % (items[1], items[0]))
-                            d.setVar('IMAGE_NAME_SUFFIX:pn-%s' % d.expand(items[0]), '.' + items[1] + 'fs')
-                        else:
-                            bb.debug(1, "Set IMAGE_NAME_SUFFIX to '.%s' for %s partition image." % (items[1], items[0]))
-                            d.setVar('IMAGE_NAME_SUFFIX:pn-%s' % d.expand(items[0]), '.' + items[1])
-                    else:
+                    if items[1] == '':
                         bb.fatal('[PARTITIONS_IMAGES] Missing label setting for %s image' % items[0])
-                    # Make sure that we're dealing with partition image and not rootfs image
+                    if items[3] == '':
+                        bb.fatal('[PARTITIONS_IMAGES] Missing size setting for %s image' % items[0])
+                    # Update IMAGE vars for each partition image
                     if items[2] != '':
                         # Mount point is available, so we're dealing with partition image
                         bb.debug(1, "Set IMAGE_PARTITION_MOUNTPOINT to %s for %s partition image." % (items[2], items[0]))
                         d.setVar('IMAGE_PARTITION_MOUNTPOINT:pn-%s' % d.expand(items[0]), items[2])
                         # Append image to image_partitions list
                         image_partitions.append(d.expand(items[0]))
-                        if items[3] != '':
-                            bb.debug(1, "Set IMAGE_ROOTFS_SIZE to %s for %s partition image." % (items[3], items[0]))
-                            d.setVar('IMAGE_ROOTFS_SIZE:pn-%s' % d.expand(items[0]), items[3])
-                        else:
-                            bb.fatal('[PARTITIONS_IMAGES] Missing size setting for %s image' % items[0])
+                        bb.debug(1, "Set IMAGE_ROOTFS_SIZE to %s for %s partition image." % (items[3], items[0]))
+                        d.setVar('IMAGE_ROOTFS_SIZE:pn-%s' % d.expand(items[0]), items[3])
 
+                        if d.expand(items[1])[-2:] != 'fs':
+                            bb.debug(1, "Set IMAGE_NAME_SUFFIX to '.%sfs' for %s partition image." % (items[1], items[0]))
+                            d.setVar('IMAGE_NAME_SUFFIX:pn-%s' % d.expand(items[0]), '.' + items[1] + 'fs')
+                        else:
+                            bb.debug(1, "Set IMAGE_NAME_SUFFIX to '.%s' for %s partition image." % (items[1], items[0]))
+                            d.setVar('IMAGE_NAME_SUFFIX:pn-%s' % d.expand(items[0]), '.' + items[1])
+                        bb.debug(1, "Set UBI_SECTION to %s for %s partition image." % (items[0], items[0]))
+                        if d.getVar('UBI_SECTION:pn-%s' % d.expand(items[0])):
+                            bb.debug(1,"UBI_SECTION is already configured to '%s' for %s partition image." % (d.getVar('UBI_SECTION:pn-%s' % d.expand(items[0])), items[0]))
+                        else:
+                            bb.debug(1, "Set UBI_SECTION to %s for %s partition image." % (items[0], items[0]))
+                            d.setVar('UBI_SECTION:pn-%s' % d.expand(items[0]), items[0])
+                        bb.debug(1, "Set UBI_VOLNAME to %s for %s partition image." % (items[1], items[0]))
+                        if d.getVar('UBI_VOLNAME:pn-%s' % d.expand(items[0])):
+                            bb.debug(1,"UBI_VOLNAME is already configured to '%s' for %s partition image." % (d.getVar('UBI_VOLNAME:pn-%s' % d.expand(items[0])), items[0]))
+                        else:
+                            bb.debug(1, "Set UBI_VOLNAME to %s for %s partition image." % (items[1], items[0]))
+                            d.setVar('UBI_VOLNAME:pn-%s' % d.expand(items[0]), items[1])
                     # Manage IMAGE_SUMMARY_LIST configuration according to PARTITIONS_IMAGE set
                     if d.getVar('ENABLE_IMAGE_LICENSE_SUMMARY') == "1":
                         if items[2] != '':
@@ -87,7 +92,7 @@ python __anonymous () {
                         if len(ubiconfigs) > 0:
                             for ubi_config in ubiconfigs:
                                 bb.debug(1, "Appending '%s' image with %s size to STM32MP_UBI_VOLUME." % (items[0], items[3]))
-                                d.appendVar('STM32MP_UBI_VOLUME:%s' % ubi_config, ' ' + items[0] + ':' + items[3])
+                                d.appendVar('STM32MP_UBI_VOLUME_%s' % ubi_config, ' ' + items[0] + ',' + items[3])
                     break
 
     # Reset IMAGE_LIST_SUMMARY with computed partition configuration
@@ -123,9 +128,33 @@ python __anonymous () {
                     bb.debug(1, "Set DEPLOY_BUILDINFO_FILE to '1' to allow to deploy build info file for rootfs build.")
                     d.setVar('DEPLOY_BUILDINFO_FILE', '1')
                     # Manage multiubi volume build enable for current image
-                    if bb.utils.contains('IMAGE_FSTYPES', 'stmultiubi', True, False, d) and d.getVar('ENABLE_MULTIVOLUME_UBI') == "1":
+                    if bb.utils.contains('IMAGE_FSTYPES', 'multiubi', True, False, d) and d.getVar('ENABLE_MULTIVOLUME_UBI') == "1":
                         bb.debug(1, "Appending 'st_multivolume_ubifs' to IMAGE_POSTPROCESS_COMMAND.")
                         d.appendVar('IMAGE_POSTPROCESS_COMMAND', 'st_multivolume_ubifs;')
+
+    # -----------------------------------------------------------------------------
+    # Make sure that 'wic' image fstype is properly configured for partition image handling
+    # -----------------------------------------------------------------------------
+    if len(image_partitions) > 0:
+        # Gather all current tasks
+        tasks = filter(lambda k: d.getVarFlag(k, "task", True), d.keys())
+        for task in tasks:
+            # Check that we are dealing with image recipe
+            if task == 'do_image':
+                # Init current image name
+                current_image_name = d.getVar('PN') or ""
+                # We need to make sure that none 'wic' image fstypes are still
+                # avaialbe in IMAGE_FSTYPES to avoid circular dependency
+                if current_image_name in image_partitions:
+                    for fstype in d.getVar('IMAGE_FSTYPES').split():
+                        if re.match(r'^wic(\..*|$)', fstype):
+                            bb.fatal('\n\
+[PARTITIONS_IMAGES] Circular dependency issue found for partition image build!\n\
+[PARTITIONS_IMAGES] Please make sure to add all related wic image type(s) to\n\
+[PARTITIONS_IMAGES] WKS_IMAGE_FSTYPE var to properly remove them for partition\n\
+[PARTITIONS_IMAGES] image build.\n\
+[PARTITIONS_IMAGES] IMAGE_FSTYPES    : %s\n\
+[PARTITIONS_IMAGES] WKS_IMAGE_FSTYPES: %s' % (d.getVar('IMAGE_FSTYPES'), d.getVar('WKS_IMAGE_FSTYPES')))
 }
 
 python image_rootfs_image_clean_task(){

@@ -7,11 +7,11 @@ require conf/machine/include/st-machine-flashlayout-deleteall-stm32mp.inc
 require conf/machine/include/st-machine-flashlayout-extensible-stm32mp.inc
 require conf/machine/include/st-machine-storage-device-stm32mp.inc
 
-# Define specific common machine name
-MACHINEOVERRIDES .= ":stcommon"
-
 # Define specific common layer name
-MACHINEOVERRIDES .= ":stm32mpcommon"
+MACHINEOVERRIDES =. "stm32mpcommon:"
+
+# Define specific common machine name
+MACHINEOVERRIDES =. "stcommon:"
 
 # =========================================================================
 # SOC
@@ -27,7 +27,7 @@ STM32MP_SOC_NAME:append:class-nativesdk = " stm32mp13 "
 # boot scheme
 # =========================================================================
 # List of supported boot schemes
-BOOTSCHEME_LABELS ??= "trusted optee"
+BOOTSCHEME_LABELS ??= "optee"
 
 # =========================================================================
 # boot device
@@ -61,6 +61,7 @@ MACHINE_FEATURES:append = " fw-update"
 # Default serial consoles (TTYs) to enable using getty
 # Before kernel 4.18, serial console are ttyS3 but after is ttySTM0
 SERIAL_CONSOLE = "115200 ttySTM0"
+SERIAL_CONSOLES = "${@d.getVar('SERIAL_CONSOLE').replace(' ', ';')}"
 
 # Don't include kernels in standard images
 RDEPENDS:${KERNEL_PACKAGE_NAME}-base = ""
@@ -94,8 +95,6 @@ MACHINE_EXTRA_RRECOMMENDS:append = " ${@bb.utils.contains('DISTRO_FEATURES','sys
 #           rule: fip
 # -----------------------------------------------------------------------------
 ENABLE_FLASHLAYOUT_CONFIG_FWUP ?= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', '1', '0', d)}"
-# Keep the binary copy configuration for legacy flashlayout file style
-ENABLE_FLASHLAYOUT_PARTITION_BINCOPY = "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', '0', '1', d)}"
 
 STM32MP_FSBL_PROGAMMER_NAME ?= "fsbl-boot"
 STM32MP_SSBL_PROGAMMER_NAME ?= "fip-boot"
@@ -240,7 +239,7 @@ STM32MP_BOOTFS_LABEL      ?= "bootfs"
 STM32MP_BOOTFS_MOUNTPOINT ?= "/boot"
 # Proposed value for bootfs is 64MB
 STM32MP_BOOTFS_SIZE       ?= "65536"
-STM32MP_ROOTFS_IMAGE ?= "${IMAGE_BASENAME}"
+STM32MP_ROOTFS_IMAGE ?= "${@[d.getVar('IMAGE_BASENAME'), d.getVar('IMAGE_BASENAME').replace('-%s' % d.getVar('DISTRO'), '')][d.getVar('TARGET_VENDOR') == (d.getVar('STM32MP_TARGETVENDOR') or "")]}"
 STM32MP_ROOTFS_LABEL ?= "rootfs"
 # Configure the rootfs size with IMAGE_ROOTFS_MAXSIZE variable
 STM32MP_ROOTFS_SIZE  ?= "${IMAGE_ROOTFS_MAXSIZE}"
@@ -278,6 +277,28 @@ PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128',
 
 PARTITIONS_SUFFIX ?= "ext4"
 
+def partImage2partConfig(config, fstype, d):
+    """
+    Convert PARTTIONS_IMAGES['config'] setting format to format expected to feed
+    PARTITIONS_CONFIG[xxx].
+    Manage <image_name> update respect to 'fstype' provided and apply the rootfs
+    namming or standard partition image one.
+        FROM: <image_name>,<partition_label>,<mountpoint>,<size>,<type>
+        TO  : <binary_name>,<partition_label>,<size>,<type>
+    """
+    items = d.getVarFlag('PARTITIONS_IMAGES', config).split(',') or ""
+    if len(items) != 5:
+        bb.fatal('Wrong settings for PARTTIONS_IMAGES[%s] : %s' % (config, items))
+    overrides = d.getVar('OVERRIDES')
+    if items[2] == '' and 'openstlinuxcommon' not in overrides.split(':'):
+        bin_suffix = '-${MACHINE}'
+    else:
+        bin_suffix = '-${DISTRO}-${MACHINE}'
+    bin_name = items[0] + bin_suffix + '.' + fstype
+    # Set string for PARTITIONS_CONFIG item: <binary_name>,<partlabel>,<size>,<type>
+    part_format = bin_name + ',' + items[1] + ',' + items[3] + ',' + items[4]
+    return part_format
+
 # <binary_name>,<partlabel>,<size>,<type>,<copy>
 PARTITIONS_CONFIG[emmc] ?= "\
     ${@' '.join(['%s' % partImage2partConfig(config, '${PARTITIONS_SUFFIX}', d) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
@@ -294,7 +315,7 @@ PARTITIONS_CONFIG[nor-sdcard] ?= "\
 PARTITIONS_CONFIG[sdcard] ?= "\
     ${@' '.join(['%s' % partImage2partConfig(config, '${PARTITIONS_SUFFIX}', d) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
     "
-PARTITIONS_CONFIG[spinand-2-128]   ?= "\
+PARTITIONS_CONFIG[spinand-2-128] ?= "\
     ${STM32MP_UBIFS_DATA},${STM32MP_UBIFS_NAME},${STM32MP_UBIFS_SIZE},System,1 \
 "
 
@@ -314,16 +335,16 @@ MULTIUBI_BUILD += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', 's
 
 # UBI Args for NAND by default on MB1262 (Micron MT29F8G16ABACAH4)
 # LEB = BLOCK_SIZE - (2 * page size): 256*1024 - (2*4096)
-MKUBIFS_ARGS:nand_4_256 = "--min-io-size 4096 --leb-size 253952 --max-leb-cnt 4096"
-UBINIZE_ARGS:nand_4_256 = "--min-io-size 4096 --peb-size 256KiB"
+MKUBIFS_ARGS_nand_4_256 = "--min-io-size 4096 --leb-size 253952 --max-leb-cnt 4096"
+UBINIZE_ARGS_nand_4_256 = "--min-io-size 4096 --peb-size 256KiB"
 # Set extra size required for UBIFS volume size (KiB)
-EXTRA_UBIFS_SIZE:nand_4_256 = "2304"
+EXTRA_UBIFS_SIZE_nand_4_256 = "2304"
 # UBI Args for SPI NAND by default on MB1262 (Micron MT29F2G01ABA)
 # LEB = BLOCK_SIZE - (2 * page size): 128*1024 - (2*2048)
-MKUBIFS_ARGS:spinand_2_128 = "--min-io-size 2048 --leb-size 126976 --max-leb-cnt 2048"
-UBINIZE_ARGS:spinand_2_128 = "--min-io-size 2048 --peb-size 128KiB"
+MKUBIFS_ARGS_spinand_2_128 = "--min-io-size 2048 --leb-size 126976 --max-leb-cnt 2048"
+UBINIZE_ARGS_spinand_2_128 = "--min-io-size 2048 --peb-size 128KiB"
 # Set extra size required for UBIFS volume size (KiB)
-EXTRA_UBIFS_SIZE:spinand_2_128 = "1408"
+EXTRA_UBIFS_SIZE_spinand_2_128 = "1408"
 
 # Define two empty volumes to manage U-Boot config beginning of multivolume UBIFS
 STM32MP_MULTIUBI_UENV1_LABEL = "uboot_config"
@@ -331,13 +352,13 @@ STM32MP_MULTIUBI_UENV1_SIZE ?= "256"
 STM32MP_MULTIUBI_UENV2_LABEL = "uboot_config_r"
 STM32MP_MULTIUBI_UENV2_SIZE ?= "${STM32MP_MULTIUBI_UENV1_SIZE}"
 
-STM32MP_UBI_VOLUME:nand_4_256:prepend = "\
-    ${STM32MP_MULTIUBI_UENV1_LABEL}:${STM32MP_MULTIUBI_UENV1_SIZE}:empty \
-    ${STM32MP_MULTIUBI_UENV2_LABEL}:${STM32MP_MULTIUBI_UENV2_SIZE}:empty \
+STM32MP_UBI_VOLUME_nand_4_256:prepend = "\
+    ${STM32MP_MULTIUBI_UENV1_LABEL},${STM32MP_MULTIUBI_UENV1_SIZE},empty \
+    ${STM32MP_MULTIUBI_UENV2_LABEL},${STM32MP_MULTIUBI_UENV2_SIZE},empty \
     "
-STM32MP_UBI_VOLUME:spinand_2_128:prepend = "\
-    ${STM32MP_MULTIUBI_UENV1_LABEL}:${STM32MP_MULTIUBI_UENV1_SIZE}:empty \
-    ${STM32MP_MULTIUBI_UENV2_LABEL}:${STM32MP_MULTIUBI_UENV2_SIZE}:empty \
+STM32MP_UBI_VOLUME_spinand_2_128:prepend = "\
+    ${STM32MP_MULTIUBI_UENV1_LABEL},${STM32MP_MULTIUBI_UENV1_SIZE},empty \
+    ${STM32MP_MULTIUBI_UENV2_LABEL},${STM32MP_MULTIUBI_UENV2_SIZE},empty \
     "
 
 # Manage specific override for UBI bootfs label name to 'boot' (hardcoded on U-Boot)
@@ -349,7 +370,7 @@ IMAGE_FSTYPES ?= "${WKS_IMAGE_FSTYPES} tar.xz"
 # Append ext4 FSTYPES to default ones for emmc and sdcard volumes
 IMAGE_FSTYPES += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'emmc nor-sdcard sdcard', 'ext4', '', d)}"
 # Append ubi FSTYPES to default ones for nand volumes
-IMAGE_FSTYPES += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256 spinand-2-128', 'stmultiubi', '', d)}"
+IMAGE_FSTYPES += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256 spinand-2-128', 'multiubi', '', d)}"
 
 # Define specific EXT4 command line:
 #   - Create minimal inode number (as it is done by default in image_types.bbclass)
@@ -375,6 +396,13 @@ ST_TOOLS_FOR_SDK = " \
     nativesdk-stm32wrapper4dbg \
     nativesdk-sdcard-raw-tools \
     nativesdk-ncurses-libncursesw \
+    "
+
+# Add tools to build native application with SDK
+# Currently mandatory for kernel and u-boot
+ST_TOOLS_FOR_SDK:append = " \
+    nativesdk-cpp-symlinks \
+    nativesdk-gcc-symlinks \
     "
 
 # For support of perl ansicolor
@@ -498,7 +526,7 @@ KERNEL_IMAGE_MAXSIZE ?= ""
 KERNEL_CONFIG_DEPLOY ?= "1"
 
 # For fit usage
-UBOOT_ENTRYPOINT = "0xC0800000"
+UBOOT_ENTRYPOINT = "0xC4000000"
 
 # List of device tree to install
 KERNEL_DEVICETREE ?= "${STM32MP_KERNEL_DEVICETREE}"
@@ -525,10 +553,10 @@ EXTRA_IMAGEDEPENDS += "virtual/bootloader"
 UBOOT_CONFIG = ""
 
 # STM32mp15
-UBOOT_CONFIG:append:stm32mp15common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee trusted', 'trusted_stm32mp15', '', d)} "
+UBOOT_CONFIG:append:stm32mp15common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee', 'trusted_stm32mp15', '', d)} "
 
 # STM32mp13
-UBOOT_CONFIG:append:stm32mp13common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee trusted', 'trusted_stm32mp13', '', d)} "
+UBOOT_CONFIG:append:stm32mp13common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee', 'trusted_stm32mp13', '', d)} "
 
 # Select u-boot binary that needs specific devicetree suffix (from UBOOT_DEVICETREE)
 # 'u-boot-nodtb.bin' and 'u-boot.dtb' : prefer 'u-boot.dtb' binary as 'u-boot-nodtb.bin'
@@ -570,11 +598,10 @@ ST_UBOOT_DEBUG_TRACE ?= "${@bb.utils.contains('ST_DEBUG_TRACE', '1', '1', '0', d
 # trusted-firmware-a
 # =========================================================================
 # Add optionnaly trusted-firmware-a
-EXTRA_IMAGEDEPENDS += "${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee trusted', 'virtual/trusted-firmware-a', '', d)}"
+EXTRA_IMAGEDEPENDS += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'virtual/trusted-firmware-a', '', d)}"
 
 # Configure trusted-firmware-a build
 TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'optee', '', d)}"
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'trusted', 'trusted', '', d)}"
 # Manage specific config settings
 TF_A_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'emmc', '', d)}"
 TF_A_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', 'nand', '', d)}"
@@ -614,15 +641,12 @@ ST_OPTEE_DEBUG_TRACE ?= "${@bb.utils.contains('ST_DEBUG_TRACE', '1', '1', '0', d
 # =========================================================================
 # Configure fip build
 FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'optee', '', d)}"
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'trusted', 'trusted', '', d)}"
 
 # Define config for each FIP_CONFIG
 FIP_CONFIG[optee]   ?= "optee,${FIP_DEVICETREE_OPTEE}"
-FIP_CONFIG[trusted] ?= "tfa,${FIP_DEVICETREE_TRUSTED}"
 
 # List of device tree to use for fip binary creation
 FIP_DEVICETREE_OPTEE   ?= "${STM32MP_DEVICETREE}"
-FIP_DEVICETREE_TRUSTED ?= "${@' '.join(d for d in '${STM32MP_DEVICETREE}'.split() if 'stm32mp15' in d)}"
 
 # Define fiptool wrapper name
 FIPTOOL_WRAPPER ?= "fiptool-stm32mp"

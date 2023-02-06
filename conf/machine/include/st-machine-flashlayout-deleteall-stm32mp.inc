@@ -44,5 +44,4 @@ FLASHLAYOUT_PARTITION_OFFSET:deleteall:emmcboot1 = "${DEVICE_START_OFFSET_BOOT1:
 # The 'deleteall' bootscheme is a trick to generate flashlayout files to clean
 # all memory devices on board. There are no specific 'deleteall' bootloaders
 # so we need to manage specific override for FLASHLAYOUT_PROGRAMMER_SECTIONS binaries
-BOOTSCHEME_REPLACE = "${@'trusted' if bb.utils.contains('BOOTSCHEME_LABELS', 'trusted', True, False, d) and not bb.utils.contains('BOOTSCHEME_LABELS', 'optee', True, False, d) else 'optee'}"
-FLASHLAYOUT_PARTITION_REPLACE_PATTERNS:${STM32MP_SSBL_PROGAMMER_NAME}:append = " deleteall;${BOOTSCHEME_REPLACE}"
+FLASHLAYOUT_PARTITION_REPLACE_PATTERNS:${STM32MP_SSBL_PROGAMMER_NAME}:append = " deleteall;optee"
