@@ -1,0 +1,153 @@
+From d8a8ef8ee90e9b22f7acaa30e6afa1aabaef4f9c Mon Sep 17 00:00:00 2001
+From: Akshat Kumar <akshat.kumar02@st.com>
+Date: Mon, 11 Mar 2024 15:23:02 +0530
+Subject: [PATCH] v2.6-stm32mp-r2.2-rc1
+
+Signed-off-by: Akshat Kumar <akshat.kumar02@st.com>
+---
+ drivers/auth/auth_mod.c                    | 20 +++++++---
+ drivers/auth/mbedtls/mbedtls_x509_parser.c | 46 ++++++++++++++++------
+ 2 files changed, 48 insertions(+), 18 deletions(-)
+
+diff --git a/drivers/auth/auth_mod.c b/drivers/auth/auth_mod.c
+index b4f3949f3e..2e8632548e 100644
+--- a/drivers/auth/auth_mod.c
++++ b/drivers/auth/auth_mod.c
+@@ -243,7 +243,7 @@ static int auth_nvctr(const auth_method_param_nv_ctr_t *param,
+ 		      unsigned int *cert_nv_ctr,
+ 		      bool *need_nv_ctr_upgrade)
+ {
+-	char *p;
++	unsigned char *p;
+ 	void *data_ptr = NULL;
+ 	unsigned int data_len, len, i;
+ 	unsigned int plat_nv_ctr;
+@@ -258,16 +258,24 @@ static int auth_nvctr(const auth_method_param_nv_ctr_t *param,
+ 
+ 	/* Parse the DER encoded integer */
+ 	assert(data_ptr);
+-	p = (char *)data_ptr;
+-	if (*p != ASN1_INTEGER) {
++	p = (unsigned char *)data_ptr;
++
++	/*
++	 * Integers must be at least 3 bytes: 1 for tag, 1 for length, and 1
++	 * for value.  The first byte (tag) must be ASN1_INTEGER.
++	 */
++	if ((data_len < 3) || (*p != ASN1_INTEGER)) {
+ 		/* Invalid ASN.1 integer */
+ 		return 1;
+ 	}
+ 	p++;
+ 
+-	/* NV-counters are unsigned integers up to 32-bit */
+-	len = (unsigned int)(*p & 0x7f);
+-	if ((*p & 0x80) || (len > 4)) {
++	/*
++	 * NV-counters are unsigned integers up to 31 bits.  Trailing
++	 * padding is not allowed.
++	 */
++	len = (unsigned int)*p;
++	if ((len > 4) || (data_len - 2 != len)) {
+ 		return 1;
+ 	}
+ 	p++;
+diff --git a/drivers/auth/mbedtls/mbedtls_x509_parser.c b/drivers/auth/mbedtls/mbedtls_x509_parser.c
+index 7b3ecd1a31..6662d96603 100644
+--- a/drivers/auth/mbedtls/mbedtls_x509_parser.c
++++ b/drivers/auth/mbedtls/mbedtls_x509_parser.c
+@@ -290,57 +290,79 @@ static int cert_parse(void *img, unsigned int img_len)
+ 
+ 	/*
+ 	 * extensions      [3]  EXPLICIT Extensions OPTIONAL
++	 * }
++	 *
++	 * X.509 and RFC5280 allow omitting the extensions entirely.
++	 * However, in TF-A, a certificate with no extensions would
++	 * always fail later on, as the extensions contain the
++	 * information needed to authenticate the next stage in the
++	 * boot chain.  Furthermore, get_ext() assumes that the
++	 * extensions have been parsed into v3_ext, and allowing
++	 * there to be no extensions would pointlessly complicate
++	 * the code.  Therefore, just reject certificates without
++	 * extensions.  This is also why version 1 and 2 certificates
++	 * are rejected above.
+ 	 */
+ 	ret = mbedtls_asn1_get_tag(&p, end, &len,
+ 				   MBEDTLS_ASN1_CONTEXT_SPECIFIC |
+ 				   MBEDTLS_ASN1_CONSTRUCTED | 3);
+-	if (ret != 0) {
++	if ((ret != 0) || (len != (size_t)(end - p))) {
+ 		return IMG_PARSER_ERR_FORMAT;
+ 	}
+ 
+ 	/*
+ 	 * Extensions  ::=  SEQUENCE SIZE (1..MAX) OF Extension
++	 * -- must use all remaining bytes in TBSCertificate
+ 	 */
+ 	v3_ext.p = p;
+ 	ret = mbedtls_asn1_get_tag(&p, end, &len, MBEDTLS_ASN1_CONSTRUCTED |
+ 				   MBEDTLS_ASN1_SEQUENCE);
+-	if (ret != 0) {
++	if ((ret != 0) || (len != (size_t)(end - p))) {
+ 		return IMG_PARSER_ERR_FORMAT;
+ 	}
+-	v3_ext.len = (p + len) - v3_ext.p;
++	v3_ext.len = end - v3_ext.p;
+ 
+ 	/*
+-	 * Check extensions integrity
++	 * Check extensions integrity.  At least one extension is
++	 * required: the ASN.1 specifies a minimum size of 1, and at
++	 * least one extension is needed to authenticate the next stage
++	 * in the boot chain.
+ 	 */
+-	while (p < end) {
++	do {
++		unsigned char *end_ext_data;
++
+ 		ret = mbedtls_asn1_get_tag(&p, end, &len,
+ 					   MBEDTLS_ASN1_CONSTRUCTED |
+ 					   MBEDTLS_ASN1_SEQUENCE);
+ 		if (ret != 0) {
+ 			return IMG_PARSER_ERR_FORMAT;
+ 		}
++		end_ext_data = p + len;
+ 
+ 		/* Get extension ID */
+-		ret = mbedtls_asn1_get_tag(&p, end, &len, MBEDTLS_ASN1_OID);
++		ret = mbedtls_asn1_get_tag(&p, end_ext_data, &len, MBEDTLS_ASN1_OID);
+ 		if (ret != 0) {
+ 			return IMG_PARSER_ERR_FORMAT;
+ 		}
+ 		p += len;
+ 
+ 		/* Get optional critical */
+-		ret = mbedtls_asn1_get_bool(&p, end, &is_critical);
++		ret = mbedtls_asn1_get_bool(&p, end_ext_data, &is_critical);
+ 		if ((ret != 0) && (ret != MBEDTLS_ERR_ASN1_UNEXPECTED_TAG)) {
+ 			return IMG_PARSER_ERR_FORMAT;
+ 		}
+ 
+-		/* Data should be octet string type */
+-		ret = mbedtls_asn1_get_tag(&p, end, &len,
++		/*
++		 * Data should be octet string type and must use all bytes in
++		 * the Extension.
++		 */
++		ret = mbedtls_asn1_get_tag(&p, end_ext_data, &len,
+ 					   MBEDTLS_ASN1_OCTET_STRING);
+-		if (ret != 0) {
++		if ((ret != 0) || ((p + len) != end_ext_data)) {
+ 			return IMG_PARSER_ERR_FORMAT;
+ 		}
+-		p += len;
+-	}
++		p = end_ext_data;
++	} while (p < end);
+ 
+ 	if (p != end) {
+ 		return IMG_PARSER_ERR_FORMAT;
+-- 
+2.25.1
+

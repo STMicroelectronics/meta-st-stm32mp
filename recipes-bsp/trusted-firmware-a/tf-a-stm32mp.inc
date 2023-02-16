@@ -298,7 +298,7 @@ do_deploy() {
                     if [ -n "${ELF_DEBUG_ENABLE}" ]; then
                         install -d ${DEPLOYDIR}/arm-trusted-firmware/debug
                         if [ -f "${B}/${config}${soc_suffix}/${BL2_ELF}" ]; then
-                            install -m 644 "${B}/${config}${soc_suffix}/${BL2_ELF}" "${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL2_BASENAME_DEPLOY}-${config}.${TF_A_ELF_SUFFIX}"
+                            install -m 644 "${B}/${config}${soc_suffix}/${BL2_ELF}" "${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL2_BASENAME_DEPLOY}${soc_suffix}-${config}.${TF_A_ELF_SUFFIX}"
                         fi
                     fi
                     ;;

@@ -115,7 +115,7 @@ deploy-\$(1)-\$(2): tf-\$(1)-\$(2)
 			cp -f \$(BLD_PATH)/\$(1)-\$(2)/fdts/\$(dt)-${FWCONFIG_NAME}.${DT_SUFFIX} \$(FWCONFIG_DEPLOYDIR)/\$(dt)-${FWCONFIG_NAME}-\$(1).${DT_SUFFIX} ; \\
 		fi ; \\
 		if [ -f \$(BLD_PATH)/\$(1)-\$(2)/${BL2_ELF} ] ; then \\
-			cp -f \$(BLD_PATH)/\$(1)-\$(2)/${BL2_ELF} \$(DEPLOYDIR)/debug/\$(2)-${BL2_BASENAME}-\$(1).${TF_A_ELF_SUFFIX} ; \\
+			cp -f \$(BLD_PATH)/\$(1)-\$(2)/${BL2_ELF} \$(DEPLOYDIR)/debug/\$(3)-${BL2_BASENAME}-\$(2)-\$(1).${TF_A_ELF_SUFFIX} ; \\
 		fi ; \\
 		if [ -f \$(BLD_PATH)/\$(1)-\$(2)/${BL32_ELF} ] ; then \\
 			cp -f \$(BLD_PATH)/\$(1)-\$(2)/${BL32_ELF} \$(DEPLOYDIR)/debug/\$(2)-${BL32_BASENAME}-\$(1).${TF_A_ELF_SUFFIX} ; \\
