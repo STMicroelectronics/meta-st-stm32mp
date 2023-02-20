@@ -1,385 +1,34 @@
-From f593955537b76035054bfc42586146cd974c9ae3 Mon Sep 17 00:00:00 2001
-From: Romuald JEANNE <romuald.jeanne@st.com>
-Date: Thu, 3 Nov 2022 15:59:56 +0100
-Subject: [PATCH 16/22] v5.15-stm32mp-r2 PHY-USB
+From 55c55e32e74d48375a64917346cf768ef4da86e6 Mon Sep 17 00:00:00 2001
+From: Romuald Jeanne <romuald.jeanne@st.com>
+Date: Tue, 25 Jul 2023 10:54:38 +0200
+Subject: [PATCH 16/22] v5.15-stm32mp-r2.1 PHY-USB
 
-Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
+Signed-off-by: Romuald Jeanne <romuald.jeanne@st.com>
 ---
- .../bindings/phy/phy-stm32-usbphyc.yaml       | 133 +++
- .../devicetree/bindings/usb/dwc2.yaml         |  33 +-
- .../devicetree/bindings/usb/generic-ehci.yaml |   5 +
- .../devicetree/bindings/usb/generic-ohci.yaml |   5 +
- .../bindings/usb/st,typec-stm32g0.yaml        |  83 ++
- drivers/phy/st/phy-stm32-usbphyc.c            | 233 +++++-
- drivers/usb/core/hcd.c                        |   9 +-
- drivers/usb/core/phy.c                        |  22 +-
- drivers/usb/core/phy.h                        |   6 +-
- drivers/usb/dwc2/core.h                       |  22 +-
- drivers/usb/dwc2/core_intr.c                  |   3 +-
- drivers/usb/dwc2/debugfs.c                    |   4 +-
- drivers/usb/dwc2/drd.c                        |  79 +-
- drivers/usb/dwc2/gadget.c                     |   2 +-
- drivers/usb/dwc2/hcd.c                        |  61 +-
- drivers/usb/dwc2/params.c                     |  75 +-
- drivers/usb/dwc2/platform.c                   |  82 +-
- drivers/usb/host/ehci-platform.c              |  16 +-
- drivers/usb/host/ohci-platform.c              |  14 +-
- drivers/usb/typec/ucsi/Kconfig                |  10 +
- drivers/usb/typec/ucsi/Makefile               |   1 +
- drivers/usb/typec/ucsi/ucsi.c                 |  49 +-
- drivers/usb/typec/ucsi/ucsi.h                 |   2 +
- drivers/usb/typec/ucsi/ucsi_stm32g0.c         | 770 ++++++++++++++++++
- 24 files changed, 1551 insertions(+), 168 deletions(-)
- create mode 100644 Documentation/devicetree/bindings/usb/st,typec-stm32g0.yaml
+ drivers/phy/st/phy-stm32-usbphyc.c    | 233 +++++++-
+ drivers/usb/core/hcd.c                |   9 +-
+ drivers/usb/core/phy.c                |  22 +-
+ drivers/usb/core/phy.h                |   6 +-
+ drivers/usb/dwc2/core.h               |  24 +-
+ drivers/usb/dwc2/core_intr.c          |   3 +-
+ drivers/usb/dwc2/debugfs.c            |   4 +-
+ drivers/usb/dwc2/drd.c                |  79 ++-
+ drivers/usb/dwc2/gadget.c             |   2 +-
+ drivers/usb/dwc2/hcd.c                |  61 +-
+ drivers/usb/dwc2/params.c             |  75 +--
+ drivers/usb/dwc2/platform.c           | 119 ++--
+ drivers/usb/host/ehci-platform.c      |  16 +-
+ drivers/usb/host/ohci-platform.c      |  14 +-
+ drivers/usb/typec/ucsi/Kconfig        |  10 +
+ drivers/usb/typec/ucsi/Makefile       |   1 +
+ drivers/usb/typec/ucsi/ucsi.c         |  49 +-
+ drivers/usb/typec/ucsi/ucsi.h         |   2 +
+ drivers/usb/typec/ucsi/ucsi_stm32g0.c | 770 ++++++++++++++++++++++++++
+ 19 files changed, 1334 insertions(+), 165 deletions(-)
  create mode 100644 drivers/usb/typec/ucsi/ucsi_stm32g0.c
 
-diff --git a/Documentation/devicetree/bindings/phy/phy-stm32-usbphyc.yaml b/Documentation/devicetree/bindings/phy/phy-stm32-usbphyc.yaml
-index 3329f1d33a4f..750ce7074648 100644
---- a/Documentation/devicetree/bindings/phy/phy-stm32-usbphyc.yaml
-+++ b/Documentation/devicetree/bindings/phy/phy-stm32-usbphyc.yaml
-@@ -74,6 +74,10 @@ patternProperties:
-       "#phy-cells":
-         enum: [ 0x0, 0x1 ]
- 
-+      interrupts:
-+        maxItems: 1
-+        description: interrupt used for wakeup when port is used by USBH controller
-+
-       connector:
-         type: object
-         allOf:
-@@ -81,6 +85,119 @@ patternProperties:
-         properties:
-           vbus-supply: true
- 
-+      # It can be necessary to adjust the PHY settings to compensate parasitics, which can be due
-+      # to USB connector/receptacle, routing, ESD protection component,... Here is the list of
-+      # all optional parameters to tune the interface of the PHY (HS for High-Speed, FS for Full-
-+      # Speed, LS for Low-Speed)
-+
-+      st,current-boost-microamp:
-+        description: Current boosting in uA
-+        enum: [ 1000, 2000 ]
-+
-+      st,no-lsfs-fb-cap:
-+        description: Disables the LS/FS feedback capacitor
-+        type: boolean
-+
-+      st,decrease-hs-slew-rate:
-+        description: Decreases the HS driver slew rate by 10%
-+        type: boolean
-+
-+      st,tune-hs-dc-level:
-+        description: |
-+          Tunes the HS driver DC level
-+          - <0> normal level
-+          - <1> increases the level by 5 to 7 mV
-+          - <2> increases the level by 10 to 14 mV
-+          - <3> decreases the level by 5 to 7 mV
-+        $ref: /schemas/types.yaml#/definitions/uint32
-+        minimum: 0
-+        maximum: 3
-+        default: 0
-+
-+      st,enable-fs-rftime-tuning:
-+        description: Enables the FS rise/fall tuning option
-+        type: boolean
-+
-+      st,enable-hs-rftime-reduction:
-+        description: Enables the HS rise/fall reduction feature
-+        type: boolean
-+
-+      st,trim-hs-current:
-+        description: |
-+          Controls HS driver current trimming for choke compensation
-+          - <0> = 18.87 mA target current / nominal + 0%
-+          - <1> = 19.165 mA target current / nominal + 1.56%
-+          - <2> = 19.46 mA target current / nominal + 3.12%
-+          - <3> = 19.755 mA target current / nominal + 4.68%
-+          - <4> = 20.05 mA target current / nominal + 6.24%
-+          - <5> = 20.345 mA target current / nominal + 7.8%
-+          - <6> = 20.64 mA target current / nominal + 9.36%
-+          - <7> = 20.935 mA target current / nominal + 10.92%
-+          - <8> = 21.23 mA target current / nominal + 12.48%
-+          - <9> = 21.525 mA target current / nominal + 14.04%
-+          - <10> = 21.82 mA target current / nominal + 15.6%
-+          - <11> = 22.115 mA target current / nominal + 17.16%
-+          - <12> = 22.458 mA target current / nominal + 19.01%
-+          - <13> = 22.755 mA target current / nominal + 20.58%
-+          - <14> = 23.052 mA target current / nominal + 22.16%
-+          - <15> = 23.348 mA target current / nominal + 23.73%
-+        $ref: /schemas/types.yaml#/definitions/uint32
-+        minimum: 0
-+        maximum: 15
-+        default: 0
-+
-+      st,trim-hs-impedance:
-+        description: |
-+          Controls HS driver impedance tuning for choke compensation
-+          - <0> = no impedance offset
-+          - <1> = reduce the impedance by 2 ohms
-+          - <2> = reduce the impedance by 4 ohms
-+          - <3> = reduce the impedance by 6 ohms
-+        $ref: /schemas/types.yaml#/definitions/uint32
-+        minimum: 0
-+        maximum: 3
-+        default: 0
-+
-+      st,tune-squelch-level:
-+        description: |
-+          Tunes the squelch DC threshold value
-+          - <0> = no shift in threshold
-+          - <1> = threshold shift by +7 mV
-+          - <2> = threshold shift by -5 mV
-+          - <3> = threshold shift by +14 mV
-+        $ref: /schemas/types.yaml#/definitions/uint32
-+        minimum: 0
-+        maximum: 3
-+        default: 0
-+
-+      st,enable-hs-rx-gain-eq:
-+        description: Enables the HS Rx gain equalizer
-+        type: boolean
-+
-+      st,tune-hs-rx-offset:
-+        description: |
-+          Adjusts the HS Rx offset
-+          - <0> = no offset
-+          - <1> = offset of +5 mV
-+          - <2> = offset of +10 mV
-+          - <3> = offset of -5 mV
-+        $ref: /schemas/types.yaml#/definitions/uint32
-+        minimum: 0
-+        maximum: 3
-+        default: 0
-+
-+      st,no-hs-ftime-ctrl:
-+        description: Disables the HS fall time control of single ended signals during pre-emphasis
-+        type: boolean
-+
-+      st,no-lsfs-sc:
-+        description: Disables the short circuit protection in LS/FS driver
-+        type: boolean
-+
-+      st,enable-hs-tx-staggering:
-+        description: Enables the basic staggering in HS Tx mode
-+        type: boolean
-+
-     allOf:
-       - if:
-           properties:
-@@ -137,6 +254,14 @@ examples:
-             reg = <0>;
-             phy-supply = <&vdd_usb>;
-             #phy-cells = <0>;
-+            st,tune-hs-dc-level = <2>;
-+            st,enable-fs-rftime-tuning;
-+            st,enable-hs-rftime-reduction;
-+            st,trim-hs-current = <15>;
-+            st,trim-hs-impedance = <1>;
-+            st,tune-squelch-level = <3>;
-+            st,tune-hs-rx-offset = <2>;
-+            st,no-lsfs-sc;
-             connector {
-                 compatible = "usb-a-connector";
-                 vbus-supply = <&vbus_sw>;
-@@ -147,6 +272,14 @@ examples:
-             reg = <1>;
-             phy-supply = <&vdd_usb>;
-             #phy-cells = <1>;
-+            st,tune-hs-dc-level = <2>;
-+            st,enable-fs-rftime-tuning;
-+            st,enable-hs-rftime-reduction;
-+            st,trim-hs-current = <15>;
-+            st,trim-hs-impedance = <1>;
-+            st,tune-squelch-level = <3>;
-+            st,tune-hs-rx-offset = <2>;
-+            st,no-lsfs-sc;
-         };
-     };
- ...
-diff --git a/Documentation/devicetree/bindings/usb/dwc2.yaml b/Documentation/devicetree/bindings/usb/dwc2.yaml
-index 10c7d9b6cc53..882a2f1e0738 100644
---- a/Documentation/devicetree/bindings/usb/dwc2.yaml
-+++ b/Documentation/devicetree/bindings/usb/dwc2.yaml
-@@ -9,6 +9,9 @@ title: DesignWare HS OTG USB 2.0 controller Bindings
- maintainers:
-   - Rob Herring <robh@kernel.org>
- 
-+allOf:
-+  - $ref: usb-drd.yaml#
-+
- properties:
-   compatible:
-     oneOf:
-@@ -101,12 +104,17 @@ properties:
-     description: reference to the VBUS and ID sensing comparators supply, in
-       order to perform OTG operation, used on STM32MP15 SoCs.
- 
--  dr_mode:
--    enum: [host, peripheral, otg]
-+  dr_mode: true
- 
--  usb-role-switch:
--    $ref: /schemas/types.yaml#/definitions/flag
--    description: Support role switch.
-+  otg-rev: true
-+
-+  hnp-disable: true
-+
-+  srp-disable: true
-+
-+  usb-role-switch: true
-+
-+  role-switch-default-mode: true
- 
-   g-rx-fifo-size:
-     $ref: /schemas/types.yaml#/definitions/uint32
-@@ -130,6 +138,21 @@ properties:
-     description: If present indicates that we need to reset the PHY when we 
-       detect a wakeup. This is due to a hardware errata.
- 
-+  port:
-+    description:
-+      Any connector to the data bus of this controller should be modelled
-+      using the OF graph bindings specified, if the "usb-role-switch"
-+      property is used.
-+    $ref: /schemas/graph.yaml#/properties/port
-+
-+  wakeup-source:
-+    $ref: /schemas/types.yaml#/definitions/flag
-+    description: If present indicates this device has wakeup capabilities
-+
-+dependencies:
-+  port: [ usb-role-switch ]
-+  role-switch-default-mode: [ usb-role-switch ]
-+
- required:
-   - compatible
-   - reg
-diff --git a/Documentation/devicetree/bindings/usb/generic-ehci.yaml b/Documentation/devicetree/bindings/usb/generic-ehci.yaml
-index cb5da1df8d40..0b12acf804ec 100644
---- a/Documentation/devicetree/bindings/usb/generic-ehci.yaml
-+++ b/Documentation/devicetree/bindings/usb/generic-ehci.yaml
-@@ -149,6 +149,11 @@ properties:
-       - host
-       - otg
- 
-+  wakeup-source:
-+    $ref: /schemas/types.yaml#/definitions/flag
-+    description:
-+      Indicate this device has wakeup capabilities.
-+
- required:
-   - compatible
-   - reg
-diff --git a/Documentation/devicetree/bindings/usb/generic-ohci.yaml b/Documentation/devicetree/bindings/usb/generic-ohci.yaml
-index d5fd3aa53ed2..ef237675a83a 100644
---- a/Documentation/devicetree/bindings/usb/generic-ohci.yaml
-+++ b/Documentation/devicetree/bindings/usb/generic-ohci.yaml
-@@ -116,6 +116,11 @@ properties:
-       - host
-       - otg
- 
-+  wakeup-source:
-+    $ref: /schemas/types.yaml#/definitions/flag
-+    description:
-+      Indicate this device has wakeup capabilities.
-+
- required:
-   - compatible
-   - reg
-diff --git a/Documentation/devicetree/bindings/usb/st,typec-stm32g0.yaml b/Documentation/devicetree/bindings/usb/st,typec-stm32g0.yaml
-new file mode 100644
-index 000000000000..b2729bd015a1
---- /dev/null
-+++ b/Documentation/devicetree/bindings/usb/st,typec-stm32g0.yaml
-@@ -0,0 +1,83 @@
-+# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
-+%YAML 1.2
-+---
-+$id: "http://devicetree.org/schemas/usb/st,typec-stm32g0.yaml#"
-+$schema: "http://devicetree.org/meta-schemas/core.yaml#"
-+
-+title: STMicroelectronics STM32G0 Type-C controller bindings
-+
-+description: |
-+  The STM32G0 MCU can be programmed to control Type-C connector(s) through I2C
-+  typically using the UCSI protocol over I2C, with a dedicated alert
-+  (interrupt) pin.
-+
-+maintainers:
-+  - Fabrice Gasnier <fabrice.gasnier@foss.st.com>
-+
-+properties:
-+  compatible:
-+    const: st,stm32g0-typec
-+
-+  reg:
-+    maxItems: 1
-+
-+  interrupts:
-+    maxItems: 1
-+
-+  connector:
-+    type: object
-+    allOf:
-+      - $ref: ../connector/usb-connector.yaml#
-+
-+  firmware-name:
-+    description: |
-+      Should contain the name of the default firmware image
-+      file located on the firmware search path
-+
-+  wakeup-source: true
-+  power-domains: true
-+
-+required:
-+  - compatible
-+  - reg
-+  - interrupts
-+
-+additionalProperties: false
-+
-+examples:
-+  - |
-+    #include <dt-bindings/interrupt-controller/irq.h>
-+    i2c5 {
-+      #address-cells = <1>;
-+      #size-cells = <0>;
-+
-+      stm32g0@53 {
-+        compatible = "st,stm32g0-typec";
-+        reg = <0x53>;
-+        /* Alert pin on GPIO PE12 */
-+        interrupts = <12 IRQ_TYPE_EDGE_FALLING>;
-+        interrupt-parent = <&gpioe>;
-+
-+        /* Example with one type-C connector */
-+        connector {
-+          compatible = "usb-c-connector";
-+          label = "USB-C";
-+
-+          port {
-+            con_usb_c_ep: endpoint {
-+              remote-endpoint = <&usbotg_hs_ep>;
-+            };
-+          };
-+        };
-+      };
-+    };
-+
-+    usbotg_hs {
-+      usb-role-switch;
-+      port {
-+        usbotg_hs_ep: endpoint {
-+          remote-endpoint = <&con_usb_c_ep>;
-+        };
-+      };
-+    };
-+...
 diff --git a/drivers/phy/st/phy-stm32-usbphyc.c b/drivers/phy/st/phy-stm32-usbphyc.c
-index cd0747ab6267..af198f7c3f09 100644
+index 27f7e2292cf0..6115f9b21ee1 100644
 --- a/drivers/phy/st/phy-stm32-usbphyc.c
 +++ b/drivers/phy/st/phy-stm32-usbphyc.c
 @@ -12,6 +12,7 @@
@@ -649,7 +298,7 @@ index cd0747ab6267..af198f7c3f09 100644
  		goto clk_disable;
  	}
  
-@@ -552,6 +744,15 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
+@@ -554,6 +746,15 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
  			usbphyc->phys[port]->vbus = NULL;
  		}
  
@@ -665,7 +314,7 @@ index cd0747ab6267..af198f7c3f09 100644
  		port++;
  	}
  
-@@ -600,6 +801,25 @@ static int stm32_usbphyc_remove(struct platform_device *pdev)
+@@ -602,6 +803,25 @@ static int stm32_usbphyc_remove(struct platform_device *pdev)
  	return 0;
  }
  
@@ -691,7 +340,7 @@ index cd0747ab6267..af198f7c3f09 100644
  static const struct of_device_id stm32_usbphyc_of_match[] = {
  	{ .compatible = "st,stm32mp1-usbphyc", },
  	{ },
-@@ -612,6 +832,7 @@ static struct platform_driver stm32_usbphyc_driver = {
+@@ -614,6 +834,7 @@ static struct platform_driver stm32_usbphyc_driver = {
  	.driver = {
  		.of_match_table = stm32_usbphyc_of_match,
  		.name = "stm32-usbphyc",
@@ -802,7 +451,7 @@ index 20a267cd986b..3df4ddbb6046 100644
  
  #endif /* __USB_CORE_PHY_H_ */
 diff --git a/drivers/usb/dwc2/core.h b/drivers/usb/dwc2/core.h
-index 71e62b3081db..255fca4e8346 100644
+index 71e62b3081db..3edf73858ec3 100644
 --- a/drivers/usb/dwc2/core.h
 +++ b/drivers/usb/dwc2/core.h
 @@ -238,11 +238,14 @@ enum dwc2_ep0_state {
@@ -847,7 +496,15 @@ index 71e62b3081db..255fca4e8346 100644
   * @hcd_enabled:	Host mode sub-driver initialization indicator.
   * @gadget_enabled:	Peripheral mode sub-driver initialization indicator.
   * @ll_hw_enabled:	Status of low-level hardware resources.
-@@ -1066,6 +1067,7 @@ struct dwc2_hsotg {
+@@ -1027,6 +1028,7 @@ struct dwc2_hregs_backup {
+  * @ctrl_out_desc:	EP0 OUT data phase desc chain pointer
+  * @irq:		Interrupt request line number
+  * @clk:		Pointer to otg clock
++ * @utmi_clk:		Pointer to utmi_clk clock
+  * @reset:		Pointer to dwc2 reset controller
+  * @reset_ecc:          Pointer to dwc2 optional reset controller in Stratix10.
+  * @regset:		A pointer to a struct debugfs_regset32, which contains
+@@ -1066,6 +1068,7 @@ struct dwc2_hsotg {
  	enum usb_otg_state op_state;
  	enum usb_dr_mode dr_mode;
  	struct usb_role_switch *role_sw;
@@ -855,6 +512,14 @@ index 71e62b3081db..255fca4e8346 100644
  	unsigned int hcd_enabled:1;
  	unsigned int gadget_enabled:1;
  	unsigned int ll_hw_enabled:1;
+@@ -1088,6 +1091,7 @@ struct dwc2_hsotg {
+ 	void *priv;
+ 	int     irq;
+ 	struct clk *clk;
++	struct clk *utmi_clk;
+ 	struct reset_control *reset;
+ 	struct reset_control *reset_ecc;
+ 
 diff --git a/drivers/usb/dwc2/core_intr.c b/drivers/usb/dwc2/core_intr.c
 index a5c52b237e72..c786560fb54e 100644
 --- a/drivers/usb/dwc2/core_intr.c
@@ -1390,10 +1055,69 @@ index 59e119345994..d300ae3d9274 100644
  
  	if (!valid)
 diff --git a/drivers/usb/dwc2/platform.c b/drivers/usb/dwc2/platform.c
-index 265d437ca0f1..d16a69355e89 100644
+index 7a09476e9f19..7defbe5d8b04 100644
 --- a/drivers/usb/dwc2/platform.c
 +++ b/drivers/usb/dwc2/platform.c
-@@ -222,20 +222,16 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
+@@ -131,10 +131,16 @@ static int __dwc2_lowlevel_hw_enable(struct dwc2_hsotg *hsotg)
+ 	if (ret)
+ 		return ret;
+ 
++	if (hsotg->utmi_clk) {
++		ret = clk_prepare_enable(hsotg->utmi_clk);
++		if (ret)
++			goto err_dis_reg;
++	}
++
+ 	if (hsotg->clk) {
+ 		ret = clk_prepare_enable(hsotg->clk);
+ 		if (ret)
+-			return ret;
++			goto err_dis_utmi_clk;
+ 	}
+ 
+ 	if (hsotg->uphy) {
+@@ -143,10 +149,29 @@ static int __dwc2_lowlevel_hw_enable(struct dwc2_hsotg *hsotg)
+ 		ret = hsotg->plat->phy_init(pdev, hsotg->plat->phy_type);
+ 	} else {
+ 		ret = phy_init(hsotg->phy);
+-		if (ret == 0)
++		if (ret == 0) {
+ 			ret = phy_power_on(hsotg->phy);
++			if (ret)
++				phy_exit(hsotg->phy);
++		}
+ 	}
+ 
++	if (ret)
++		goto err_dis_clk;
++
++	return 0;
++
++err_dis_clk:
++	if (hsotg->clk)
++		clk_disable_unprepare(hsotg->clk);
++
++err_dis_utmi_clk:
++	if (hsotg->utmi_clk)
++		clk_disable_unprepare(hsotg->utmi_clk);
++
++err_dis_reg:
++	regulator_bulk_disable(ARRAY_SIZE(hsotg->supplies), hsotg->supplies);
++
+ 	return ret;
+ }
+ 
+@@ -186,6 +211,9 @@ static int __dwc2_lowlevel_hw_disable(struct dwc2_hsotg *hsotg)
+ 	if (hsotg->clk)
+ 		clk_disable_unprepare(hsotg->clk);
+ 
++	if (hsotg->utmi_clk)
++		clk_disable_unprepare(hsotg->utmi_clk);
++
+ 	return regulator_bulk_disable(ARRAY_SIZE(hsotg->supplies), hsotg->supplies);
+ }
+ 
+@@ -210,20 +238,16 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
  	int i, ret;
  
  	hsotg->reset = devm_reset_control_get_optional(hsotg->dev, "dwc2");
@@ -1420,7 +1144,7 @@ index 265d437ca0f1..d16a69355e89 100644
  
  	reset_control_deassert(hsotg->reset_ecc);
  
-@@ -251,11 +247,8 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
+@@ -239,11 +263,8 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
  		case -ENOSYS:
  			hsotg->phy = NULL;
  			break;
@@ -1433,7 +1157,7 @@ index 265d437ca0f1..d16a69355e89 100644
  		}
  	}
  
-@@ -268,12 +261,8 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
+@@ -256,12 +277,8 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
  			case -ENXIO:
  				hsotg->uphy = NULL;
  				break;
@@ -1447,7 +1171,7 @@ index 265d437ca0f1..d16a69355e89 100644
  			}
  		}
  	}
-@@ -282,10 +271,8 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
+@@ -270,10 +287,13 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
  
  	/* Clock */
  	hsotg->clk = devm_clk_get_optional(hsotg->dev, "otg");
@@ -1457,10 +1181,15 @@ index 265d437ca0f1..d16a69355e89 100644
 -	}
 +	if (IS_ERR(hsotg->clk))
 +		return dev_err_probe(hsotg->dev, PTR_ERR(hsotg->clk), "cannot get otg clock\n");
++
++	hsotg->utmi_clk = devm_clk_get_optional(hsotg->dev, "utmi");
++	if (IS_ERR(hsotg->utmi_clk))
++		return dev_err_probe(hsotg->dev, PTR_ERR(hsotg->utmi_clk),
++				     "cannot get utmi clock\n");
  
  	/* Regulators */
  	for (i = 0; i < ARRAY_SIZE(hsotg->supplies); i++)
-@@ -293,12 +280,9 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
+@@ -281,12 +301,9 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
  
  	ret = devm_regulator_bulk_get(hsotg->dev, ARRAY_SIZE(hsotg->supplies),
  				      hsotg->supplies);
@@ -1476,7 +1205,7 @@ index 265d437ca0f1..d16a69355e89 100644
  	return 0;
  }
  
-@@ -558,16 +542,12 @@ static int dwc2_driver_probe(struct platform_device *dev)
+@@ -546,16 +563,12 @@ static int dwc2_driver_probe(struct platform_device *dev)
  		hsotg->usb33d = devm_regulator_get(hsotg->dev, "usb33d");
  		if (IS_ERR(hsotg->usb33d)) {
  			retval = PTR_ERR(hsotg->usb33d);
@@ -1495,7 +1224,7 @@ index 265d437ca0f1..d16a69355e89 100644
  			goto error;
  		}
  
-@@ -582,8 +562,7 @@ static int dwc2_driver_probe(struct platform_device *dev)
+@@ -570,8 +583,7 @@ static int dwc2_driver_probe(struct platform_device *dev)
  
  	retval = dwc2_drd_init(hsotg);
  	if (retval) {
@@ -1505,7 +1234,7 @@ index 265d437ca0f1..d16a69355e89 100644
  		goto error_init;
  	}
  
-@@ -669,8 +648,19 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
+@@ -657,8 +669,19 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
  	bool is_device_mode = dwc2_is_device_mode(dwc2);
  	int ret = 0;
  
@@ -1526,7 +1255,7 @@ index 265d437ca0f1..d16a69355e89 100644
  
  	dwc2_drd_suspend(dwc2);
  
-@@ -711,6 +701,9 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
+@@ -699,6 +722,9 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
  		dwc2->phy_off_for_suspend = true;
  	}
  
@@ -1536,7 +1265,7 @@ index 265d437ca0f1..d16a69355e89 100644
  	return ret;
  }
  
-@@ -719,6 +712,9 @@ static int __maybe_unused dwc2_resume(struct device *dev)
+@@ -707,6 +733,9 @@ static int __maybe_unused dwc2_resume(struct device *dev)
  	struct dwc2_hsotg *dwc2 = dev_get_drvdata(dev);
  	int ret = 0;
  
@@ -1546,7 +1275,7 @@ index 265d437ca0f1..d16a69355e89 100644
  	if (dwc2->phy_off_for_suspend && dwc2->ll_hw_enabled) {
  		ret = __dwc2_lowlevel_hw_enable(dwc2);
  		if (ret)
-@@ -751,10 +747,12 @@ static int __maybe_unused dwc2_resume(struct device *dev)
+@@ -739,10 +768,12 @@ static int __maybe_unused dwc2_resume(struct device *dev)
  		spin_unlock_irqrestore(&dwc2->lock, flags);
  	}
  
@@ -1707,7 +1436,7 @@ index 8a8eb5cb8e0f..480d533d762f 100644
  obj-$(CONFIG_UCSI_CCG)			+= ucsi_ccg.o
 +obj-$(CONFIG_UCSI_STM32G0)		+= ucsi_stm32g0.o
 diff --git a/drivers/usb/typec/ucsi/ucsi.c b/drivers/usb/typec/ucsi/ucsi.c
-index 1f23eb543d8f..9659819ca2c9 100644
+index dca6803a75bd..cde70a9c838e 100644
 --- a/drivers/usb/typec/ucsi/ucsi.c
 +++ b/drivers/usb/typec/ucsi/ucsi.c
 @@ -205,8 +205,11 @@ void ucsi_altmode_update_active(struct ucsi_connector *con)
@@ -1724,7 +1453,7 @@ index 1f23eb543d8f..9659819ca2c9 100644
  			return;
  		}
  		cur = 0xff;
-@@ -1156,12 +1159,8 @@ static int ucsi_register_port(struct ucsi *ucsi, int index)
+@@ -1154,12 +1157,8 @@ static int ucsi_register_port(struct ucsi *ucsi, int index)
  		ucsi_port_psy_changed(con);
  	}
  
@@ -1739,7 +1468,7 @@ index 1f23eb543d8f..9659819ca2c9 100644
  
  	/* Only notify USB controller if partner supports USB data */
  	if (!(UCSI_CONSTAT_PARTNER_FLAGS(con->status.flags) & UCSI_CONSTAT_PARTNER_FLAG_USB))
-@@ -1345,7 +1344,9 @@ EXPORT_SYMBOL_GPL(ucsi_destroy);
+@@ -1344,7 +1343,9 @@ EXPORT_SYMBOL_GPL(ucsi_destroy);
   */
  int ucsi_register(struct ucsi *ucsi)
  {
@@ -1750,7 +1479,7 @@ index 1f23eb543d8f..9659819ca2c9 100644
  
  	ret = ucsi->ops->read(ucsi, UCSI_VERSION, &ucsi->version,
  			      sizeof(ucsi->version));
-@@ -1355,6 +1356,33 @@ int ucsi_register(struct ucsi *ucsi)
+@@ -1354,6 +1355,33 @@ int ucsi_register(struct ucsi *ucsi)
  	if (!ucsi->version)
  		return -ENODEV;
  
@@ -1784,7 +1513,7 @@ index 1f23eb543d8f..9659819ca2c9 100644
  	queue_work(system_long_wq, &ucsi->work);
  
  	return 0;
-@@ -1388,6 +1416,9 @@ void ucsi_unregister(struct ucsi *ucsi)
+@@ -1387,6 +1415,9 @@ void ucsi_unregister(struct ucsi *ucsi)
  	}
  
  	kfree(ucsi->connector);

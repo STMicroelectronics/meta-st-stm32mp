@@ -1,0 +1,553 @@
+From d366624fc551bb25c4a1a9b94de2408eb75b56fd Mon Sep 17 00:00:00 2001
+From: Romuald Jeanne <romuald.jeanne@st.com>
+Date: Tue, 25 Jul 2023 10:51:31 +0200
+Subject: [PATCH 13/22] v5.15-stm32mp-r2.1 MMC
+
+Signed-off-by: Romuald Jeanne <romuald.jeanne@st.com>
+---
+ drivers/mmc/host/mmci.c                |  70 ++++++++++++-
+ drivers/mmc/host/mmci.h                |   4 +
+ drivers/mmc/host/mmci_stm32_sdmmc.c    | 137 ++++++++++++++++++++-----
+ drivers/mtd/nand/raw/Kconfig           |   2 +-
+ drivers/mtd/nand/raw/stm32_fmc2_nand.c |  40 +++++++-
+ 5 files changed, 222 insertions(+), 31 deletions(-)
+
+diff --git a/drivers/mmc/host/mmci.c b/drivers/mmc/host/mmci.c
+index 2c4eda83ca18..05cfc28a5e98 100644
+--- a/drivers/mmc/host/mmci.c
++++ b/drivers/mmc/host/mmci.c
+@@ -270,6 +270,7 @@ static struct variant_data variant_stm32_sdmmc = {
+ 	.datactrl_any_blocksz	= true,
+ 	.datactrl_mask_sdio	= MCI_DPSM_ST_SDIOEN,
+ 	.stm32_idmabsize_mask	= GENMASK(12, 5),
++	.use_sdio_irq		= true,
+ 	.busy_timeout		= true,
+ 	.busy_detect		= true,
+ 	.busy_detect_flag	= MCI_STM32_BUSYD0,
+@@ -280,7 +281,7 @@ static struct variant_data variant_stm32_sdmmc = {
+ static struct variant_data variant_stm32_sdmmcv2 = {
+ 	.fifosize		= 16 * 4,
+ 	.fifohalfsize		= 8 * 4,
+-	.f_max			= 208000000,
++	.f_max			= 267000000,
+ 	.stm32_clkdiv		= true,
+ 	.cmdreg_cpsm_enable	= MCI_CPSM_STM32_ENABLE,
+ 	.cmdreg_lrsp_crc	= MCI_CPSM_STM32_LRSP_CRC,
+@@ -296,6 +297,7 @@ static struct variant_data variant_stm32_sdmmcv2 = {
+ 	.datactrl_any_blocksz	= true,
+ 	.datactrl_mask_sdio	= MCI_DPSM_ST_SDIOEN,
+ 	.stm32_idmabsize_mask	= GENMASK(16, 5),
++	.use_sdio_irq		= true,
+ 	.dma_lli		= true,
+ 	.busy_timeout		= true,
+ 	.busy_detect		= true,
+@@ -392,6 +394,10 @@ static void mmci_write_datactrlreg(struct mmci_host *host, u32 datactrl)
+ 	/* Keep busy mode in DPSM if enabled */
+ 	datactrl |= host->datactrl_reg & host->variant->busy_dpsm_flag;
+ 
++	/* Keep SD I/O interrupt mode enabled */
++	if (host->variant->use_sdio_irq && host->mmc->caps & MMC_CAP_SDIO_IRQ)
++		datactrl |= host->variant->datactrl_mask_sdio;
++
+ 	if (host->datactrl_reg != datactrl) {
+ 		host->datactrl_reg = datactrl;
+ 		writel(datactrl, host->base + MMCIDATACTRL);
+@@ -1644,6 +1650,11 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
+ 			mmci_data_irq(host, host->data, status);
+ 		}
+ 
++		if (host->variant->use_sdio_irq &&
++		    host->mmc->caps & MMC_CAP_SDIO_IRQ &&
++		    host->ops && host->ops->sdio_irq)
++			host->ops->sdio_irq(host, status);
++
+ 		/*
+ 		 * Busy detection has been handled by mmci_cmd_irq() above.
+ 		 * Clear the status bit to prevent polling in IRQ context.
+@@ -1729,7 +1740,8 @@ static void mmci_set_max_busy_timeout(struct mmc_host *mmc)
+ 		return;
+ 
+ 	if (host->variant->busy_timeout && mmc->actual_clock)
+-		max_busy_timeout = ~0UL / (mmc->actual_clock / MSEC_PER_SEC);
++		max_busy_timeout = U32_MAX / DIV_ROUND_UP(mmc->actual_clock,
++							  MSEC_PER_SEC);
+ 
+ 	mmc->max_busy_timeout = max_busy_timeout;
+ }
+@@ -1883,6 +1895,45 @@ static int mmci_sig_volt_switch(struct mmc_host *mmc, struct mmc_ios *ios)
+ 	return ret;
+ }
+ 
++static void mmci_enable_sdio_irq(struct mmc_host *mmc, int enable)
++{
++	struct mmci_host *host = mmc_priv(mmc);
++	unsigned long flags;
++
++	if (!host->variant->use_sdio_irq)
++		return;
++
++	if (host->ops && host->ops->enable_sdio_irq) {
++		if (enable)
++			/* Keep device active while SDIO IRQ is enabled */
++			pm_runtime_get_sync(mmc_dev(mmc));
++
++		spin_lock_irqsave(&host->lock, flags);
++		host->ops->enable_sdio_irq(host, enable);
++		spin_unlock_irqrestore(&host->lock, flags);
++
++		if (!enable) {
++			pm_runtime_mark_last_busy(mmc_dev(mmc));
++			pm_runtime_put_autosuspend(mmc_dev(mmc));
++		}
++	}
++}
++
++static void mmci_ack_sdio_irq(struct mmc_host *mmc)
++{
++	struct mmci_host *host = mmc_priv(mmc);
++	unsigned long flags;
++
++	if (!host->variant->use_sdio_irq)
++		return;
++
++	if (host->ops && host->ops->enable_sdio_irq) {
++		spin_lock_irqsave(&host->lock, flags);
++		host->ops->enable_sdio_irq(host, 1);
++		spin_unlock_irqrestore(&host->lock, flags);
++	}
++}
++
+ static struct mmc_host_ops mmci_ops = {
+ 	.request	= mmci_request,
+ 	.pre_req	= mmci_pre_request,
+@@ -1891,6 +1942,8 @@ static struct mmc_host_ops mmci_ops = {
+ 	.get_ro		= mmc_gpio_get_ro,
+ 	.get_cd		= mmci_get_cd,
+ 	.start_signal_voltage_switch = mmci_sig_volt_switch,
++	.enable_sdio_irq = mmci_enable_sdio_irq,
++	.ack_sdio_irq	= mmci_ack_sdio_irq,
+ };
+ 
+ static void mmci_probe_level_translator(struct mmc_host *mmc)
+@@ -2158,6 +2211,14 @@ static int mmci_probe(struct amba_device *dev,
+ 		mmc->caps |= MMC_CAP_WAIT_WHILE_BUSY;
+ 	}
+ 
++	if (variant->use_sdio_irq && host->mmc->caps & MMC_CAP_SDIO_IRQ) {
++		mmc->caps2 |= MMC_CAP2_SDIO_IRQ_NOTHREAD;
++
++		if (variant->datactrl_mask_sdio)
++			mmci_write_datactrlreg(host,
++					       host->variant->datactrl_mask_sdio);
++	}
++
+ 	/* Variants with mandatory busy timeout in HW needs R1B responses. */
+ 	if (variant->busy_timeout)
+ 		mmc->caps |= MMC_CAP_NEED_RSP_BUSY;
+@@ -2433,6 +2494,11 @@ static const struct amba_id mmci_ids[] = {
+ 		.mask	= 0xf0ffffff,
+ 		.data	= &variant_stm32_sdmmcv2,
+ 	},
++	{
++		.id     = 0x20253180,
++		.mask	= 0xf0ffffff,
++		.data	= &variant_stm32_sdmmcv2,
++	},
+ 	/* Qualcomm variants */
+ 	{
+ 		.id     = 0x00051180,
+diff --git a/drivers/mmc/host/mmci.h b/drivers/mmc/host/mmci.h
+index e1a9b96a3396..a710cd686cb2 100644
+--- a/drivers/mmc/host/mmci.h
++++ b/drivers/mmc/host/mmci.h
+@@ -316,6 +316,7 @@ struct mmci_host;
+  * @opendrain: bitmask identifying the OPENDRAIN bit inside MMCIPOWER register
+  * @dma_lli: true if variant has dma link list feature.
+  * @stm32_idmabsize_mask: stm32 sdmmc idma buffer size.
++ * @use_sdio_irq: allow SD I/O card to interrupt the host
+  */
+ struct variant_data {
+ 	unsigned int		clkreg;
+@@ -360,6 +361,7 @@ struct variant_data {
+ 	u32			start_err;
+ 	u32			opendrain;
+ 	u8			dma_lli:1;
++	u8			use_sdio_irq:1;
+ 	u32			stm32_idmabsize_mask;
+ 	void (*init)(struct mmci_host *host);
+ };
+@@ -383,6 +385,8 @@ struct mmci_host_ops {
+ 	bool (*busy_complete)(struct mmci_host *host, u32 status, u32 err_msk);
+ 	void (*pre_sig_volt_switch)(struct mmci_host *host);
+ 	int (*post_sig_volt_switch)(struct mmci_host *host, struct mmc_ios *ios);
++	void (*enable_sdio_irq)(struct mmci_host *host, int enable);
++	void (*sdio_irq)(struct mmci_host *host, u32 status);
+ };
+ 
+ struct mmci_host {
+diff --git a/drivers/mmc/host/mmci_stm32_sdmmc.c b/drivers/mmc/host/mmci_stm32_sdmmc.c
+index 4cceb9bab036..0cc33b172080 100644
+--- a/drivers/mmc/host/mmci_stm32_sdmmc.c
++++ b/drivers/mmc/host/mmci_stm32_sdmmc.c
+@@ -43,6 +43,9 @@ struct sdmmc_lli_desc {
+ struct sdmmc_idma {
+ 	dma_addr_t sg_dma;
+ 	void *sg_cpu;
++	dma_addr_t bounce_dma_addr;
++	void *bounce_buf;
++	bool use_bounce_buffer;
+ };
+ 
+ struct sdmmc_dlyb {
+@@ -54,6 +57,8 @@ struct sdmmc_dlyb {
+ static int sdmmc_idma_validate_data(struct mmci_host *host,
+ 				    struct mmc_data *data)
+ {
++	struct sdmmc_idma *idma = host->dma_priv;
++	struct device *dev = mmc_dev(host->mmc);
+ 	struct scatterlist *sg;
+ 	int i;
+ 
+@@ -61,41 +66,69 @@ static int sdmmc_idma_validate_data(struct mmci_host *host,
+ 	 * idma has constraints on idmabase & idmasize for each element
+ 	 * excepted the last element which has no constraint on idmasize
+ 	 */
++	idma->use_bounce_buffer = false;
+ 	for_each_sg(data->sg, sg, data->sg_len - 1, i) {
+ 		if (!IS_ALIGNED(sg->offset, sizeof(u32)) ||
+ 		    !IS_ALIGNED(sg->length, SDMMC_IDMA_BURST)) {
+-			dev_err(mmc_dev(host->mmc),
++			dev_dbg(mmc_dev(host->mmc),
+ 				"unaligned scatterlist: ofst:%x length:%d\n",
+ 				data->sg->offset, data->sg->length);
+-			return -EINVAL;
++			goto use_bounce_buffer;
+ 		}
+ 	}
+ 
+ 	if (!IS_ALIGNED(sg->offset, sizeof(u32))) {
+-		dev_err(mmc_dev(host->mmc),
++		dev_dbg(mmc_dev(host->mmc),
+ 			"unaligned last scatterlist: ofst:%x length:%d\n",
+ 			data->sg->offset, data->sg->length);
+-		return -EINVAL;
++		goto use_bounce_buffer;
+ 	}
+ 
++	return 0;
++
++use_bounce_buffer:
++	if (!idma->bounce_buf) {
++		idma->bounce_buf = dmam_alloc_coherent(dev,
++						       host->mmc->max_req_size,
++						       &idma->bounce_dma_addr,
++						       GFP_KERNEL);
++		if (!idma->bounce_buf) {
++			dev_err(dev, "Unable to map allocate DMA bounce buffer.\n");
++			return -ENOMEM;
++		}
++	}
++
++	idma->use_bounce_buffer = true;
++
+ 	return 0;
+ }
+ 
+ static int _sdmmc_idma_prep_data(struct mmci_host *host,
+ 				 struct mmc_data *data)
+ {
+-	int n_elem;
++	struct sdmmc_idma *idma = host->dma_priv;
+ 
+-	n_elem = dma_map_sg(mmc_dev(host->mmc),
+-			    data->sg,
+-			    data->sg_len,
+-			    mmc_get_dma_dir(data));
++	if (idma->use_bounce_buffer) {
++		if (data->flags & MMC_DATA_WRITE) {
++			unsigned int xfer_bytes = data->blksz * data->blocks;
+ 
+-	if (!n_elem) {
+-		dev_err(mmc_dev(host->mmc), "dma_map_sg failed\n");
+-		return -EINVAL;
+-	}
++			sg_copy_to_buffer(data->sg, data->sg_len,
++					  idma->bounce_buf, xfer_bytes);
++			dma_wmb();
++		}
++	} else {
++		int n_elem;
++
++		n_elem = dma_map_sg(mmc_dev(host->mmc),
++				    data->sg,
++				    data->sg_len,
++				    mmc_get_dma_dir(data));
+ 
++		if (!n_elem) {
++			dev_err(mmc_dev(host->mmc), "dma_map_sg failed\n");
++			return -EINVAL;
++		}
++	}
+ 	return 0;
+ }
+ 
+@@ -112,8 +145,19 @@ static int sdmmc_idma_prep_data(struct mmci_host *host,
+ static void sdmmc_idma_unprep_data(struct mmci_host *host,
+ 				   struct mmc_data *data, int err)
+ {
+-	dma_unmap_sg(mmc_dev(host->mmc), data->sg, data->sg_len,
+-		     mmc_get_dma_dir(data));
++	struct sdmmc_idma *idma = host->dma_priv;
++
++	if (idma->use_bounce_buffer) {
++		if (data->flags & MMC_DATA_READ) {
++			unsigned int xfer_bytes = data->blksz * data->blocks;
++
++			sg_copy_from_buffer(data->sg, data->sg_len,
++					    idma->bounce_buf, xfer_bytes);
++		}
++	} else {
++		dma_unmap_sg(mmc_dev(host->mmc), data->sg, data->sg_len,
++			     mmc_get_dma_dir(data));
++	}
+ }
+ 
+ static int sdmmc_idma_setup(struct mmci_host *host)
+@@ -137,6 +181,8 @@ static int sdmmc_idma_setup(struct mmci_host *host)
+ 		host->mmc->max_segs = SDMMC_LLI_BUF_LEN /
+ 			sizeof(struct sdmmc_lli_desc);
+ 		host->mmc->max_seg_size = host->variant->stm32_idmabsize_mask;
++
++		host->mmc->max_req_size = SZ_1M;
+ 	} else {
+ 		host->mmc->max_segs = 1;
+ 		host->mmc->max_seg_size = host->mmc->max_req_size;
+@@ -154,8 +200,16 @@ static int sdmmc_idma_start(struct mmci_host *host, unsigned int *datactrl)
+ 	struct scatterlist *sg;
+ 	int i;
+ 
+-	if (!host->variant->dma_lli || data->sg_len == 1) {
+-		writel_relaxed(sg_dma_address(data->sg),
++	if (!host->variant->dma_lli || data->sg_len == 1 ||
++	    idma->use_bounce_buffer) {
++		u32 dma_addr;
++
++		if (idma->use_bounce_buffer)
++			dma_addr = idma->bounce_dma_addr;
++		else
++			dma_addr = sg_dma_address(data->sg);
++
++		writel_relaxed(dma_addr,
+ 			       host->base + MMCI_STM32_IDMABASE0R);
+ 		writel_relaxed(MMCI_STM32_IDMAEN,
+ 			       host->base + MMCI_STM32_IDMACTRLR);
+@@ -239,17 +293,8 @@ static void mmci_sdmmc_set_clkreg(struct mmci_host *host, unsigned int desired)
+ 	clk |= host->clk_reg_add;
+ 	clk |= ddr;
+ 
+-	/*
+-	 * SDMMC_FBCK is selected when an external Delay Block is needed
+-	 * with SDR104.
+-	 */
+-	if (host->mmc->ios.timing >= MMC_TIMING_UHS_SDR50) {
++	if (host->mmc->ios.timing >= MMC_TIMING_UHS_SDR50)
+ 		clk |= MCI_STM32_CLK_BUSSPEED;
+-		if (host->mmc->ios.timing == MMC_TIMING_UHS_SDR104) {
+-			clk &= ~MCI_STM32_CLK_SEL_MSK;
+-			clk |= MCI_STM32_CLK_SELFBCK;
+-		}
+-	}
+ 
+ 	mmci_write_clkreg(host, clk);
+ }
+@@ -456,10 +501,27 @@ static int sdmmc_execute_tuning(struct mmc_host *mmc, u32 opcode)
+ {
+ 	struct mmci_host *host = mmc_priv(mmc);
+ 	struct sdmmc_dlyb *dlyb = host->variant_priv;
++	u32 clk;
++
++	if ((host->mmc->ios.timing != MMC_TIMING_UHS_SDR104 &&
++	     host->mmc->ios.timing != MMC_TIMING_MMC_HS200) ||
++	    host->mmc->actual_clock <= 50000000)
++		return 0;
+ 
+ 	if (!dlyb || !dlyb->base)
+ 		return -EINVAL;
+ 
++	writel_relaxed(DLYB_CR_DEN, dlyb->base + DLYB_CR);
++
++	/*
++	 * SDMMC_FBCK is selected when an external Delay Block is needed
++	 * with SDR104 or HS200.
++	 */
++	clk = host->clk_reg;
++	clk &= ~MCI_STM32_CLK_SEL_MSK;
++	clk |= MCI_STM32_CLK_SELFBCK;
++	mmci_write_clkreg(host, clk);
++
+ 	if (sdmmc_dlyb_lng_tuning(host))
+ 		return -EINVAL;
+ 
+@@ -504,6 +566,25 @@ static int sdmmc_post_sig_volt_switch(struct mmci_host *host,
+ 	return ret;
+ }
+ 
++static void sdmmc_enable_sdio_irq(struct mmci_host *host, int enable)
++{
++	void __iomem *base = host->base;
++	u32 mask = readl_relaxed(base + MMCIMASK0);
++
++	if (enable)
++		writel_relaxed(mask | MCI_ST_SDIOITMASK, base + MMCIMASK0);
++	else
++		writel_relaxed(mask & ~MCI_ST_SDIOITMASK, base + MMCIMASK0);
++}
++
++static void sdmmc_sdio_irq(struct mmci_host *host, u32 status)
++{
++	if (status & MCI_ST_SDIOIT) {
++		sdmmc_enable_sdio_irq(host, 0);
++		sdio_signal_irq(host->mmc);
++	}
++}
++
+ static struct mmci_host_ops sdmmc_variant_ops = {
+ 	.validate_data = sdmmc_idma_validate_data,
+ 	.prep_data = sdmmc_idma_prep_data,
+@@ -517,6 +598,8 @@ static struct mmci_host_ops sdmmc_variant_ops = {
+ 	.busy_complete = sdmmc_busy_complete,
+ 	.pre_sig_volt_switch = sdmmc_pre_sig_volt_vswitch,
+ 	.post_sig_volt_switch = sdmmc_post_sig_volt_switch,
++	.enable_sdio_irq = sdmmc_enable_sdio_irq,
++	.sdio_irq = sdmmc_sdio_irq,
+ };
+ 
+ void sdmmc_variant_init(struct mmci_host *host)
+diff --git a/drivers/mtd/nand/raw/Kconfig b/drivers/mtd/nand/raw/Kconfig
+index 67b7cb67c030..dccb86e577a3 100644
+--- a/drivers/mtd/nand/raw/Kconfig
++++ b/drivers/mtd/nand/raw/Kconfig
+@@ -385,7 +385,7 @@ config MTD_NAND_TEGRA
+ 
+ config MTD_NAND_STM32_FMC2
+ 	tristate "Support for NAND controller on STM32MP SoCs"
+-	depends on MACH_STM32MP157 || COMPILE_TEST
++	depends on ARCH_STM32 || COMPILE_TEST
+ 	select MFD_SYSCON
+ 	help
+ 	  Enables support for NAND Flash chips on SoCs containing the FMC2
+diff --git a/drivers/mtd/nand/raw/stm32_fmc2_nand.c b/drivers/mtd/nand/raw/stm32_fmc2_nand.c
+index 1ac8c4887ce0..7c491e5a661d 100644
+--- a/drivers/mtd/nand/raw/stm32_fmc2_nand.c
++++ b/drivers/mtd/nand/raw/stm32_fmc2_nand.c
+@@ -9,6 +9,7 @@
+ #include <linux/dmaengine.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/errno.h>
++#include <linux/gpio/consumer.h>
+ #include <linux/interrupt.h>
+ #include <linux/iopoll.h>
+ #include <linux/mfd/syscon.h>
+@@ -231,6 +232,7 @@ struct stm32_fmc2_timings {
+ 
+ struct stm32_fmc2_nand {
+ 	struct nand_chip chip;
++	struct gpio_desc *wp_gpio;
+ 	struct stm32_fmc2_timings timings;
+ 	int ncs;
+ 	int cs_used[FMC2_MAX_CE];
+@@ -1750,6 +1752,18 @@ static const struct nand_controller_ops stm32_fmc2_nfc_controller_ops = {
+ 	.setup_interface = stm32_fmc2_nfc_setup_interface,
+ };
+ 
++static void stm32_fmc2_nfc_wp_enable(struct stm32_fmc2_nand *nand)
++{
++	if (nand->wp_gpio)
++		gpiod_set_value(nand->wp_gpio, 1);
++}
++
++static void stm32_fmc2_nfc_wp_disable(struct stm32_fmc2_nand *nand)
++{
++	if (nand->wp_gpio)
++		gpiod_set_value(nand->wp_gpio, 0);
++}
++
+ static int stm32_fmc2_nfc_parse_child(struct stm32_fmc2_nfc *nfc,
+ 				      struct device_node *dn)
+ {
+@@ -1788,6 +1802,18 @@ static int stm32_fmc2_nfc_parse_child(struct stm32_fmc2_nfc *nfc,
+ 		nand->cs_used[i] = cs;
+ 	}
+ 
++	nand->wp_gpio = devm_gpiod_get_from_of_node(nfc->dev, dn,
++						    "wp-gpios", 0,
++						    GPIOD_OUT_HIGH, "wp");
++	if (IS_ERR(nand->wp_gpio)) {
++		ret = PTR_ERR(nand->wp_gpio);
++		if (ret != -ENOENT)
++			return dev_err_probe(nfc->dev, ret,
++					     "failed to request WP GPIO\n");
++
++		nand->wp_gpio = NULL;
++	}
++
+ 	nand_set_flash_node(&nand->chip, dn);
+ 
+ 	return 0;
+@@ -1963,10 +1989,12 @@ static int stm32_fmc2_nfc_probe(struct platform_device *pdev)
+ 	chip->options |= NAND_BUSWIDTH_AUTO | NAND_NO_SUBPAGE_WRITE |
+ 			 NAND_USES_DMA;
+ 
++	stm32_fmc2_nfc_wp_disable(nand);
++
+ 	/* Scan to find existence of the device */
+ 	ret = nand_scan(chip, nand->ncs);
+ 	if (ret)
+-		goto err_release_dma;
++		goto err_wp_enable;
+ 
+ 	ret = mtd_device_register(mtd, NULL, 0);
+ 	if (ret)
+@@ -1979,6 +2007,9 @@ static int stm32_fmc2_nfc_probe(struct platform_device *pdev)
+ err_nand_cleanup:
+ 	nand_cleanup(chip);
+ 
++err_wp_enable:
++	stm32_fmc2_nfc_wp_enable(nand);
++
+ err_release_dma:
+ 	if (nfc->dma_ecc_ch)
+ 		dma_release_channel(nfc->dma_ecc_ch);
+@@ -2019,15 +2050,20 @@ static int stm32_fmc2_nfc_remove(struct platform_device *pdev)
+ 
+ 	clk_disable_unprepare(nfc->clk);
+ 
++	stm32_fmc2_nfc_wp_enable(nand);
++
+ 	return 0;
+ }
+ 
+ static int __maybe_unused stm32_fmc2_nfc_suspend(struct device *dev)
+ {
+ 	struct stm32_fmc2_nfc *nfc = dev_get_drvdata(dev);
++	struct stm32_fmc2_nand *nand = &nfc->nand;
+ 
+ 	clk_disable_unprepare(nfc->clk);
+ 
++	stm32_fmc2_nfc_wp_enable(nand);
++
+ 	pinctrl_pm_select_sleep_state(dev);
+ 
+ 	return 0;
+@@ -2049,6 +2085,8 @@ static int __maybe_unused stm32_fmc2_nfc_resume(struct device *dev)
+ 
+ 	stm32_fmc2_nfc_init(nfc);
+ 
++	stm32_fmc2_nfc_wp_disable(nand);
++
+ 	for (chip_cs = 0; chip_cs < FMC2_MAX_CE; chip_cs++) {
+ 		if (!(nfc->cs_assigned & BIT(chip_cs)))
+ 			continue;
+-- 
+2.17.1
+

@@ -1,327 +1,23 @@
-From e02af9ac4cbbe463217ac8c34eee18170d57e5af Mon Sep 17 00:00:00 2001
-From: Romuald JEANNE <romuald.jeanne@st.com>
-Date: Thu, 3 Nov 2022 15:36:23 +0100
-Subject: [PATCH 09/22] v5.15-stm32mp-r2 I2C-IIO-IRQCHIP
+From 56ee138f53ea518a8d1bf9178496e6a4ed65a582 Mon Sep 17 00:00:00 2001
+From: Romuald Jeanne <romuald.jeanne@st.com>
+Date: Tue, 25 Jul 2023 10:43:45 +0200
+Subject: [PATCH 09/22] v5.15-stm32mp-r2.1 I2C-IIO-IRQCHIP
 
-Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
+Signed-off-by: Romuald Jeanne <romuald.jeanne@st.com>
 ---
- .../devicetree/bindings/i2c/st,stm32-i2c.yaml |   2 +
- .../iio/adc/sigma-delta-modulator.yaml        |   3 +
- .../bindings/iio/adc/st,stm32-adc.yaml        | 175 +++-
- drivers/i2c/busses/i2c-stm32f7.c              | 265 +++---
- drivers/iio/adc/sd_adc_modulator.c            |  89 +-
- drivers/iio/adc/stm32-adc-core.c              | 208 ++++-
- drivers/iio/adc/stm32-adc-core.h              |  90 ++
- drivers/iio/adc/stm32-adc.c                   | 861 ++++++++++++++++--
- drivers/iio/adc/stm32-dfsdm-adc.c             | 108 ++-
- drivers/iio/adc/stm32-dfsdm-core.c            |  91 +-
- drivers/iio/adc/stm32-dfsdm.h                 |  69 +-
- drivers/irqchip/irq-stm32-exti.c              | 427 ++++++---
- include/linux/irqdomain.h                     |   4 +
- kernel/irq/irqdomain.c                        |   6 +-
- 14 files changed, 1965 insertions(+), 433 deletions(-)
+ drivers/i2c/busses/i2c-stm32f7.c   | 265 ++++-----
+ drivers/iio/adc/sd_adc_modulator.c |  89 ++-
+ drivers/iio/adc/stm32-adc-core.c   | 208 ++++++-
+ drivers/iio/adc/stm32-adc-core.h   |  90 +++
+ drivers/iio/adc/stm32-adc.c        | 861 +++++++++++++++++++++++++----
+ drivers/iio/adc/stm32-dfsdm-adc.c  | 107 +++-
+ drivers/iio/adc/stm32-dfsdm-core.c |  91 ++-
+ drivers/iio/adc/stm32-dfsdm.h      |  69 ++-
+ drivers/irqchip/irq-stm32-exti.c   | 427 ++++++++++----
+ include/linux/irqdomain.h          |   4 +
+ kernel/irq/irqdomain.c             |   6 +-
+ 11 files changed, 1793 insertions(+), 424 deletions(-)
 
-diff --git a/Documentation/devicetree/bindings/i2c/st,stm32-i2c.yaml b/Documentation/devicetree/bindings/i2c/st,stm32-i2c.yaml
-index d747f4990ad8..5df3dbd6091f 100644
---- a/Documentation/devicetree/bindings/i2c/st,stm32-i2c.yaml
-+++ b/Documentation/devicetree/bindings/i2c/st,stm32-i2c.yaml
-@@ -17,6 +17,7 @@ allOf:
-           contains:
-             enum:
-               - st,stm32f7-i2c
-+              - st,stm32mp13-i2c
-               - st,stm32mp15-i2c
-     then:
-       properties:
-@@ -52,6 +53,7 @@ properties:
-     enum:
-       - st,stm32f4-i2c
-       - st,stm32f7-i2c
-+      - st,stm32mp13-i2c
-       - st,stm32mp15-i2c
- 
-   reg:
-diff --git a/Documentation/devicetree/bindings/iio/adc/sigma-delta-modulator.yaml b/Documentation/devicetree/bindings/iio/adc/sigma-delta-modulator.yaml
-index a390343d0c2a..bf5d71fb60da 100644
---- a/Documentation/devicetree/bindings/iio/adc/sigma-delta-modulator.yaml
-+++ b/Documentation/devicetree/bindings/iio/adc/sigma-delta-modulator.yaml
-@@ -21,6 +21,9 @@ properties:
-   '#io-channel-cells':
-     const: 0
- 
-+  vref-supply:
-+    description: Phandle to the vref input analog reference voltage.
-+
- required:
-   - compatible
-   - '#io-channel-cells'
-diff --git a/Documentation/devicetree/bindings/iio/adc/st,stm32-adc.yaml b/Documentation/devicetree/bindings/iio/adc/st,stm32-adc.yaml
-index a58334c3bb76..47883701e331 100644
---- a/Documentation/devicetree/bindings/iio/adc/st,stm32-adc.yaml
-+++ b/Documentation/devicetree/bindings/iio/adc/st,stm32-adc.yaml
-@@ -27,6 +27,7 @@ properties:
-       - st,stm32f4-adc-core
-       - st,stm32h7-adc-core
-       - st,stm32mp1-adc-core
-+      - st,stm32mp13-adc-core
- 
-   reg:
-     maxItems: 1
-@@ -37,6 +38,7 @@ properties:
-         - stm32f4 and stm32h7 share a common ADC interrupt line.
-         - stm32mp1 has two separate interrupt lines, one for each ADC within
-           ADC block.
-+        - stm32mp13 has an interrupt line per ADC block.
-     minItems: 1
-     maxItems: 2
- 
-@@ -182,6 +184,34 @@ allOf:
-           maximum: 36000000
-           default: 36000000
- 
-+  - if:
-+      properties:
-+        compatible:
-+          contains:
-+            const: st,stm32mp13-adc-core
-+
-+    then:
-+      properties:
-+        clocks:
-+          minItems: 1
-+          maxItems: 2
-+
-+        clock-names:
-+          items:
-+            - const: bus
-+            - const: adc
-+          minItems: 1
-+          maxItems: 2
-+
-+        interrupts:
-+          items:
-+            - description: ADC interrupt line
-+
-+        st,max-clk-rate-hz:
-+          minimum: 120000
-+          maximum: 36000000
-+          default: 36000000
-+
- additionalProperties: false
- 
- required:
-@@ -210,6 +240,7 @@ patternProperties:
-           - st,stm32f4-adc
-           - st,stm32h7-adc
-           - st,stm32mp1-adc
-+          - st,stm32mp13-adc
- 
-       reg:
-         description: |
-@@ -222,10 +253,16 @@ patternProperties:
-       '#io-channel-cells':
-         const: 1
- 
-+      '#address-cells':
-+        const: 1
-+
-+      '#size-cells':
-+        const: 0
-+
-       interrupts:
-         description: |
-           IRQ Line for the ADC instance. Valid values are:
--            - 0 for adc@0
-+            - 0 for adc@0 (single adc for stm32mp13)
-             - 1 for adc@100
-             - 2 for adc@200 (stm32f4 only)
-         maxItems: 1
-@@ -246,16 +283,18 @@ patternProperties:
-       assigned-resolution-bits:
-         description: |
-           Resolution (bits) to use for conversions:
--            - can be 6, 8, 10 or 12 on stm32f4
-+            - can be 6, 8, 10 or 12 on stm32f4 and stm32mp13
-             - can be 8, 10, 12, 14 or 16 on stm32h7 and stm32mp1
- 
-       st,adc-channels:
-         description: |
-           List of single-ended channels muxed for this ADC. It can have up to:
-             - 16 channels, numbered from 0 to 15 (for in0..in15) on stm32f4
-+            - 19 channels, numbered from 0 to 18 (for in0..in18) on stm32mp13.
-             - 20 channels, numbered from 0 to 19 (for in0..in19) on stm32h7 and
-               stm32mp1.
-         $ref: /schemas/types.yaml#/definitions/uint32-array
-+        deprecated: true
- 
-       st,adc-diff-channels:
-         description: |
-@@ -265,7 +304,9 @@ patternProperties:
-           <vinp vinn>, <vinp vinn>,... vinp and vinn are numbered from 0 to 19.
- 
-           Note: At least one of "st,adc-channels" or "st,adc-diff-channels" is
--          required. Both properties can be used together. Some channels can be
-+          required if no adc generic channel is defined. These legacy channel
-+          properties are exclusive with adc generic channel bindings.
-+          Both properties can be used together. Some channels can be
-           used as single-ended and some other ones as differential (mixed). But
-           channels can't be configured both as single-ended and differential.
-         $ref: /schemas/types.yaml#/definitions/uint32-matrix
-@@ -279,6 +320,7 @@ patternProperties:
-                 "vinn" indicates negative input number
-               minimum: 0
-               maximum: 19
-+        deprecated: true
- 
-       st,min-sample-time-nsecs:
-         description:
-@@ -289,6 +331,50 @@ patternProperties:
-           list, to set sample time resp. for all channels, or independently for
-           each channel.
-         $ref: /schemas/types.yaml#/definitions/uint32-array
-+        deprecated: true
-+
-+      nvmem-cells:
-+        items:
-+          - description: Phandle to the calibration vrefint data provided by otp
-+
-+      nvmem-cell-names:
-+        items:
-+          - const: vrefint
-+
-+    patternProperties:
-+      "^channel@([0-9]|1[0-9])$":
-+        type: object
-+        $ref: "adc.yaml"
-+        description: Represents the external channels which are connected to the ADC.
-+
-+        properties:
-+          reg:
-+            items:
-+              minimum: 0
-+              maximum: 19
-+
-+          label:
-+            description: |
-+              Unique name to identify which channel this is.
-+              Reserved label names "vddcore", "vddcpu", "vddq_ddr", "vrefint" and "vbat"
-+              are used to identify internal channels with matching names.
-+
-+          diff-channels:
-+            $ref: /schemas/types.yaml#/definitions/uint32-array
-+            items:
-+              minimum: 0
-+              maximum: 19
-+
-+          st,min-sample-time-ns:
-+            description: |
-+              Minimum sampling time in nanoseconds. Depending on hardware (board)
-+              e.g. high/low analog input source impedance, fine tune of ADC
-+              sampling time may be recommended.
-+
-+        required:
-+          - reg
-+
-+        additionalProperties: false
- 
-     allOf:
-       - if:
-@@ -367,13 +453,38 @@ patternProperties:
-               items:
-                 minimum: 40
- 
--    additionalProperties: false
- 
--    anyOf:
--      - required:
--          - st,adc-channels
--      - required:
--          - st,adc-diff-channels
-+      - if:
-+          properties:
-+            compatible:
-+              contains:
-+                const: st,stm32mp13-adc
-+
-+        then:
-+          properties:
-+            reg:
-+              const: 0x0
-+
-+            interrupts:
-+              const: 0
-+
-+            assigned-resolution-bits:
-+              enum: [6, 8, 10, 12]
-+              default: 12
-+
-+            st,adc-channels:
-+              minItems: 1
-+              maxItems: 19
-+              items:
-+                minimum: 0
-+                maximum: 18
-+
-+            st,min-sample-time-nsecs:
-+              minItems: 1
-+              maxItems: 19
-+              items:
-+                minimum: 40
-+    additionalProperties: false
- 
-     required:
-       - compatible
-@@ -451,4 +562,50 @@ examples:
-         // other adc child node follow...
-       };
- 
-+  - |
-+    // Example 3: with stm32mp157c to setup ADC2 with:
-+    // - internal channels 13, 14, 15.
-+      #include <dt-bindings/interrupt-controller/arm-gic.h>
-+      #include <dt-bindings/clock/stm32mp1-clks.h>
-+      adc122: adc@48003000 {
-+        compatible = "st,stm32mp1-adc-core";
-+        reg = <0x48003000 0x400>;
-+        interrupts = <GIC_SPI 18 IRQ_TYPE_LEVEL_HIGH>,
-+                     <GIC_SPI 90 IRQ_TYPE_LEVEL_HIGH>;
-+        clocks = <&rcc ADC12>, <&rcc ADC12_K>;
-+        clock-names = "bus", "adc";
-+        booster-supply = <&booster>;
-+        vdd-supply = <&vdd>;
-+        vdda-supply = <&vdda>;
-+        vref-supply = <&vref>;
-+        st,syscfg = <&syscfg>;
-+        interrupt-controller;
-+        #interrupt-cells = <1>;
-+        #address-cells = <1>;
-+        #size-cells = <0>;
-+        adc@100 {
-+          compatible = "st,stm32mp1-adc";
-+          #io-channel-cells = <1>;
-+          reg = <0x100>;
-+          interrupts = <1>;
-+          #address-cells = <1>;
-+          #size-cells = <0>;
-+          channel@13 {
-+            reg = <13>;
-+            label = "vrefint";
-+            st,min-sample-time-ns = <9000>;
-+          };
-+          channel@14 {
-+            reg = <14>;
-+            label = "vddcore";
-+            st,min-sample-time-ns = <9000>;
-+          };
-+          channel@15 {
-+            reg = <15>;
-+            label = "vbat";
-+            st,min-sample-time-ns = <9000>;
-+          };
-+        };
-+      };
-+
- ...
 diff --git a/drivers/i2c/busses/i2c-stm32f7.c b/drivers/i2c/busses/i2c-stm32f7.c
 index 50d5ae81d227..791baea3623b 100644
 --- a/drivers/i2c/busses/i2c-stm32f7.c
@@ -2770,7 +2466,7 @@ index ef5b54ed9661..d05e081e1009 100644
  };
  MODULE_DEVICE_TABLE(of, stm32_adc_of_match);
 diff --git a/drivers/iio/adc/stm32-dfsdm-adc.c b/drivers/iio/adc/stm32-dfsdm-adc.c
-index 1cfefb3b5e56..997f1f387a04 100644
+index 6592221cbe21..997f1f387a04 100644
 --- a/drivers/iio/adc/stm32-dfsdm-adc.c
 +++ b/drivers/iio/adc/stm32-dfsdm-adc.c
 @@ -10,6 +10,7 @@
@@ -2951,14 +2647,6 @@ index 1cfefb3b5e56..997f1f387a04 100644
  	}
  
  	indio_dev->num_channels = num_ch;
-@@ -1521,6 +1620,7 @@ static const struct of_device_id stm32_dfsdm_adc_match[] = {
- 	},
- 	{}
- };
-+MODULE_DEVICE_TABLE(of, stm32_dfsdm_adc_match);
- 
- static int stm32_dfsdm_adc_probe(struct platform_device *pdev)
- {
 diff --git a/drivers/iio/adc/stm32-dfsdm-core.c b/drivers/iio/adc/stm32-dfsdm-core.c
 index a627af9a825e..65c01d522ce3 100644
 --- a/drivers/iio/adc/stm32-dfsdm-core.c
@@ -3906,10 +3594,10 @@ index 9ee238ad29ce..553da4899f55 100644
   * Should several domains have the same device node, but serve
   * different purposes (for example one domain is for PCI/MSI, and the
 diff --git a/kernel/irq/irqdomain.c b/kernel/irq/irqdomain.c
-index 035e3038c4de..5c74ebb13a77 100644
+index e0b67784ac1e..0c768e06a798 100644
 --- a/kernel/irq/irqdomain.c
 +++ b/kernel/irq/irqdomain.c
-@@ -744,9 +744,8 @@ static int irq_domain_translate(struct irq_domain *d,
+@@ -794,9 +794,8 @@ static int irq_domain_translate(struct irq_domain *d,
  	return 0;
  }
  
@@ -3921,7 +3609,7 @@ index 035e3038c4de..5c74ebb13a77 100644
  {
  	int i;
  
-@@ -756,6 +755,7 @@ static void of_phandle_args_to_fwspec(struct device_node *np, const u32 *args,
+@@ -806,6 +805,7 @@ static void of_phandle_args_to_fwspec(struct device_node *np, const u32 *args,
  	for (i = 0; i < count; i++)
  		fwspec->param[i] = args[i];
  }

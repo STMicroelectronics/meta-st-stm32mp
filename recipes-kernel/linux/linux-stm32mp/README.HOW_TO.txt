@@ -149,10 +149,10 @@ We highly preconized the build is a build directory method as:
     $ scripts/kconfig/merge_config.sh -m -r -O $PWD/../build $PWD/../build/.config ../fragment-01-xxx.config
     $ scripts/kconfig/merge_config.sh -m -r -O $PWD/../build $PWD/../build/.config ../fragment-02-xxx.config
     ...
-    $ yes '' | make ARCH=arm oldconfig O="$PWD/../build"
+    $ (yes '' || true) | make ARCH=arm oldconfig O="$PWD/../build"
     * or, by loop:
     $> for f in `ls -1 ../fragment*.config`; do scripts/kconfig/merge_config.sh -m -r -O $PWD/../build $PWD/../build/.config $f; done
-    $> yes '' | make ARCH=arm oldconfig O="$PWD/../build"
+    $> (yes '' || true) | make ARCH=arm oldconfig O="$PWD/../build"
 
 * Configure on the current source code directory
     $ cd <directory to kernel source code>
@@ -163,10 +163,10 @@ We highly preconized the build is a build directory method as:
     $ scripts/kconfig/merge_config.sh -m -r .config ../fragment-01-xxxx.config
     $ scripts/kconfig/merge_config.sh -m -r .config ../fragment-02-xxxx.config
     ...
-    $ yes '' | make oldconfig
+    $ (yes '' || true) | make oldconfig
     * or, by loop:
     $ for f in `ls -1 ../fragment*.config`; do scripts/kconfig/merge_config.sh -m -r .config $f; done
-    $ yes '' | make ARCH=arm oldconfig
+    $ (yes '' || true) | make ARCH=arm oldconfig
 
 NB: Two types of fragments are provided:
     * official fragments (fragment-xxx.config)
