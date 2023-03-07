@@ -1,0 +1,133 @@
+From 9acaeaf64c605f28dd378b36ba0bc6e84558a98c Mon Sep 17 00:00:00 2001
+From: vermaash <ashish.verma@st.com>
+Date: Fri, 12 Jul 2024 16:13:48 +0530
+Subject: [PATCH] 3.16.0-stm32mp-r2.2
+
+Signed-off-by: vermaash <ashish.verma@st.com>
+---
+ core/arch/arm/plat-stm32mp1/main.c |  2 +-
+ core/drivers/stm32_rng.c           | 14 ++++++++++----
+ core/drivers/stm32_rtc.c           |  8 ++++++++
+ core/drivers/stm32_tamp.c          | 10 ++++++++++
+ core/include/drivers/stm32_rtc.h   |  3 +++
+ 5 files changed, 32 insertions(+), 5 deletions(-)
+
+diff --git a/core/arch/arm/plat-stm32mp1/main.c b/core/arch/arm/plat-stm32mp1/main.c
+index 3ae327ee54..9ec5ef16f5 100644
+--- a/core/arch/arm/plat-stm32mp1/main.c
++++ b/core/arch/arm/plat-stm32mp1/main.c
+@@ -727,7 +727,7 @@ static TEE_Result stm32_configure_tamp(void)
+ 	return TEE_SUCCESS;
+ }
+ 
+-service_init(stm32_configure_tamp);
++driver_init_late(stm32_configure_tamp);
+ #endif
+ 
+ #ifdef CFG_STM32_HSE_MONITORING
+diff --git a/core/drivers/stm32_rng.c b/core/drivers/stm32_rng.c
+index 363aeee00e..f1e75bba20 100644
+--- a/core/drivers/stm32_rng.c
++++ b/core/drivers/stm32_rng.c
+@@ -47,9 +47,9 @@
+ #define RNG_NIST_CONFIG_B	U(0x1801000)
+ #define RNG_NIST_CONFIG_MASK	GENMASK_32(25, 8)
+ 
+-#define RNG_MAX_NOISE_CLK_FREQ	U(3000000)
+ 
+ struct stm32_rng_driver_data {
++	unsigned long max_noise_clk_freq;
+ 	bool has_cond_reset;
+ };
+ 
+@@ -173,7 +173,7 @@ static uint32_t stm32_rng_clock_freq_restrain(struct stm32_rng_device *dev)
+ 	 * No need to handle the case when clock-div > 0xF as it is physically
+ 	 * impossible
+ 	 */
+-	while ((clock_rate >> clock_div) > RNG_MAX_NOISE_CLK_FREQ)
++	while ((clock_rate >> clock_div) > dev->ddata->max_noise_clk_freq)
+ 		clock_div++;
+ 
+ 	DMSG("RNG clk rate : %lu", clk_get_rate(dev->pdata.clock) >> clock_div);
+@@ -473,11 +473,17 @@ err:
+ }
+ 
+ static const struct stm32_rng_driver_data mp13_data[] = {
+-	{ .has_cond_reset = true },
++	{
++		.max_noise_clk_freq = U(48000000),
++		.has_cond_reset = true
++	},
+ };
+ 
+ static const struct stm32_rng_driver_data mp15_data[] = {
+-	{ .has_cond_reset = false },
++	{
++		.max_noise_clk_freq = U(48000000),
++		.has_cond_reset = false
++	},
+ };
+ DECLARE_KEEP_PAGER(mp15_data);
+ 
+diff --git a/core/drivers/stm32_rtc.c b/core/drivers/stm32_rtc.c
+index 27a914044b..286a4127ff 100644
+--- a/core/drivers/stm32_rtc.c
++++ b/core/drivers/stm32_rtc.c
+@@ -427,6 +427,14 @@ bool stm32_rtc_is_timestamp_enable(void)
+ 	return ret;
+ }
+ 
++TEE_Result stm32_rtc_driver_is_initialized(void)
++{
++	if (rtc_dev.pclk)
++		return TEE_SUCCESS;
++
++	return TEE_ERROR_DEFER_DRIVER_INIT;
++}
++
+ static TEE_Result parse_dt(const void *fdt, int node,
+ 			   const void *compat_data)
+ {
+diff --git a/core/drivers/stm32_tamp.c b/core/drivers/stm32_tamp.c
+index 5a2174e18f..14bdaab021 100644
+--- a/core/drivers/stm32_tamp.c
++++ b/core/drivers/stm32_tamp.c
+@@ -1324,6 +1324,16 @@ static TEE_Result stm32_tamp_probe(const void *fdt, int node,
+ 	TEE_Result res = TEE_SUCCESS;
+ 	vaddr_t base = 0;
+ 
++	/* Manage dependency on the RNG driver */
++	res = dt_driver_get_crypto();
++	if (res)
++		return res;
++
++	/* Manage dependency on RTC driver */
++	res = stm32_rtc_driver_is_initialized();
++	if (res)
++		return res;
++
+ 	res = stm32_tamp_get_platdata(&stm32_tamp.pdata);
+ 	if (res)
+ 		return res;
+diff --git a/core/include/drivers/stm32_rtc.h b/core/include/drivers/stm32_rtc.h
+index ab1887e0bd..487926c460 100644
+--- a/core/include/drivers/stm32_rtc.h
++++ b/core/include/drivers/stm32_rtc.h
+@@ -8,6 +8,7 @@
+ #define __PLAT_RTC_H__
+ 
+ #include <stdbool.h>
++#include <tee_api_types.h>
+ 
+ struct stm32_rtc_calendar {
+ 	uint32_t ssr;
+@@ -57,4 +58,6 @@ bool stm32_rtc_is_timestamp_enable(void);
+ /* Get RTC timestamp for current time */
+ void stm32_rtc_get_timestamp(struct stm32_rtc_time *tamp_ts);
+ 
++TEE_Result stm32_rtc_driver_is_initialized(void);
++
+ #endif /* __PLAT_RTC_H__ */
+-- 
+2.25.1
+
