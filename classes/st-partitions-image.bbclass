@@ -21,6 +21,8 @@ python __anonymous () {
         bb.note('ENABLE_PARTITIONS_IMAGE not enabled')
         return
 
+    import re
+
     # -----------------------------------------------------------------------------
     # Update the partition configuration set by user
     # -----------------------------------------------------------------------------
@@ -126,6 +128,30 @@ python __anonymous () {
                     if bb.utils.contains('IMAGE_FSTYPES', 'stmultiubi', True, False, d) and d.getVar('ENABLE_MULTIVOLUME_UBI') == "1":
                         bb.debug(1, "Appending 'st_multivolume_ubifs' to IMAGE_POSTPROCESS_COMMAND.")
                         d.appendVar('IMAGE_POSTPROCESS_COMMAND', 'st_multivolume_ubifs;')
+
+    # -----------------------------------------------------------------------------
+    # Make sure that 'wic' image fstype is properly configured for partition image handling
+    # -----------------------------------------------------------------------------
+    if len(image_partitions) > 0:
+        # Gather all current tasks
+        tasks = filter(lambda k: d.getVarFlag(k, "task", True), d.keys())
+        for task in tasks:
+            # Check that we are dealing with image recipe
+            if task == 'do_image':
+                # Init current image name
+                current_image_name = d.getVar('PN') or ""
+                # We need to make sure that none 'wic' image fstypes are still
+                # avaialbe in IMAGE_FSTYPES to avoid circular dependency
+                if current_image_name in image_partitions:
+                    for fstype in d.getVar('IMAGE_FSTYPES').split():
+                        if re.match(r'^wic(\..*|$)', fstype):
+                            bb.fatal('\n\
+[PARTITIONS_IMAGES] Circular dependency issue found for partition image build!\n\
+[PARTITIONS_IMAGES] Please make sure to add all related wic image type(s) to\n\
+[PARTITIONS_IMAGES] WKS_IMAGE_FSTYPE var to properly remove them for partition\n\
+[PARTITIONS_IMAGES] image build.\n\
+[PARTITIONS_IMAGES] IMAGE_FSTYPES    : %s\n\
+[PARTITIONS_IMAGES] WKS_IMAGE_FSTYPES: %s' % (d.getVar('IMAGE_FSTYPES'), d.getVar('WKS_IMAGE_FSTYPES')))
 }
 
 python image_rootfs_image_clean_task(){
