@@ -11,7 +11,9 @@ FLASHLAYOUT_SUFFIX = "${@bb.utils.contains('ENCRYPT_ENABLE', '1', '${ENCRYPT_SUF
 
 # List the PARTITION_TYPE used for bootloader partition
 FLASHLAYOUT_BINARY_TYPES += "Binary"
+FLASHLAYOUT_BINARY_TYPES += "ENV"
 FLASHLAYOUT_BINARY_TYPES += "FIP"
+FLASHLAYOUT_BINARY_TYPES += "FWU_MDATA"
 
 # -----------------------------------------------------------------------------
 # For the stm32mp flashlayout files, configuration is done to get output file
