@@ -82,8 +82,7 @@ DEVICE_START_OFFSET_BOOT1:EMMC ?= "boot2"
 DEVICE_PARTUUID_ROOTFS:EMMC ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS:${DEVICE:EMMC}')) or ''}"
 
 # Configure the list of boards that enable EMMC
-DEVICE_BOARD_ENABLE:EMMC += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', '${STM32MP_DT_FILES_ED}', '', d)}"
-DEVICE_BOARD_ENABLE:EMMC += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', '${STM32MP_DT_FILES_EV}', '', d)}"
+DEVICE_BOARD_ENABLE:EMMC += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', '${STM32MP_DT_FILES_EMMC}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # NAND
@@ -93,7 +92,7 @@ DEVICE_MAX_OFFSET:NAND     ?= "0x40000000"
 DEVICE_ALIGNMENT_SIZE:NAND ?= "0x00040000"
 
 # Configure the list of boards that enable NAND
-DEVICE_BOARD_ENABLE:NAND   += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', '${STM32MP_DT_FILES_EV}', '', d)}"
+DEVICE_BOARD_ENABLE:NAND   += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', '${STM32MP_DT_FILES_NAND}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # NOR
@@ -106,7 +105,7 @@ DEVICE_ALIGNMENT_SIZE:NOR  ?= "0x00010000"
 DEVICE_PARTUUID_ROOTFS:NOR ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS:${DEVICE:NOR}')) or ''}"
 
 # Configure the list of boards that enable NOR
-DEVICE_BOARD_ENABLE:NOR    += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'nor', 'nor-sdcard' ], '${STM32MP_DT_FILES_EV}', '', d)}"
+DEVICE_BOARD_ENABLE:NOR    += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'nor', 'nor-sdcard' ], '${STM32MP_DT_FILES_NOR}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # SDCARD
@@ -122,9 +121,7 @@ DEVICE_ALIGNMENT_SIZE:SDCARD  ?= "0x00000200"
 DEVICE_PARTUUID_ROOTFS:SDCARD ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS:${DEVICE:SDCARD}')) or ''}"
 
 # Configure the list of boards that enable SDCARD
-DEVICE_BOARD_ENABLE:SDCARD += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', '${STM32MP_DT_FILES_DK}', '', d)}"
-DEVICE_BOARD_ENABLE:SDCARD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard', 'nor' ], '${STM32MP_DT_FILES_ED}', '', d)}"
-DEVICE_BOARD_ENABLE:SDCARD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard', 'nor' ], '${STM32MP_DT_FILES_EV}', '', d)}"
+DEVICE_BOARD_ENABLE:SDCARD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard', 'nor' ], '${STM32MP_DT_FILES_SDCARD}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # SPI NAND
@@ -134,7 +131,7 @@ DEVICE_MAX_OFFSET:SPINAND     ?= "0x10000000"
 DEVICE_ALIGNMENT_SIZE:SPINAND ?= "0x00020000"
 
 # Configure the list of boards that enable SPINAND
-DEVICE_BOARD_ENABLE:SPINAND += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', '', '', d)}"
+DEVICE_BOARD_ENABLE:SPINAND += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', '${STM32MP_DT_FILES_SPINAND}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # Fixed configuration from U-Boot source code

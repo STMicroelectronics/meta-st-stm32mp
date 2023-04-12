@@ -6,13 +6,12 @@ FLASHLAYOUT_BOOTSCHEME_LABELS += "deleteall"
 # -----------------------------------------------------------------------------
 # Define config labels
 # -----------------------------------------------------------------------------
-FLASHLAYOUT_CONFIG_LABELS:deleteall = "disco eval"
+FLASHLAYOUT_CONFIG_LABELS:deleteall = "board"
 
 # -----------------------------------------------------------------------------
 # Define label types for each config
 # -----------------------------------------------------------------------------
-FLASHLAYOUT_TYPE_LABELS:deleteall:disco = "${STM32MP_DT_FILES_DK}"
-FLASHLAYOUT_TYPE_LABELS:deleteall:eval  = "${STM32MP_DT_FILES_ED} ${STM32MP_DT_FILES_EV}"
+FLASHLAYOUT_TYPE_LABELS:deleteall:board = "${STM32MP_DEVICETREE}"
 
 # -----------------------------------------------------------------------------
 # Define partitions to consider for flashlayout file generation

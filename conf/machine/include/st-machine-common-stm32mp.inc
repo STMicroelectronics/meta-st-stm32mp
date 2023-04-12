@@ -72,14 +72,21 @@ RDEPENDS:${KERNEL_PACKAGE_NAME}-base = ""
 # Ship all kernel modules by default
 MACHINE_EXTRA_RRECOMMENDS = " kernel-modules kernel-imagebootfs"
 
-# Default device tree list supported per board
-STM32MP_DT_FILES_DK ??= ""
-STM32MP_DT_FILES_ED ??= ""
-STM32MP_DT_FILES_EV ??= ""
-# Set default supported device tree list
-STM32MP_DEVICETREE:append = " ${STM32MP_DT_FILES_DK} "
-STM32MP_DEVICETREE:append = " ${STM32MP_DT_FILES_ED} "
-STM32MP_DEVICETREE:append = " ${STM32MP_DT_FILES_EV} "
+# Default device tree list per supported storages
+STM32MP_DT_FILES_EMMC    ??= ""
+STM32MP_DT_FILES_NAND    ??= ""
+STM32MP_DT_FILES_NOR     ??= ""
+STM32MP_DT_FILES_SDCARD  ??= ""
+STM32MP_DT_FILES_SPINAND ??= ""
+
+STM32MP_DT_FILES_ALL += "${STM32MP_DT_FILES_EMMC}"
+STM32MP_DT_FILES_ALL += "${STM32MP_DT_FILES_NAND}"
+STM32MP_DT_FILES_ALL += "${STM32MP_DT_FILES_NOR}"
+STM32MP_DT_FILES_ALL += "${STM32MP_DT_FILES_SDCARD}"
+STM32MP_DT_FILES_ALL += "${STM32MP_DT_FILES_SPINAND}"
+
+# Set default supported device tree list (without duplicate)
+STM32MP_DEVICETREE:append = " ${@' '.join('%s' % dt_file for dt_file in list(dict.fromkeys((d.getVar('STM32MP_DT_FILES_ALL') or '').split())))} "
 
 # =========================================================================
 # Machine specific packages

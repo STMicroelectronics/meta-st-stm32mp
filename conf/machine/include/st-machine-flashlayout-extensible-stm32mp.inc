@@ -13,7 +13,7 @@ FLASHLAYOUT_CONFIG_LABELS:extensible = "${@bb.utils.contains('BOOTDEVICE_LABELS'
 # -----------------------------------------------------------------------------
 # Define label types
 # -----------------------------------------------------------------------------
-FLASHLAYOUT_TYPE_LABELS:extensible = "${@d.getVar('STM32MP_DT_FILES_DK') or 'none'}"
+FLASHLAYOUT_TYPE_LABELS:extensible = "${@' '.join(dt for dt in '${STM32MP_DT_FILES_SDCARD}'.split() if '-dk' in dt)}"
 
 # -----------------------------------------------------------------------------
 # Define partitions to use
