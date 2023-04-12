@@ -29,8 +29,10 @@ python () {
     This function configure dynamically the needed alias between generic storage
     device name and device type.
     Output for this function is the initialization of:
-        DEVICE_<device_name> = '<device_type>'
-        DEVICE_<device_type> = '<device_name>'
+        DEVICE:<device_name> = '<device_type>'
+        DEVICE:<device_type> = '<device_name>'
+    NB: we may have multiple <device_name> that refer to same <device_type>,
+        but the opposite is not allowed yet
     """
     device_storage_config = d.getVar('DEVICE_STORAGE') or ''
     if not device_storage_config:
@@ -54,7 +56,10 @@ python () {
                     bb.fatal('Wrong DEVICE_STORAGE configuration: "%s" is not part of supported device type (%s)' % (device_type, supported_device_types))
                 # Configure alias
                 d.setVar('DEVICE:%s' % device_name, device_type)
-                d.setVar('DEVICE:%s' % device_type, device_name)
+                if d.getVar('DEVICE:%s' % device_type):
+                    d.appendVar('DEVICE:%s' % device_type, ' ' + device_name)
+                else:
+                    d.setVar('DEVICE:%s' % device_type, device_name)
             else:
                 bb.fatal('Wrong DEVICE_STORAGE configuration: expecting DEVICE_STORAGE = "<device_name1>:<devie_type1>,<device_name2>:<device_type2>"')
 }
@@ -98,7 +103,7 @@ DEVICE_MAX_OFFSET:NOR      ?= "0x04000000"
 DEVICE_ALIGNMENT_SIZE:NOR  ?= "0x00010000"
 
 # Configure the rootfs partition uid used in gpt partition table for NOR
-DEVICE_PARTUUID_ROOTFS:NOR ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS:${DEVICE_NOR}')) or ''}"
+DEVICE_PARTUUID_ROOTFS:NOR ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS:${DEVICE:NOR}')) or ''}"
 
 # Configure the list of boards that enable NOR
 DEVICE_BOARD_ENABLE:NOR    += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'nor', 'nor-sdcard' ], '${STM32MP_DT_FILES_EV}', '', d)}"

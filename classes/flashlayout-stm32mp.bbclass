@@ -307,16 +307,32 @@ def get_device(bootscheme, config, partition, d):
     # Return the value computed
     return device
 
+def get_device_alias(device_type, labeltype, d):
+    """
+    This function returns the device alias name for the current labeltype.
+    Empty value if no alias configured.
+    """
+    device_alias = d.getVar('DEVICE:%s' % device_type) or ""
+    device_name = ""
+    if len(device_alias.split()) > 1:
+        # Need to select the proper alias name for current selection
+        for alias_name in device_alias.split():
+            # Check if proposed labeltype is enabled
+            enabled_labeltypes = d.getVar('DEVICE_BOARD_ENABLE:%s' % alias_name) or "none"
+            if labeltype in enabled_labeltypes:
+                device_name = alias_name
+                break
+    else:
+        device_name = device_alias
+    bb.debug(1, '>>> Device alias for %s device type and current % labeltype set to: %s' % (device_type, labeltype, device_name))
+    return device_name
+
 def align_size(d, device, size, copy=1):
     """
     This function returns the size in KiB for the selected device making sure to
     align on erase block and taking into account the copy expected to fit for the
     original size set
     """
-    # Make sure to use device name and not device type
-    device_types = (d.getVar('DEVICE_STORAGE_TYPES') or "").split()
-    if device in device_types:
-        device = d.getVar('DEVICE:%s' % device) or ""
     # Get device alignment size
     alignment_size = d.getVar('DEVICE_ALIGNMENT_SIZE:%s' % device) or "none"
     if alignment_size == 'none':
@@ -338,7 +354,7 @@ def align_size(d, device, size, copy=1):
     # Return the computed size
     return size
 
-def get_offset(new_offset, copy, current_device, bootscheme, config, partition, d):
+def get_offset(new_offset, copy, current_device, bootscheme, config, partition, labeltype, d):
     """
     This function returns a couple of strings: offset, next_offset
     The offset is the one to use in flashlayout file for the requested partition,
@@ -357,7 +373,7 @@ def get_offset(new_offset, copy, current_device, bootscheme, config, partition, 
     """
     import re
     # Get current_device alias
-    device_alias = d.getVar('DEVICE:%s' % current_device) or ""
+    device_alias = get_device_alias(current_device, labeltype, d)
     # Set offset
     offset = expand_var('FLASHLAYOUT_PARTITION_OFFSET', bootscheme, config, partition, d)
     bb.debug(1, '>>> Selected FLASHLAYOUT_PARTITION_OFFSET: %s' % offset)
@@ -414,7 +430,7 @@ def get_binaryname(labeltype, device, bootscheme, config, partition, d):
     bb.debug(1, '>>> Selected FLASHLAYOUT_PARTITION_BIN2LOAD: %s' % binary_name)
     # Set 'device' to alias name in lower case
     if device != 'none':
-        device = d.getVar('DEVICE:%s' % device).lower()
+        device = get_device_alias(device, labeltype, d).lower()
     # Init pattern to look for with current config value
     update_patterns = '<BOOTSCHEME>;' + bootscheme
     update_patterns += ' ' + '<CONFIG>;' + config.replace("-","_")
@@ -599,7 +615,7 @@ python do_create_flashlayout_config() {
                                 # Save partition current device to previous one for next loop
                                 partition_prevdevice = partition_device
                                 # Get partition offset
-                                partition_offset, partition_nextoffset, partition_maxoffset = get_offset(partition_nextoffset, partition_copy, partition_device, bootscheme, config, partition, d)
+                                partition_offset, partition_nextoffset, partition_maxoffset = get_offset(partition_nextoffset, partition_copy, partition_device, bootscheme, config, partition, labeltype, d)
                                 # Get binary name
                                 partition_bin2load = get_binaryname(labeltype, partition_device, bootscheme, config, partition, d)
                                 # Be verbose in log file
@@ -639,7 +655,7 @@ python do_create_flashlayout_config() {
                                             break_and_clean_file = '1'
                                             break
                                 # Get the supported labels for current storage device
-                                partition_device_alias = d.getVar('DEVICE:%s' % partition_device) or ""
+                                partition_device_alias = get_device_alias(partition_device, labeltype, d)
                                 partition_type_supported_labels = d.getVar('DEVICE_BOARD_ENABLE:%s' % partition_device_alias) or "none"
                                 # Check if partition type is supported for the current label
                                 if partition_device != 'none' and current_label not in partition_type_supported_labels.split():
@@ -871,14 +887,14 @@ def get_duplicate_labels(d, part_config):
 FLASHLAYOUT_LABELS_VARS = "CONFIG_LABELS PARTITION_LABELS TYPE_LABELS"
 FLASHLAYOUT_LABELS_OVERRIDES = "${FLASHLAYOUT_BOOTSCHEME_LABELS} ${FLASHLAYOUT_CONFIG_LABELS}"
 FLASHLAYOUT_LABELS_OVERRIDES += "${@' '.join('%s:%s' % (b, c) for b in d.getVar('FLASHLAYOUT_BOOTSCHEME_LABELS').split() for c in d.getVar('FLASHLAYOUT_CONFIG_LABELS').split())}"
-do_create_flashlayout_config[vardeps] += "${@' '.join(['FLASHLAYOUT:%s:%s' % (v, o) for v in d.getVar('FLASHLAYOUT_LABELS_VARS').split() for o in d.getVar('FLASHLAYOUT_LABELS_OVERRIDES').split()])}"
+do_create_flashlayout_config[vardeps] += "${@' '.join(['FLASHLAYOUT_%s:%s' % (v, o) for v in d.getVar('FLASHLAYOUT_LABELS_VARS').split() for o in d.getVar('FLASHLAYOUT_LABELS_OVERRIDES').split()])}"
 
 FLASHLAYOUT_PARTITION_VARS = "ENABLE ID TYPE DEVICE OFFSET BIN2LOAD SIZE REPLACE_PATTERNS"
 FLASHLAYOUT_PARTITION_CONFIGURED = "${@' '.join(dict.fromkeys(' '.join('%s' % d.getVar('FLASHLAYOUT_PARTITION_LABELS:%s' % o) for o in d.getVar('FLASHLAYOUT_LABELS_OVERRIDES').split()).split()))}"
 FLASHLAYOUT_PARTITION_CONFIGURED += "${@' '.join('%s' % l for l in get_duplicate_labels(d, 'PARTITIONS_BOOTLOADER_CONFIG PARTITIONS_CONFIG').split())}"
 FLASHLAYOUT_PARTITION_OVERRIDES = "${FLASHLAYOUT_LABELS_OVERRIDES} ${FLASHLAYOUT_PARTITION_CONFIGURED}"
 FLASHLAYOUT_PARTITION_OVERRIDES += "${@' '.join('%s:%s' % (o, p) for o in d.getVar('FLASHLAYOUT_LABELS_OVERRIDES').split() for p in d.getVar('FLASHLAYOUT_PARTITION_CONFIGURED').split())}"
-do_create_flashlayout_config[vardeps] += "${@' '.join(['FLASHLAYOUT_PARTITION:%s:%s' % (v, o) for v in d.getVar('FLASHLAYOUT_PARTITION_VARS').split() for o in d.getVar('FLASHLAYOUT_PARTITION_OVERRIDES').split()])}"
+do_create_flashlayout_config[vardeps] += "${@' '.join(['FLASHLAYOUT_PARTITION_%s:%s' % (v, o) for v in d.getVar('FLASHLAYOUT_PARTITION_VARS').split() for o in d.getVar('FLASHLAYOUT_PARTITION_OVERRIDES').split()])}"
 
 FLASHLAYOUT_DEVICE_VARS = "ALIGNMENT_SIZE BOARD_ENABLE START_OFFSET MAX_OFFSET"
-do_create_flashlayout_config[vardeps] += "${@' '.join(['DEVICE:%s:%s' % (v, o) for v in d.getVar('FLASHLAYOUT_DEVICE_VARS').split() for o in d.getVar('DEVICE_STORAGE_NAMES').split()])}"
+do_create_flashlayout_config[vardeps] += "${@' '.join(['DEVICE_%s:%s' % (v, o) for v in d.getVar('FLASHLAYOUT_DEVICE_VARS').split() for o in d.getVar('DEVICE_STORAGE_NAMES').split()])}"
