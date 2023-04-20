@@ -11,6 +11,8 @@ SRCREV = "a1f02f4f3daae7e21ee58b4c93ec3e46b8f28d15"
 SRC_URI += " \
     file://0001-v2.6-stm32mp-r1.patch \
     file://0002-v2.6-stm32mp-r2.patch \
+    \
+    file://0001-LD-not-track-warning-as-error-and-no-warn-rwx-segmen.patch \
     "
 
 TF_A_VERSION = "v2.6"
