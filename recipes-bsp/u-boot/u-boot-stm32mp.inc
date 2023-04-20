@@ -322,3 +322,7 @@ INSANE_SKIP:${PN} += "ldflags"
 # Avoid QA Issue: ELF binary has relocations in .text
 # (uboot no need -fPIC option : remove check)
 INSANE_SKIP:${PN} += "textrel"
+# ---------------------------------------------------------------------
+# Avoid QA Issue: contains reference to TMPDIR [buildpaths]
+INSANE_SKIP:${PN} += "buildpaths"
+
