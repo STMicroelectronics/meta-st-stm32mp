@@ -39,7 +39,11 @@ IMAGE_CMD:stmultiubi () {
         eval local mkubifs_args=\"\$MKUBIFS_ARGS_${name}\"
         eval local ubinize_args=\"\$UBINIZE_ARGS_${name}\"
 
-        if multiubi_mkfs "${mkubifs_args}" "${ubinize_args}" "${name}"; then
+        #if multiubi_mkfs "${mkubifs_args}" "${ubinize_args}" "${name}"; then
+        #FIXME temporary fix while waiting for official patch from OpenEmbedded-Core layer
+        # Since use of write_ubi_config() function the 'vname' var is no more initialized
+        # on multiubi_mkfs() function side:
+        if (vname="_${name}" multiubi_mkfs "${mkubifs_args}" "${ubinize_args}" "${name}"); then
             if [ -e ${IMGDEPLOYDIR}/ubinize_${name}-${IMAGE_NAME}.cfg ]; then
                 # Set correct name for cfg file to allow automatic cleanup
                 mv ${IMGDEPLOYDIR}/ubinize_${name}-${IMAGE_NAME}.cfg ${IMGDEPLOYDIR}/${IMAGE_NAME}_${name}.ubinize.cfg.ubi
