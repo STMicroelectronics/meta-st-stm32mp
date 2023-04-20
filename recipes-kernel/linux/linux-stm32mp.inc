@@ -3,6 +3,7 @@ COMPATIBLE_MACHINE = "(stm32mpcommon)"
 inherit kernel
 
 DEPENDS += "openssl-native util-linux-native libyaml-native"
+DEPENDS += "gmp-native libmpc-native"
 
 B = "${WORKDIR}/build"
 # Configure build dir for externalsrc class usage through devtool
@@ -79,7 +80,6 @@ do_configure:append() {
     #oe_runmake -C ${S} O=${B} savedefconfig && cp ${B}/defconfig ${WORKDIR}/defconfig.saved
 }
 
-# ---------------------------------------------------------------------
 do_compile_kernelmodules:append() {
     if (grep -q -i -e '^CONFIG_MODULES=y$' ${B}/.config); then
         # 5.10+ kernels have module.lds that we need to copy for external module builds

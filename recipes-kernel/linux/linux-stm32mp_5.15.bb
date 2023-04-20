@@ -82,18 +82,18 @@ KERNEL_CONFIG_FRAGMENTS += "${@bb.utils.contains('KERNEL_DEFCONFIG', 'defconfig'
 KERNEL_CONFIG_FRAGMENTS += "${@bb.utils.contains('DISTRO_FEATURES', 'systemd', '${WORKDIR}/fragments/${LINUX_VERSION}/fragment-03-systemd.config', '', d)} "
 KERNEL_CONFIG_FRAGMENTS += "${WORKDIR}/fragments/${LINUX_VERSION}/fragment-04-modules.config"
 KERNEL_CONFIG_FRAGMENTS += "${@oe.utils.ifelse(d.getVar('KERNEL_SIGN_ENABLE') == '1', '${WORKDIR}/fragments/${LINUX_VERSION}/fragment-05-signature.config','')} "
-KERNEL_CONFIG_FRAGMENTS += "${@bb.utils.contains('MACHINE_FEATURES', 'nosmp', '${WORKDIR}/fragments/${LINUX_VERSION}/fragment-06-smp.config', '', d)} "
+KERNEL_CONFIG_FRAGMENTS += "${@bb.utils.contains('MACHINE_FEATURES', 'nosmp', '${WORKDIR}/fragments/${LINUX_VERSION}/fragment-06-nosmp.config', '', d)} "
 
 SRC_URI += "file://${LINUX_VERSION}/fragment-03-systemd.config;subdir=fragments"
 SRC_URI += "file://${LINUX_VERSION}/fragment-04-modules.config;subdir=fragments"
 SRC_URI += "file://${LINUX_VERSION}/fragment-05-signature.config;subdir=fragments"
-SRC_URI += "file://${LINUX_VERSION}/fragment-06-smp.config;subdir=fragments"
+SRC_URI += "file://${LINUX_VERSION}/fragment-06-nosmp.config;subdir=fragments"
 
 # Don't forget to add/del for devupstream
 SRC_URI:class-devupstream += "file://${LINUX_VERSION}/fragment-03-systemd.config;subdir=fragments"
 SRC_URI:class-devupstream += "file://${LINUX_VERSION}/fragment-04-modules.config;subdir=fragments"
 SRC_URI:class-devupstream += "file://${LINUX_VERSION}/fragment-05-signature.config;subdir=fragments"
-SRC_URI:class-devupstream += "file://${LINUX_VERSION}/fragment-06-smp.config;subdir=fragments"
+SRC_URI:class-devupstream += "file://${LINUX_VERSION}/fragment-06-nosmp.config;subdir=fragments"
 
 # -------------------------------------------------------------
 # Kernel Args
