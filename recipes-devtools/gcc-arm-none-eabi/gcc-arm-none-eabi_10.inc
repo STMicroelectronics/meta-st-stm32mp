@@ -21,3 +21,7 @@ do_install() {
 INSANE_SKIP:${PN} = "already-stripped file-rdeps"
 INHIBIT_PACKAGE_STRIP = "1"
 INHIBIT_SYSROOT_STRIP = "1"
+# ---------------------------------------------------------------------
+# Avoid QA Issue: contains reference to TMPDIR [buildpaths]
+INSANE_SKIP:${PN} += "buildpaths"
+
