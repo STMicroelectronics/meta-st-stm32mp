@@ -9,6 +9,8 @@ SRC_URI += " \
     file://fonts.tar.gz;subdir=git;name=fonts  \
     file://0001-3.16.0-stm32mp-r1.patch        \
     file://0002-3.16.0-stm32mp-r2.patch    \
+    \
+    file://0001-GCC12-correct-warning.patch    \
     "
 
 SRC_URI[fonts.sha256sum] = "4941e8bb6d8ac377838e27b214bf43008c496a24a8f897e0b06433988cbd53b2"
