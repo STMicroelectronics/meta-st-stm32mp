@@ -39,7 +39,7 @@ revision: HEAD
 
 ```
 [META-OPENEMBEDDED]
-URI: git://github.com/openembedded/meta-openembedded.git
+URI: https://github.com/openembedded/meta-openembedded.git
 layers: meta-python meta-oe
 branch: same dedicated branch as meta-st-stm32mp
 revision: HEAD
