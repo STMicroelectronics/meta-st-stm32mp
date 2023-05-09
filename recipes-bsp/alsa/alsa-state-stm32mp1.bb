@@ -20,6 +20,8 @@ SRC_URI = " \
     \
     file://system-generator-alsa-states \
     file://system-generator-alsa-conf   \
+    \
+    file://alsa-state-stm32mp.service \
     "
 
 S = "${WORKDIR}"
@@ -49,14 +51,26 @@ do_install() {
 
     # Enable systemd automatic selection
     if ${@bb.utils.contains('DISTRO_FEATURES','systemd','true','false',d)}; then
-        install -d ${D}${systemd_unitdir}/system-generators/
+        install -d ${D}${bindir}
         if [ -f ${WORKDIR}/system-generator-alsa-states ]; then
-            install -m 0755 ${WORKDIR}/system-generator-alsa-states ${D}${systemd_unitdir}/system-generators/
+            install -m 0755 ${WORKDIR}/system-generator-alsa-states ${D}${bindir}
         fi
         if [ -f ${WORKDIR}/system-generator-alsa-conf ]; then
-            install -m 0755 ${WORKDIR}/system-generator-alsa-conf ${D}${systemd_unitdir}/system-generators/
+            install -m 0755 ${WORKDIR}/system-generator-alsa-conf ${D}${bindir}
         fi
+
+        install -d ${D}${systemd_unitdir}/system
+        install -m 644 ${WORKDIR}/alsa-state-stm32mp.service ${D}/${systemd_unitdir}/system
+
     fi
 }
 
-FILES:${PN} = "${localstatedir}/lib/alsa/*.state ${systemd_unitdir}/system-generators ${sysconfdir}/*.conf "
+FILES:${PN} = "${localstatedir}/lib/alsa/*.state ${bindir} ${sysconfdir}/*.conf ${systemd_unitdir}/system"
+
+# -----------------------------------------------------------
+# specific for service
+inherit systemd
+SYSTEMD_PACKAGES += " ${PN} "
+SYSTEMD_SERVICE:${PN} = "alsa-state-stm32mp.service"
+SYSTEMD_AUTO_ENABLE:${PN} = "enable"
+
