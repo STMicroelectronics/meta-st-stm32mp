@@ -14,9 +14,9 @@ require tf-a-stm32mp-config.inc
 # ------------------------------------
 # Set MBEDTLS support
 TFA_MBEDTLS_DIR ?= "mbedtls"
-# MBEDTLS v2.24.0
-SRC_URI_MBEDTLS = "git://github.com/ARMmbed/mbedtls.git;protocol=https;destsuffix=git/${TFA_MBEDTLS_DIR};branch=master;name=mbedtls"
-SRCREV_mbedtls = "523f0554b6cdc7ace5d360885c3f5bbcc73ec0e8"
+# MBEDTLS v2.28.1
+SRC_URI_MBEDTLS = "git://github.com/ARMmbed/mbedtls.git;protocol=https;destsuffix=git/${TFA_MBEDTLS_DIR};branch=mbedtls-2.28;name=mbedtls"
+SRCREV_mbedtls = "dd79db10014d85b26d11fe57218431f2e5ede6f2"
 LIC_FILES_CHKSUM_MBEDTLS = "file://mbedtls/LICENSE;md5=3b83ef96387f14655fc854ddc3c6bd57"
 LICENSE_MBEDTLS = "Apache-2.0"
 # Add MBEDTLS to our sources
@@ -271,74 +271,50 @@ do_compile() {
                     temp_version=$(od -A o -t dI header.dump | head -n 1 | cut -d' ' -f2- | sed "s/ //g")
                     rm -f header.dump
                     [ "$(expr $temp_version / 65536)" = "2" ] && tf_a_sign_of_opt="-of ${TF_A_SIGN_OF}"
+                    # Init default encryption options for signing tool
+                    tf_a_encrypt_opts=""
+                    if [ "${ENCRYPT_ENABLE}" = "1" ]; then
+                        # Init encrypt key for signing tools
+                        encrypt_key="${ENCRYPT_FSBL_KEY_PATH_LIST}"
+                        if [ -n "${STM32MP_ENCRYPT_SOC_NAME}" ]; then
+                            unset k
+                            for soc in ${STM32MP_ENCRYPT_SOC_NAME}; do
+                                k=$(expr $k + 1)
+                                [ "$(echo ${dt} | grep -c ${soc})" -eq 1 ] && encrypt_key=$(echo ${ENCRYPT_FSBL_KEY_PATH_LIST} | cut -d',' -f${k})
+                            done
+                        fi
+                        # Set encryption options for signing tools
+                        tf_a_encrypt_opts="\
+                            --enc-key ${encrypt_key} \
+                            --enc-dc ${TF_A_ENCRYPT_DC} \
+                            --image-version ${TF_A_ENCRYPT_IMGVER} \
+                            "
+                        # Set specific '-of' option for encryption
+                        tf_a_sign_of_opt="-of ${TF_A_ENCRYPT_OF}"
+                    fi
                     # Sign tf-a binary
                     ${SIGN_TOOL} \
                         -bin "${B}/${config}${soc_suffix}/${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}" \
-                        -o "${B}/${config}${soc_suffix}/${tfa_basename}-${dt}-${config}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" \
-                        --password "${SIGN_KEY_PASS}" \
-                        --public-key $(ls -1 $(dirname ${sign_key})/publicKey*.pem | tr '\n' '\t') \
-                        --private-key ${sign_key} \
-                        --type fsbl \
-                        --silent \
-                        ${tf_a_sign_of_opt}
-                    if [ "${TF_A_ENABLE_DEBUG_WRAPPER}" = "1" ]; then
-                        ${SIGN_TOOL} \
-                            -bin "${B}/${config}${soc_suffix}/debug-${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}" \
-                            -o "${B}/${config}${soc_suffix}/debug-${tfa_basename}-${dt}-${config}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" \
-                            --password "${SIGN_KEY_PASS}" \
-                            --public-key $(ls -1 $(dirname ${sign_key})/publicKey*.pem | tr '\n' '\t') \
-                            --private-key "${sign_key}" \
-                            --type fsbl \
-                            --silent \
-                            ${tf_a_sign_of_opt}
-                    fi
-                fi
-
-                if [ "${ENCRYPT_ENABLE}" = "1" ]; then
-                    # Init encrypt key for signing tools
-                    encrypt_key="${ENCRYPT_FSBL_KEY_PATH_LIST}"
-                    if [ -n "${STM32MP_ENCRYPT_SOC_NAME}" ]; then
-                        unset k
-                        for soc in ${STM32MP_ENCRYPT_SOC_NAME}; do
-                            k=$(expr $k + 1)
-                            [ "$(echo ${dt} | grep -c ${soc})" -eq 1 ] && encrypt_key=$(echo ${ENCRYPT_FSBL_KEY_PATH_LIST} | cut -d',' -f${k})
-                        done
-                    fi
-                    # Encrypt tf-a binary
-                    ${SIGN_TOOL} \
-                        -bin "${B}/${config}${soc_suffix}/${tfa_basename}-${dt}-${config}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" \
                         -o "${B}/${config}${soc_suffix}/${tfa_basename}-${dt}-${config}${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" \
                         --password "${SIGN_KEY_PASS}" \
                         --public-key $(ls -1 $(dirname ${sign_key})/publicKey*.pem | tr '\n' '\t') \
                         --private-key ${sign_key} \
                         --type fsbl \
                         --silent \
-                        --enc-key ${encrypt_key} \
-                        --enc-dc "${TF_A_ENCRYPT_DC}" \
-                        --image-version "${TF_A_ENCRYPT_IMGVER}" \
-                        -of "${TF_A_ENCRYPT_OF}"
+                        ${tf_a_encrypt_opts} \
+                        ${tf_a_sign_of_opt}
                     if [ "${TF_A_ENABLE_DEBUG_WRAPPER}" = "1" ]; then
                         ${SIGN_TOOL} \
-                            -bin "${B}/${config}${soc_suffix}/debug-${tfa_basename}-${dt}-${config}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" \
+                            -bin "${B}/${config}${soc_suffix}/debug-${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}" \
                             -o "${B}/${config}${soc_suffix}/debug-${tfa_basename}-${dt}-${config}${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" \
                             --password "${SIGN_KEY_PASS}" \
                             --public-key $(ls -1 $(dirname ${sign_key})/publicKey*.pem | tr '\n' '\t') \
-                            --private-key ${sign_key} \
+                            --private-key "${sign_key}" \
                             --type fsbl \
                             --silent \
-                            --enc-key ${encrypt_key} \
-                            --enc-dc "${TF_A_ENCRYPT_DC}" \
-                            --image-version "${TF_A_ENCRYPT_IMGVER}" \
-                            -of "${TF_A_ENCRYPT_OF}"
+                            ${tf_a_encrypt_opts} \
+                            ${tf_a_sign_of_opt}
                     fi
-                fi
-            fi
-            # Specific for bl32 target
-            if [ "$(echo ${tf_a_make_target} | grep -cw 'bl32')" = "1" ]; then
-                # Move 'bl32.elf' file to explicit file name with 'soc_suffix' info (same file for all devicetree build)
-                # This avoid unexpected deployment for other config (cf. do_deploy task)
-                if [ -f "${B}/${config}${soc_suffix}/${BL32_ELF}" ]; then
-                    mv -f "${B}/${config}${soc_suffix}/${BL32_ELF}" "${B}/${config}${soc_suffix}/${TF_A_BASENAME}-${BL32_BASENAME}${soc_suffix}.${TF_A_ELF_SUFFIX}"
                 fi
             fi
         done
@@ -380,7 +356,7 @@ do_deploy() {
                         fi
                     fi
                     if [ -n "${ELF_DEBUG_ENABLE}" ]; then
-                        install -d ${DEPLOYDIR}/arm-trusted-firmware/debug
+                        install -d "${DEPLOYDIR}/arm-trusted-firmware/debug"
                         if [ -f "${B}/${config}${soc_suffix}/${BL2_ELF}" ]; then
                             install -m 644 "${B}/${config}${soc_suffix}/${BL2_ELF}" "${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL2_BASENAME_DEPLOY}${soc_suffix}-${config}.${TF_A_ELF_SUFFIX}"
                         fi
@@ -388,52 +364,44 @@ do_deploy() {
                     ;;
                 bl31)
                     # Install BL31 files
+                    install -d "${DEPLOYDIR}/arm-trusted-firmware/bl31"
+                    # Install BL31 binary
                     if [ -f "${B}/${config}${soc_suffix}/${BL31_BASENAME}.${BL31_SUFFIX}" ]; then
-                        install -d "${DEPLOYDIR}/arm-trusted-firmware/bl31"
-                        # Install BL31 binary
-                        install -m 644 "${B}/${config}${soc_suffix}/${BL31_BASENAME}.${BL31_SUFFIX}" "${DEPLOYDIR}/arm-trusted-firmware/bl31/${tfa_basename}-${BL31_BASENAME_DEPLOY}${soc_suffix}.${BL31_SUFFIX}"
-                        if [ -n "${ELF_DEBUG_ENABLE}" ]; then
-                            if [ -f "${B}/${config}${soc_suffix}/${tfa_basename}-${BL31_BASENAME}${soc_suffix}.${TF_A_ELF_SUFFIX}" ]; then
-                                install -d "${DEPLOYDIR}/arm-trusted-firmware/bl32/debug"
-                                install -m 644 "${B}/${config}${soc_suffix}/${tfa_basename}-${BL31_BASENAME}${soc_suffix}.${TF_A_ELF_SUFFIX}" "${DEPLOYDIR}/arm-trusted-firmware/bl31/debug/${tfa_basename}-${BL31_BASENAME_DEPLOY}${soc_suffix}.${TF_A_ELF_SUFFIX}"
-                            fi
-                        fi
+                        install -m 644 "${B}/${config}${soc_suffix}/${BL31_BASENAME}.${BL31_SUFFIX}" "${DEPLOYDIR}/arm-trusted-firmware/bl31/${tfa_basename}-${BL31_BASENAME_DEPLOY}${soc_suffix}-${config}.${BL31_SUFFIX}"
+                    fi
+                    # Install BL31 devicetree
+                    if [ -f "${B}/${config}${soc_suffix}/fdts/${dt}-${BL31_BASENAME}.${DT_SUFFIX}" ]; then
+                        install -m 644 "${B}/${config}${soc_suffix}/fdts/${dt}-${BL31_BASENAME}.${DT_SUFFIX}" "${DEPLOYDIR}/arm-trusted-firmware/bl31/${dt}-${BL31_BASENAME}-${config}.${DT_SUFFIX}"
                     fi
                     if [ -n "${ELF_DEBUG_ENABLE}" ]; then
-                        install -d "${DEPLOYDIR}/arm-trusted-firmware/debug"
+                        install -d "${DEPLOYDIR}/arm-trusted-firmware/bl31/debug"
                         if [ -f "${B}/${config}${soc_suffix}/${BL31_ELF}" ]; then
-                            install -m 644 "${B}/${config}${soc_suffix}/${BL31_ELF}" "${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL31_BASENAME_DEPLOY}-${config}.${TF_A_ELF_SUFFIX}"
+                            install -m 644 "${B}/${config}${soc_suffix}/${BL31_ELF}" "${DEPLOYDIR}/arm-trusted-firmware/bl31/debug/${tfa_basename}-${BL31_BASENAME_DEPLOY}${soc_suffix}-${config}.${TF_A_ELF_SUFFIX}"
                         fi
                     fi
                     ;;
                 bl32)
                     # Install BL32 files
+                    install -d "${DEPLOYDIR}/arm-trusted-firmware/bl32"
+                    # Install BL32 binary
                     if [ -f "${B}/${config}${soc_suffix}/${BL32_BASENAME}.${BL32_SUFFIX}" ]; then
-                        install -d "${DEPLOYDIR}/arm-trusted-firmware/bl32"
-                        # Install BL32 binary
-                        install -m 644 "${B}/${config}${soc_suffix}/${BL32_BASENAME}.${BL32_SUFFIX}" "${DEPLOYDIR}/arm-trusted-firmware/bl32/${tfa_basename}-${BL32_BASENAME_DEPLOY}${soc_suffix}.${BL32_SUFFIX}"
-                        # Install BL32 devicetree
-                        if [ -f "${B}/${config}${soc_suffix}/fdts/${dt}-${BL32_BASENAME}.${DT_SUFFIX}" ]; then
-                            install -m 644 "${B}/${config}${soc_suffix}/fdts/${dt}-${BL32_BASENAME}.${DT_SUFFIX}" "${DEPLOYDIR}/arm-trusted-firmware/bl32/${dt}-${BL32_BASENAME}.${DT_SUFFIX}"
-                        fi
-                        if [ -n "${ELF_DEBUG_ENABLE}" ]; then
-                            if [ -f "${B}/${config}${soc_suffix}/${tfa_basename}-${BL32_BASENAME}${soc_suffix}.${TF_A_ELF_SUFFIX}" ]; then
-                                install -d "${DEPLOYDIR}/arm-trusted-firmware/bl32/debug"
-                                install -m 644 "${B}/${config}${soc_suffix}/${tfa_basename}-${BL32_BASENAME}${soc_suffix}.${TF_A_ELF_SUFFIX}" "${DEPLOYDIR}/arm-trusted-firmware/bl32/debug/${tfa_basename}-${BL32_BASENAME_DEPLOY}${soc_suffix}.${TF_A_ELF_SUFFIX}"
-                            fi
-                        fi
+                        install -m 644 "${B}/${config}${soc_suffix}/${BL32_BASENAME}.${BL32_SUFFIX}" "${DEPLOYDIR}/arm-trusted-firmware/bl32/${tfa_basename}-${BL32_BASENAME_DEPLOY}${soc_suffix}-${config}.${BL32_SUFFIX}"
+                    fi
+                    # Install BL32 devicetree
+                    if [ -f "${B}/${config}${soc_suffix}/fdts/${dt}-${BL32_BASENAME}.${DT_SUFFIX}" ]; then
+                        install -m 644 "${B}/${config}${soc_suffix}/fdts/${dt}-${BL32_BASENAME}.${DT_SUFFIX}" "${DEPLOYDIR}/arm-trusted-firmware/bl32/${dt}-${BL32_BASENAME}-${config}.${DT_SUFFIX}"
                     fi
                     if [ -n "${ELF_DEBUG_ENABLE}" ]; then
-                        install -d "${DEPLOYDIR}/arm-trusted-firmware/debug"
+                        install -d "${DEPLOYDIR}/arm-trusted-firmware/bl32/debug"
                         if [ -f "${B}/${config}${soc_suffix}/${BL32_ELF}" ]; then
-                            install -m 644 "${B}/${config}${soc_suffix}/${BL32_ELF}" "${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL32_BASENAME_DEPLOY}-${config}.${TF_A_ELF_SUFFIX}"
+                            install -m 644 "${B}/${config}${soc_suffix}/${BL32_ELF}" "${DEPLOYDIR}/arm-trusted-firmware/bl32/debug/${tfa_basename}-${BL32_BASENAME_DEPLOY}${soc_suffix}-${config}.${TF_A_ELF_SUFFIX}"
                         fi
                     fi
                     ;;
                 fwconfig)
                     # Install fwconfig
+                    install -d "${DEPLOYDIR}/arm-trusted-firmware/fwconfig"
                     if [ -f "${B}/${config}${soc_suffix}/fdts/${dt}-${FWCONFIG_NAME}.${DT_SUFFIX}" ]; then
-                        install -d "${DEPLOYDIR}/arm-trusted-firmware/fwconfig"
                         install -m 644 "${B}/${config}${soc_suffix}/fdts/${dt}-${FWCONFIG_NAME}.${DT_SUFFIX}" "${DEPLOYDIR}/arm-trusted-firmware/fwconfig/${dt}-${FWCONFIG_NAME}-${config}.${DT_SUFFIX}"
                     fi
                     ;;

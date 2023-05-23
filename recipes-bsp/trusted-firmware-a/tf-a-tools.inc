@@ -1,9 +1,8 @@
 FILESEXTRAPATHS:prepend := "${THISDIR}/tf-a-tools:"
 
 SRC_URI:append = " \
+    file://0001-FIX-GCC-tools-overwrite.patch \
     file://0001-tools-allow-to-use-a-root-key-password-from-command-.patch \
-    file://0002-fix-fiptool-respect-OPENSSL_DIR.patch \
-    file://0003-FIX-openssl-for-nativesdk.patch \
     "
 
 DEPENDS += "dtc-native openssl"

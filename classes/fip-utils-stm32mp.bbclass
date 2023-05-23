@@ -37,11 +37,13 @@ FIPTOOL_WRAPPER ?= "fiptool-stm32mp"
 # Default FIP file names and suffixes
 FIP_BL31        ?= "tf-a-bl31"
 FIP_BL31_SUFFIX ?= "bin"
+FIP_BL31_DTB        ?= "bl31"
+FIP_BL31_DTB_SUFFIX ?= "dtb"
 FIP_TFA        ?= "tf-a-bl32"
 FIP_TFA_SUFFIX ?= "bin"
 FIP_TFA_DTB        ?= "bl32"
 FIP_TFA_DTB_SUFFIX ?= "dtb"
-FIP_FW_CONFIG ?= "fw-config"
+FIP_FW_CONFIG        ?= "fw-config"
 FIP_FW_CONFIG_SUFFIX ?= "dtb"
 FIP_OPTEE_HEADER   ?= "tee-header_v2"
 FIP_OPTEE_PAGER    ?= "tee-pager_v2"
@@ -153,21 +155,25 @@ do_deploy:append:class-target() {
             # Init FIP bl31 settings
             if [ "${FIP_BL31_ENABLE}" = "1" ]; then
                 # Check for files
-                [ -f "${FIP_DEPLOYDIR_BL31}/${FIP_BL31}${soc_suffix}.${FIP_BL31_SUFFIX}" ] || bbfatal "No ${FIP_BL31}${soc_suffix}.${FIP_BL31_SUFFIX} file in folder: ${FIP_DEPLOYDIR_BL31}"
+                [ -f "${FIP_DEPLOYDIR_BL31}/${FIP_BL31}${soc_suffix}-${config}.${FIP_BL31_SUFFIX}" ] || bbfatal "Missing ${FIP_BL31}${soc_suffix}-${config}.${FIP_BL31_SUFFIX} file in folder: ${FIP_DEPLOYDIR_BL31}"
+                [ -f "${FIP_DEPLOYDIR_BL31}/${dt}-${FIP_BL31_DTB}-${config}.${FIP_BL31_DTB_SUFFIX}" ] || bbfatal "Missing ${dt}-${FIP_BL31_DTB}-${config}.${FIP_BL31_DTB_SUFFIX} file in folder: ${FIP_DEPLOYDIR_BL31}"
                 # Set FIP_BL31CONF
-                FIP_BL31CONF="--soc-fw ${FIP_DEPLOYDIR_BL31}/${FIP_BL31}${soc_suffix}.${FIP_BL31_SUFFIX}"
+                FIP_BL31CONF="\
+                    --soc-fw ${FIP_DEPLOYDIR_BL31}/${FIP_BL31}${soc_suffix}-${config}.${FIP_BL31_SUFFIX} \
+                    --soc-fw-config ${FIP_DEPLOYDIR_BL31}/${dt}-${FIP_BL31_DTB}-${config}.${FIP_BL31_DTB_SUFFIX} \
+                    "
             else
                 FIP_BL31CONF=""
             fi
             # Init FIP extra conf settings
             if [ "${bl32_conf}" = "${FIP_CONFIG_FW_TFA}" ]; then
                 # Check for files
-                [ -f "${FIP_DEPLOYDIR_TFA}/${FIP_TFA}${soc_suffix}.${FIP_TFA_SUFFIX}" ] || bbfatal "No ${FIP_TFA}${soc_suffix}.${FIP_TFA_SUFFIX} file in folder: ${FIP_DEPLOYDIR_TFA}"
-                [ -f "${FIP_DEPLOYDIR_TFA}/${dt}-${FIP_TFA_DTB}.${FIP_TFA_DTB_SUFFIX}" ] || bbfatal "No ${dt}-${FIP_TFA_DTB}.${FIP_TFA_DTB_SUFFIX} file in folder: ${FIP_DEPLOYDIR_TFA}"
+                [ -f "${FIP_DEPLOYDIR_TFA}/${FIP_TFA}${soc_suffix}-${config}.${FIP_TFA_SUFFIX}" ] || bbfatal "Missing ${FIP_TFA}${soc_suffix}-${config}.${FIP_TFA_SUFFIX} file in folder: ${FIP_DEPLOYDIR_TFA}"
+                [ -f "${FIP_DEPLOYDIR_TFA}/${dt}-${FIP_TFA_DTB}-${config}.${FIP_TFA_DTB_SUFFIX}" ] || bbfatal "Missing ${dt}-${FIP_TFA_DTB}-${config}.${FIP_TFA_DTB_SUFFIX} file in folder: ${FIP_DEPLOYDIR_TFA}"
                 # Set FIP_EXTRACONF
                 FIP_EXTRACONF="\
-                    --tos-fw ${FIP_DEPLOYDIR_TFA}/${FIP_TFA}${soc_suffix}.${FIP_TFA_SUFFIX} \
-                    --tos-fw-config ${FIP_DEPLOYDIR_TFA}/${dt}-${FIP_TFA_DTB}.${FIP_TFA_DTB_SUFFIX} \
+                    --tos-fw ${FIP_DEPLOYDIR_TFA}/${FIP_TFA}${soc_suffix}-${config}.${FIP_TFA_SUFFIX} \
+                    --tos-fw-config ${FIP_DEPLOYDIR_TFA}/${dt}-${FIP_TFA_DTB}-${config}.${FIP_TFA_DTB_SUFFIX} \
                     "
             elif [ "${bl32_conf}" = "${FIP_CONFIG_FW_TEE}" ]; then
                 # Check for files
@@ -274,6 +280,7 @@ function bbfatal() { echo "\$*" ; exit 1 ; }
 
 # Set default TF-A FIP config
 FIP_CONFIG="\${FIP_CONFIG:-${FIP_CONFIG}}"
+FIP_BL31_ENABLE="\${FIP_BL31_ENABLE:-${FIP_BL31_ENABLE}}"
 FIP_BL32_CONF=""
 FIP_DEVICETREE="\${FIP_DEVICETREE:-}"
 
@@ -323,6 +330,7 @@ fi
 FIP_DEPLOYDIR_ROOT="\${FIP_DEPLOYDIR_ROOT:-}"
 FIP_DEPLOYDIR_FIP="\${FIP_DEPLOYDIR_FIP:-\$FIP_DEPLOYDIR_ROOT/fip}"
 FIP_DEPLOYDIR_TFA="\${FIP_DEPLOYDIR_TFA:-\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl32}"
+FIP_DEPLOYDIR_BL31="\${FIP_DEPLOYDIR_BL31:-\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl31}"
 FIP_DEPLOYDIR_FWCONF="\${FIP_DEPLOYDIR_FWCONF:-\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/fwconfig}"
 FIP_DEPLOYDIR_OPTEE="\${FIP_DEPLOYDIR_OPTEE:-\$FIP_DEPLOYDIR_ROOT/optee}"
 FIP_DEPLOYDIR_UBOOT="\${FIP_DEPLOYDIR_UBOOT:-\$FIP_DEPLOYDIR_ROOT/u-boot}"
@@ -338,8 +346,14 @@ for config in \$FIP_CONFIG; do
     echo "    devicetree config: \${dt_config}"
 done
 echo ""
+echo "Switch configuration:"
+echo "  FIP_BL31_ENABLE : \$FIP_BL31_ENABLE"
+echo ""
+echo "Output folders:"
+echo "  FIP_DEPLOYDIR_ROOT  : \$FIP_DEPLOYDIR_ROOT"
 echo "  FIP_DEPLOYDIR_FIP   : \$FIP_DEPLOYDIR_FIP"
 echo "  FIP_DEPLOYDIR_TFA   : \$FIP_DEPLOYDIR_TFA"
+echo "  FIP_DEPLOYDIR_BL31  : \$FIP_DEPLOYDIR_BL31"
 echo "  FIP_DEPLOYDIR_FWCONF: \$FIP_DEPLOYDIR_FWCONF"
 echo "  FIP_DEPLOYDIR_OPTEE : \$FIP_DEPLOYDIR_OPTEE"
 echo "  FIP_DEPLOYDIR_UBOOT : \$FIP_DEPLOYDIR_UBOOT"
@@ -366,15 +380,28 @@ for config in \$FIP_CONFIG; do
         # Init FIP nt-fw config
         [ -f "\$FIP_DEPLOYDIR_UBOOT/${FIP_UBOOT}\${soc_suffix}.${FIP_UBOOT_SUFFIX}" ] || bbfatal "Missing ${FIP_UBOOT}\${soc_suffix}.${FIP_UBOOT_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_UBOOT' or '\\\$FIP_DEPLOYDIR_ROOT/u-boot'"
         FIP_NTFW="--nt-fw \$FIP_DEPLOYDIR_UBOOT/${FIP_UBOOT}\${soc_suffix}.${FIP_UBOOT_SUFFIX}"
+        # Init FIP bl31 settings
+        if [ "\$FIP_BL31_ENABLE" = "1" ]; then
+            # Check for files
+            [ -f "\$FIP_DEPLOYDIR_BL31/${FIP_BL31}\${soc_suffix}-\${config}.${FIP_BL31_SUFFIX}" ] || bbfatal "Missing \$FIP_DEPLOYDIR_BL31/${FIP_BL31}\${soc_suffix}-\${config}.${FIP_BL31_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_BL31' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl31'"
+            [ -f "\$FIP_DEPLOYDIR_BL31/\${dt}-${FIP_BL31_DTB}-\${config}.${FIP_BL31_DTB_SUFFIX}" ] || bbfatal "Missing \${dt}-${FIP_BL31_DTB}-\${config}.${FIP_BL31_DTB_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_BL31' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl31'"
+            # Set FIP_BL31CONF
+            FIP_BL31CONF="\\
+                --soc-fw \$FIP_DEPLOYDIR_BL31/${FIP_BL31}\${soc_suffix}-\${config}.${FIP_BL31_SUFFIX} \\
+                --soc-fw-config \$FIP_DEPLOYDIR_BL31/\${dt}-${FIP_BL31_DTB}-\${config}.${FIP_BL31_DTB_SUFFIX} \\
+                "
+        else
+            FIP_BL31CONF=""
+        fi
         # Init FIP extra conf settings
         if [ "\${bl32_conf}" = "${FIP_CONFIG_FW_TFA}" ]; then
             # Check for files
-            [ -f "\$FIP_DEPLOYDIR_TFA/${FIP_TFA}\${soc_suffix}.${FIP_TFA_SUFFIX}" ] || bbfatal "No ${FIP_TFA}\${soc_suffix}.${FIP_TFA_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_TFA' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl32'"
-            [ -f "\$FIP_DEPLOYDIR_TFA/\${dt}-${FIP_TFA_DTB}.${FIP_TFA_DTB_SUFFIX}" ] || bbfatal "No \${dt}-${FIP_TFA_DTB}.${FIP_TFA_DTB_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_TFA' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl32'"
+            [ -f "\$FIP_DEPLOYDIR_TFA/${FIP_TFA}\${soc_suffix}-\${config}.${FIP_TFA_SUFFIX}" ] || bbfatal "Missing ${FIP_TFA}\${soc_suffix}-\${config}.${FIP_TFA_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_TFA' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl32'"
+            [ -f "\$FIP_DEPLOYDIR_TFA/\${dt}-${FIP_TFA_DTB}-\${config}.${FIP_TFA_DTB_SUFFIX}" ] || bbfatal "Missing \${dt}-${FIP_TFA_DTB}-\${config}.${FIP_TFA_DTB_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_TFA' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl32'"
             # Set FIP_EXTRACONF
             FIP_EXTRACONF="\\
-                --tos-fw \$FIP_DEPLOYDIR_TFA/${FIP_TFA}\${soc_suffix}.${FIP_TFA_SUFFIX} \\
-                --tos-fw-config \$FIP_DEPLOYDIR_TFA/\${dt}-${FIP_TFA_DTB}.${FIP_TFA_DTB_SUFFIX} \\
+                --tos-fw \$FIP_DEPLOYDIR_TFA/${FIP_TFA}\${soc_suffix}-\${config}.${FIP_TFA_SUFFIX} \\
+                --tos-fw-config \$FIP_DEPLOYDIR_TFA/\${dt}-${FIP_TFA_DTB}-\${config}.${FIP_TFA_DTB_SUFFIX} \\
                 "
         elif [ "\${bl32_conf}" = "${FIP_CONFIG_FW_TEE}" ]; then
             # Check for files
@@ -397,6 +424,7 @@ for config in \$FIP_CONFIG; do
                         \$FIP_FWCONFIG \\
                         \$FIP_HWCONFIG \\
                         \$FIP_NTFW \\
+                        \$FIP_BL31CONF \\
                         \$FIP_EXTRACONF \\
                         \$FIP_DEPLOYDIR_FIP/${FIP_BASENAME}-\${dt}-\${config}.${FIP_SUFFIX}
         echo "[${FIPTOOL}] Done"

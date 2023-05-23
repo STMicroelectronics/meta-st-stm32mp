@@ -17,10 +17,12 @@ SRC_PATH ?= \$(PWD)
 BLD_PATH ?= \$(SRC_PATH)/../build
 DEPLOYDIR ?= \$(SRC_PATH)/../deploy
 
+BL31_DEPLOYDIR     ?= \$(DEPLOYDIR)/bl31
 BL32_DEPLOYDIR     ?= \$(DEPLOYDIR)/bl32
 FWCONFIG_DEPLOYDIR ?= \$(DEPLOYDIR)/fwconfig
 
 # Configure default TF-A features
+TF_A_ENABLE_BL31 ?= ${FIP_BL31_ENABLE}
 TF_A_ENABLE_DEBUG_WRAPPER ?= ${TF_A_ENABLE_DEBUG_WRAPPER}
 
 # Set default TF-A config
@@ -45,7 +47,6 @@ TF_A_DEVICETREE_$config ?= $(echo ${TF_A_DEVICETREE} | cut -d',' -f${i})
 TF_A_EXTRA_OPTFLAGS_$config ?= $(echo ${TF_A_EXTRA_OPTFLAGS} | cut -d',' -f${i})
 TF_A_BINARY_$config ?= $(echo ${TF_A_BINARIES} | cut -d',' -f${i})
 TF_A_MAKE_TARGET_$config ?= $(echo ${TF_A_MAKE_TARGET} | cut -d',' -f${i})
-
 EOF
     done
     cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk
@@ -99,15 +100,26 @@ deploy-\$(1)-\$(2): tf-\$(1)-\$(2)
 				stm32wrapper4dbg -s \$(BLD_PATH)/\$(1)-\$(2)/\$(3)-\$(dt).${TF_A_SUFFIX} -d \$(DEPLOYDIR)/debug/debug-\$(3)-\$(dt)-\$(1).${TF_A_SUFFIX} ; \\
 			fi ; \\
 		fi ; \\
+		if [ -f \$(BLD_PATH)/\$(1)-\$(2)/${BL31_BASENAME}.${BL31_SUFFIX} ] ; then \\
+			mkdir -p \$(BL31_DEPLOYDIR) ; \\
+			cp -f \$(BLD_PATH)/\$(1)-\$(2)/${BL31_BASENAME}.${BL31_SUFFIX} \$(BL31_DEPLOYDIR)/\$(3)-${BL31_BASENAME}-\$(2)-\$(1).${BL31_SUFFIX} ; \\
+			if [ -f \$(BLD_PATH)/\$(1)-\$(2)/fdts/\$(dt)-${BL31_BASENAME}.${DT_SUFFIX} ]; then \\
+				cp -f \$(BLD_PATH)/\$(1)-\$(2)/fdts/\$(dt)-${BL31_BASENAME}.${DT_SUFFIX} \$(BL31_DEPLOYDIR)/\$(dt)-${BL31_BASENAME}-\$(1).${DT_SUFFIX}; \\
+			fi ; \\
+			if [ -f \$(BLD_PATH)/\$(1)-\$(2)/${BL31_ELF} ]; then \\
+				mkdir -p \$(BL31_DEPLOYDIR)/debug ; \\
+				cp -f \$(BLD_PATH)/\$(1)-\$(2)/${BL31_ELF} \$(BL31_DEPLOYDIR)/debug/\$(3)-${BL31_BASENAME}-\$(2)-\$(1).${TF_A_ELF_SUFFIX} ; \\
+			fi ; \\
+		fi ; \\
 		if [ -f \$(BLD_PATH)/\$(1)-\$(2)/${BL32_BASENAME}.${BL32_SUFFIX} ] ; then \\
 			mkdir -p \$(BL32_DEPLOYDIR) ; \\
-			cp -f \$(BLD_PATH)/\$(1)-\$(2)/${BL32_BASENAME}.${BL32_SUFFIX} \$(BL32_DEPLOYDIR)/\$(3)-${BL32_BASENAME}-\$(2).${BL32_SUFFIX} ; \\
+			cp -f \$(BLD_PATH)/\$(1)-\$(2)/${BL32_BASENAME}.${BL32_SUFFIX} \$(BL32_DEPLOYDIR)/\$(3)-${BL32_BASENAME}-\$(2)-\$(1).${BL32_SUFFIX} ; \\
 			if [ -f \$(BLD_PATH)/\$(1)-\$(2)/fdts/\$(dt)-${BL32_BASENAME}.${DT_SUFFIX} ]; then \\
-				cp -f \$(BLD_PATH)/\$(1)-\$(2)/fdts/\$(dt)-${BL32_BASENAME}.${DT_SUFFIX} \$(BL32_DEPLOYDIR)/ ; \\
+				cp -f \$(BLD_PATH)/\$(1)-\$(2)/fdts/\$(dt)-${BL32_BASENAME}.${DT_SUFFIX} \$(BL32_DEPLOYDIR)/\$(dt)-${BL32_BASENAME}-\$(1).${DT_SUFFIX} ; \\
 			fi ; \\
 			if [ -f \$(BLD_PATH)/\$(1)-\$(2)/${BL32_ELF} ]; then \\
 				mkdir -p \$(BL32_DEPLOYDIR)/debug ; \\
-				mv -f \$(BLD_PATH)/\$(1)-\$(2)/${BL32_ELF} \$(BL32_DEPLOYDIR)/debug/\$(3)-${BL32_BASENAME}-\$(2).${TF_A_ELF_SUFFIX} ; \\
+				cp -f \$(BLD_PATH)/\$(1)-\$(2)/${BL32_ELF} \$(BL32_DEPLOYDIR)/debug/\$(3)-${BL32_BASENAME}-\$(2)-\$(1).${TF_A_ELF_SUFFIX} ; \\
 			fi ; \\
 		fi ; \\
 		if [ -f \$(BLD_PATH)/\$(1)-\$(2)/fdts/\$(dt)-${FWCONFIG_NAME}.${DT_SUFFIX} ]; then \\
@@ -116,9 +128,6 @@ deploy-\$(1)-\$(2): tf-\$(1)-\$(2)
 		fi ; \\
 		if [ -f \$(BLD_PATH)/\$(1)-\$(2)/${BL2_ELF} ] ; then \\
 			cp -f \$(BLD_PATH)/\$(1)-\$(2)/${BL2_ELF} \$(DEPLOYDIR)/debug/\$(3)-${BL2_BASENAME}-\$(2)-\$(1).${TF_A_ELF_SUFFIX} ; \\
-		fi ; \\
-		if [ -f \$(BLD_PATH)/\$(1)-\$(2)/${BL32_ELF} ] ; then \\
-			cp -f \$(BLD_PATH)/\$(1)-\$(2)/${BL32_ELF} \$(DEPLOYDIR)/debug/\$(2)-${BL32_BASENAME}-\$(1).${TF_A_ELF_SUFFIX} ; \\
 		fi ; \\
 	)
 endef
@@ -145,12 +154,14 @@ help:
 	@echo "  TF_A_MAKE_TARGET"
 	@echo
 	@echo "TF-A features configuration:"
+	@echo "  TF_A_ENABLE_BL31 = \$(TF_A_ENABLE_BL31) ('1' to generate bl31 binary)"
 	@echo "  TF_A_ENABLE_DEBUG_WRAPPER = \$(TF_A_ENABLE_DEBUG_WRAPPER) ('1' to generate tf-a for debugging)"
 	@echo
 	@echo "TF-A folder configuration:"
 	@echo "  SRC_PATH  = \$(SRC_PATH)"
 	@echo "  BLD_PATH  = \$(BLD_PATH)"
 	@echo "  DEPLOYDIR = \$(DEPLOYDIR)"
+	@echo "  BL31_DEPLOYDIR     = \$(DEPLOYDIR)/bl31"
 	@echo "  BL32_DEPLOYDIR     = \$(DEPLOYDIR)/bl32"
 	@echo "  FWCONFIG_DEPLOYDIR = \$(DEPLOYDIR)/fwconfig"
 	@echo
@@ -185,11 +196,8 @@ host_tools:
 
 fip: \$(deploy-targets)
 	for config in \$(TF_A_CONFIG) ; do \\
-		if [ "\$\$config" = "trusted" ]; then \\
-			FIP_DEPLOYDIR_TFA=\$(BL32_DEPLOYDIR) FIP_DEPLOYDIR_FWCONF=\$(FWCONFIG_DEPLOYDIR) FIP_DEVICETREE="\$(if \$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE_trusted))" FIP_CONFIG="trusted" FIP_BL32_CONF="tfa" fiptool-stm32mp ; \\
-		fi ; \\
 		if [ "\$\$config" = "optee" ]; then \\
-			FIP_DEPLOYDIR_TFA=\$(BL32_DEPLOYDIR) FIP_DEPLOYDIR_FWCONF=\$(FWCONFIG_DEPLOYDIR) FIP_DEVICETREE="\$(if \$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE_optee))" FIP_CONFIG="optee" FIP_BL32_CONF="optee" fiptool-stm32mp ; \\
+			FIP_DEPLOYDIR_TFA=\$(BL32_DEPLOYDIR) FIP_DEPLOYDIR_BL31=\$(BL31_DEPLOYDIR) FIP_DEPLOYDIR_FWCONF=\$(FWCONFIG_DEPLOYDIR) FIP_DEVICETREE="\$(if \$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE),\$(TF_A_DEVICETREE_optee))" FIP_CONFIG="optee" FIP_BL31_ENABLE="\$(TF_A_ENABLE_BL31)" FIP_BL32_CONF="optee" fiptool-stm32mp ; \\
 		fi ; \\
 	done
 

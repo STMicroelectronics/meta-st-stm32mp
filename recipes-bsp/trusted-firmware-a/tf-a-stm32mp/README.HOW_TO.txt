@@ -83,7 +83,7 @@ have 3 solutions to use git:
 
 4.3 Get Git from Arm Software community and apply STMicroelectronics patches
 ---------------------------------------------------------------
-    URL: git://github.com/ARM-software/arm-trusted-firmware.git
+    URL: git:/git.trustedfirmware.org/TF-A/trusted-firmware-a.git
     Branch: ##ARCHIVER_COMMUNITY_BRANCH##
     Revision: ##ARCHIVER_COMMUNITY_REVISION##
 
