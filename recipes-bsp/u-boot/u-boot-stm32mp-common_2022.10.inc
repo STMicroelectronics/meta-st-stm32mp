@@ -4,7 +4,9 @@ HOMEPAGE = "http://www.denx.de/wiki/U-Boot/WebHome"
 SECTION = "bootloaders"
 
 LICENSE = "GPL-2.0-or-later"
-LIC_FILES_CHKSUM = "file://Licenses/README;md5=5a7450c57ffe5ae63fd732446b988025"
+LIC_FILES_CHKSUM = "file://Licenses/README;md5=2ca5f2c35c8cc335f0a19756634782f1"
+
+CVE_PRODUCT = "denx:u-boot"
 
 DEPENDS += "dtc-native bc-native"
 DEPENDS += "flex-native bison-native"
@@ -13,28 +15,31 @@ DEPENDS += "python3-setuptools-native"
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 
 SRC_URI = "git://github.com/u-boot/u-boot.git;protocol=https;branch=master"
-SRCREV  = "d80bb749fab53da72c4a0e09b8c2d2aaa3103c91"
+SRCREV  = "4debc57a3da6c3f4d3f89a637e99206f4cea0a96"
 
-SRC_URI += "\
-    file://0001-ARM-v2021.10-stm32mp-r1-MACHINE.patch \
-    file://0002-ARM-v2021.10-stm32mp-r1-BOARD.patch \
-    file://0003-ARM-v2021.10-stm32mp-r1-MISC-DRIVERS.patch \
-    file://0004-ARM-v2021.10-stm32mp-r1-DEVICETREE.patch \
-    file://0005-ARM-v2021.10-stm32mp-r1-CONFIG.patch \
-    file://0006-ARM-v2021.10-stm32mp-r2-MACHINE.patch \
-    file://0007-ARM-v2021.10-stm32mp-r2-BOARD.patch \
-    file://0008-ARM-v2021.10-stm32mp-r2-MISC-DRIVERS.patch \
-    file://0009-ARM-v2021.10-stm32mp-r2-DEVICETREE.patch \
+SRC_URI += " \
+    file://0001-${U_BOOT_VERSION}-${U_BOOT_SUBVERSION}-${U_BOOT_RELEASE}-MACHINE.patch \
+    file://0002-${U_BOOT_VERSION}-${U_BOOT_SUBVERSION}-${U_BOOT_RELEASE}-BOARD.patch \
+    file://0003-${U_BOOT_VERSION}-${U_BOOT_SUBVERSION}-${U_BOOT_RELEASE}-MISC-DRIVERS.patch \
+    file://0004-${U_BOOT_VERSION}-${U_BOOT_SUBVERSION}-${U_BOOT_RELEASE}-DEVICETREE.patch \
+    file://0005-${U_BOOT_VERSION}-${U_BOOT_SUBVERSION}-${U_BOOT_RELEASE}-CONFIG.patch \
     \
     file://0099-Add-external-var-to-allow-build-of-new-devicetree-fi.patch \
 "
 
 # debug and trace
 SRC_URI += "${@bb.utils.contains('ST_UBOOT_DEBUG_TRACE', '1', '', 'file://0098-silent_mode.patch', d)}"
+SRC_URI += "${@bb.utils.contains('ST_UBOOT_DEBUG_TRACE', '1', '', 'file://fragment-01-silent_mode.cfg;subdir=fragments/features', d)}"
 
-U_BOOT_VERSION = "v2021.10"
+# optional config
+SRC_URI += "${@bb.utils.contains('UBOOT_SIGN_ENABLE', '1', 'file://fragment-02-signature.cfg;subdir=fragments/features', '', d)}"
+
+# efi config
+SRC_URI += "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'file://fragment-03-efi.cfg;subdir=fragments/features', '', d)}"
+
+U_BOOT_VERSION = "v2022.10"
 U_BOOT_SUBVERSION = "stm32mp"
-U_BOOT_RELEASE = "r2"
+U_BOOT_RELEASE = "r1"
 
 PV = "${U_BOOT_VERSION}-${U_BOOT_SUBVERSION}-${U_BOOT_RELEASE}"
 
@@ -51,7 +56,7 @@ S = "${WORKDIR}/git"
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/u-boot.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV:class-devupstream = "3984366f6997c680b8c6ccc82d50e77a6e1cccf2"
+SRCREV:class-devupstream = "aa6822adfbe7b0b89d646e987505a740511878e2"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

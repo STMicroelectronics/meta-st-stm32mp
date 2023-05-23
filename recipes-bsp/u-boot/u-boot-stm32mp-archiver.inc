@@ -100,9 +100,6 @@ uboot-\$(1):: configure-\$(1)
 		if [ -f \$(BLD_PATH)/\$(1)/\$(shell echo \$(3) | cut -d'.' -f1).stm32 ]; then \\
 			cp -f \$(BLD_PATH)/\$(1)/\$(shell echo \$(3) | cut -d'.' -f1).stm32 \$(DEPLOYDIR)/u-boot-\$(dt).stm32 ; \\
 		fi ; \\
-		if [ -f \$(BLD_PATH)/\$(1)/${SPL_BINARY_STM32} ]; then \\
-			cp -f \$(BLD_PATH)/\$(1)/${SPL_BINARY_STM32} \$(DEPLOYDIR)/${SPL_BINARYNAME}-\$(dt); \\
-		fi ; \\
 	)
 endef
 
@@ -117,9 +114,6 @@ deploy-\$(1):: uboot-\$(1)
 		fi ; \\
 		if [ -f \$(BLD_PATH)/\$(1)/${UBOOT_ELF} ]; then \\
 			cp -f \$(BLD_PATH)/\$(1)/${UBOOT_ELF} \$(DEPLOYDIR)/debug/u-boot\$(strip \$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),-\$(soc),))).${UBOOT_ELF_SUFFIX} ; \\
-		fi ; \\
-		if [ -f \$(BLD_PATH)/\$(1)/${SPL_ELF} ]; then \\
-			cp -f \$(BLD_PATH)/\$(1)/${SPL_ELF} \$(DEPLOYDIR)/debug/${SPL_ELF_NAME}\$(strip \$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),-\$(soc),))); \\
 		fi ; \\
 	)
 endef
