@@ -21,3 +21,4 @@ FILES:${PN} += "${datadir}/gcc-arm-none-eabi"
 # Some library files in the tarball are not at the expected place,
 # and it's working. But QA will complain, so skip the complaint on libdir
 INSANE_SKIP:${PN} += "libdir"
+
