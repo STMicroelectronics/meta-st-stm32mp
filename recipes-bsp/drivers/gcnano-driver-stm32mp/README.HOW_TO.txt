@@ -17,7 +17,7 @@ OpenSTLinux SDK must be installed.
 
 * Compile and install the gcnano kernel module
     $> tar xf ##BP##-##PR##.tar.xz
-    $> cd ##GCNANO_TARNAME##
+    $> cd ##BP##
     $> KERNEL_BUILDDIR="../../linux-stm32mp-<KERNELVERSION>-stm32mp-<RELEASE>/build"
     * Build kernel module
     $> make ARCH=arm SOC_PLATFORM=st-mp1 DEBUG=0 O="${KERNEL_BUILDDIR}" M="${PWD}" AQROOT="${PWD}" -C ${KERNEL_BUILDDIR}
@@ -43,14 +43,15 @@ OpenSTLinux SDK must be installed.
 4. Update Starter Package with gcnano kernel module compilation outputs
 ---------------------------
 
-<-- Section under construction -->
-
 If not already done, extract the artifacts from Starter Package tarball, for example:
     # tar xf en.FLASH-stm32mp1-*.tar.xz
 
+Update Starter package with just compiled kernel module galcore.ko:
 Move to Starter Package root folder,
-    #> cd <your_starter_package_dir_path>
-Cleanup Starter Package from original gcnano kernel module artifacts first
-    #> echo "*** Section under construction ***"
-
-<-- Section under construction -->
+    #> mkdir -p <your_starter_package_dir_path>/rootfs_mounted
+    #> sudo mount -o loop <your_starter_package_dir_path>/images/stm32mp1/st-image-weston-openstlinux-weston-stm32mp1.ext4 <your_starter_package_dir_path>/rootfs_mounted
+    #> sudo mkdir -p <your_starter_package_dir_path>/rootfs_mounted/lib/modules/*/extra
+    #> sudo cp -vf */galcore.ko  <your_starter_package_dir_path>/rootfs_mounted/lib/modules/*/extra
+    #> sudo depmod -a -b <your_starter_package_dir_path>/rootfs_mounted $(\ls <your_starter_package_dir_path>/rootfs_mounted/lib/modules)
+    #> sudo umount <your_starter_package_dir_path>/rootfs_mounted
+    #> rmdir <your_starter_package_dir_path>/rootfs_mounted

@@ -1,17 +1,17 @@
 require gcnano-userland.inc
 
 LICENSE = "Proprietary"
-LIC_FILES_CHKSUM = "file://${GCNANO_TAR_FILENAME}/LICENSE;md5=dd36864f287701862a189a69fc50f1d8"
+LIC_FILES_CHKSUM = "file://${GCNANO_TAR_FILENAME}/LICENSE;md5=0e85fa534ee3a1a7f5ccc65cd6e789f9"
 
 DEPENDS += " libdrm wayland "
 
 SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries;protocol=https;branch=gcnano-${GCNANO_VERSION}-binaries"
-SRCREV = "787d3311e1bae40805fe2091be653eaadf059611"
+SRCREV = "5d02efd5cb4cfa85307633891f3cf87550a8bc1d"
 
 PV = "${GCNANO_VERSION}+${GCNANO_DATE}"
 
-GCNANO_VERSION = "6.4.9"
-GCNANO_DATE = "20221020"
+GCNANO_VERSION = "6.4.13"
+GCNANO_DATE = "20230517"
 
 S = "${WORKDIR}/git"
 B = "${S}/${GCNANO_TAR_FILENAME}"
