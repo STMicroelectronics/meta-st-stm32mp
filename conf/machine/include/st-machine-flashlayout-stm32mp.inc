@@ -76,7 +76,7 @@ FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', 'nand-4-256', '', d)}"
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', 'nor-sdcard', '', d)}"
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'nor', '', d)}"
-FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'sdcard', '', d)}"
+FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', bb.utils.contains('MACHINE_FEATURES', 'efi', 'sdcard sdcard-EFI', 'sdcard', d), '', d)}"
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', 'spinand-2-128', '', d)}"
 
 # Set by default this variable to 0, and set to 1 only when we are using st-example-image-*
@@ -114,6 +114,7 @@ FLASHLAYOUT_TYPE_LABELS:nor-sdcard = "${DEVICE_BOARD_ENABLE:NOR}"
 # SDCARD
 # Set flashlayout file generation for all boards
 FLASHLAYOUT_TYPE_LABELS:sdcard = "${DEVICE_BOARD_ENABLE:SDCARD}"
+FLASHLAYOUT_TYPE_LABELS:sdcard-EFI = "${DEVICE_BOARD_ENABLE:SDCARD}"
 # SPINAND
 # Set flashlayout file generation for all boards
 FLASHLAYOUT_TYPE_LABELS:spinand-2-128 = "${DEVICE_BOARD_ENABLE:SPINAND}"
@@ -162,6 +163,11 @@ FLASHLAYOUT_PARTITION_LABELS:sdcard  = "\
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'sdcard').split()])} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'sdcard').split()])} \
     "
+FLASHLAYOUT_PARTITION_LABELS:sdcard-EFI = "\
+    ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'sdcard-EFI').split()])} \
+    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'sdcard-EFI').split()])} \
+    "
 FLASHLAYOUT_PARTITION_LABELS:spinand-2-128 = "\
     ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
     ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'spinand-2-128').split()])} \
@@ -189,6 +195,7 @@ FLASHLAYOUT_PARTITION_ENABLE:${STM32MP_SSBL_PROGAMMER_NAME} = "-"
 FLASHLAYOUT_PARTITION_ENABLE:empty = "PE"
 # Need to make sure to delete partition that contains U-Boot env before update (gpt partitions only)
 FLASHLAYOUT_PARTITION_ENABLE:sdcard:${STM32MP_SSBL1_NAME} = "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', '', 'PD', d)}"
+FLASHLAYOUT_PARTITION_ENABLE:sdcard-EFI:${STM32MP_SSBL1_NAME} = "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', '', 'PD', d)}"
 FLASHLAYOUT_PARTITION_ENABLE:emmc:${STM32MP_SSBL1_NAME} = "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', '', 'PD', d)}"
 
 # -----------------------------------------------------------------------------
@@ -212,6 +219,7 @@ FLASHLAYOUT_PARTITION_DEVICE:nand-4-256     = "none:${FLASHLAYOUT_PROGRAMMER_SEC
 FLASHLAYOUT_PARTITION_DEVICE:nor            = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE:NOR}:default"
 FLASHLAYOUT_PARTITION_DEVICE:nor-sdcard     = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE:NOR}:default,${DEVICE:SDCARD}:${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'nor-sdcard').split()])}"
 FLASHLAYOUT_PARTITION_DEVICE:sdcard         = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE:SDCARD}:default"
+FLASHLAYOUT_PARTITION_DEVICE:sdcard-EFI     = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE:SDCARD}:default"
 FLASHLAYOUT_PARTITION_DEVICE:spinand-2-128  = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE:SPINAND}:default"
 
 FLASHLAYOUT_PARTITION_OFFSET:${STM32MP_FSBL_PROGAMMER_NAME} = "0x0"
@@ -227,6 +235,7 @@ FLASHLAYOUT_PARTITION_SIZE:emmc:${STM32MP_ROOTFS_LABEL} = "3145728"
 # 4GiB for sdcard
 FLASHLAYOUT_PARTITION_SIZE:nor-sdcard:${STM32MP_ROOTFS_LABEL} = "4194304"
 FLASHLAYOUT_PARTITION_SIZE:sdcard:${STM32MP_ROOTFS_LABEL}     = "4194304"
+FLASHLAYOUT_PARTITION_SIZE:sdcard-EFI:${STM32MP_ROOTFS_LABEL} = "4194304"
 
 # Set binaries to use for each partition
 # -----------------------------------------------------------------------------

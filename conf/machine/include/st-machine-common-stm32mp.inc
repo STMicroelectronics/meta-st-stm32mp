@@ -70,7 +70,7 @@ SERIAL_CONSOLES = "${@d.getVar('SERIAL_CONSOLE').replace(' ', ';')}"
 RDEPENDS:${KERNEL_PACKAGE_NAME}-base = ""
 
 # Ship all kernel modules by default
-MACHINE_EXTRA_RRECOMMENDS = " kernel-modules kernel-imagebootfs"
+MACHINE_EXTRA_RRECOMMENDS = " kernel-modules ${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'kernel-imageefi', 'kernel-imagebootfs', d)}"
 
 # Default device tree list per supported storages
 STM32MP_DT_FILES_EMMC    ??= ""
@@ -138,7 +138,7 @@ PARTITIONS_BOOTLOADER_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc
 PARTITIONS_BOOTLOADER_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', 'nand-4-256', '', d)}"
 PARTITIONS_BOOTLOADER_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', 'nor-sdcard', '', d)}"
 PARTITIONS_BOOTLOADER_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'nor', '', d)}"
-PARTITIONS_BOOTLOADER_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'sdcard', '', d)}"
+PARTITIONS_BOOTLOADER_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', bb.utils.contains('MACHINE_FEATURES', 'efi', 'sdcard sdcard-EFI', 'sdcard', d), '', d)}"
 PARTITIONS_BOOTLOADER_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', 'spinand-2-128', '', d)}"
 
 # <binary_name>,<partlabel>,<size>,<type>,<copy>
@@ -179,6 +179,14 @@ PARTITIONS_BOOTLOADER_CONFIG[sdcard] ?= "\
     ${@ '${STM32MP_SSBL1_DATA},${STM32MP_SSBL1_NAME},${STM32MP_SSBL1_SIZE},FIP,1' if '${STM32MP_SSBL1_NAME}' else ''} \
     ${@ '${STM32MP_SSBL2_DATA},${STM32MP_SSBL2_NAME},${STM32MP_SSBL2_SIZE},FIP,1' if '${STM32MP_SSBL2_NAME}' else ''} \
     ${@ '${STM32MP_UENV_DATA},${STM32MP_UENV_NAME},${STM32MP_UENV_SIZE},Binary,1' if '${STM32MP_UENV_NAME}' else ''} \
+    "
+PARTITIONS_BOOTLOADER_CONFIG[sdcard-EFI] ?= "\
+    ${@ '${STM32MP_FSBL1_DATA},${STM32MP_FSBL1_NAME},${STM32MP_FSBL1_SIZE},Binary,' + bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', '2', '1', d) if '${STM32MP_FSBL1_NAME}' else ''} \
+    ${@ '${STM32MP_FSBL2_DATA},${STM32MP_FSBL2_NAME},${STM32MP_FSBL2_SIZE},Binary,1' if '${STM32MP_FSBL2_NAME}' and bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', False, True, d) else ''} \
+    ${@ '${STM32MP_METADATA_DATA},${STM32MP_METADATA_NAME},${STM32MP_METADATA_SIZE},FWU_MDATA,2' if '${STM32MP_METADATA_NAME}' else ''} \
+    ${@ '${STM32MP_SSBL1_DATA},${STM32MP_SSBL1_NAME},${STM32MP_SSBL1_SIZE},FIP,1' if '${STM32MP_SSBL1_NAME}' else ''} \
+    ${@ '${STM32MP_SSBL2_DATA},${STM32MP_SSBL2_NAME},${STM32MP_SSBL2_SIZE},FIP,1' if '${STM32MP_SSBL2_NAME}' else ''} \
+    ${@ '${STM32MP_UENV_DATA},${STM32MP_UENV_NAME},${STM32MP_UENV_SIZE},ENV,1' if '${STM32MP_UENV_NAME}' else ''} \
     "
 PARTITIONS_BOOTLOADER_CONFIG[spinand-2-128] ?= "\
     ${@ '${STM32MP_FSBL1_DATA},${STM32MP_FSBL1_NAME},${STM32MP_FSBL1_SIZE_UBOOT},Binary,2' if '${STM32MP_FSBL1_NAME}' else ''} \
@@ -238,12 +246,24 @@ ST_BOOTFS   ?= "1"
 ST_VENDORFS ?= "1"
 ST_USERFS   ?= "1"
 
-PARTITIONS_IMAGES += "${@bb.utils.contains('ST_BOOTFS', '1', 'bootfs', '', d)}"
+PARTITIONS_IMAGES += "${@bb.utils.contains('ST_BOOTFS', '1', bb.utils.contains('MACHINE_FEATURES', 'efi', 'bootfs efi', 'bootfs', d), '', d)}"
 PARTITIONS_IMAGES += "${@bb.utils.contains('ST_VENDORFS', '1', 'vendorfs', '', d)}"
 PARTITIONS_IMAGES += "rootfs"
 PARTITIONS_IMAGES += "${@bb.utils.contains('ST_USERFS', '1', 'userfs', '', d)}"
 
+# Configure the partition images list to use as default (for both ext4 and ubi)
+PARTITIONS_LIST += "${@bb.utils.contains('ST_BOOTFS', '1', 'bootfs', '', d)}"
+PARTITIONS_LIST += "${@bb.utils.contains('ST_VENDORFS', '1', 'vendorfs', '', d)}"
+PARTITIONS_LIST += "rootfs"
+PARTITIONS_LIST += "${@bb.utils.contains('ST_USERFS', '1', 'userfs', '', d)}"
+# Configure the partition images list to use for EFI boot
+PARTITIONS_LIST_EFI += "${@bb.utils.contains('ST_BOOTFS', '1', 'efi', '', d)}"
+PARTITIONS_LIST_EFI += "${@bb.utils.contains('ST_VENDORFS', '1', 'vendorfs', '', d)}"
+PARTITIONS_LIST_EFI += "rootfs"
+PARTITIONS_LIST_EFI += "${@bb.utils.contains('ST_USERFS', '1', 'userfs', '', d)}"
+
 # Define image to use for extra partitions
+STM32MP_BOOTFS_EFI_IMAGE ?= "st-image-bootfs-efi"
 STM32MP_BOOTFS_IMAGE      ?= "st-image-bootfs"
 STM32MP_BOOTFS_LABEL      ?= "bootfs"
 STM32MP_BOOTFS_MOUNTPOINT ?= "/boot"
@@ -266,6 +286,7 @@ STM32MP_VENDORFS_SIZE       ?= "16384"
 
 # <image_name>,<partition_label>,<mountpoint>,<size>,<type>
 PARTITIONS_IMAGES[bootfs]   ?= "${STM32MP_BOOTFS_IMAGE},${STM32MP_BOOTFS_LABEL},${STM32MP_BOOTFS_MOUNTPOINT},${STM32MP_BOOTFS_SIZE},System"
+PARTITIONS_IMAGES[efi]      ?= "${STM32MP_BOOTFS_EFI_IMAGE},${STM32MP_BOOTFS_LABEL},${STM32MP_BOOTFS_MOUNTPOINT},${STM32MP_BOOTFS_SIZE},ESP"
 PARTITIONS_IMAGES[vendorfs] ?= "${STM32MP_VENDORFS_IMAGE},${STM32MP_VENDORFS_LABEL},${STM32MP_VENDORFS_MOUNTPOINT},${STM32MP_VENDORFS_SIZE},FileSystem"
 PARTITIONS_IMAGES[rootfs]   ?= "${STM32MP_ROOTFS_IMAGE},${STM32MP_ROOTFS_LABEL},,${STM32MP_ROOTFS_SIZE},FileSystem"
 PARTITIONS_IMAGES[userfs]   ?= "${STM32MP_USERFS_IMAGE},${STM32MP_USERFS_LABEL},${STM32MP_USERFS_MOUNTPOINT},${STM32MP_USERFS_SIZE},FileSystem"
@@ -282,7 +303,7 @@ PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'emmc', 
 PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', 'nand-4-256', '', d)}"
 PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'nor', '', d)}"
 PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', 'nor-sdcard', '', d)}"
-PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'sdcard', '', d)}"
+PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', bb.utils.contains('MACHINE_FEATURES', 'efi', 'sdcard sdcard-EFI', 'sdcard', d), '', d)}"
 PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', 'spinand-2-128', '', d)}"
 
 PARTITIONS_SUFFIX ?= "ext4"
@@ -311,20 +332,23 @@ def partImage2partConfig(config, fstype, d):
 
 # <binary_name>,<partlabel>,<size>,<type>,<copy>
 PARTITIONS_CONFIG[emmc] ?= "\
-    ${@' '.join(['%s' % partImage2partConfig(config, '${PARTITIONS_SUFFIX}', d) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    ${@' '.join(['%s' % partImage2partConfig(config, '${PARTITIONS_SUFFIX}', d) for config in d.getVar('PARTITIONS_LIST').split()])} \
     "
 PARTITIONS_CONFIG[nand-4-256] ?= "\
     ${STM32MP_UBIFS_DATA},${STM32MP_UBIFS_NAME},${STM32MP_UBIFS_SIZE},System,1 \
     "
 PARTITIONS_CONFIG[nor] ?= "\
-    ${@' '.join(['%s' % partImage2partConfig(config, '${PARTITIONS_SUFFIX}', d) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    ${@' '.join(['%s' % partImage2partConfig(config, '${PARTITIONS_SUFFIX}', d) for config in d.getVar('PARTITIONS_LIST').split()])} \
     "
 PARTITIONS_CONFIG[nor-sdcard] ?= "\
-    ${@' '.join(['%s' % partImage2partConfig(config, '${PARTITIONS_SUFFIX}', d) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    ${@' '.join(['%s' % partImage2partConfig(config, '${PARTITIONS_SUFFIX}', d) for config in d.getVar('PARTITIONS_LIST').split()])} \
     "
 PARTITIONS_CONFIG[sdcard] ?= "\
-    ${@' '.join(['%s' % partImage2partConfig(config, '${PARTITIONS_SUFFIX}', d) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    ${@' '.join(['%s' % partImage2partConfig(config, '${PARTITIONS_SUFFIX}', d) for config in d.getVar('PARTITIONS_LIST').split()])} \
     "
+PARTITIONS_CONFIG[sdcard-EFI] ?= "\
+    ${@' '.join(['%s' % partImage2partConfig(config, 'vfat' if config == 'efi' else '${PARTITIONS_SUFFIX}', d) for config in d.getVar('PARTITIONS_LIST_EFI').split()])} \
+"
 PARTITIONS_CONFIG[spinand-2-128] ?= "\
     ${STM32MP_UBIFS_DATA},${STM32MP_UBIFS_NAME},${STM32MP_UBIFS_SIZE},System,1 \
 "
@@ -396,10 +420,10 @@ def partImage2ubiVolConfig(d, config):
     return part_format
 
 STM32MP_UBI_VOLUME_nand_4_256 ?= "\
-    ${@' '.join(['%s' % partImage2ubiVolConfig(d, config) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    ${@' '.join(['%s' % partImage2ubiVolConfig(d, config) for config in d.getVar('PARTITIONS_LIST').split()])} \
     "
 STM32MP_UBI_VOLUME_spinand_2_128 ?= "\
-    ${@' '.join(['%s' % partImage2ubiVolConfig(d, config) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    ${@' '.join(['%s' % partImage2ubiVolConfig(d, config) for config in d.getVar('PARTITIONS_LIST').split()])} \
     "
 
 # Manage specific override for UBI bootfs label name to 'boot' (hardcoded on U-Boot)
@@ -561,10 +585,13 @@ ST_DEBUG_TRACE ?= "1"
 # Kernel
 # =========================================================================
 # Kernel image type
-KERNEL_IMAGETYPE     =  "${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'fitImage', 'uImage', d)}"
+KERNEL_EFI_NAME = "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'zImage', 'uImage', d)}"
+KERNEL_EFI_ALT_NAME = "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'uImage', 'zImage', d)}"
+
+KERNEL_IMAGETYPE     =  "${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'fitImage', '${KERNEL_EFI_NAME}', d)}"
 KERNEL_ALT_IMAGETYPE =  " Image "
 KERNEL_ALT_IMAGETYPE =+ " vmlinux "
-KERNEL_ALT_IMAGETYPE =+ " ${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'uImage', 'zImage', d)} "
+KERNEL_ALT_IMAGETYPE =+ " ${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'uImage', '${KERNEL_EFI_ALT_NAME}', d)} "
 
 KERNEL_CLASSES = " ${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'kernel-fitimage', 'kernel-uimage', d)} "
 
@@ -745,3 +772,10 @@ M4_PACKAGE_4USERFS = "${@bb.utils.contains('ST_USERFS','1','1','0',d)}"
 # =========================================================================
 # Configure use of vendorfs if enable to install gcnano libs
 GCNANO_USERLAND_OUTPUT_LIBDIR = "${@bb.utils.contains('ST_VENDORFS', '1', '${STM32MP_VENDORFS_MOUNTPOINT}/lib', '${libdir}', d)}"
+
+# =========================================================================
+# EFI configuration
+# =========================================================================
+# For efi configuration
+IMAGE_CLASSES += "image_types-stfat"
+EFI_PROVIDER = ""
