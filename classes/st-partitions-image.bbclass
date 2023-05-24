@@ -84,15 +84,6 @@ python __anonymous () {
                         else:
                             # Set '/' as default mountpoint for rootfs in IMAGE_SUMMARY_LIST
                             image_summary_list += items[0] + ':' + '/' + ';'
-
-                    # Manage multiubi volume list STM32MP_UBI_VOLUME
-                    if bb.utils.contains('IMAGE_FSTYPES', 'stmultiubi', True, False, d) and d.getVar('ENABLE_MULTIVOLUME_UBI') == "1":
-                        # Get the MULTIUBI_BUILD list without any duplicates
-                        ubiconfigs = list(dict.fromkeys((d.getVar('MULTIUBI_BUILD') or "").split()))
-                        if len(ubiconfigs) > 0:
-                            for ubi_config in ubiconfigs:
-                                bb.debug(1, "Appending '%s' image with %s size to STM32MP_UBI_VOLUME." % (items[0], items[3]))
-                                d.appendVar('STM32MP_UBI_VOLUME_%s' % ubi_config, ' ' + items[0] + ',' + items[3])
                     break
 
     # Reset IMAGE_LIST_SUMMARY with computed partition configuration

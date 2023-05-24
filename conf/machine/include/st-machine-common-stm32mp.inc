@@ -357,18 +357,49 @@ UBINIZE_ARGS_spinand_2_128 = "--min-io-size 2048 --peb-size 128KiB"
 EXTRA_UBIFS_SIZE_spinand_2_128 = "1408"
 
 # Define two empty volumes to manage U-Boot config beginning of multivolume UBIFS
+STM32MP_MULTIUBI_UENV1_NAME ?= "U-Boot-env-1"
 STM32MP_MULTIUBI_UENV1_LABEL = "uboot_config"
 STM32MP_MULTIUBI_UENV1_SIZE ?= "256"
+STM32MP_MULTIUBI_UENV2_NAME ?= "U-Boot-env-2"
 STM32MP_MULTIUBI_UENV2_LABEL = "uboot_config_r"
 STM32MP_MULTIUBI_UENV2_SIZE ?= "${STM32MP_MULTIUBI_UENV1_SIZE}"
 
 STM32MP_UBI_VOLUME_nand_4_256:prepend = "\
-    ${STM32MP_MULTIUBI_UENV1_LABEL},${STM32MP_MULTIUBI_UENV1_SIZE},empty \
-    ${STM32MP_MULTIUBI_UENV2_LABEL},${STM32MP_MULTIUBI_UENV2_SIZE},empty \
+    ${STM32MP_MULTIUBI_UENV1_NAME},${STM32MP_MULTIUBI_UENV1_LABEL},${STM32MP_MULTIUBI_UENV1_SIZE},empty \
+    ${STM32MP_MULTIUBI_UENV2_NAME},${STM32MP_MULTIUBI_UENV2_LABEL},${STM32MP_MULTIUBI_UENV2_SIZE},empty \
     "
 STM32MP_UBI_VOLUME_spinand_2_128:prepend = "\
-    ${STM32MP_MULTIUBI_UENV1_LABEL},${STM32MP_MULTIUBI_UENV1_SIZE},empty \
-    ${STM32MP_MULTIUBI_UENV2_LABEL},${STM32MP_MULTIUBI_UENV2_SIZE},empty \
+    ${STM32MP_MULTIUBI_UENV1_NAME},${STM32MP_MULTIUBI_UENV1_LABEL},${STM32MP_MULTIUBI_UENV1_SIZE},empty \
+    ${STM32MP_MULTIUBI_UENV2_NAME},${STM32MP_MULTIUBI_UENV2_LABEL},${STM32MP_MULTIUBI_UENV2_SIZE},empty \
+    "
+
+def partImage2ubiVolConfig(d, config):
+    """
+    Convert PARTTIONS_IMAGES['config'] setting format to format expected to feed
+    STM32MP_UBI_VOLUME.
+    Manage <image_name> update by applying the rootfs namming or standard
+    partition image one.
+        FROM: <image_name>,<partition_label>,<mountpoint>,<size>,<type>
+        TO  : <binary_name>,<partition_label>,<size>,<type>
+    """
+    items = d.getVarFlag('PARTITIONS_IMAGES', config).split(',') or ""
+    if len(items) != 5:
+        bb.fatal('Wrong settings for PARTTIONS_IMAGES[%s] : %s' % (config, items))
+    overrides = d.getVar('OVERRIDES')
+    if items[2] == '' and 'openstlinuxcommon' not in overrides.split(':'):
+        bin_suffix = '-${MACHINE}'
+    else:
+        bin_suffix = '-${DISTRO}-${MACHINE}'
+    bin_name = items[0] + bin_suffix
+    # Set string for STM32MP_UBI_VOLUME item: <binary_name>,<partlabel>,<size>,<type>
+    part_format = bin_name + ',' + items[1] + ',' + items[3] + ',' + items[4]
+    return part_format
+
+STM32MP_UBI_VOLUME_nand_4_256 ?= "\
+    ${@' '.join(['%s' % partImage2ubiVolConfig(d, config) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    "
+STM32MP_UBI_VOLUME_spinand_2_128 ?= "\
+    ${@' '.join(['%s' % partImage2ubiVolConfig(d, config) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
     "
 
 # Manage specific override for UBI bootfs label name to 'boot' (hardcoded on U-Boot)
