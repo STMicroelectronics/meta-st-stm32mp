@@ -23,6 +23,9 @@ STM32MP_SOC_NAME:append:stm32mp13common = " stm32mp13 "
 STM32MP_SOC_NAME:append:class-nativesdk = " stm32mp15 "
 STM32MP_SOC_NAME:append:class-nativesdk = " stm32mp13 "
 
+STM32MP_ENCRYPT_SOC_NAME = ""
+STM32MP_ENCRYPT_SOC_NAME:append:stm32mp13common = " stm32mp13 "
+
 # =========================================================================
 # boot scheme
 # =========================================================================
@@ -99,13 +102,13 @@ ENABLE_FLASHLAYOUT_CONFIG_FWUP ?= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-
 STM32MP_FSBL_PROGAMMER_NAME ?= "fsbl-boot"
 STM32MP_SSBL_PROGAMMER_NAME ?= "fip-boot"
 
-STM32MP_FSBL1_DATA ?= "arm-trusted-firmware/tf-a-<TYPE>-<DEVICE>.stm32"
+STM32MP_FSBL1_DATA ?= "arm-trusted-firmware/tf-a-<TYPE>-<DEVICE>${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.stm32"
 STM32MP_FSBL1_NAME ?= "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', 'fsbl', 'fsbl1', d)}"
 STM32MP_FSBL1_SIZE ?= "256"
 STM32MP_FSBL2_DATA ?= "${STM32MP_FSBL1_DATA}"
 STM32MP_FSBL2_NAME ?= "fsbl2"
 STM32MP_FSBL2_SIZE ?= "${STM32MP_FSBL1_SIZE}"
-STM32MP_SSBL1_DATA ?= "fip/fip-<TYPE>-<BOOTSCHEME>${FIP_SIGN_SUFFIX}.bin"
+STM32MP_SSBL1_DATA ?= "fip/fip-<TYPE>-<BOOTSCHEME>${FIP_ENCRYPT_SUFFIX}${FIP_SIGN_SUFFIX}.bin"
 STM32MP_SSBL1_NAME ?= "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', 'fip-a', 'fip', d)}"
 STM32MP_SSBL1_SIZE ?= "4096"
 STM32MP_SSBL2_DATA ?= "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', '', '${STM32MP_SSBL1_DATA}', d)}"
@@ -502,6 +505,15 @@ TOOLCHAIN_TARGET_TASK += " bash-dev libgomp-dev"
 TOOLCHAIN_TARGET_TASK:remove:pn-buildtools-tarball = " bash-dev libgomp-dev"
 
 # =========================================================================
+# Signing configuration
+# =========================================================================
+ENCRYPT_ENABLE ?= "0"
+ENCRYPT_SUFFIX ?= "_Encrypted"
+
+SIGN_ENABLE ?= "0"
+SIGN_SUFFIX ?= "_Signed"
+
+# =========================================================================
 # Debug trace
 # =========================================================================
 # acitvate/desactive the debug and trace on boot stage: tf-a, optee, u-boot and kernel
@@ -617,7 +629,8 @@ TF_A_SSP_ENABLE ?= "0"
 TF_A_CONFIG += "${@bb.utils.contains('TF_A_SSP_ENABLE', '1', 'uart-ssp usb-ssp', '', d)}"
 
 # Default configuration for signing trusted-firmware-a binary
-TF_A_SIGN_ENABLE ?= "0"
+TF_A_SIGN_SUFFIX ?= "${@bb.utils.contains('SIGN_ENABLE', '1', '${SIGN_SUFFIX}', '', d)}"
+TF_A_ENCRYPT_SUFFIX ?= "${@bb.utils.contains('ENCRYPT_ENABLE', '1', '${ENCRYPT_SUFFIX}', '', d)}"
 
 # Configure TF-A to build the metadata binary
 TF_A_ENABLE_METADATA ?= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', '1', '0', d)}"
@@ -652,8 +665,8 @@ FIP_DEVICETREE_OPTEE   ?= "${STM32MP_DEVICETREE}"
 FIPTOOL_WRAPPER ?= "fiptool-stm32mp"
 
 # Manage specific config to sign FIP
-FIP_SIGN_ENABLE ?= "${@bb.utils.contains('TF_A_SIGN_ENABLE', '1', '1', '', d)}"
-FIP_SIGN_SUFFIX ?= "${@bb.utils.contains('FIP_SIGN_ENABLE', '1', '_Signed', '', d)}"
+FIP_SIGN_SUFFIX ?= "${@bb.utils.contains('SIGN_ENABLE', '1', '${SIGN_SUFFIX}', '', d)}"
+FIP_ENCRYPT_SUFFIX ?= "${@bb.utils.contains('ENCRYPT_ENABLE', '1', '${ENCRYPT_SUFFIX}', '', d)}"
 
 # =========================================================================
 # Xserver

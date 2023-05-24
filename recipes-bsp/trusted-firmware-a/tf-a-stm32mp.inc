@@ -5,6 +5,7 @@ PROVIDES += "virtual/trusted-firmware-a"
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 inherit deploy
+inherit sign-stm32mp
 inherit fip-utils-stm32mp
 
 # Include TF-A config definitions
@@ -19,12 +20,12 @@ SRCREV_mbedtls = "523f0554b6cdc7ace5d360885c3f5bbcc73ec0e8"
 LIC_FILES_CHKSUM_MBEDTLS = "file://mbedtls/LICENSE;md5=3b83ef96387f14655fc854ddc3c6bd57"
 LICENSE_MBEDTLS = "Apache-2.0"
 # Add MBEDTLS to our sources
-SRC_URI:append = " ${@bb.utils.contains('TF_A_SIGN_ENABLE', '1', '${SRC_URI_MBEDTLS}', '', d)}"
+SRC_URI:append = " ${@bb.utils.contains('SIGN_ENABLE', '1', '${SRC_URI_MBEDTLS}', '', d)}"
 # Update license variables
-LICENSE:append = "${@bb.utils.contains('TF_A_SIGN_ENABLE', '1', ' & ${LICENSE_MBEDTLS}', '', d)}"
-LIC_FILES_CHKSUM:append = "${@bb.utils.contains('TF_A_SIGN_ENABLE', '1', ' ${LIC_FILES_CHKSUM_MBEDTLS}', '', d)}"
+LICENSE:append = "${@bb.utils.contains('SIGN_ENABLE', '1', ' & ${LICENSE_MBEDTLS}', '', d)}"
+LIC_FILES_CHKSUM:append = "${@bb.utils.contains('SIGN_ENABLE', '1', ' ${LIC_FILES_CHKSUM_MBEDTLS}', '', d)}"
 # Add mbed TLS to version
-SRCREV_FORMAT:append = "${@bb.utils.contains('TF_A_SIGN_ENABLE', '1', '_mbedtls', '', d)}"
+SRCREV_FORMAT:append = "${@bb.utils.contains('SIGN_ENABLE', '1', '_mbedtls', '', d)}"
 # ------------------------------------
 
 B = "${WORKDIR}/build"
@@ -36,6 +37,7 @@ DEPENDS:append = " ${@bb.utils.contains('TF_A_ENABLE_DEBUG_WRAPPER', '1', 'stm32
 
 # Default log level
 ST_TF_A_DEBUG ??= "1"
+ST_TF_A_DEBUG_TRACE ??= "0"
 ST_TF_A_LOG_LEVEL_RELEASE ??= "20"
 ST_TF_A_LOG_LEVEL_DEBUG ??= "40"
 
@@ -88,11 +90,16 @@ TF_A_CONFIG ?= ""
 TF_A_ENABLE_DEBUG_WRAPPER ??= "1"
 
 # Set default configuration to allow signing
-TF_A_SIGN_ENABLE ??= "0"
-TF_A_ENCRYPTED_ENABLE ??= "0"
+TF_A_SIGN_SUFFIX ??= "${@bb.utils.contains('SIGN_ENABLE', '1', '${SIGN_SUFFIX}', '', d)}"
+TF_A_SIGN_OF ?= "0x00000001"
+
+TF_A_ENCRYPT_SUFFIX ??= "${@bb.utils.contains('ENCRYPT_ENABLE', '1', '${ENCRYPT_SUFFIX}', '', d)}"
+TF_A_ENCRYPT_DC ?= "0x0E5F2025"
+TF_A_ENCRYPT_IMGVER ?= "0"
+TF_A_ENCRYPT_OF ?= "0x80000003"
 
 # Set metadata generation
-TF_A_ENABLE_METADATA ??= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', '1', '0', 'd')}"
+TF_A_ENABLE_METADATA ??= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', '1', '0', d)}"
 TF_A_METADATA_NAME ?= "metadata"
 TF_A_METADATA_SUFFIX ?= "bin"
 TF_A_METADATA_BINARY ??= "${TF_A_METADATA_NAME}.${TF_A_METADATA_SUFFIX}"
@@ -101,9 +108,9 @@ TF_A_METADATA_TOOL ?= "tools/fwu_gen_metadata/fwumd_tool.py"
 TF_A_METADATA_JSON ?= "plat/st/stm32mp1/default_metadata.json"
 
 # Configure specific build flags
-EXTRA_OEMAKE += "${@bb.utils.contains('TF_A_SIGN_ENABLE', '1', 'TRUSTED_BOARD_BOOT=1', '', d)}"
-EXTRA_OEMAKE += "${@bb.utils.contains('TF_A_SIGN_ENABLE', '1', 'MBEDTLS_DIR=${TFA_MBEDTLS_DIR}', '', d)}"
-EXTRA_OEMAKE += "${@bb.utils.contains('TF_A_ENCRYPTED_ENABLE', '1', 'DECRYPTION_SUPPORT=aes_gcm ENCRYPT_BL32=1', '', d)}"
+EXTRA_OEMAKE += "${@bb.utils.contains('SIGN_ENABLE', '1', 'TRUSTED_BOARD_BOOT=1', '', d)}"
+EXTRA_OEMAKE += "${@bb.utils.contains('SIGN_ENABLE', '1', 'MBEDTLS_DIR=${TFA_MBEDTLS_DIR}', '', d)}"
+EXTRA_OEMAKE += "${@bb.utils.contains('ENCRYPT_ENABLE', '1', 'DECRYPTION_SUPPORT=aes_gcm ENCRYPT_BL32=1', '', d)}"
 
 # -----------------------------------------------
 # Handle TF-A config and set internal vars
@@ -169,12 +176,11 @@ python () {
                     break
 
     # Manage case of signature:
-    # If signature are activated, for winning space, the debug parameter will be remove and level of trace decrease
-    signature_val = d.getVar('TF_A_SIGN_ENABLE')
-    if signature_val and signature_val == "1":
-        bb.warn("TF-A SIGNATURE: force to disable DEBUG and decrease log level")
-        # force no debug and log level to release
-        d.setVar('ST_TF_A_DEBUG_TRACE', "0")
+    if d.getVar('SIGN_ENABLE') == "1":
+        # If signature are activated, for winning space, the debug parameter will be remove and level of trace decrease
+        if d.getVar('ST_TF_A_DEBUG_TRACE') == '1':
+            bb.warn("TF-A SIGNATURE: force ST_TF_A_DEBUG_TRACE to '0' to disable DEBUG and decrease log level")
+            d.setVar('ST_TF_A_DEBUG_TRACE', "0")
 }
 
 # -----------------------------------------------
@@ -248,6 +254,84 @@ do_compile() {
                 if [ "${TF_A_ENABLE_DEBUG_WRAPPER}" = "1" ]; then
                     stm32wrapper4dbg -s "${B}/${config}${soc_suffix}/${tfa_basename}-${dt}.${TF_A_SUFFIX}" -d "${B}/${config}${soc_suffix}/debug-${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}"
                 fi
+
+                if [ "${SIGN_ENABLE}" = "1" ]; then
+                    # Init sign key for signing tools
+                    sign_key="${SIGN_KEY_PATH_LIST}"
+                    if [ -n "${STM32MP_SOC_NAME}" ]; then
+                        unset k
+                        for soc in ${STM32MP_SOC_NAME}; do
+                            k=$(expr $k + 1)
+                            [ "$(echo ${dt} | grep -c ${soc})" -eq 1 ] && sign_key=$(echo ${SIGN_KEY_PATH_LIST} | cut -d',' -f${k})
+                        done
+                    fi
+                    # Init default '-of' option for signing case
+                    tf_a_sign_of_opt=""
+                    dd if="${B}/${config}${soc_suffix}/${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}" of=header.dump bs=1 count=4 skip=72 > /dev/null 2> /dev/null
+                    temp_version=$(od -A o -t dI header.dump | head -n 1 | cut -d' ' -f2- | sed "s/ //g")
+                    rm -f header.dump
+                    [ "$(expr $temp_version / 65536)" = "2" ] && tf_a_sign_of_opt="-of ${TF_A_SIGN_OF}"
+                    # Sign tf-a binary
+                    ${SIGN_TOOL} \
+                        -bin "${B}/${config}${soc_suffix}/${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}" \
+                        -o "${B}/${config}${soc_suffix}/${tfa_basename}-${dt}-${config}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" \
+                        --password "${SIGN_KEY_PASS}" \
+                        --public-key $(ls -1 $(dirname ${sign_key})/publicKey*.pem | tr '\n' '\t') \
+                        --private-key ${sign_key} \
+                        --type fsbl \
+                        --silent \
+                        ${tf_a_sign_of_opt}
+                    if [ "${TF_A_ENABLE_DEBUG_WRAPPER}" = "1" ]; then
+                        ${SIGN_TOOL} \
+                            -bin "${B}/${config}${soc_suffix}/debug-${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}" \
+                            -o "${B}/${config}${soc_suffix}/debug-${tfa_basename}-${dt}-${config}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" \
+                            --password "${SIGN_KEY_PASS}" \
+                            --public-key $(ls -1 $(dirname ${sign_key})/publicKey*.pem | tr '\n' '\t') \
+                            --private-key "${sign_key}" \
+                            --type fsbl \
+                            --silent \
+                            ${tf_a_sign_of_opt}
+                    fi
+                fi
+
+                if [ "${ENCRYPT_ENABLE}" = "1" ]; then
+                    # Init encrypt key for signing tools
+                    encrypt_key="${ENCRYPT_FSBL_KEY_PATH_LIST}"
+                    if [ -n "${STM32MP_ENCRYPT_SOC_NAME}" ]; then
+                        unset k
+                        for soc in ${STM32MP_ENCRYPT_SOC_NAME}; do
+                            k=$(expr $k + 1)
+                            [ "$(echo ${dt} | grep -c ${soc})" -eq 1 ] && encrypt_key=$(echo ${ENCRYPT_FSBL_KEY_PATH_LIST} | cut -d',' -f${k})
+                        done
+                    fi
+                    # Encrypt tf-a binary
+                    ${SIGN_TOOL} \
+                        -bin "${B}/${config}${soc_suffix}/${tfa_basename}-${dt}-${config}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" \
+                        -o "${B}/${config}${soc_suffix}/${tfa_basename}-${dt}-${config}${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" \
+                        --password "${SIGN_KEY_PASS}" \
+                        --public-key $(ls -1 $(dirname ${sign_key})/publicKey*.pem | tr '\n' '\t') \
+                        --private-key ${sign_key} \
+                        --type fsbl \
+                        --silent \
+                        --enc-key ${encrypt_key} \
+                        --enc-dc "${TF_A_ENCRYPT_DC}" \
+                        --image-version "${TF_A_ENCRYPT_IMGVER}" \
+                        -of "${TF_A_ENCRYPT_OF}"
+                    if [ "${TF_A_ENABLE_DEBUG_WRAPPER}" = "1" ]; then
+                        ${SIGN_TOOL} \
+                            -bin "${B}/${config}${soc_suffix}/debug-${tfa_basename}-${dt}-${config}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" \
+                            -o "${B}/${config}${soc_suffix}/debug-${tfa_basename}-${dt}-${config}${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" \
+                            --password "${SIGN_KEY_PASS}" \
+                            --public-key $(ls -1 $(dirname ${sign_key})/publicKey*.pem | tr '\n' '\t') \
+                            --private-key ${sign_key} \
+                            --type fsbl \
+                            --silent \
+                            --enc-key ${encrypt_key} \
+                            --enc-dc "${TF_A_ENCRYPT_DC}" \
+                            --image-version "${TF_A_ENCRYPT_IMGVER}" \
+                            -of "${TF_A_ENCRYPT_OF}"
+                    fi
+                fi
             fi
             # Specific for bl32 target
             if [ "$(echo ${tf_a_make_target} | grep -cw 'bl32')" = "1" ]; then
@@ -289,16 +373,16 @@ do_deploy() {
                 bl2)
                     # Install TF-A binary
                     if [ -f "${B}/${config}${soc_suffix}/${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}" ]; then
-                        install -m 644 "${B}/${config}${soc_suffix}/${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}" "${DEPLOYDIR}/arm-trusted-firmware/"
+                        install -m 644 "${B}/${config}${soc_suffix}/${tfa_basename}-${dt}-${config}${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" "${DEPLOYDIR}/arm-trusted-firmware/"
                         if [ "${TF_A_ENABLE_DEBUG_WRAPPER}" = "1" ]; then
                             install -d "${DEPLOYDIR}/arm-trusted-firmware/debug"
-                            install -m 644 "${B}/${config}${soc_suffix}/debug-${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}" "${DEPLOYDIR}/arm-trusted-firmware/debug/"
+                            install -m 644 "${B}/${config}${soc_suffix}/debug-${tfa_basename}-${dt}-${config}${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" "${DEPLOYDIR}/arm-trusted-firmware/debug/"
                         fi
                     fi
                     if [ -n "${ELF_DEBUG_ENABLE}" ]; then
                         install -d ${DEPLOYDIR}/arm-trusted-firmware/debug
                         if [ -f "${B}/${config}${soc_suffix}/${BL2_ELF}" ]; then
-                            install -m 644 "${B}/${config}${soc_suffix}/${BL2_ELF}" "${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL2_BASENAME_DEPLOY}-${config}.${TF_A_ELF_SUFFIX}"
+                            install -m 644 "${B}/${config}${soc_suffix}/${BL2_ELF}" "${DEPLOYDIR}/arm-trusted-firmware/debug/${tfa_basename}-${BL2_BASENAME_DEPLOY}${soc_suffix}-${config}.${TF_A_ELF_SUFFIX}"
                         fi
                     fi
                     ;;

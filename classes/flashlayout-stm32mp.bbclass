@@ -29,7 +29,7 @@
 # there are some variables to configure.
 #
 # Naming:
-#   <FLASHLAYOUT_BASENAME>[_<FLASHLAYOUT_CONFIG_LABEL>][_<FLASHLAYOUT_TYPE_LABEL>-FLASHLAYOUT_BOOTSCHEME_LABEL].<FLASHLAYOUT_SUFFIX>
+#   <FLASHLAYOUT_BASENAME>[_<FLASHLAYOUT_CONFIG_LABEL>][_<FLASHLAYOUT_TYPE_LABEL>-FLASHLAYOUT_BOOTSCHEME_LABEL]<FLASHLAYOUT_SUFFIX>
 #
 #   FLASHLAYOUT_BASENAME
 #       Default to 'FlashLayout'
@@ -41,7 +41,7 @@
 #       Set from FLASHLAYOUT_BOOTSCHEME_LABELS list (without any '_' in bootscheme labels)
 # Note that both are appended only when FLASHLAYOUT_TYPE_LABELS and FLASHLAYOUT_BOOTSCHEME_LABELS contain more than two labels.
 #   FLASHLAYOUT_SUFFIX
-#       Default to 'tsv'
+#       Default to '.tsv'
 #
 # File content structure:
 #   Opt     Id      Name    Type    IP      Offset  Binary
@@ -101,7 +101,7 @@ ENABLE_FLASHLAYOUT_DEFAULT ??= "0"
 FLASHLAYOUT_DEFAULT_SRC ??= ""
 # Configure flashlayout file name default format
 FLASHLAYOUT_BASENAME ??= "FlashLayout"
-FLASHLAYOUT_SUFFIX   ??= "tsv"
+FLASHLAYOUT_SUFFIX   ??= ".tsv"
 # Configure flashlayout file generation for stm32wrapper4dbg
 ENABLE_FLASHLAYOUT_CONFIG_WRAPPER4DBG ??= "0"
 
@@ -533,7 +533,7 @@ python do_create_flashlayout_config() {
                     labeltype_addons = ''
                 else:
                     labeltype_addons = '_' + labeltype + '-' + bootscheme
-                flashlayout_file = os.path.join(flashlayout_subfolder_path, d.expand("${FLASHLAYOUT_BASENAME}%s%s.${FLASHLAYOUT_SUFFIX}" % (config_addons, labeltype_addons)))
+                flashlayout_file = os.path.join(flashlayout_subfolder_path, d.expand("${FLASHLAYOUT_BASENAME}%s%s${FLASHLAYOUT_SUFFIX}" % (config_addons, labeltype_addons)))
                 # Get the partition list to write in flashlayout file
                 partitions = expand_var('FLASHLAYOUT_PARTITION_LABELS', bootscheme, config, '', d)
                 bb.debug(1, 'FLASHLAYOUT_PARTITION_LABELS: %s' % partitions)
@@ -691,7 +691,7 @@ python do_create_flashlayout_config() {
                         flashlayout_wrapper4dbg_subfolder_path = os.path.join(d.getVar('FLASHLAYOUT_DESTDIR'), bootscheme, "debug")
                         bb.utils.mkdirhier(flashlayout_wrapper4dbg_subfolder_path)
                         # Wrapper4dbg output filename
-                        debug_flashlayout_file = os.path.join(flashlayout_wrapper4dbg_subfolder_path,d.expand("debug-${FLASHLAYOUT_BASENAME}%s%s.${FLASHLAYOUT_SUFFIX}" % (config_addons, labeltype_addons)))
+                        debug_flashlayout_file = os.path.join(flashlayout_wrapper4dbg_subfolder_path,d.expand("debug-${FLASHLAYOUT_BASENAME}%s%s${FLASHLAYOUT_SUFFIX}" % (config_addons, labeltype_addons)))
                         bb.debug(1, ">>> Update tf-a in %s" %  (debug_flashlayout_file))
                         os.rename(tmp_flashlayout_file, debug_flashlayout_file)
                     else:

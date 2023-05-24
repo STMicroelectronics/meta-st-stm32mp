@@ -7,6 +7,8 @@ FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'virtual
 FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'virtual/bootloader', 'virtual/bootloader:do_deploy', '', d)}"
 FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'virtual/optee-os', 'virtual/optee-os:do_deploy', '', d)}"
 
+FLASHLAYOUT_SUFFIX = "${@bb.utils.contains('ENCRYPT_ENABLE', '1', '${ENCRYPT_SUFFIX}', '', d)}${@bb.utils.contains('SIGN_ENABLE', '1', '${SIGN_SUFFIX}', '', d)}.tsv"
+
 # List the PARTITION_TYPE used for bootloader partition
 FLASHLAYOUT_BINARY_TYPES += "Binary"
 FLASHLAYOUT_BINARY_TYPES += "FIP"
@@ -235,7 +237,7 @@ FLASHLAYOUT_PARTITION_SIZE:sdcard:${STM32MP_ROOTFS_LABEL}     = "4194304"
 #       '<TYPE>'       (to insert label  from FLASHLAYOUT_TYPE_LABELS)
 # These patterns are processed to expand binary name for each config.
 # -----------------------------------------------------------------------------
-FLASHLAYOUT_PARTITION_BIN2LOAD:${STM32MP_FSBL_PROGAMMER_NAME} = "arm-trusted-firmware/tf-a-<TYPE>-usb.stm32"
+FLASHLAYOUT_PARTITION_BIN2LOAD:${STM32MP_FSBL_PROGAMMER_NAME} = "arm-trusted-firmware/tf-a-<TYPE>-usb${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.stm32"
 FLASHLAYOUT_PARTITION_BIN2LOAD:${STM32MP_SSBL_PROGAMMER_NAME} = "${STM32MP_SSBL1_DATA}"
 
 # -----------------------------------------------------------------------------

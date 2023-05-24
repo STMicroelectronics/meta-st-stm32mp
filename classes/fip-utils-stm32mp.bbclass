@@ -1,3 +1,5 @@
+inherit sign-stm32mp
+
 DEPENDS += "tf-a-tools-native"
 
 # Configure new package to provide fiptool wrapper for SDK usage
@@ -25,6 +27,8 @@ FIP_BL31_ENABLE ?= ""
 
 # Set CERTTOOL binary name to use
 CERTTOOL ?= "cert_create"
+# Set ENCTOOL binary name to use
+ENCTOOL ?= "encrypt_fw"
 # Set FIPTOOL binary name to use
 FIPTOOL ?= "fiptool"
 # Set STM32MP fiptool wrapper
@@ -57,11 +61,9 @@ FIP_DEPLOYDIR_OPTEE  ?= "${DEPLOY_DIR}/images/${MACHINE}/optee"
 FIP_DEPLOYDIR_UBOOT  ?= "${DEPLOY_DIR}/images/${MACHINE}/u-boot"
 
 # Set default configuration to allow FIP signing
-FIP_SIGN_ENABLE ??= ''
-FIP_SIGN_KEY ??= ''
-FIP_SIGN_KEY_EXTERNAL ??= ''
-FIP_SIGN_KEY_PASS ??= ''
-FIP_SIGN_SUFFIX ??= ''
+FIP_ENCRYPT_SUFFIX ??= "${@bb.utils.contains('ENCRYPT_ENABLE', '1', '${ENCRYPT_SUFFIX}', '', d)}"
+FIP_ENCRYPT_NONCE ??= "1234567890abcdef12345678"
+FIP_SIGN_SUFFIX ??= "${@bb.utils.contains('SIGN_ENABLE', '1', '${SIGN_SUFFIX}', '', d)}"
 
 # Define FIP dependency build
 FIP_DEPENDS += "virtual/bootloader"
@@ -121,52 +123,6 @@ python () {
                     break
 }
 
-# -----------------------------------------------
-# Handle FIP signing config and set internal vars
-#   FIP_SIGN_KEY_PATH_SOC_LIST
-def get_sign_key_path(d, relative_path):
-    if relative_path != None:
-        for p in d.getVar("BBPATH").split(":"):
-            file_path = os.path.join(p, relative_path)
-            if os.path.isfile(file_path):
-                bb.debug(1, "Set FIP_SIGN_KEY to '%s' path." % file_path)
-                return file_path
-    return None
-
-python generate_sign_key_path() {
-    default_fip_signingkey = d.getVar('FIP_SIGN_KEY')
-    if not default_fip_signingkey:
-        bb.note("Please make sure to configure \"FIP_SIGN_KEY\" var to signing key file.")
-    else:
-        if d.getVar('FIP_SIGN_KEY_EXTERNAL') == '1':
-            default_fip_signingkey_path = get_sign_key_path(d, default_fip_signingkey)
-            if default_fip_signingkey_path:
-                d.setVar('FIP_SIGN_KEY_PATH', default_fip_signingkey_path)
-            else:
-                bbpaths = d.getVar('BBPATH').replace(':','\n\t')
-                bb.fatal('\nNot able to find "%s" path from current BBPATH var:\n\t%s.' % (default_fip_signingkey, bbpaths))
-        else:
-            d.setVar('FIP_SIGN_KEY_PATH', default_fip_signingkey)
-
-    socname_list = d.getVar('STM32MP_SOC_NAME')
-    if socname_list and len(socname_list) > 0:
-        d.setVar('FIP_SIGN_KEY_PATH_SOC_LIST', '')
-        for socname in socname_list.split():
-            fip_signingkey = d.getVar('FIP_SIGN_KEY_%s' % socname)
-            if not fip_signingkey and not default_fip_signingkey:
-                bb.fatal("Please make sure to configure \"FIP_SIGN_KEY_%s\" var to signing key file." % socname)
-            if d.getVar('FIP_SIGN_KEY_EXTERNAL') == '1':
-                fip_signingkey_path = get_sign_key_path(d, fip_signingkey)
-                if fip_signingkey_path:
-                    d.appendVar('FIP_SIGN_KEY_PATH_SOC_LIST', fip_signingkey_path + ',')
-                else:
-                    bbpaths = d.getVar('BBPATH').replace(':','\n\t')
-                    bb.fatal('\nNot able to find "%s" (socname %s) path from current BBPATH var:\n\t%s.' % (fip_signingkey, socname, bbpaths))
-            else:
-                d.appendVar('FIP_SIGN_KEY_PATH_SOC_LIST', fip_signingkey + ',')
-}
-
-do_deploy[prefuncs] += "${@bb.utils.contains('FIP_SIGN_ENABLE', '1', 'generate_sign_key_path', '', d)}"
 # Deploy the fip binary for current target
 do_deploy:append:class-target() {
     install -d ${DEPLOYDIR}
@@ -218,31 +174,45 @@ do_deploy:append:class-target() {
                 [ -f "${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_HEADER}-${dt}.${FIP_OPTEE_SUFFIX}" ] || bbfatal "Missing ${FIP_OPTEE_HEADER}-${dt}.${FIP_OPTEE_SUFFIX} file in folder: ${FIP_DEPLOYDIR_OPTEE}"
                 [ -f "${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_PAGER}-${dt}.${FIP_OPTEE_SUFFIX}" ] || bbfatal "Missing ${FIP_OPTEE_PAGER}-${dt}.${FIP_OPTEE_SUFFIX} file in folder: ${FIP_DEPLOYDIR_OPTEE}"
                 [ -f "${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_PAGEABLE}-${dt}.${FIP_OPTEE_SUFFIX}" ] || bbfatal "Missing ${FIP_OPTEE_PAGEABLE}-${dt}.${FIP_OPTEE_SUFFIX} file in folder: ${FIP_DEPLOYDIR_OPTEE}"
+                if [ "${ENCRYPT_ENABLE}" = "1" ]; then
+                    encrypt_key="${ENCRYPT_FIP_KEY_PATH_LIST}"
+                    if [ -n "${STM32MP_ENCRYPT_SOC_NAME}" ]; then
+                        unset k
+                        for soc in ${STM32MP_ENCRYPT_SOC_NAME}; do
+                            k=$(expr $k + 1)
+                            [ "$(echo ${dt} | grep -c ${soc})" -eq 1 ] && encrypt_key=$(echo ${ENCRYPT_FIP_KEY_PATH_LIST} | cut -d',' -f${k})
+                        done
+                    fi
+                    # The encryption key is already available in hexadecimal format, so just extract it from file
+                    encrypt_key="$(cat ${encrypt_key})"
+                    ${ENCTOOL} --key "${encrypt_key}" --nonce "${FIP_ENCRYPT_NONCE}" --fw-enc-status 0 \
+                        --in "${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_HEADER}-${dt}.${FIP_OPTEE_SUFFIX}" \
+                        --out "${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_HEADER}-${dt}${FIP_ENCRYPT_SUFFIX}.${FIP_OPTEE_SUFFIX}"
+                    ${ENCTOOL} --key "${encrypt_key}" --nonce "${FIP_ENCRYPT_NONCE}" --fw-enc-status 0 \
+                        --in "${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_PAGER}-${dt}.${FIP_OPTEE_SUFFIX}" \
+                        --out "${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_PAGER}-${dt}${FIP_ENCRYPT_SUFFIX}.${FIP_OPTEE_SUFFIX}"
+                    ${ENCTOOL} --key "${encrypt_key}" --nonce "${FIP_ENCRYPT_NONCE}" --fw-enc-status 0 \
+                        --in "${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_PAGEABLE}-${dt}.${FIP_OPTEE_SUFFIX}" \
+                        --out "${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_PAGEABLE}-${dt}${FIP_ENCRYPT_SUFFIX}.${FIP_OPTEE_SUFFIX}"
+                fi
                 # Set FIP_EXTRACONF
                 FIP_EXTRACONF="\
-                    --tos-fw ${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_HEADER}-${dt}.${FIP_OPTEE_SUFFIX} \
-                    --tos-fw-extra1 ${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_PAGER}-${dt}.${FIP_OPTEE_SUFFIX} \
-                    --tos-fw-extra2 ${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_PAGEABLE}-${dt}.${FIP_OPTEE_SUFFIX} \
+                    --tos-fw ${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_HEADER}-${dt}${FIP_ENCRYPT_SUFFIX}.${FIP_OPTEE_SUFFIX} \
+                    --tos-fw-extra1 ${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_PAGER}-${dt}${FIP_ENCRYPT_SUFFIX}.${FIP_OPTEE_SUFFIX} \
+                    --tos-fw-extra2 ${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_PAGEABLE}-${dt}${FIP_ENCRYPT_SUFFIX}.${FIP_OPTEE_SUFFIX} \
                     "
             else
                 bbfatal "Wrong configuration '${bl32_conf}' found in FIP_CONFIG for ${config} config."
             fi
             # Init certificate settings
-            if [ "${FIP_SIGN_ENABLE}" = "1" ]; then
-                soc_sign_suffix=""
+            if [ "${SIGN_ENABLE}" = "1" ]; then
+                sign_key="${SIGN_KEY_PATH_LIST}"
                 if [ -n "${STM32MP_SOC_NAME}" ]; then
                     unset k
                     for soc in ${STM32MP_SOC_NAME}; do
                         k=$(expr $k + 1)
-                        if [ "$(echo ${dt} | grep -c ${soc})" -eq 1 ]; then
-                            sign_key=$(echo ${FIP_SIGN_KEY_PATH_SOC_LIST} | cut -d',' -f${k})
-                        fi
+                        [ "$(echo ${dt} | grep -c ${soc})" -eq 1 ] && sign_key=$(echo ${SIGN_KEY_PATH_LIST} | cut -d',' -f${k})
                     done
-                else
-                    sign_key="${FIP_SIGN_KEY_PATH}"
-                fi
-                if [ -z "${sign_key}" ]; then
-                    bbfatal "Please make sure to configure \"FIP_SIGN_KEY\" var to signing key file."
                 fi
                 FIP_CERTCONF="\
                     --tb-fw-cert ${WORKDIR}/tb_fw.crt \
@@ -258,7 +228,7 @@ do_deploy:append:class-target() {
                 # Generate certificates
                 ${CERTTOOL} -n --tfw-nvctr 0 --ntfw-nvctr 0 --key-alg ecdsa --hash-alg sha256 \
                         --rot-key ${sign_key} \
-                        --rot-key-pwd ${FIP_SIGN_KEY_PASS} \
+                        --rot-key-pwd ${SIGN_KEY_PASS} \
                         ${FIP_FWCONFIG} \
                         ${FIP_HWCONFIG} \
                         ${FIP_NTFW} \
@@ -278,7 +248,7 @@ do_deploy:append:class-target() {
                             ${FIP_BL31CONF} \
                             ${FIP_EXTRACONF} \
                             ${FIP_CERTCONF} \
-                            ${FIP_DEPLOYDIR_FIP}/${FIP_BASENAME}-${dt}-${config}${FIP_SIGN_SUFFIX}.${FIP_SUFFIX}"
+                            ${FIP_DEPLOYDIR_FIP}/${FIP_BASENAME}-${dt}-${config}${FIP_ENCRYPT_SUFFIX}${FIP_SIGN_SUFFIX}.${FIP_SUFFIX}"
             ${FIPTOOL} create \
                             ${FIP_FWCONFIG} \
                             ${FIP_HWCONFIG} \
@@ -286,7 +256,7 @@ do_deploy:append:class-target() {
                             ${FIP_BL31CONF} \
                             ${FIP_EXTRACONF} \
                             ${FIP_CERTCONF} \
-                            ${FIP_DEPLOYDIR_FIP}/${FIP_BASENAME}-${dt}-${config}${FIP_SIGN_SUFFIX}.${FIP_SUFFIX}
+                            ${FIP_DEPLOYDIR_FIP}/${FIP_BASENAME}-${dt}-${config}${FIP_ENCRYPT_SUFFIX}${FIP_SIGN_SUFFIX}.${FIP_SUFFIX}
         done
     done
 }
