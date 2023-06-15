@@ -14,15 +14,12 @@ Compilation of kernel:
 OpenSTLinux SDK must be installed.
 
 For kernel build, you need to install:
-- libncurses and libncursesw dev package libyaml-dev
-    Ubuntu: sudo apt-get install libncurses5-dev libncursesw5-dev libyaml-dev
-    Fedora: sudo yum install ncurses-devel libyaml-devel
+- libncurses and libncursesw dev package
+    Ubuntu: sudo apt-get install libncurses5-dev libncursesw5-dev
+    Fedora: sudo yum install ncurses-devel
 - mkimage
     Ubuntu: sudo apt-get install u-boot-tools
     Fedora: sudo yum install u-boot-tools
-- yaml (check dts)
-    Ubuntu: sudo apt-get install libyaml-dev
-    Fedora: sudo yum install libyaml-devel
 
 Only if you like to have a git management of the code (see section 4
 [Manage the kernel source code]):
