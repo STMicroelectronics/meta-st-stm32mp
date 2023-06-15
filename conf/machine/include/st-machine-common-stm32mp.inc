@@ -377,6 +377,13 @@ ST_TOOLS_FOR_SDK = " \
     nativesdk-ncurses-libncursesw \
     "
 
+# Add tools to build native application with SDK
+# Currently mandatory for kernel and u-boot
+ST_TOOLS_FOR_SDK:append = " \
+    nativesdk-cpp-symlinks \
+    nativesdk-gcc-symlinks \
+    "
+
 # For support of perl ansicolor
 ST_TOOLS_FOR_SDK_PERL = " \
     nativesdk-perl-module-term-ansicolor \
