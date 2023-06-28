@@ -1,107 +1,21 @@
-From b0e70738cf7a9a1c9b4e10c3aec7cea6004ed9a4 Mon Sep 17 00:00:00 2001
-From: Romuald JEANNE <romuald.jeanne@st.com>
-Date: Thu, 3 Nov 2022 16:04:20 +0100
-Subject: [PATCH 18/22] v5.15-stm32mp-r2 RESET-RTC
+From 7fe1292e55fceed31d6c038f1b73a8a64d1b21ad Mon Sep 17 00:00:00 2001
+From: Romuald Jeanne <romuald.jeanne@st.com>
+Date: Tue, 6 Jun 2023 10:46:12 +0200
+Subject: [PATCH 18/24] v6.1-stm32mp-r1 RESET-RTC
 
-Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
+Signed-off-by: Romuald Jeanne <romuald.jeanne@st.com>
 ---
- .../devicetree/bindings/rtc/st,stm32-rtc.yaml |  37 ++
- drivers/rtc/Kconfig                           |   1 +
- drivers/rtc/rtc-stm32.c                       | 365 ++++++++++++++----
- include/dt-bindings/reset/stm32mp1-resets.h   |  24 +-
- include/dt-bindings/reset/stm32mp13-resets.h  | 100 +++++
- include/dt-bindings/rtc/rtc-stm32.h           |  14 +
- 6 files changed, 459 insertions(+), 82 deletions(-)
- create mode 100644 include/dt-bindings/reset/stm32mp13-resets.h
+ drivers/rtc/Kconfig                 |   1 +
+ drivers/rtc/rtc-stm32.c             | 372 ++++++++++++++++++++++------
+ include/dt-bindings/rtc/rtc-stm32.h |  14 ++
+ 3 files changed, 311 insertions(+), 76 deletions(-)
  create mode 100644 include/dt-bindings/rtc/rtc-stm32.h
 
-diff --git a/Documentation/devicetree/bindings/rtc/st,stm32-rtc.yaml b/Documentation/devicetree/bindings/rtc/st,stm32-rtc.yaml
-index 5456604b1c14..d94e1d13d908 100644
---- a/Documentation/devicetree/bindings/rtc/st,stm32-rtc.yaml
-+++ b/Documentation/devicetree/bindings/rtc/st,stm32-rtc.yaml
-@@ -52,6 +52,20 @@ properties:
-       override default rtc_ck parent clock phandle of the new parent clock of rtc_ck
-     maxItems: 1
- 
-+  st,lsco:
-+    $ref: "/schemas/types.yaml#/definitions/uint32"
-+    description: |
-+      To select and enable RTC Low Speed Clock Output.
-+      Refer to <include/dt-bindings/rtc/rtc-stm32.h> for the supported values.
-+      Pinctrl state named "default" may be defined to reserve pin for RTC output.
-+
-+  st,alarm:
-+    $ref: "/schemas/types.yaml#/definitions/uint32"
-+    description: |
-+      To select and enable RTC Alarm A output.
-+      Refer to <include/dt-bindings/rtc/rtc-stm32.h> for the supported values.
-+      Pinctrl state named "default" may be defined to reserve pin for RTC output.
-+
- allOf:
-   - if:
-       properties:
-@@ -65,6 +79,12 @@ allOf:
-           minItems: 1
-           maxItems: 1
- 
-+        st,lsco:
-+          maxItems: 0
-+
-+        st,alarm:
-+          maxItems: 0
-+
-         clock-names: false
- 
-       required:
-@@ -82,6 +102,12 @@ allOf:
-           minItems: 2
-           maxItems: 2
- 
-+        st,lsco:
-+          maxItems: 0
-+
-+        st,alarm:
-+          maxItems: 0
-+
-       required:
-         - clock-names
-         - st,syscfg
-@@ -101,6 +127,12 @@ allOf:
-         assigned-clocks: false
-         assigned-clock-parents: false
- 
-+        st,lsco:
-+          maxItems: 1
-+
-+        st,alarm:
-+          maxItems: 1
-+
-       required:
-         - clock-names
- 
-@@ -129,12 +161,17 @@ examples:
- 
-     #include <dt-bindings/interrupt-controller/arm-gic.h>
-     #include <dt-bindings/clock/stm32mp1-clks.h>
-+    #include <dt-bindings/rtc/rtc-stm32.h>
-     rtc@5c004000 {
-       compatible = "st,stm32mp1-rtc";
-       reg = <0x5c004000 0x400>;
-       clocks = <&rcc RTCAPB>, <&rcc RTC>;
-       clock-names = "pclk", "rtc_ck";
-       interrupts = <GIC_SPI 3 IRQ_TYPE_LEVEL_HIGH>;
-+      st,alarm = <RTC_OUT1>;
-+      st,lsco = <RTC_OUT2_RMP>;
-+      pinctrl-0 = <&rtc_out1_pins_a &rtc_out2_rmp_pins_a>;
-+      pinctrl-names = "default";
-     };
- 
- ...
 diff --git a/drivers/rtc/Kconfig b/drivers/rtc/Kconfig
-index e1bc5214494e..57ef1efdfc3c 100644
+index bb63edb507da..b3a7a63175e5 100644
 --- a/drivers/rtc/Kconfig
 +++ b/drivers/rtc/Kconfig
-@@ -1867,6 +1867,7 @@ config RTC_DRV_R7301
+@@ -1896,6 +1896,7 @@ config RTC_DRV_R7301
  config RTC_DRV_STM32
  	tristate "STM32 RTC"
  	select REGMAP_MMIO
@@ -110,7 +24,7 @@ index e1bc5214494e..57ef1efdfc3c 100644
  	help
  	   If you say yes here you get support for the STM32 On-Chip
 diff --git a/drivers/rtc/rtc-stm32.c b/drivers/rtc/rtc-stm32.c
-index ac9e228b56d0..20896b4b4641 100644
+index ac9e228b56d0..84c8f6733c7f 100644
 --- a/drivers/rtc/rtc-stm32.c
 +++ b/drivers/rtc/rtc-stm32.c
 @@ -5,7 +5,10 @@
@@ -183,9 +97,9 @@ index ac9e228b56d0..20896b4b4641 100644
  	bool has_pclk;
  	bool need_dbp;
 -	bool has_wakeirq;
++	bool need_accuracy;
 +	bool has_lsco;
 +	bool has_alarm_out;
-+	bool need_accuracy;
  };
  
  struct stm32_rtc {
@@ -410,8 +324,7 @@ index ac9e228b56d0..20896b4b4641 100644
 -	       (tm->tm_sec >= cur_sec))))))
 -		return 0;
 +	stm32_rtc_read_time(dev, &now);
- 
--	return -EINVAL;
++
 +	/*
 +	 * Find the next month and the year of the next month.
 +	 * Note: tm_mon and next_month are from 0 to 11
@@ -423,7 +336,8 @@ index ac9e228b56d0..20896b4b4641 100644
 +	} else {
 +		next_year = now.tm_year;
 +	}
-+
+ 
+-	return -EINVAL;
 +	/* Find the maximum limit of alarm in days. */
 +	max_day_forward = rtc_month_days(now.tm_mon, now.tm_year)
 +			 - now.tm_mday
@@ -461,9 +375,9 @@ index ac9e228b56d0..20896b4b4641 100644
  	.has_pclk = false,
  	.need_dbp = true,
 -	.has_wakeirq = false,
++	.need_accuracy = false,
 +	.has_lsco = false,
 +	.has_alarm_out = false,
-+	.need_accuracy = false,
  	.regs = {
  		.tr = 0x00,
  		.dr = 0x04,
@@ -480,9 +394,9 @@ index ac9e228b56d0..20896b4b4641 100644
  	.has_pclk = true,
  	.need_dbp = true,
 -	.has_wakeirq = false,
++	.need_accuracy = false,
 +	.has_lsco = false,
 +	.has_alarm_out = false,
-+	.need_accuracy = false,
  	.regs = {
  		.tr = 0x00,
  		.dr = 0x04,
@@ -499,9 +413,9 @@ index ac9e228b56d0..20896b4b4641 100644
  	.has_pclk = true,
  	.need_dbp = false,
 -	.has_wakeirq = true,
++	.need_accuracy = true,
 +	.has_lsco = true,
 +	.has_alarm_out = true,
-+	.need_accuracy = true,
  	.regs = {
  		.tr = 0x00,
  		.dr = 0x04,
@@ -536,16 +450,16 @@ index ac9e228b56d0..20896b4b4641 100644
 +	if (rtc->data->need_accuracy) {
 +		for (pred_a = 0; pred_a <= pred_a_max; pred_a++) {
 +			pred_s = (rate / (pred_a + 1)) - 1;
-+
+ 
+-		if (((pred_s + 1) * (pred_a + 1)) == rate)
+-			break;
 +			if (pred_s <= pred_s_max && ((pred_s + 1) * (pred_a + 1)) == rate)
 +				break;
 +		}
 +	} else {
 +		for (pred_a = pred_a_max; pred_a + 1 > 0; pred_a--) {
 +			pred_s = (rate / (pred_a + 1)) - 1;
- 
--		if (((pred_s + 1) * (pred_a + 1)) == rate)
--			break;
++
 +			if (((pred_s + 1) * (pred_a + 1)) == rate)
 +				break;
 +		}
@@ -597,25 +511,29 @@ index ac9e228b56d0..20896b4b4641 100644
  	cr &= ~STM32_RTC_CR_FMT;
  	writel_relaxed(cr, rtc->base + regs->cr);
  
-@@ -736,13 +941,15 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+@@ -735,16 +940,13 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+ 		rtc->rtc_ck = devm_clk_get(&pdev->dev, NULL);
  	} else {
  		rtc->pclk = devm_clk_get(&pdev->dev, "pclk");
- 		if (IS_ERR(rtc->pclk)) {
+-		if (IS_ERR(rtc->pclk)) {
 -			dev_err(&pdev->dev, "no pclk clock");
-+			if (PTR_ERR(rtc->pclk) != -EPROBE_DEFER)
-+				dev_err(&pdev->dev, "no pclk clock");
- 			return PTR_ERR(rtc->pclk);
- 		}
+-			return PTR_ERR(rtc->pclk);
+-		}
++		if (IS_ERR(rtc->pclk))
++			return dev_err_probe(&pdev->dev, PTR_ERR(rtc->pclk), "no pclk clock");
++
  		rtc->rtc_ck = devm_clk_get(&pdev->dev, "rtc_ck");
  	}
- 	if (IS_ERR(rtc->rtc_ck)) {
+-	if (IS_ERR(rtc->rtc_ck)) {
 -		dev_err(&pdev->dev, "no rtc_ck clock");
-+		if (PTR_ERR(rtc->rtc_ck) != -EPROBE_DEFER)
-+			dev_err(&pdev->dev, "no rtc_ck clock");
- 		return PTR_ERR(rtc->rtc_ck);
- 	}
+-		return PTR_ERR(rtc->rtc_ck);
+-	}
++	if (IS_ERR(rtc->rtc_ck))
++		return dev_err_probe(&pdev->dev, PTR_ERR(rtc->rtc_ck), "no rtc_ck clock");
  
-@@ -779,19 +986,12 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+ 	if (rtc->data->has_pclk) {
+ 		ret = clk_prepare_enable(rtc->pclk);
+@@ -779,19 +981,12 @@ static int stm32_rtc_probe(struct platform_device *pdev)
  	}
  
  	ret = device_init_wakeup(&pdev->dev, true);
@@ -640,7 +558,7 @@ index ac9e228b56d0..20896b4b4641 100644
  
  	platform_set_drvdata(pdev, rtc);
  
-@@ -814,6 +1014,33 @@ static int stm32_rtc_probe(struct platform_device *pdev)
+@@ -814,6 +1009,33 @@ static int stm32_rtc_probe(struct platform_device *pdev)
  		goto err;
  	}
  
@@ -674,7 +592,7 @@ index ac9e228b56d0..20896b4b4641 100644
  	/*
  	 * If INITS flag is reset (calendar year field set to 0x00), calendar
  	 * must be initialized
-@@ -852,6 +1079,9 @@ static int stm32_rtc_remove(struct platform_device *pdev)
+@@ -852,6 +1074,9 @@ static int stm32_rtc_remove(struct platform_device *pdev)
  	const struct stm32_rtc_registers *regs = &rtc->data->regs;
  	unsigned int cr;
  
@@ -684,7 +602,7 @@ index ac9e228b56d0..20896b4b4641 100644
  	/* Disable interrupts */
  	stm32_rtc_wpr_unlock(rtc);
  	cr = readl_relaxed(rtc->base + regs->cr);
-@@ -881,9 +1111,6 @@ static int stm32_rtc_suspend(struct device *dev)
+@@ -881,9 +1106,6 @@ static int stm32_rtc_suspend(struct device *dev)
  	if (rtc->data->has_pclk)
  		clk_disable_unprepare(rtc->pclk);
  
@@ -694,7 +612,7 @@ index ac9e228b56d0..20896b4b4641 100644
  	return 0;
  }
  
-@@ -905,15 +1132,13 @@ static int stm32_rtc_resume(struct device *dev)
+@@ -905,15 +1127,13 @@ static int stm32_rtc_resume(struct device *dev)
  		return ret;
  	}
  
@@ -713,146 +631,6 @@ index ac9e228b56d0..20896b4b4641 100644
  
  static struct platform_driver stm32_rtc_driver = {
  	.probe		= stm32_rtc_probe,
-diff --git a/include/dt-bindings/reset/stm32mp1-resets.h b/include/dt-bindings/reset/stm32mp1-resets.h
-index f3a0ed317835..bdbf9e253015 100644
---- a/include/dt-bindings/reset/stm32mp1-resets.h
-+++ b/include/dt-bindings/reset/stm32mp1-resets.h
-@@ -107,17 +107,17 @@
- #define GPIOK_R		19786
- 
- /* SCMI reset domain identifiers */
--#define RST_SCMI0_SPI6		0
--#define RST_SCMI0_I2C4		1
--#define RST_SCMI0_I2C6		2
--#define RST_SCMI0_USART1	3
--#define RST_SCMI0_STGEN		4
--#define RST_SCMI0_GPIOZ		5
--#define RST_SCMI0_CRYP1		6
--#define RST_SCMI0_HASH1		7
--#define RST_SCMI0_RNG1		8
--#define RST_SCMI0_MDMA		9
--#define RST_SCMI0_MCU		10
--#define RST_SCMI0_MCU_HOLD_BOOT	11
-+#define RST_SCMI_SPI6		0
-+#define RST_SCMI_I2C4		1
-+#define RST_SCMI_I2C6		2
-+#define RST_SCMI_USART1		3
-+#define RST_SCMI_STGEN		4
-+#define RST_SCMI_GPIOZ		5
-+#define RST_SCMI_CRYP1		6
-+#define RST_SCMI_HASH1		7
-+#define RST_SCMI_RNG1		8
-+#define RST_SCMI_MDMA		9
-+#define RST_SCMI_MCU		10
-+#define RST_SCMI_MCU_HOLD_BOOT	11
- 
- #endif /* _DT_BINDINGS_STM32MP1_RESET_H_ */
-diff --git a/include/dt-bindings/reset/stm32mp13-resets.h b/include/dt-bindings/reset/stm32mp13-resets.h
-new file mode 100644
-index 000000000000..934864e90da6
---- /dev/null
-+++ b/include/dt-bindings/reset/stm32mp13-resets.h
-@@ -0,0 +1,100 @@
-+/* SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause */
-+/*
-+ * Copyright (C) STMicroelectronics 2018 - All Rights Reserved
-+ * Author: Gabriel Fernandez <gabriel.fernandez@st.com> for STMicroelectronics.
-+ */
-+
-+#ifndef _DT_BINDINGS_STM32MP13_RESET_H_
-+#define _DT_BINDINGS_STM32MP13_RESET_H_
-+
-+#define TIM2_R		13568
-+#define TIM3_R		13569
-+#define TIM4_R		13570
-+#define TIM5_R		13571
-+#define TIM6_R		13572
-+#define TIM7_R		13573
-+#define LPTIM1_R	13577
-+#define SPI2_R		13579
-+#define SPI3_R		13580
-+#define USART3_R	13583
-+#define UART4_R		13584
-+#define UART5_R		13585
-+#define UART7_R		13586
-+#define UART8_R		13587
-+#define I2C1_R		13589
-+#define I2C2_R		13590
-+#define SPDIF_R		13594
-+#define TIM1_R		13632
-+#define TIM8_R		13633
-+#define SPI1_R		13640
-+#define USART6_R	13645
-+#define SAI1_R		13648
-+#define SAI2_R		13649
-+#define DFSDM_R		13652
-+#define FDCAN_R		13656
-+#define LPTIM2_R	13696
-+#define LPTIM3_R	13697
-+#define LPTIM4_R	13698
-+#define LPTIM5_R	13699
-+#define SYSCFG_R	13707
-+#define VREF_R		13709
-+#define DTS_R		13712
-+#define PMBCTRL_R	13713
-+#define LTDC_R		13760
-+#define DCMIPP_R	13761
-+#define DDRPERFM_R	13768
-+#define USBPHY_R	13776
-+#define STGEN_R		13844
-+#define USART1_R	13888
-+#define USART2_R	13889
-+#define SPI4_R		13890
-+#define SPI5_R		13891
-+#define I2C3_R		13892
-+#define I2C4_R		13893
-+#define I2C5_R		13894
-+#define TIM12_R		13895
-+#define TIM13_R		13896
-+#define TIM14_R		13897
-+#define TIM15_R		13898
-+#define TIM16_R		13899
-+#define TIM17_R		13900
-+#define DMA1_R		13952
-+#define DMA2_R		13953
-+#define DMAMUX1_R	13954
-+#define DMA3_R		13955
-+#define DMAMUX2_R	13956
-+#define ADC1_R		13957
-+#define ADC2_R		13958
-+#define USBO_R		13960
-+#define GPIOA_R		14080
-+#define GPIOB_R		14081
-+#define GPIOC_R		14082
-+#define GPIOD_R		14083
-+#define GPIOE_R		14084
-+#define GPIOF_R		14085
-+#define GPIOG_R		14086
-+#define GPIOH_R		14087
-+#define GPIOI_R		14088
-+#define TSC_R		14095
-+#define PKA_R		14146
-+#define SAES_R		14147
-+#define CRYP1_R		14148
-+#define HASH1_R		14149
-+#define RNG1_R		14150
-+#define AXIMC_R		14160
-+#define MDMA_R		14208
-+#define MCE_R		14209
-+#define ETH1MAC_R	14218
-+#define FMC_R		14220
-+#define QSPI_R		14222
-+#define SDMMC1_R	14224
-+#define SDMMC2_R	14225
-+#define CRC1_R		14228
-+#define USBH_R		14232
-+#define ETH2MAC_R	14238
-+
-+/* SCMI reset domain identifiers */
-+#define RST_SCMI_LTDC		0
-+#define RST_SCMI_MDMA		1
-+
-+#endif /* _DT_BINDINGS_STM32MP13_RESET_H_ */
 diff --git a/include/dt-bindings/rtc/rtc-stm32.h b/include/dt-bindings/rtc/rtc-stm32.h
 new file mode 100644
 index 000000000000..2fd78c2e62d4

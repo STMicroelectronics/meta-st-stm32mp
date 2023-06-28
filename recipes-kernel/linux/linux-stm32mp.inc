@@ -1,9 +1,10 @@
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 
+#for EFI
+include ${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'conf/image-uefi.conf', '', d)}
 inherit kernel
 
 DEPENDS += "openssl-native util-linux-native libyaml-native"
-DEPENDS += "gmp-native libmpc-native"
 
 B = "${WORKDIR}/build"
 # Configure build dir for externalsrc class usage through devtool
@@ -21,18 +22,6 @@ EXTRA_OEMAKE += "${@oe.utils.ifelse(d.getVar('KERNEL_SIGN_ENABLE') == '1', 'INST
 
 # Deploy kernel config file to deploy folder
 KERNEL_CONFIG_DEPLOY ??= "0"
-
-# YoctoProject bugzilla : 140044
-#   There's a race between do_symlink_kernsrc and do_populate_lic, since the latter is ordered "after do_patch";
-#
-# Below a STMicroelectonics' hacks waiting for official Yocto patch:
-#       commit already exists in gathesgarth :
-#a2b50b74d609ce079ab36b82d4c7c3539fb56485 kernel.bbclass: ensure symlink_kernsrc task gets run even with externalsrc
-python () {
-    bb.build.deltask('do_symlink_kernsrc', d)
-    bb.build.addtask('do_symlink_kernsrc', 'do_patch do_configure', 'do_unpack', d)
-}
-
 
 # ---------------------------------------------------------------------
 # Defconfig
@@ -80,14 +69,6 @@ do_configure:append() {
     #oe_runmake -C ${S} O=${B} savedefconfig && cp ${B}/defconfig ${WORKDIR}/defconfig.saved
 }
 
-do_compile_kernelmodules:append() {
-    if (grep -q -i -e '^CONFIG_MODULES=y$' ${B}/.config); then
-        # 5.10+ kernels have module.lds that we need to copy for external module builds
-        if [ -e "${B}/scripts/module.lds" ]; then
-            install -Dm 0644 ${B}/scripts/module.lds ${STAGING_KERNEL_BUILDDIR}/scripts/module.lds
-        fi
-    fi
-}
 # ---------------------------------------------------------------------
 do_install:append() {
     # Install KERNEL_IMAGETYPE for kernel-imagebootfs package
@@ -100,12 +81,20 @@ do_install:append() {
     #snd dependencies
     install -d ${D}/${sysconfdir}/modprobe.d/
     echo "softdep snd-soc-cs42l51 pre: snd-soc-cs42l51-i2c" > ${D}/${sysconfdir}/modprobe.d/stm32mp1-snd.conf
+
+    # efi
+    if ${@bb.utils.contains('MACHINE_FEATURES','efi','true','false',d)}; then
+        install -d ${D}${EFI_FILES_PATH}
+        install -m 0644 ${KERNEL_OUTPUT_DIR}/${KERNEL_IMAGETYPE} ${D}${EFI_FILES_PATH}/${EFI_BOOT_IMAGE}
+        install -d ${D}${EFI_PREFIX}/dtb
+        install -m 0664 ${D}${EFI_PREFIX}/*.dtb ${D}${EFI_PREFIX}/dtb/
+    fi
 }
 # ---------------------------------------------------------------------
 do_deploy:append() {
     if [ ${MODULE_TARBALL_DEPLOY} = "1" ] && (grep -q -i -e '^CONFIG_MODULES=y$' .config); then
         mkdir -p ${D}${root_prefix}/lib
-        tar -cvzf $deployDir/modules-stripped-${MODULE_TARBALL_NAME}.tgz -C ${WORKDIR}/package/${root_prefix} lib
+        tar -cvzf $deployDir/modules-stripped-${MODULE_TARBALL_NAME}.tgz --exclude='.debug' -C ${WORKDIR}/package/${root_prefix} lib
         ln -sf modules-stripped-${MODULE_TARBALL_NAME}.tgz $deployDir/modules-stripped-${MODULE_TARBALL_LINK_NAME}.tgz
     fi
     if [ ${KERNEL_CONFIG_DEPLOY} = "1" ] && [ -f "${D}/boot/config-${KERNEL_VERSION}" ]; then
@@ -138,3 +127,6 @@ FILES:${KERNEL_PACKAGE_NAME}-headers = "${exec_prefix}/src/linux*"
 FILES:${KERNEL_PACKAGE_NAME}-image  += "boot/ ${KERNEL_IMAGEDEST}"
 FILES:${KERNEL_PACKAGE_NAME}-imagebootfs = "boot/*.dtb boot/${KERNEL_IMAGETYPE}"
 FILES:${KERNEL_PACKAGE_NAME}-modules += "${sysconfdir}/modprobe.d"
+
+PACKAGES =+ "${@bb.utils.contains('MACHINE_FEATURES', 'efi', '${KERNEL_PACKAGE_NAME}-imageefi', '', d)} "
+FILES:${KERNEL_PACKAGE_NAME}-imageefi = "${EFI_PREFIX}/dtb/ ${EFI_FILES_PATH}"
