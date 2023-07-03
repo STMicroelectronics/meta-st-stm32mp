@@ -25,6 +25,7 @@ SRC_URI += "\
     file://0007-ARM-v2021.10-stm32mp-r2-BOARD.patch \
     file://0008-ARM-v2021.10-stm32mp-r2-MISC-DRIVERS.patch \
     file://0009-ARM-v2021.10-stm32mp-r2-DEVICETREE.patch \
+    file://0010-ARM-v2021.10-stm32mp-r2.1-rc1.patch \
     \
     file://0099-Add-external-var-to-allow-build-of-new-devicetree-fi.patch \
 "
@@ -34,7 +35,7 @@ SRC_URI += "${@bb.utils.contains('ST_UBOOT_DEBUG_TRACE', '1', '', 'file://0098-s
 
 U_BOOT_VERSION = "v2021.10"
 U_BOOT_SUBVERSION = "stm32mp"
-U_BOOT_RELEASE = "r2"
+U_BOOT_RELEASE = "r2.1"
 
 PV = "${U_BOOT_VERSION}-${U_BOOT_SUBVERSION}-${U_BOOT_RELEASE}"
 
