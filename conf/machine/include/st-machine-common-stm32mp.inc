@@ -382,6 +382,8 @@ ST_TOOLS_FOR_SDK = " \
 ST_TOOLS_FOR_SDK:append = " \
     nativesdk-cpp-symlinks \
     nativesdk-gcc-symlinks \
+    nativesdk-libyaml \
+    nativesdk-libyaml-dev \
     "
 
 # For support of perl ansicolor
@@ -428,12 +430,6 @@ ST_TOOLS_FOR_SDK:append = " \
 # For support wayland-scanner in SDK
 ST_TOOLS_FOR_SDK:append = " \
     nativesdk-wayland \
-    "
-
-# For Kernel yaml dependency
-ST_TOOLS_FOR_SDK:remove = " \
-    nativesdk-libyaml \
-    nativesdk-libyaml-dev \
     "
 
 # For CMSIS-SVD file parser with GDB
