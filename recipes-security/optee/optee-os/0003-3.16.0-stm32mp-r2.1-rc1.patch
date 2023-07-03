@@ -1,0 +1,848 @@
+From 40bea7e6dd305b8fec278fa56bc38eed127ce946 Mon Sep 17 00:00:00 2001
+From: Lionel VITTE <lionel.vitte@st.com>
+Date: Mon, 3 Jul 2023 10:30:06 +0200
+Subject: [PATCH] 3.16.0-stm32mp-r2.1-rc1
+
+---
+ core/arch/arm/dts/stm32mp135f-dk.dts          |   4 +-
+ core/arch/arm/plat-stm32mp1/conf.mk           |   4 +-
+ .../arm/plat-stm32mp1/drivers/stm32mp1_pmic.c | 151 +++++++++++++-----
+ .../plat-stm32mp1/drivers/stm32mp1_pwr_irq.c  |  78 ++++++---
+ core/arch/arm/plat-stm32mp1/main.c            |   4 +-
+ core/arch/arm/plat-stm32mp1/pm/context.c      |  12 +-
+ core/arch/arm/plat-stm32mp1/pm/low_power.c    |  15 +-
+ core/drivers/crypto/stm32/stm32_saes.c        |   7 +
+ core/drivers/regulator/core.c                 |   5 +
+ core/drivers/stm32_iwdg.c                     |  18 ++-
+ core/drivers/stm32_rng.c                      |  12 +-
+ core/drivers/stm32_uart.c                     |   4 +-
+ core/include/drivers/stpmic1.h                |  35 ----
+ core/include/kernel/huk_subkey.h              |   5 +
+ core/kernel/huk_subkey.c                      |  16 +-
+ .../devicetree/bindings/mfd/st,stpmic1.yaml   |  51 ++++++
+ 16 files changed, 293 insertions(+), 128 deletions(-)
+
+diff --git a/core/arch/arm/dts/stm32mp135f-dk.dts b/core/arch/arm/dts/stm32mp135f-dk.dts
+index 4400b2b13..710446101 100644
+--- a/core/arch/arm/dts/stm32mp135f-dk.dts
++++ b/core/arch/arm/dts/stm32mp135f-dk.dts
+@@ -9,6 +9,7 @@
+ #include <dt-bindings/clock/stm32mp13-clksrc.h>
+ #include <dt-bindings/gpio/gpio.h>
+ #include <dt-bindings/gpio/stm32mp_gpio.h>
++#include <dt-bindings/mfd/st,stpmic1.h>
+ #include <dt-bindings/power/stm32mp1-power.h>
+ #include <dt-bindings/rtc/rtc-stm32.h>
+ #include <dt-bindings/soc/stm32mp-tzc400-macro.h>
+@@ -192,7 +193,8 @@
+ 		reg = <0x33>;
+ 		status = "okay";
+ 		st,wakeup-pin-number = <1>;
+-		st,notif-it-id = <0>;
++		st,pmic-it-id = <IT_PONKEY_F IT_PONKEY_R>;
++		st,notif-it-id = <0 2>;
+ 
+ 		regulators {
+ 			compatible = "st,stpmic1-regulators";
+diff --git a/core/arch/arm/plat-stm32mp1/conf.mk b/core/arch/arm/plat-stm32mp1/conf.mk
+index 6c959d4bc..05229e61e 100644
+--- a/core/arch/arm/plat-stm32mp1/conf.mk
++++ b/core/arch/arm/plat-stm32mp1/conf.mk
+@@ -310,10 +310,8 @@ CFG_ENABLE_EMBEDDED_TESTS ?= y
+ CFG_WITH_STATS ?= y
+ CFG_WERROR ?= y
+ 
+-# Enable to allow debug
+-ifeq ($(CFG_TEE_CORE_DEBUG),y)
++# Enable OTP update with BSEC driver
+ CFG_STM32_BSEC_WRITE ?= y
+-endif
+ 
+ # Default disable some support for pager memory size constraint
+ ifeq ($(CFG_WITH_PAGER),y)
+diff --git a/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pmic.c b/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pmic.c
+index 4eda619cf..653ac4f7d 100644
+--- a/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pmic.c
++++ b/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pmic.c
+@@ -12,6 +12,7 @@
+ #include <drivers/stm32mp1_pmic.h>
+ #include <drivers/stm32mp1_pwr.h>
+ #include <drivers/stpmic1.h>
++#include <dt-bindings/mfd/st,stpmic1.h>
+ #include <io.h>
+ #include <keep.h>
+ #include <kernel/boot.h>
+@@ -26,6 +27,7 @@
+ #include <platform_config.h>
+ #include <stdbool.h>
+ #include <stm32_util.h>
++#include <sys/queue.h>
+ #include <trace.h>
+ #include <util.h>
+ 
+@@ -42,6 +44,17 @@
+ static struct i2c_handle_s *i2c_pmic_handle;
+ static uint32_t pmic_i2c_addr;
+ 
++struct pmic_it_handle_s {
++	uint8_t pmic_reg;
++	uint8_t pmic_bit;
++	uint8_t notif_id;
++
++	SLIST_ENTRY(pmic_it_handle_s) link;
++};
++
++static SLIST_HEAD(pmic_it_handle_head, pmic_it_handle_s) pmic_it_handle_list =
++	SLIST_HEAD_INITIALIZER(pmic_it_handle_list);
++
+ /* CPU voltage supplier if found */
+ static char cpu_supply_name[PMIC_REGU_SUPPLY_NAME_LEN];
+ 
+@@ -508,11 +521,10 @@ static void register_non_secure_pmic(void)
+ 	}
+ }
+ 
+-static enum itr_return stpmic1_irq_handler(struct itr_handler *handler)
++static enum itr_return stpmic1_irq_handler(struct itr_handler *handler __unused)
+ {
+ 	uint8_t read_val = 0U;
+ 	unsigned int i = 0U;
+-	uint32_t *it_id = handler->data;
+ 
+ 	FMSG("Stpmic1 irq handler");
+ 
+@@ -523,16 +535,22 @@ static enum itr_return stpmic1_irq_handler(struct itr_handler *handler)
+ 			panic();
+ 
+ 		if (read_val) {
++			struct pmic_it_handle_s *prv = NULL;
++
+ 			FMSG("Stpmic1 irq pending %u: %#"PRIx8, i, read_val);
+ 
+ 			if (stpmic1_register_write(ITCLEARLATCH1_REG + i,
+ 						   read_val))
+ 				panic();
+ 
+-			/* forward falling interrupt to non-secure */
+-			if (i == 0 && (read_val & BIT(IT_PONKEY_F)))
+-				if (it_id)
+-					notif_send_it(*it_id);
++			SLIST_FOREACH(prv, &pmic_it_handle_list, link)
++				if ((prv->pmic_reg == ITCLEARMASK1_REG + i) &&
++				    (read_val & BIT(prv->pmic_bit))) {
++					FMSG("STPMIC1 send notif %u",
++					     prv->notif_id);
++
++					notif_send_it(prv->notif_id);
++				}
+ 		}
+ 	}
+ 
+@@ -587,57 +605,104 @@ static void initialize_pmic(const void *fdt, int pmic_node)
+ 	stm32mp_put_pmic();
+ }
+ 
+-static TEE_Result stm32_pmic_probe(const void *fdt, int node,
+-				   const void *compat_data __unused)
++static TEE_Result stm32_pmic_init_it(const void *fdt, int node)
+ {
+-	TEE_Result res = TEE_SUCCESS;
+-	const fdt32_t *cuint = NULL;
++	TEE_Result res = TEE_ERROR_GENERIC;
++	const uint32_t *notif_ids = NULL;
++	int nb_notif = 0;
++	size_t pwr_it = 0;
+ 	struct itr_handler *hdl = NULL;
+-	size_t it = 0;
+-	uint32_t *it_id = NULL;
++	const fdt32_t *cuint = NULL;
+ 
+-	res = i2c_dt_get_by_subnode(fdt, node, &i2c_pmic_handle);
+-	if (res)
+-		return res;
++	cuint = fdt_getprop(fdt, node, "st,wakeup-pin-number", NULL);
++	if (!cuint) {
++		IMSG("Missing wake-up pin description");
++		return TEE_SUCCESS;
++	}
+ 
+-	initialize_pmic(fdt, node);
++	pwr_it = fdt32_to_cpu(*cuint) - 1U;
+ 
+-	if (IS_ENABLED(CFG_STM32MP13)) {
+-		cuint = fdt_getprop(fdt, node, "st,wakeup-pin-number", NULL);
+-		if (!cuint) {
+-			IMSG("Missing wake-up pin description");
+-			return TEE_SUCCESS;
+-		}
++	notif_ids = fdt_getprop(fdt, node, "st,notif-it-id", &nb_notif);
++	if (!notif_ids)
++		return TEE_ERROR_ITEM_NOT_FOUND;
+ 
+-		it = fdt32_to_cpu(*cuint) - 1U;
++	if (nb_notif > 0) {
++		struct pmic_it_handle_s *prv = NULL;
++		unsigned int i = 0;
++		const uint32_t *pmic_its = NULL;
++		int nb_it = 0;
+ 
+-		cuint = fdt_getprop(fdt, node, "st,notif-it-id", NULL);
+-		if (cuint) {
+-			it_id = calloc(1, sizeof(it_id));
+-			if (!it_id)
+-				return TEE_ERROR_OUT_OF_MEMORY;
++		pmic_its = fdt_getprop(fdt, node, "st,pmic-it-id", &nb_it);
++		if (!pmic_its)
++			return TEE_ERROR_ITEM_NOT_FOUND;
+ 
+-			*it_id = fdt32_to_cpu(*cuint);
+-		}
++		if (nb_it != nb_notif)
++			panic("st,notif-it-id incorrect description");
+ 
+-		res = stm32mp1_pwr_itr_alloc_add(it, stpmic1_irq_handler,
+-						 PWR_WKUP_FLAG_FALLING |
+-						 PWR_WKUP_FLAG_THREADED,
+-						 it_id, &hdl);
+-		if (res)
+-			panic("pmic: Couldn't allocate itr");
++		for (i = 0; i < (nb_notif / sizeof(uint32_t)); i++) {
++			uint8_t val = 0;
++			uint8_t pmic_it = 0;
+ 
+-		stm32mp1_pwr_itr_enable(hdl->it);
++			prv = calloc(1, sizeof(*prv));
++			if (!prv)
++				panic("pmic: Couldn't allocate pmic it");
+ 
+-		/* Enable ponkey irq */
+-		stm32mp_get_pmic();
+-		if (stpmic1_register_write(ITCLEARMASK1_REG,
+-					   BIT(IT_PONKEY_F) | BIT(IT_PONKEY_R)))
+-			panic();
++			pmic_it = fdt32_to_cpu(pmic_its[i]);
++
++			assert(pmic_it <= IT_SWIN_R);
++
++			prv->pmic_reg = ITCLEARMASK1_REG + pmic_it / U(8);
++			prv->pmic_bit = pmic_it % U(8);
++			prv->notif_id = fdt32_to_cpu(notif_ids[i]);
++
++			SLIST_INSERT_HEAD(&pmic_it_handle_list, prv, link);
++
++			stm32mp_get_pmic();
+ 
+-		stm32mp_put_pmic();
++			/* Enable requested interrupt */
++			if (stpmic1_register_read(prv->pmic_reg, &val))
++				panic();
++
++			val |= BIT(prv->pmic_bit);
++
++			if (stpmic1_register_write(prv->pmic_reg, val))
++				panic();
++
++			stm32mp_put_pmic();
++		}
++
++		SLIST_FOREACH(prv, &pmic_it_handle_list, link) {
++			FMSG("STPMIC1 forwards irq reg:%u bit:%u as notif:%u",
++			     prv->pmic_reg, prv->pmic_bit, prv->notif_id);
++		}
+ 	}
+ 
++	res = stm32mp1_pwr_itr_alloc_add(pwr_it, stpmic1_irq_handler,
++					 PWR_WKUP_FLAG_FALLING |
++					 PWR_WKUP_FLAG_THREADED,
++					 NULL, &hdl);
++	if (res)
++		panic("pmic: Couldn't allocate itr");
++
++	stm32mp1_pwr_itr_enable(hdl->it);
++
++	return res;
++}
++
++static TEE_Result stm32_pmic_probe(const void *fdt, int node,
++				   const void *compat_data __unused)
++{
++	TEE_Result res = TEE_SUCCESS;
++
++	res = i2c_dt_get_by_subnode(fdt, node, &i2c_pmic_handle);
++	if (res)
++		return res;
++
++	initialize_pmic(fdt, node);
++
++	if (IS_ENABLED(CFG_STM32MP13))
++		res = stm32_pmic_init_it(fdt, node);
++
+ 	return res;
+ }
+ 
+diff --git a/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pwr_irq.c b/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pwr_irq.c
+index 0913e9151..ca2761a81 100644
+--- a/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pwr_irq.c
++++ b/core/arch/arm/plat-stm32mp1/drivers/stm32mp1_pwr_irq.c
+@@ -13,6 +13,7 @@
+ #include <kernel/dt.h>
+ #include <kernel/notif.h>
+ #include <kernel/panic.h>
++#include <kernel/spinlock.h>
+ #include <libfdt.h>
+ #include <platform_config.h>
+ #include <stm32_util.h>
+@@ -47,6 +48,7 @@ struct stm32_pwr_data {
+ 	struct itr_handler *gic_hdl;
+ 	bool threaded[PWR_NB_WAKEUPPINS];
+ 	bool pending[PWR_NB_WAKEUPPINS];
++	unsigned int spinlock;
+ };
+ 
+ static struct stm32_pwr_data *pwr_data;
+@@ -148,6 +150,7 @@ static TEE_Result
+ stm32_pwr_irq_set_pull_config(size_t it, enum wkup_pull_setting config)
+ {
+ 	struct stm32_pwr_data *priv = pwr_data;
++	uint32_t exceptions = 0;
+ 
+ 	VERBOSE_PWR("irq:%zu pull config:0%#"PRIx32, it, config);
+ 
+@@ -156,29 +159,59 @@ stm32_pwr_irq_set_pull_config(size_t it, enum wkup_pull_setting config)
+ 		return TEE_ERROR_GENERIC;
+ 	}
+ 
++	exceptions = cpu_spin_lock_xsave(&priv->spinlock);
++
+ 	io_mask32(priv->base + WKUPCR,
+ 		  (config & WKUP_PULL_MASK) << (WKUP_PULL_SHIFT + it * 2),
+ 		  (WKUP_PULL_MASK) << (WKUP_PULL_SHIFT + it * 2));
+ 
++	cpu_spin_unlock_xrestore(&priv->spinlock, exceptions);
++
+ 	return TEE_SUCCESS;
+ }
+ 
+-static TEE_Result
+-stm32_pwr_irq_set_trig(size_t it, enum pwr_wkup_flags trig)
++static void stm32mp1_pwr_itr_enable_nolock(size_t it)
++{
++	struct stm32_pwr_data *priv = pwr_data;
++
++	VERBOSE_PWR("Pwr irq enable");
++
++	if (IS_ENABLED(CFG_STM32_EXTI))
++		stm32_exti_enable_wake(PWR_EXTI_WKUP1 + it);
++
++	io_setbits32(priv->base + MPUWKUPENR, BIT(it));
++}
++
++static void stm32mp1_pwr_itr_disable_nolock(size_t it)
++{
++	struct stm32_pwr_data *priv = pwr_data;
++
++	VERBOSE_PWR("Pwr irq disable");
++
++	io_clrbits32(priv->base + MPUWKUPENR, BIT(it));
++
++	if (IS_ENABLED(CFG_STM32_EXTI))
++		stm32_exti_disable_wake(PWR_EXTI_WKUP1 + it);
++}
++
++static TEE_Result stm32_pwr_irq_set_trig(size_t it, enum pwr_wkup_flags trig)
+ {
+ 	struct stm32_pwr_data *priv = pwr_data;
++	uint32_t exceptions = 0;
+ 	uint32_t wkupcr = 0;
+ 	int en = 0;
+ 
+ 	VERBOSE_PWR("irq:%zu trig:%#"PRIx32, it, trig);
+ 
++	exceptions = cpu_spin_lock_xsave(&priv->spinlock);
++
+ 	en = io_read32(priv->base + MPUWKUPENR) & BIT(it);
+ 	/*
+ 	 * Reference manual request to disable the wakeup pin while
+-	 * changing the edge detection setting
++	 * changing the edge detection setting.
+ 	 */
+ 	if (en)
+-		stm32mp1_pwr_itr_disable(it);
++		stm32mp1_pwr_itr_disable_nolock(it);
+ 
+ 	wkupcr = io_read32(priv->base + WKUPCR);
+ 	switch (trig) {
+@@ -195,7 +228,9 @@ stm32_pwr_irq_set_trig(size_t it, enum pwr_wkup_flags trig)
+ 	io_write32(priv->base + WKUPCR, wkupcr);
+ 
+ 	if (en)
+-		stm32mp1_pwr_itr_enable(it);
++		stm32mp1_pwr_itr_enable_nolock(it);
++
++	cpu_spin_unlock_xrestore(&priv->spinlock, exceptions);
+ 
+ 	return TEE_SUCCESS;
+ }
+@@ -203,25 +238,21 @@ stm32_pwr_irq_set_trig(size_t it, enum pwr_wkup_flags trig)
+ void stm32mp1_pwr_itr_enable(size_t it)
+ {
+ 	struct stm32_pwr_data *priv = pwr_data;
++	uint32_t exceptions = 0;
+ 
+-	VERBOSE_PWR("Pwr irq enable");
+-
+-	if (IS_ENABLED(CFG_STM32_EXTI))
+-		stm32_exti_enable_wake(PWR_EXTI_WKUP1 + it);
+-
+-	io_setbits32(priv->base + MPUWKUPENR, BIT(it));
++	exceptions = cpu_spin_lock_xsave(&priv->spinlock);
++	stm32mp1_pwr_itr_enable_nolock(it);
++	cpu_spin_unlock_xrestore(&priv->spinlock, exceptions);
+ }
+ 
+ void stm32mp1_pwr_itr_disable(size_t it)
+ {
+ 	struct stm32_pwr_data *priv = pwr_data;
++	uint32_t exceptions = 0;
+ 
+-	VERBOSE_PWR("Pwr irq disable");
+-
+-	io_clrbits32(priv->base + MPUWKUPENR, BIT(it));
+-
+-	if (IS_ENABLED(CFG_STM32_EXTI))
+-		stm32_exti_disable_wake(PWR_EXTI_WKUP1 + it);
++	exceptions = cpu_spin_lock_xsave(&priv->spinlock);
++	stm32mp1_pwr_itr_disable_nolock(it);
++	cpu_spin_unlock_xrestore(&priv->spinlock, exceptions);
+ }
+ 
+ static TEE_Result stm32mp1_pwr_irt_add(struct itr_handler *hdl)
+@@ -231,7 +262,9 @@ static TEE_Result stm32mp1_pwr_irt_add(struct itr_handler *hdl)
+ 	struct stm32_pinctrl_list pinctrl_list = { };
+ 	struct stm32_pinctrl pin = { };
+ 	struct stm32_pinctrl *pinctrl = NULL;
++	uint32_t exceptions = 0;
+ 	unsigned int i = 0;
++	bool itr_free = false;
+ 
+ 	VERBOSE_PWR("Pwr IRQ add");
+ 
+@@ -241,10 +274,15 @@ static TEE_Result stm32mp1_pwr_irt_add(struct itr_handler *hdl)
+ 	}
+ 
+ 	assert(it >= PWR_WKUP_PIN1 && it < PWR_NB_WAKEUPPINS);
+-	/* check IRQ not already in use */
+-	assert(!priv->hdl[it]);
+ 
+-	priv->hdl[it] = hdl;
++	/* Use PWR lock to ensure consistent interrupt registering */
++	exceptions = cpu_spin_lock_xsave(&priv->spinlock);
++	itr_free = !priv->hdl[it];
++	if (itr_free)
++		priv->hdl[it] = hdl;
++	cpu_spin_unlock_xrestore(&priv->spinlock, exceptions);
++	if (!itr_free)
++		return TEE_ERROR_GENERIC;
+ 
+ 	if (hdl->flags & PWR_WKUP_FLAG_THREADED)
+ 		priv->threaded[it] = true;
+diff --git a/core/arch/arm/plat-stm32mp1/main.c b/core/arch/arm/plat-stm32mp1/main.c
+index 2e9f7a699..3ae327ee5 100644
+--- a/core/arch/arm/plat-stm32mp1/main.c
++++ b/core/arch/arm/plat-stm32mp1/main.c
+@@ -165,9 +165,9 @@ static TEE_Result init_console_from_dt(void)
+ 	/* Replace early console with the new one */
+ 	console_flush();
+ 	console_data = *pd;
+-	free(pd);
+ 	register_serial_console(&console_data.chip);
+ 	IMSG("DTB enables console (%ssecure)", pd->secure ? "" : "non-");
++	free(pd);
+ 
+ 	return TEE_SUCCESS;
+ }
+@@ -727,7 +727,7 @@ static TEE_Result stm32_configure_tamp(void)
+ 	return TEE_SUCCESS;
+ }
+ 
+-driver_init_late(stm32_configure_tamp);
++service_init(stm32_configure_tamp);
+ #endif
+ 
+ #ifdef CFG_STM32_HSE_MONITORING
+diff --git a/core/arch/arm/plat-stm32mp1/pm/context.c b/core/arch/arm/plat-stm32mp1/pm/context.c
+index c9d26ee37..7e08bc0a2 100644
+--- a/core/arch/arm/plat-stm32mp1/pm/context.c
++++ b/core/arch/arm/plat-stm32mp1/pm/context.c
+@@ -213,7 +213,7 @@ static void __maybe_unused print_ccm_decryption_duration(void)
+ 		((unsigned long long)ctx->stgen_cnt * 1000) /
+ 		io_read32(stgen + CNTFID_OFFSET));
+ 
+-	clk_enable(pm_clocks.bkpsram);
++	clk_disable(pm_clocks.bkpsram);
+ }
+ #else
+ static void __maybe_unused print_ccm_decryption_duration(void)
+@@ -582,15 +582,17 @@ TEE_Result stm32mp_pm_call_bl2_lp_entry(unsigned int soc_mode)
+ 
+ 	dcache_op_all(DCACHE_OP_CLEAN_INV);
+ 
++	/* Disable Cache & MMU before calling low_power section */
++	write_sctlr(read_sctlr() & ~(SCTLR_C | SCTLR_M));
++
+ 	dsb();
++	isb();
+ 
+-	/* Disable MMU before calling low_power section */
+-	write_sctlr(read_sctlr() & ~SCTLR_M);
+ 
+ 	(*stm32_pwr_down_wfi)(true, soc_mode);
+ 
+-	/* Enable MMU */
+-	write_sctlr(read_sctlr() | SCTLR_M);
++	/* Enable Cache & MMU */
++	write_sctlr(read_sctlr() | SCTLR_C | SCTLR_M);
+ 
+ 	clk_disable(pm_clocks.bkpsram);
+ 
+diff --git a/core/arch/arm/plat-stm32mp1/pm/low_power.c b/core/arch/arm/plat-stm32mp1/pm/low_power.c
+index cbc5fa151..653c3dfb7 100644
+--- a/core/arch/arm/plat-stm32mp1/pm/low_power.c
++++ b/core/arch/arm/plat-stm32mp1/pm/low_power.c
+@@ -292,13 +292,6 @@ void stm32_enter_cstop(uint32_t mode)
+ 		io_clrsetbits32(pwr_base + PWR_CR3_OFF, PWR_CR3_POPL_MASK,
+ 				20U << PWR_CR3_POPL_SHIFT);
+ 
+-		/* Keep backup RAM content in standby */
+-		io_setbits32(pwr_base + PWR_CR2_OFF, PWR_CR2_BREN);
+-
+-		// TODO add a timeout?
+-		while (!(io_read32(pwr_base + PWR_CR2_OFF) & PWR_CR2_BRRDY))
+-			;
+-
+ #ifndef CFG_STM32MP13
+ 		if (stm32mp1_is_retram_during_standby()) {
+ 			/* Keep retention in standby */
+@@ -344,9 +337,6 @@ void stm32_exit_cstop(void)
+ 	dsb();
+ 	isb();
+ 
+-	/* Disable retention and backup RAM content after stop */
+-	io_clrbits32(stm32_pwr_base() + PWR_CR2_OFF, PWR_CR2_BREN);
+-
+ #ifndef CFG_STM32MP13
+ 	/* Disable retention and backup RAM content after stop */
+ 	io_clrbits32(stm32_pwr_base() + PWR_CR2_OFF, PWR_CR2_RREN);
+@@ -525,6 +515,11 @@ static TEE_Result init_low_power(void)
+ 		     RCC_MP_SREQSETR_STPREQ_P0 | RCC_MP_SREQSETR_STPREQ_P1);
+ #endif
+ 
++	/* Keep backup RAM content in standby */
++	io_setbits32(pwr_base + PWR_CR2_OFF, PWR_CR2_BREN);
++	while (!(io_read32(pwr_base + PWR_CR2_OFF) & PWR_CR2_BRRDY))
++		;
++
+ 	return TEE_SUCCESS;
+ }
+ driver_init_late(init_low_power);
+diff --git a/core/drivers/crypto/stm32/stm32_saes.c b/core/drivers/crypto/stm32/stm32_saes.c
+index 9453d0d52..d8495a16e 100644
+--- a/core/drivers/crypto/stm32/stm32_saes.c
++++ b/core/drivers/crypto/stm32/stm32_saes.c
+@@ -1337,6 +1337,13 @@ TEE_Result huk_subkey_derive(enum huk_subkey_usage usage,
+ 	struct stm32_saes_context ctx = { };
+ 	uint8_t separator = 0;
+ 
++	// Check if driver is probed
++	if (saes_pdata.base.pa == 0) {
++		DMSG("Use __huk_subkey_derive instead of SAES IP features");
++		return __huk_subkey_derive(usage, const_data, const_data_len,
++					   subkey, subkey_len);
++	}
++
+ 	input = malloc(const_data_len + sizeof(separator) + sizeof(usage) +
+ 		       sizeof(subkey_bitlen) + AES_BLOCK_SIZE);
+ 	if (!input)
+diff --git a/core/drivers/regulator/core.c b/core/drivers/regulator/core.c
+index d4dc3751d..7ef58b268 100644
+--- a/core/drivers/regulator/core.c
++++ b/core/drivers/regulator/core.c
+@@ -575,6 +575,11 @@ static TEE_Result parse_properties(const void *fdt, struct rdev *rdev, int node)
+ 	}
+ 
+ 	rdev->reg_name = fdt_getprop(fdt, node, "regulator-name", NULL);
++	if (rdev->reg_name) {
++		rdev->reg_name = strdup(rdev->reg_name);
++		if (!rdev->reg_name)
++			panic();
++	}
+ 
+ 	return TEE_SUCCESS;
+ }
+diff --git a/core/drivers/stm32_iwdg.c b/core/drivers/stm32_iwdg.c
+index 49e4fad50..fba4abe7e 100644
+--- a/core/drivers/stm32_iwdg.c
++++ b/core/drivers/stm32_iwdg.c
+@@ -35,6 +35,7 @@
+ #define IWDG_EWCR_OFFSET	U(0x14)
+ 
+ /* Registers values */
++#define IWDG_KR_WPROT_KEY	U(0x0000)
+ #define IWDG_KR_ACCESS_KEY	U(0x5555)
+ #define IWDG_KR_RELOAD_KEY	U(0xAAAA)
+ #define IWDG_KR_START_KEY	U(0xCCCC)
+@@ -45,6 +46,7 @@
+ #define IWDG_RLR_RL_MASK	GENMASK_32(11, 0)
+ 
+ #define IWDG_SR_EWU		BIT(3)
++#define IWDG_SR_EWIF		BIT(14)
+ 
+ #define IWDG_EWCR_EWIE		BIT(15)
+ #define IWDG_EWCR_EWIC		BIT(14)
+@@ -88,10 +90,22 @@ static enum itr_return stm32_iwdg_it_handler(struct itr_handler *handler)
+ 
+ 	stm32mp_dump_core_registers(true);
+ 
+-	iwdg_refresh(iwdg);
+-
+ 	clk_enable(iwdg->pdata.clock);
+ 
++	/* Check for spurious interrupt */
++	if (!(io_read32(iwdg_base + IWDG_SR_OFFSET) & IWDG_SR_EWIF)) {
++		clk_disable(iwdg->pdata.clock);
++		return ITRR_NONE;
++	}
++
++	/*
++	 * Writing IWDG_EWCR_EWIT triggers a watchdog refresh.
++	 * To prevent the watchdog refresh, write-protect all the registers;
++	 * this makes read-only all IWDG_EWCR fields except IWDG_EWCR_EWIC.
++	 */
++	io_write32(iwdg_base + IWDG_KR_OFFSET, IWDG_KR_WPROT_KEY);
++
++	/* Disable early interrupt */
+ 	io_setbits32(iwdg_base + IWDG_EWCR_OFFSET, IWDG_EWCR_EWIC);
+ 
+ 	clk_disable(iwdg->pdata.clock);
+diff --git a/core/drivers/stm32_rng.c b/core/drivers/stm32_rng.c
+index ef5862308..363aeee00 100644
+--- a/core/drivers/stm32_rng.c
++++ b/core/drivers/stm32_rng.c
+@@ -140,9 +140,19 @@ static TEE_Result stm32_rng_read_available(struct stm32_rng_device *dev,
+ 
+ 	/* RNG is ready: read up to 4 32bit words */
+ 	while (size) {
+-		uint32_t data32 = io_read32(base + RNG_DR);
++		uint32_t data32 = 0;
+ 		size_t sz = MIN(size, sizeof(uint32_t));
+ 
++		if (!(io_read32(base + RNG_SR) & RNG_SR_DRDY))
++			return TEE_ERROR_NO_DATA;
++
++		data32 = io_read32(base + RNG_DR);
++		/* Late seed error case: DR being 0 is an error status */
++		if (!data32) {
++			conceal_seed_error(dev);
++			return TEE_ERROR_NO_DATA;
++		}
++
+ 		memcpy(buf, &data32, sz);
+ 		buf += sz;
+ 		size -= sz;
+diff --git a/core/drivers/stm32_uart.c b/core/drivers/stm32_uart.c
+index 5105b14bc..1ffc99117 100644
+--- a/core/drivers/stm32_uart.c
++++ b/core/drivers/stm32_uart.c
+@@ -38,12 +38,12 @@
+  * Bit 5 RXNE: Read data register not empty/RXFIFO not empty
+  * Bit 6 TC: Transmission complete
+  * Bit 7 TXE/TXFNF: Transmit data register empty/TXFIFO not full
+- * Bit 27 TXFE: TXFIFO threshold reached
++ * Bit 23 TXFE: TXFIFO empty
+  */
+ #define USART_ISR_RXNE_RXFNE		BIT(5)
+ #define USART_ISR_TC			BIT(6)
+ #define USART_ISR_TXE_TXFNF		BIT(7)
+-#define USART_ISR_TXFE			BIT(27)
++#define USART_ISR_TXFE			BIT(23)
+ 
+ static vaddr_t loc_chip_to_base(struct serial_chip *chip)
+ {
+diff --git a/core/include/drivers/stpmic1.h b/core/include/drivers/stpmic1.h
+index 5fe48232f..b293c846f 100644
+--- a/core/include/drivers/stpmic1.h
++++ b/core/include/drivers/stpmic1.h
+@@ -171,41 +171,6 @@
+ #define USBSW_OTG_SWITCH_ENABLED_POS	1
+ #define BOOST_ENABLED_POS		0
+ 
+-/* IRQ definitions */
+-#define IT_PONKEY_F	0
+-#define IT_PONKEY_R	1
+-#define IT_WAKEUP_F	2
+-#define IT_WAKEUP_R	3
+-#define IT_VBUS_OTG_F	4
+-#define IT_VBUS_OTG_R	5
+-#define IT_SWOUT_F	6
+-#define IT_SWOUT_R	7
+-
+-#define IT_CURLIM_BUCK1	0
+-#define IT_CURLIM_BUCK2	1
+-#define IT_CURLIM_BUCK3	2
+-#define IT_CURLIM_BUCK4	3
+-#define IT_OCP_OTG	4
+-#define IT_OCP_SWOUT	5
+-#define IT_OCP_BOOST	6
+-#define IT_OVP_BOOST	7
+-
+-#define IT_CURLIM_LDO1	0
+-#define IT_CURLIM_LDO2	1
+-#define IT_CURLIM_LDO3	2
+-#define IT_CURLIM_LDO4	3
+-#define IT_CURLIM_LDO5	4
+-#define IT_CURLIM_LDO6	5
+-#define IT_SHORT_SWOTG	6
+-#define IT_SHORT_SWOUT	7
+-
+-#define IT_TWARN_F	0
+-#define IT_TWARN_R	1
+-#define IT_VINLOW_F	2
+-#define IT_VINLOW_R	3
+-#define IT_SWIN_F	4
+-#define IT_SWIN_R	5
+-
+ /*
+  * Bind SPMIC1 device driver with a specific I2C bus instance
+  * @i2c_handle: target I2C instance to use
+diff --git a/core/include/kernel/huk_subkey.h b/core/include/kernel/huk_subkey.h
+index 59bcf2773..a6a18e953 100644
+--- a/core/include/kernel/huk_subkey.h
++++ b/core/include/kernel/huk_subkey.h
+@@ -49,12 +49,17 @@ enum huk_subkey_usage {
+  *
+  * Returns a subkey derived from the hardware unique key. Given the same
+  * input the same subkey is returned each time.
++ * Function huk_subkey_derive is __weak to allow platform custom implementation.
++ * __huk_subkey_derive implements the default behavior of huk_subkey_derive.
+  *
+  * Return TEE_SUCCES on success or an error code on failure.
+  */
+ TEE_Result huk_subkey_derive(enum huk_subkey_usage usage,
+ 			     const void *const_data, size_t const_data_len,
+ 			     uint8_t *subkey, size_t subkey_len);
++TEE_Result __huk_subkey_derive(enum huk_subkey_usage usage,
++			       const void *const_data, size_t const_data_len,
++			       uint8_t *subkey, size_t subkey_len);
+ 
+ 
+ #endif /*__KERNEL_HUK_SUBKEY_H*/
+diff --git a/core/kernel/huk_subkey.c b/core/kernel/huk_subkey.c
+index 5481120b6..3db2cfe5f 100644
+--- a/core/kernel/huk_subkey.c
++++ b/core/kernel/huk_subkey.c
+@@ -58,10 +58,9 @@ static TEE_Result huk_compat(void *ctx, enum huk_subkey_usage usage)
+ }
+ #endif /*CFG_CORE_HUK_SUBKEY_COMPAT*/
+ 
+-__weak
+-TEE_Result huk_subkey_derive(enum huk_subkey_usage usage,
+-			     const void *const_data, size_t const_data_len,
+-			     uint8_t *subkey, size_t subkey_len)
++TEE_Result __huk_subkey_derive(enum huk_subkey_usage usage,
++			       const void *const_data, size_t const_data_len,
++			       uint8_t *subkey, size_t subkey_len)
+ {
+ 	void *ctx = NULL;
+ 	struct tee_hw_unique_key huk = { };
+@@ -106,3 +105,12 @@ out:
+ 	crypto_mac_free_ctx(ctx);
+ 	return res;
+ }
++
++__weak
++TEE_Result huk_subkey_derive(enum huk_subkey_usage usage,
++			     const void *const_data, size_t const_data_len,
++			     uint8_t *subkey, size_t subkey_len)
++{
++	return __huk_subkey_derive(usage, const_data, const_data_len, subkey,
++				   subkey_len);
++}
+diff --git a/documentation/devicetree/bindings/mfd/st,stpmic1.yaml b/documentation/devicetree/bindings/mfd/st,stpmic1.yaml
+index 344623f1f..7d97a7082 100644
+--- a/documentation/devicetree/bindings/mfd/st,stpmic1.yaml
++++ b/documentation/devicetree/bindings/mfd/st,stpmic1.yaml
+@@ -262,6 +262,51 @@ properties:
+     minItems: 1
+     maxItems: 1
+ 
++  st,pmic-it-id:
++    description: PMIC interruptions id to forward to the non-secure world
++      in the form of OPTEE notifications described by st,notif-it-id.
++        IT_PONKEY_F = 0
++        IT_PONKEY_R = 1
++        IT_WAKEUP_F = 2
++        IT_WAKEUP_R = 3
++        IT_VBUS_OTG_F = 4
++        IT_VBUS_OTG_R = 5
++        IT_SWOUT_F = 6
++        IT_SWOUT_R = 7
++        IT_CURLIM_BUCK1 = 8
++        IT_CURLIM_BUCK2 = 9
++        IT_CURLIM_BUCK3 = 10
++        IT_CURLIM_BUCK4 = 11
++        IT_OCP_OTG = 12
++        IT_OCP_SWOUT = 13
++        IT_OCP_BOOST = 14
++        IT_OVP_BOOST = 15
++        IT_CURLIM_LDO1 = 16
++        IT_CURLIM_LDO2 = 17
++        IT_CURLIM_LDO3 = 18
++        IT_CURLIM_LDO4 = 19
++        IT_CURLIM_LDO5 = 20
++        IT_CURLIM_LDO6 = 21
++        IT_SHORT_SWOTG = 22
++        IT_SHORT_SWOUT = 23
++        IT_TWARN_F = 24
++        IT_TWARN_R = 25
++        IT_VINLOW_F = 26
++        IT_VINLOW_R = 27
++        IT_SWIN_F = 30
++        IT_SWIN_R = 31
++    $ref: /schemas/types.yaml#/definitions/uint32
++    minItems: 1
++    maxItems: 32
++
++  st,notif-it-id:
++    description: OPTEE notification numbers to send to the non-secure world.
++      One notification is needed for each interruption listed by st,pmic-it-id,
++      so the number of notifications must be eaqual to the number of interrupts.
++    $ref: /schemas/types.yaml#/definitions/uint32
++    minItems: 1
++    maxItems: 32
++
+ additionalProperties: false
+ 
+ required:
+@@ -271,6 +316,10 @@ required:
+   - "#interrupt-cells"
+   - interrupt-controller
+ 
++dependencies:
++  st,notif-it-id: [ 'st,pmic-it-id' ]
++  st,pmic-it-id: [ 'st,notif-it-id' ]
++
+ examples:
+   - |
+     #include <dt-bindings/mfd/st,stpmic1.h>
+@@ -289,6 +338,8 @@ examples:
+         #interrupt-cells = <2>;
+ 
+         st,wakeup-pin-number = <1>;
++        st,pmic-it-id = <IT_PONKEY_F IT_PONKEY_R>;
++        st,notif-it-id = <0 2>;
+ 
+         onkey {
+           compatible = "st,stpmic1-onkey";
+-- 
+2.25.1
+
