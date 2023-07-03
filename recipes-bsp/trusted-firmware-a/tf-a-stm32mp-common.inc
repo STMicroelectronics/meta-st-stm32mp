@@ -11,11 +11,12 @@ SRCREV = "a1f02f4f3daae7e21ee58b4c93ec3e46b8f28d15"
 SRC_URI += " \
     file://0001-v2.6-stm32mp-r1.patch \
     file://0002-v2.6-stm32mp-r2.patch \
+    file://0003-v2.6-stm32mp-r2.1-rc1.patch\
     "
 
 TF_A_VERSION = "v2.6"
 TF_A_SUBVERSION = "stm32mp"
-TF_A_RELEASE = "r2"
+TF_A_RELEASE = "r2.1"
 PV = "${TF_A_VERSION}-${TF_A_SUBVERSION}-${TF_A_RELEASE}"
 
 ARCHIVER_ST_BRANCH = "${TF_A_VERSION}-${TF_A_SUBVERSION}"
