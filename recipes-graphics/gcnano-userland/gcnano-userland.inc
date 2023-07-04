@@ -8,6 +8,7 @@ PROVIDES = "\
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'gbm', 'virtual/libgbm', '', d)}       \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv1', 'virtual/libgles1', '', d)}  \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv2', 'virtual/libgles2', '', d)}  \
+    ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv2', 'virtual/libgles3', '', d)}  \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'vg', 'virtual/libopenvg', '', d)}     \
     "
 
