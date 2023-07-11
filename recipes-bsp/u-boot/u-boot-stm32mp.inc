@@ -6,6 +6,9 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/u-boot-stm32mp:"
 EXTERNALSRC_BUILD:pn-${PN} = "${WORKDIR}/build"
 B = "${WORKDIR}/build"
 
+SRC_URI:append:stm32mp1common = " file://fragment-04-fastboot_mmc0.fb_cfg;subdir=fragments/features"
+SRC_URI:append:stm32mp1common = " file://fragment-05-fastboot_mmc1.fb_cfg;subdir=fragments/features"
+
 # Configure for debug elf
 ELF_DEBUG_ENABLE ?= "1"
 UBOOT_ELF = "${@'u-boot' if d.getVar('ELF_DEBUG_ENABLE') == '1' else ''}"
@@ -49,6 +52,72 @@ base_do_unpack:append () {
             shutil.move(s, ubootsrc)
             os.symlink(ubootsrc, s)
 }
+
+# -----------------------------------------------------------------------------
+# Prepend a way to add specific fragments for fastboot
+# returns all the elements from the src uri that are .fb_cfg files
+def find_fb_cfgs(d):
+    sources=src_patches(d, True)
+    sources_list=[]
+    for s in sources:
+        if s.endswith('.fb_cfg'):
+            sources_list.append(s)
+
+    return sources_list
+
+python get_fastboot_fragments() {
+    fbconfigflags = d.getVarFlags('UBOOT_CONFIG')
+    # The "doc" varflag is special, we don't want to see it here
+    fbconfigflags.pop('doc', None)
+    fbconfig = (d.getVar('UBOOT_CONFIG') or "").split()
+
+    UBOOT_FB_CFG = ''
+    if len(fbconfig) > 0:
+        for config in fbconfig:
+            for f, v in fbconfigflags.items():
+                if config == f and "fastboot" in f:
+                    items = v.split(',')
+                    if items[0]:
+                        device_type = items[0].upper().split('-')[2]
+                        device_type = device_type.split('_')[0]
+                        device_frag = d.getVar('DEVICE:%s' % device_type)
+                        if device_frag:
+                            d.appendVar('UBOOT_FB_CFG', device_frag)
+                        else:
+                            bb.fatal('Wrong UBOOT_CONFIG. %s is not a correct device' % i)
+            d.appendVar('UBOOT_FB_CFG', ',')
+}
+
+do_generate_defconfig() {
+    if [ -n "${UBOOT_CONFIG}" ]; then
+        unset i j
+        for config in ${UBOOT_MACHINE}; do
+            i=$(expr $i + 1);
+            for type in ${UBOOT_CONFIG}; do
+                j=$(expr $j + 1);
+                if [ $j -eq $i ]; then
+                    # Check if a fastboot configuration needs to be done
+                    fb_cfg="$(echo ${UBOOT_FB_CFG} | cut -d',' -f $i )"
+                    if [ -n "${fb_cfg}" ]; then
+                        tmp_cfg="$(echo ${@" ".join(find_fb_cfgs(d))})"
+                        for f in ${tmp_cfg}; do
+                            fcf=$(echo $f | sed 's,.*/fragment-[0-9]*-\(.*\)\.fb_cfg,\1,')
+                            if echo ${fcf} | grep ${fb_cfg}; then
+                                def_cfg="$(echo ${config} | sed 's,-fastboot.*_,_,')"
+                                cat ${S}/configs/${def_cfg} ${f} > ${S}/configs/${config}
+                            fi
+                        done
+                    fi
+                fi
+            done
+            unset j
+        done
+        unset i
+    fi
+}
+addtask generate_defconfig before do_configure after do_patch
+do_generate_defconfig[prefuncs] += "get_fastboot_fragments"
+do_generate_defconfig[vardeps] += "SRC_URI"
 
 # -----------------------------------------------------------------------------
 # Append configure to handle specific MTDPART check if required
@@ -207,7 +276,7 @@ do_deploy:append() {
                                     fi
                                     # Install 'u-boot-nodtb.bin' binary in case '*.dtb' binary installation configured
                                     if [ "${binarysuffix}" = "dtb" ]; then
-                                        install -m 644 ${B}/${config}/u-boot-nodtb.bin ${DEPLOYDIR}${SUBFOLDER}/u-boot-nodtb${soc_suffix}.bin
+                                        install -m 644 ${B}/${config}/u-boot-nodtb.bin ${DEPLOYDIR}${SUBFOLDER}/u-boot-nodtb${soc_suffix}-${type_suffix}.bin
                                     fi
                                     if [ -n "${UBOOT_ELF}" ]; then
                                         install -m 644 ${B}/${config}/${UBOOT_ELF} ${DEPLOYDIR}${SUBFOLDER}/debug/u-boot${soc_suffix}.${UBOOT_ELF_SUFFIX}
@@ -250,4 +319,3 @@ INSANE_SKIP:${PN} += "textrel"
 # ---------------------------------------------------------------------
 # Avoid QA Issue: contains reference to TMPDIR [buildpaths]
 INSANE_SKIP:${PN} += "buildpaths"
-

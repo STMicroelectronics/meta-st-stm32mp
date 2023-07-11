@@ -18,8 +18,8 @@ FIP_CONFIG ?= ""
 
 # Default FIP config:
 #   There are two options implemented to select two different firmware and each
-#   FIP_CONFIG should configure one: 'tfa' or 'optee'
-FIP_CONFIG_FW_TFA = "tfa"
+#   FIP_CONFIG should configure one: 'trusted' or 'optee'
+FIP_CONFIG_FW_TFA = "trusted"
 FIP_CONFIG_FW_TEE = "optee"
 
 # Init BL31 config
@@ -112,16 +112,21 @@ python () {
                     if not v.strip():
                         bb.fatal('[FIP_CONFIG] Missing configuration for %s config' % config)
                     items = v.split(',')
-                    if items[0] and len(items) > 2:
-                        raise bb.parse.SkipRecipe('Only <BL32_CONF> and <DT_CONFIG> can be specified!')
+                    if items[0] and len(items) > 3:
+                        raise bb.parse.SkipRecipe('Only <BL32_CONF>, <DT_CONFIG> and <UBOOT_CONF> can be specified!')
                     # Set internal vars
                     if items[0] == fip_config_fw_tfa or items[0] == fip_config_fw_tee:
                         bb.debug(1, "Appending '%s' to FIP_BL32_CONF" % items[0])
                         d.appendVar('FIP_BL32_CONF', items[0] + ',')
                     else:
                         bb.fatal('[FIP_CONFIG] Wrong configuration for %s config: %s should be one of %s or %s' % (config,items[0],fip_config_fw_tfa,fip_config_fw_tee))
+                    if items[2]:
+                        uboot_pattern = items[2]
+                    else:
+                        bb.fatal('[FIP_CONFIG] Wrong configuration for <UBOOT_CONF>. It must be specified')
                     bb.debug(1, "Appending '%s' to FIP_DEVICETREE" % items[1])
                     d.appendVar('FIP_DEVICETREE', items[1] + ',')
+                    d.appendVar('FIP_UBOOT_CONF', uboot_pattern + ',')
                     break
 }
 
@@ -133,8 +138,9 @@ do_deploy:append:class-target() {
     unset i
     for config in ${FIP_CONFIG}; do
         i=$(expr $i + 1)
-        bl32_conf=$(echo ${FIP_BL32_CONF} | cut -d',' -f${i})
+        bl_conf=$(echo ${FIP_BL32_CONF} | cut -d',' -f${i})
         dt_config=$(echo ${FIP_DEVICETREE} | cut -d',' -f${i})
+        uboot_conf=$(echo ${FIP_UBOOT_CONF} | cut -d',' -f${i})
         for dt in ${dt_config}; do
             # Init soc suffix
             soc_suffix=""
@@ -144,38 +150,38 @@ do_deploy:append:class-target() {
                 done
             fi
             # Init FIP fw-config settings
-            [ -f "${FIP_DEPLOYDIR_FWCONF}/${dt}-${FIP_FW_CONFIG}-${config}.${FIP_FW_CONFIG_SUFFIX}" ] || bbfatal "Missing ${dt}-${FIP_FW_CONFIG}-${config}.${FIP_FW_CONFIG_SUFFIX} file in folder: ${FIP_DEPLOYDIR_FWCONF}"
-            FIP_FWCONFIG="--fw-config ${FIP_DEPLOYDIR_FWCONF}/${dt}-${FIP_FW_CONFIG}-${config}.${FIP_FW_CONFIG_SUFFIX}"
+            [ -f "${FIP_DEPLOYDIR_FWCONF}/${dt}-${FIP_FW_CONFIG}-${bl_conf}.${FIP_FW_CONFIG_SUFFIX}" ] || bbfatal "Missing ${dt}-${FIP_FW_CONFIG}-${bl_conf}.${FIP_FW_CONFIG_SUFFIX} file in folder: ${FIP_DEPLOYDIR_FWCONF}"
+            FIP_FWCONFIG="--fw-config ${FIP_DEPLOYDIR_FWCONF}/${dt}-${FIP_FW_CONFIG}-${bl_conf}.${FIP_FW_CONFIG_SUFFIX}"
             # Init FIP hw-config settings
             [ -f "${FIP_DEPLOYDIR_UBOOT}/${FIP_UBOOT_DTB}-${dt}.${FIP_UBOOT_DTB_SUFFIX}" ] || bbfatal "Missing ${FIP_UBOOT_DTB}-${dt}.${FIP_UBOOT_DTB_SUFFIX} file in folder: ${FIP_DEPLOYDIR_UBOOT}"
             FIP_HWCONFIG="--hw-config ${FIP_DEPLOYDIR_UBOOT}/${FIP_UBOOT_DTB}-${dt}.${FIP_UBOOT_DTB_SUFFIX}"
             # Init FIP nt-fw config
-            [ -f "${FIP_DEPLOYDIR_UBOOT}/${FIP_UBOOT}${soc_suffix}.${FIP_UBOOT_SUFFIX}" ] || bbfatal "Missing ${FIP_UBOOT}${soc_suffix}.${FIP_UBOOT_SUFFIX} file in folder: ${FIP_DEPLOYDIR_UBOOT}"
-            FIP_NTFW="--nt-fw ${FIP_DEPLOYDIR_UBOOT}/${FIP_UBOOT}${soc_suffix}.${FIP_UBOOT_SUFFIX}"
+            [ -f "${FIP_DEPLOYDIR_UBOOT}/${FIP_UBOOT}${soc_suffix}-${uboot_conf}.${FIP_UBOOT_SUFFIX}" ] || bbfatal "Missing ${FIP_UBOOT}${soc_suffix}-${uboot_conf}.${FIP_UBOOT_SUFFIX} file in folder: ${FIP_DEPLOYDIR_UBOOT}"
+            FIP_NTFW="--nt-fw ${FIP_DEPLOYDIR_UBOOT}/${FIP_UBOOT}${soc_suffix}-${uboot_conf}.${FIP_UBOOT_SUFFIX}"
             # Init FIP bl31 settings
             if [ "${FIP_BL31_ENABLE}" = "1" ]; then
                 # Check for files
-                [ -f "${FIP_DEPLOYDIR_BL31}/${FIP_BL31}${soc_suffix}-${config}.${FIP_BL31_SUFFIX}" ] || bbfatal "Missing ${FIP_BL31}${soc_suffix}-${config}.${FIP_BL31_SUFFIX} file in folder: ${FIP_DEPLOYDIR_BL31}"
-                [ -f "${FIP_DEPLOYDIR_BL31}/${dt}-${FIP_BL31_DTB}-${config}.${FIP_BL31_DTB_SUFFIX}" ] || bbfatal "Missing ${dt}-${FIP_BL31_DTB}-${config}.${FIP_BL31_DTB_SUFFIX} file in folder: ${FIP_DEPLOYDIR_BL31}"
+                [ -f "${FIP_DEPLOYDIR_BL31}/${FIP_BL31}${soc_suffix}-${bl_conf}.${FIP_BL31_SUFFIX}" ] || bbfatal "Missing ${FIP_BL31}${soc_suffix}-${bl_conf}.${FIP_BL31_SUFFIX} file in folder: ${FIP_DEPLOYDIR_BL31}"
+                [ -f "${FIP_DEPLOYDIR_BL31}/${dt}-${FIP_BL31_DTB}-${bl_conf}.${FIP_BL31_DTB_SUFFIX}" ] || bbfatal "Missing ${dt}-${FIP_BL31_DTB}-${bl_conf}.${FIP_BL31_DTB_SUFFIX} file in folder: ${FIP_DEPLOYDIR_BL31}"
                 # Set FIP_BL31CONF
                 FIP_BL31CONF="\
-                    --soc-fw ${FIP_DEPLOYDIR_BL31}/${FIP_BL31}${soc_suffix}-${config}.${FIP_BL31_SUFFIX} \
-                    --soc-fw-config ${FIP_DEPLOYDIR_BL31}/${dt}-${FIP_BL31_DTB}-${config}.${FIP_BL31_DTB_SUFFIX} \
+                    --soc-fw ${FIP_DEPLOYDIR_BL31}/${FIP_BL31}${soc_suffix}-${bl_conf}.${FIP_BL31_SUFFIX} \
+                    --soc-fw-config ${FIP_DEPLOYDIR_BL31}/${dt}-${FIP_BL31_DTB}-${bl_conf}.${FIP_BL31_DTB_SUFFIX} \
                     "
             else
                 FIP_BL31CONF=""
             fi
             # Init FIP extra conf settings
-            if [ "${bl32_conf}" = "${FIP_CONFIG_FW_TFA}" ]; then
+            if [ "${bl_conf}" = "${FIP_CONFIG_FW_TFA}" ]; then
                 # Check for files
-                [ -f "${FIP_DEPLOYDIR_TFA}/${FIP_TFA}${soc_suffix}-${config}.${FIP_TFA_SUFFIX}" ] || bbfatal "Missing ${FIP_TFA}${soc_suffix}-${config}.${FIP_TFA_SUFFIX} file in folder: ${FIP_DEPLOYDIR_TFA}"
-                [ -f "${FIP_DEPLOYDIR_TFA}/${dt}-${FIP_TFA_DTB}-${config}.${FIP_TFA_DTB_SUFFIX}" ] || bbfatal "Missing ${dt}-${FIP_TFA_DTB}-${config}.${FIP_TFA_DTB_SUFFIX} file in folder: ${FIP_DEPLOYDIR_TFA}"
+                [ -f "${FIP_DEPLOYDIR_TFA}/${FIP_TFA}${soc_suffix}-${bl_conf}.${FIP_TFA_SUFFIX}" ] || bbfatal "Missing ${FIP_TFA}${soc_suffix}-${bl_conf}.${FIP_TFA_SUFFIX} file in folder: ${FIP_DEPLOYDIR_TFA}"
+                [ -f "${FIP_DEPLOYDIR_TFA}/${dt}-${FIP_TFA_DTB}-${bl_conf}.${FIP_TFA_DTB_SUFFIX}" ] || bbfatal "Missing ${dt}-${FIP_TFA_DTB}-${bl_conf}.${FIP_TFA_DTB_SUFFIX} file in folder: ${FIP_DEPLOYDIR_TFA}"
                 # Set FIP_EXTRACONF
                 FIP_EXTRACONF="\
-                    --tos-fw ${FIP_DEPLOYDIR_TFA}/${FIP_TFA}${soc_suffix}-${config}.${FIP_TFA_SUFFIX} \
-                    --tos-fw-config ${FIP_DEPLOYDIR_TFA}/${dt}-${FIP_TFA_DTB}-${config}.${FIP_TFA_DTB_SUFFIX} \
+                    --tos-fw ${FIP_DEPLOYDIR_TFA}/${FIP_TFA}${soc_suffix}-${bl_conf}.${FIP_TFA_SUFFIX} \
+                    --tos-fw-config ${FIP_DEPLOYDIR_TFA}/${dt}-${FIP_TFA_DTB}-${bl_conf}.${FIP_TFA_DTB_SUFFIX} \
                     "
-            elif [ "${bl32_conf}" = "${FIP_CONFIG_FW_TEE}" ]; then
+            elif [ "${bl_conf}" = "${FIP_CONFIG_FW_TEE}" ]; then
                 # Check for files
                 [ -f "${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_HEADER}-${dt}.${FIP_OPTEE_SUFFIX}" ] || bbfatal "Missing ${FIP_OPTEE_HEADER}-${dt}.${FIP_OPTEE_SUFFIX} file in folder: ${FIP_DEPLOYDIR_OPTEE}"
                 [ -f "${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_PAGER}-${dt}.${FIP_OPTEE_SUFFIX}" ] || bbfatal "Missing ${FIP_OPTEE_PAGER}-${dt}.${FIP_OPTEE_SUFFIX} file in folder: ${FIP_DEPLOYDIR_OPTEE}"
@@ -208,7 +214,7 @@ do_deploy:append:class-target() {
                     --tos-fw-extra2 ${FIP_DEPLOYDIR_OPTEE}/${FIP_OPTEE_PAGEABLE}-${dt}${FIP_ENCRYPT_SUFFIX}.${FIP_OPTEE_SUFFIX} \
                     "
             else
-                bbfatal "Wrong configuration '${bl32_conf}' found in FIP_CONFIG for ${config} config."
+                bbfatal "Wrong configuration '${bl_conf}' found in FIP_CONFIG for ${config} config."
             fi
             # Init certificate settings
             if [ "${SIGN_ENABLE}" = "1" ]; then
@@ -339,10 +345,10 @@ echo ""
 echo "${FIPTOOL_WRAPPER} config:"
 for config in \$FIP_CONFIG; do
     i=\$(expr \$i + 1)
-    bl32_conf=\$(echo \$FIP_BL32_CONF | cut -d',' -f\$i)
+    bl_conf=\$(echo \$FIP_BL32_CONF | cut -d',' -f\$i)
     dt_config=\$(echo \$FIP_DEVICETREE | cut -d',' -f\$i)
     echo "  \${config}:" ; \\
-    echo "    bl32 config value: \${bl32_conf}"
+    echo "    bl32 config value: \${bl_conf}"
     echo "    devicetree config: \${dt_config}"
 done
 echo ""
@@ -361,7 +367,7 @@ echo ""
 unset i
 for config in \$FIP_CONFIG; do
     i=\$(expr \$i + 1)
-    bl32_conf=\$(echo \$FIP_BL32_CONF | cut -d',' -f\$i)
+    bl_conf=\$(echo \$FIP_BL32_CONF | cut -d',' -f\$i)
     dt_config=\$(echo \$FIP_DEVICETREE | cut -d',' -f\$i)
     for dt in \${dt_config}; do
         # Init soc suffix
@@ -372,8 +378,8 @@ for config in \$FIP_CONFIG; do
             done
         fi
         # Init FIP fw-config settings
-        [ -f "\$FIP_DEPLOYDIR_FWCONF/\${dt}-${FIP_FW_CONFIG}-\${config}.${FIP_FW_CONFIG_SUFFIX}" ] || bbfatal "Missing \${dt}-${FIP_FW_CONFIG}-\${config}.${FIP_FW_CONFIG_SUFFIX} file in folder: \\\$FIP_DEPLOYDIR_FWCONF or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/fwconfig'"
-        FIP_FWCONFIG="--fw-config \$FIP_DEPLOYDIR_FWCONF/\${dt}-${FIP_FW_CONFIG}-\${config}.${FIP_FW_CONFIG_SUFFIX}"
+        [ -f "\$FIP_DEPLOYDIR_FWCONF/\${dt}-${FIP_FW_CONFIG}-\${bl_conf}.${FIP_FW_CONFIG_SUFFIX}" ] || bbfatal "Missing \${dt}-${FIP_FW_CONFIG}-\${bl_conf}.${FIP_FW_CONFIG_SUFFIX} file in folder: \\\$FIP_DEPLOYDIR_FWCONF or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/fwconfig'"
+        FIP_FWCONFIG="--fw-config \$FIP_DEPLOYDIR_FWCONF/\${dt}-${FIP_FW_CONFIG}-\${bl_conf}.${FIP_FW_CONFIG_SUFFIX}"
         # Init FIP hw-config settings
         [ -f "\$FIP_DEPLOYDIR_UBOOT/${FIP_UBOOT_DTB}-\${dt}.${FIP_UBOOT_DTB_SUFFIX}" ] || bbfatal "Missing ${FIP_UBOOT_DTB}-\${dt}.${FIP_UBOOT_DTB_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_UBOOT' or '\\\$FIP_DEPLOYDIR_ROOT/u-boot'"
         FIP_HWCONFIG="--hw-config \$FIP_DEPLOYDIR_UBOOT/${FIP_UBOOT_DTB}-\${dt}.${FIP_UBOOT_DTB_SUFFIX}"
@@ -383,27 +389,27 @@ for config in \$FIP_CONFIG; do
         # Init FIP bl31 settings
         if [ "\$FIP_BL31_ENABLE" = "1" ]; then
             # Check for files
-            [ -f "\$FIP_DEPLOYDIR_BL31/${FIP_BL31}\${soc_suffix}-\${config}.${FIP_BL31_SUFFIX}" ] || bbfatal "Missing \$FIP_DEPLOYDIR_BL31/${FIP_BL31}\${soc_suffix}-\${config}.${FIP_BL31_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_BL31' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl31'"
-            [ -f "\$FIP_DEPLOYDIR_BL31/\${dt}-${FIP_BL31_DTB}-\${config}.${FIP_BL31_DTB_SUFFIX}" ] || bbfatal "Missing \${dt}-${FIP_BL31_DTB}-\${config}.${FIP_BL31_DTB_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_BL31' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl31'"
+            [ -f "\$FIP_DEPLOYDIR_BL31/${FIP_BL31}\${soc_suffix}-\${bl_conf}.${FIP_BL31_SUFFIX}" ] || bbfatal "Missing \$FIP_DEPLOYDIR_BL31/${FIP_BL31}\${soc_suffix}-\${bl_conf}.${FIP_BL31_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_BL31' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl31'"
+            [ -f "\$FIP_DEPLOYDIR_BL31/\${dt}-${FIP_BL31_DTB}-\${bl_conf}.${FIP_BL31_DTB_SUFFIX}" ] || bbfatal "Missing \${dt}-${FIP_BL31_DTB}-\${bl_conf}.${FIP_BL31_DTB_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_BL31' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl31'"
             # Set FIP_BL31CONF
             FIP_BL31CONF="\\
-                --soc-fw \$FIP_DEPLOYDIR_BL31/${FIP_BL31}\${soc_suffix}-\${config}.${FIP_BL31_SUFFIX} \\
-                --soc-fw-config \$FIP_DEPLOYDIR_BL31/\${dt}-${FIP_BL31_DTB}-\${config}.${FIP_BL31_DTB_SUFFIX} \\
+                --soc-fw \$FIP_DEPLOYDIR_BL31/${FIP_BL31}\${soc_suffix}-\${bl_conf}.${FIP_BL31_SUFFIX} \\
+                --soc-fw-config \$FIP_DEPLOYDIR_BL31/\${dt}-${FIP_BL31_DTB}-\${bl_conf}.${FIP_BL31_DTB_SUFFIX} \\
                 "
         else
             FIP_BL31CONF=""
         fi
         # Init FIP extra conf settings
-        if [ "\${bl32_conf}" = "${FIP_CONFIG_FW_TFA}" ]; then
+        if [ "\${bl_conf}" = "${FIP_CONFIG_FW_TFA}" ]; then
             # Check for files
-            [ -f "\$FIP_DEPLOYDIR_TFA/${FIP_TFA}\${soc_suffix}-\${config}.${FIP_TFA_SUFFIX}" ] || bbfatal "Missing ${FIP_TFA}\${soc_suffix}-\${config}.${FIP_TFA_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_TFA' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl32'"
-            [ -f "\$FIP_DEPLOYDIR_TFA/\${dt}-${FIP_TFA_DTB}-\${config}.${FIP_TFA_DTB_SUFFIX}" ] || bbfatal "Missing \${dt}-${FIP_TFA_DTB}-\${config}.${FIP_TFA_DTB_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_TFA' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl32'"
+            [ -f "\$FIP_DEPLOYDIR_TFA/${FIP_TFA}\${soc_suffix}-\${bl_conf}.${FIP_TFA_SUFFIX}" ] || bbfatal "Missing ${FIP_TFA}\${soc_suffix}-\${bl_conf}.${FIP_TFA_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_TFA' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl32'"
+            [ -f "\$FIP_DEPLOYDIR_TFA/\${dt}-${FIP_TFA_DTB}-\${bl_conf}.${FIP_TFA_DTB_SUFFIX}" ] || bbfatal "Missing \${dt}-${FIP_TFA_DTB}-\${bl_conf}.${FIP_TFA_DTB_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_TFA' or '\\\$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/bl32'"
             # Set FIP_EXTRACONF
             FIP_EXTRACONF="\\
-                --tos-fw \$FIP_DEPLOYDIR_TFA/${FIP_TFA}\${soc_suffix}-\${config}.${FIP_TFA_SUFFIX} \\
-                --tos-fw-config \$FIP_DEPLOYDIR_TFA/\${dt}-${FIP_TFA_DTB}-\${config}.${FIP_TFA_DTB_SUFFIX} \\
+                --tos-fw \$FIP_DEPLOYDIR_TFA/${FIP_TFA}\${soc_suffix}-\${bl_conf}.${FIP_TFA_SUFFIX} \\
+                --tos-fw-config \$FIP_DEPLOYDIR_TFA/\${dt}-${FIP_TFA_DTB}-\${bl_conf}.${FIP_TFA_DTB_SUFFIX} \\
                 "
-        elif [ "\${bl32_conf}" = "${FIP_CONFIG_FW_TEE}" ]; then
+        elif [ "\${bl_conf}" = "${FIP_CONFIG_FW_TEE}" ]; then
             # Check for files
             [ -f "\$FIP_DEPLOYDIR_OPTEE/${FIP_OPTEE_HEADER}-\${dt}.${FIP_OPTEE_SUFFIX}" ] || bbfatal "Missing ${FIP_OPTEE_HEADER}-\${dt}.${FIP_OPTEE_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_OPTEE' or '\\\$FIP_DEPLOYDIR_ROOT/optee'"
             [ -f "\$FIP_DEPLOYDIR_OPTEE/${FIP_OPTEE_PAGER}-\${dt}.${FIP_OPTEE_SUFFIX}" ] || bbfatal "Missing ${FIP_OPTEE_PAGER}-\${dt}.${FIP_OPTEE_SUFFIX} file in folder: '\\\$FIP_DEPLOYDIR_OPTEE' or '\\\$FIP_DEPLOYDIR_ROOT/optee'"
@@ -415,10 +421,10 @@ for config in \$FIP_CONFIG; do
                 --tos-fw-extra2 \$FIP_DEPLOYDIR_OPTEE/${FIP_OPTEE_PAGEABLE}-\${dt}.${FIP_OPTEE_SUFFIX} \\
                 "
         else
-            bbfatal "Wrong configuration '\${bl32_conf}' found in FIP_CONFIG for \${config} config."
+            bbfatal "Wrong configuration '\${bl_conf}' found in FIP_CONFIG for \${bl_conf} config."
         fi
         # Generate FIP binary
-        echo "[${FIPTOOL}] Create ${FIP_BASENAME}-\${dt}-\${config}.${FIP_SUFFIX} fip binary into 'FIP_DEPLOYDIR_FIP' folder..."
+        echo "[${FIPTOOL}] Create ${FIP_BASENAME}-\${dt}-\${bl_conf}.${FIP_SUFFIX} fip binary into 'FIP_DEPLOYDIR_FIP' folder..."
         [ -d "\$FIP_DEPLOYDIR_FIP" ] || mkdir -p "\$FIP_DEPLOYDIR_FIP"
         ${FIPTOOL} create \\
                         \$FIP_FWCONFIG \\
@@ -426,7 +432,7 @@ for config in \$FIP_CONFIG; do
                         \$FIP_NTFW \\
                         \$FIP_BL31CONF \\
                         \$FIP_EXTRACONF \\
-                        \$FIP_DEPLOYDIR_FIP/${FIP_BASENAME}-\${dt}-\${config}.${FIP_SUFFIX}
+                        \$FIP_DEPLOYDIR_FIP/${FIP_BASENAME}-\${dt}-\${bl_conf}.${FIP_SUFFIX}
         echo "[${FIPTOOL}] Done"
     done
 done
