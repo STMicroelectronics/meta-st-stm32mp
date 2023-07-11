@@ -81,6 +81,10 @@ FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor', '
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', bb.utils.contains('MACHINE_FEATURES', 'efi', 'sdcard sdcard-EFI', 'sdcard', d), '', d)}"
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', 'spinand-2-128', '', d)}"
 
+# flashlayout for fastboot
+FLASHLAYOUT_CONFIG_LABELS:fastboot += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', bb.utils.contains('MACHINE_FEATURES', 'efi', 'sdcard sdcard-EFI', 'sdcard', d), '', d)}"
+FLASHLAYOUT_CONFIG_LABELS:fastboot += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'emmc', '', d)}"
+
 # Set by default this variable to 0, and set to 1 only when we are using st-example-image-*
 ST_EXAMPLE_IMAGE ??= "0"
 
@@ -246,7 +250,6 @@ FLASHLAYOUT_PARTITION_SIZE:nor-sdcard:${STM32MP_ROOTFS_LABEL} = "4194304"
 FLASHLAYOUT_PARTITION_SIZE:sdcard:${STM32MP_ROOTFS_LABEL}     = "4194304"
 FLASHLAYOUT_PARTITION_SIZE:sdcard-EFI:${STM32MP_ROOTFS_LABEL} = "4194304"
 
-# Set binaries to use for each partition
 # -----------------------------------------------------------------------------
 # Use following pattern in binary name to expand to specific label config:
 #       '<CONFIG>'     (to insert label from FLASHLAYOUT_CONFIG_LABELS - NB: substitution for all '-' in label by '_')
@@ -255,6 +258,11 @@ FLASHLAYOUT_PARTITION_SIZE:sdcard-EFI:${STM32MP_ROOTFS_LABEL} = "4194304"
 #       '<TYPE>'       (to insert label  from FLASHLAYOUT_TYPE_LABELS)
 # These patterns are processed to expand binary name for each config.
 # -----------------------------------------------------------------------------
+# Override default name for fastboot
+FLASHLAYOUT_PARTITION_BIN2LOAD:fastboot:${STM32MP_SSBL1_NAME} ?= "fip/fip-<TYPE>-<BOOTSCHEME>-<CONFIG>${FIP_ENCRYPT_SUFFIX}${FIP_SIGN_SUFFIX}.bin"
+FLASHLAYOUT_PARTITION_BIN2LOAD:fastboot:${STM32MP_SSBL2_PROGAMMER_NAME} ?= "fip/fip-<TYPE>-<BOOTSCHEME>-<CONFIG>${FIP_ENCRYPT_SUFFIX}${FIP_SIGN_SUFFIX}.bin"
+
+# Set binaries to use for each partition
 
 # -----------------------------------------------------------------------------
 # Use the 'FLASHLAYOUT_PARTITION_REPLACE_PATTERNS' var to allow dynamic binary
