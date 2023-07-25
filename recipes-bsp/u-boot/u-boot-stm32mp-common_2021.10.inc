@@ -25,7 +25,7 @@ SRC_URI += "\
     file://0007-ARM-v2021.10-stm32mp-r2-BOARD.patch \
     file://0008-ARM-v2021.10-stm32mp-r2-MISC-DRIVERS.patch \
     file://0009-ARM-v2021.10-stm32mp-r2-DEVICETREE.patch \
-    file://0010-ARM-v2021.10-stm32mp-r2.1-rc1.patch \
+    file://0010-ARM-v2021.10-stm32mp-r2.1.patch \
     \
     file://0099-Add-external-var-to-allow-build-of-new-devicetree-fi.patch \
 "
