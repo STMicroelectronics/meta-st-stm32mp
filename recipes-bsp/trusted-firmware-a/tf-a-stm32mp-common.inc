@@ -32,7 +32,7 @@ S = "${WORKDIR}/git"
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/arm-trusted-firmware.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV:class-devupstream = "4b6e8e9bf8fa676ff8d1358ea2cf2e44904c2473"
+SRCREV:class-devupstream = "aa1e9e2db80e49ed0259757a0f09ff119725409d"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github
