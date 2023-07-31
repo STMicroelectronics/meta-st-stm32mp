@@ -8,6 +8,7 @@ PROVIDES = "\
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'gbm', 'virtual/libgbm', '', d)}       \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv1', 'virtual/libgles1', '', d)}  \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv2', 'virtual/libgles2', '', d)}  \
+    ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv2', 'virtual/libgles3', '', d)}  \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'vg', 'virtual/libopenvg', '', d)}     \
     "
 
@@ -18,6 +19,7 @@ PACKAGES += "\
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'gbm', 'libgbm-gcnano libgbm-gcnano-dev', '', d)}          \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv1', 'libgles1-gcnano libgles1-gcnano-dev', '', d)}   \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv2', 'libgles2-gcnano libgles2-gcnano-dev', '', d)}   \
+    ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv2', 'libgles3-gcnano-dev', '', d)}                   \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'vg', 'libopenvg-gcnano libopenvg-gcnano-dev', '', d)}     \
     "
 
@@ -116,7 +118,7 @@ gcnano_install_lib() {
                 # Install libraries
                 install -m 0555 ${gcnano_libdir}/libGLSLC.so ${gcnano_libdir_install}/
                 find ${gcnano_libdir}/* -type f -name libGLESv2.so.* -exec install -m 0555 '{}' ${gcnano_libdir_install}/ \;
-                # Install includes
+                # Install GLESv2 and GLESv3 includes
                 install -m 0755 -d ${gcnano_incdir_install}/GLES2
                 install -m 0644 ${gcnano_incdir}/GLES2/* ${gcnano_incdir_install}/GLES2
                 # Hack for weston & kmscube compilation
@@ -216,6 +218,7 @@ python __anonymous() {
               ("egl", "libegl", "libegl1"),
               ("glesv1", "libgles1", "libglesv1-cm1"),
               ("glesv2", "libgles2", "libglesv2-2"),
+              ("glesv2", "libgles3"),
               ("vg", "libopenvg")):
         if not p[0] in pkgconfig:
             continue
@@ -225,7 +228,7 @@ python __anonymous() {
         fullp = p[1] + "-gcnano"
         if fullp in pkgs:
             rpkgs = " ".join(p[1:])
-            d.setVar("DEBIAN_NOAUTONAME_" + fullp, "1")
+            d.setVar("DEBIAN_NOAUTONAME:" + fullp, "1")
             d.appendVar("RREPLACES:" + fullp, rpkgs)
             d.appendVar("RPROVIDES:" + fullp, rpkgs)
             d.appendVar("RCONFLICTS:" + fullp, rpkgs)
@@ -236,7 +239,7 @@ python __anonymous() {
         fullp += "-dev"
         if fullp not in pkgs:
             rpkgs = p[1] + "-dev"
-            d.setVar("DEBIAN_NOAUTONAME_" + fullp, "1")
+            d.setVar("DEBIAN_NOAUTONAME:" + fullp, "1")
             d.appendVar("RREPLACES:" + fullp, rpkgs)
             d.appendVar("RPROVIDES:" + fullp, rpkgs)
             d.appendVar("RCONFLICTS:" + fullp, rpkgs)
@@ -263,7 +266,8 @@ FILES:libgal-gcnano-dev = ""
 FILES:libegl-gcnano-dev = "${includedir}/EGL ${includedir}/KHR ${libdir}/pkgconfig/egl.pc"
 FILES:libgbm-gcnano-dev = "${includedir}/gbm.h ${libdir}/pkgconfig/gbm.pc"
 FILES:libgles1-gcnano-dev = "${includedir}/GLES ${libdir}/pkgconfig/glesv1*.pc"
-FILES:libgles2-gcnano-dev = "${includedir}/GLES2 ${includedir}/GLES3 ${libdir}/pkgconfig/glesv2.pc"
+FILES:libgles2-gcnano-dev = "${includedir}/GLES2 ${libdir}/pkgconfig/glesv2.pc"
+FILES:libgles3-gcnano-dev = "${includedir}/GLES3"
 FILES:libopenvg-gcnano-dev = "${includedir}/VG ${libdir}/pkgconfig/vg.pc"
 # Append additional symlinks to *-dev packages for delivered shared libs
 # when GCNANO_USERLAND_OUTPUT_LIBDIR differs from libdir
@@ -286,6 +290,8 @@ RDEPENDS:${PN} += "\
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv2', 'libgles2-gcnano', '', d)}  \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'vg', 'libopenvg-gcnano', '', d)}     \
     "
+
+RDEPENDS:libgles3-gcnano-dev += "libgles2-gcnano-dev"
 
 # Generate empty gcnano-userland package to install all dependencies
 ALLOW_EMPTY:${PN} = "1"
