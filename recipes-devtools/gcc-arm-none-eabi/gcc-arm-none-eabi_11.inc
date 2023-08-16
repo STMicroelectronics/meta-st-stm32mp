@@ -1,18 +1,17 @@
 SUMMARY = "Baremetal GCC for ARM"
 LICENSE = "GPL-3.0-with-GCC-exception & GPL-3.0-only"
 
-LIC_FILES_CHKSUM = "file://share/info/gcc.info;md5=32f1a898d3ddd89ccb368ff8f483c98a"
+LIC_FILES_CHKSUM = "file://share/info/gcc.info;md5=520901b4e94df9b4e99ad47d88719a6b"
+SRC_URI = "https://developer.arm.com/-/media/Files/downloads/gnu/11.3.rel1/binrel/arm-gnu-toolchain-11.3.rel1-x86_64-arm-none-eabi.tar.xz;name=gcc-arm-x86"
+SRC_URI[gcc-arm-x86.sha256sum] = "d420d87f68615d9163b99bbb62fe69e85132dc0a8cd69fca04e813597fe06121"
 
-SRC_URI = "https://developer.arm.com/-/media/Files/downloads/gnu/11.2-2022.02/binrel/gcc-arm-11.2-2022.02-x86_64-arm-none-eabi.tar.xz;name=gcc-arm-x86"
-SRC_URI[gcc-arm-x86.sha256sum] = "8c5acd5ae567c0100245b0556941c237369f210bceb196edfe5a2e7532c60326"
-
-SRC_URI:aarch64 = "https://developer.arm.com/-/media/Files/downloads/gnu/11.2-2022.02/binrel/gcc-arm-11.2-2022.02-aarch64-arm-none-eabi.tar.xz;name=gcc-arm-aarch64"
-SRC_URI[gcc-arm-aarch64.sha256sum] = "ef1d82e5894e3908cb7ed49c5485b5b95deefa32872f79c2b5f6f5447cabf55f"
+SRC_URI:aarch64 = "https://developer.arm.com/-/media/Files/downloads/gnu/11.3.rel1/binrel/arm-gnu-toolchain-11.3.rel1-aarch64-arm-none-eabi.tar.xz;name=gcc-arm-aarch64"
+SRC_URI[gcc-arm-aarch64.sha256sum] = "6c713c11d018dcecc16161f822517484a13af151480bbb722badd732412eb55e"
 
 PV = "11"
 
-S = "${WORKDIR}/gcc-arm-11.2-2022.02-x86_64-arm-none-eabi"
-S:aarch64 = "${WORKDIR}/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu"
+S = "${WORKDIR}/arm-gnu-toolchain-11.3.rel1-x86_64-arm-none-eabi"
+S:aarch64 = "${WORKDIR}/arm-gnu-toolchain-11.3.rel1-aarch64-arm-none-eabi"
 
 do_install() {
     install -d ${D}/${datadir}/gcc-arm-none-eabi
