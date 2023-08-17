@@ -247,10 +247,14 @@ do_deploy:append() {
         namewithoutsignature=`echo $ubootdevicetree | sed "s/\.dtb/-without-signature.dtb/g"`
         namewithsignature=`echo $ubootdevicetree | sed "s/\.dtb/-with-signature.dtb/g"`
         mv $ubootdevicetree $namewithoutsignature
-        #get name of kernel uboot devicetree
-        nameonkernel=`ls -1 ${DEPLOY_DIR_IMAGE}/kernel/u-boot-${MACHINE}*.dtb | head -n 1`
-        cp $nameonkernel $namewithsignature
-        cp $nameonkernel $ubootdevicetree
+        if [ -e ${B}/fitImage-linux ]; then
+            #get name of devicetree with signature
+            namedtb=`${B}/fitImage-linux`
+            cp $namedtb $namewithsignature
+            cp $namedtb $ubootdevicetree
+        else
+            bbfatal "no fitImage-linux available"
+        fi
     fi
 }
 
