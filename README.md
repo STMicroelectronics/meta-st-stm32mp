@@ -47,6 +47,42 @@ revision: HEAD
 
 The dependency (meta-python) are due to the usage of OPTEE which require to use some python packages.
 
+### Kas Support
+
+If you are familiar with `kas` tool, you can use it to setup this layer only or other custom layer that includes this layer's `kas` configuration.
+
+* To build images provided by this layer (`stm32mp1` machine is supported):
+
+```sh
+git clone https://github.com/STMicroelectronics/meta-st-stm32mp -b <branch>
+kas build meta-st-stm32mp/kas/kas-st-stm32mp1-##image##.yml
+```
+
+for `##image##` is one of: `bootfs`, `userfs` or `vendorfs`.
+
+* To use `kas` from another custom layer that uses this layer, `kas` supports including a file from another layer that is not the one containing your `kas` files.
+
+**Example**:
+
+* `meta-custom/kas-custom-image.yml`
+
+```yaml
+head:
+  version: 5
+  includes:
+    - repo: meta-st-stm32mp
+      file: kas/include/kas-st.yml
+
+repos:
+  meta-st-stm32mp:
+    url: https://github.com/STMicroelectronics/meta-st-stm32mp
+    path: layers
+    refspec: kirkstone
+
+target: custom-image
+machine: stm32mp1
+```
+
 ## EULA
 
 Some SoC depends on firmware and/or packages that are covered by
