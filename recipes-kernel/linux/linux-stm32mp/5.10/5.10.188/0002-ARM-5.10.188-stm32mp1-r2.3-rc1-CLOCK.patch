@@ -1,19 +1,18 @@
-From 03e80db319911b2c73129f7c930437f900b41c07 Mon Sep 17 00:00:00 2001
-From: Romuald JEANNE <romuald.jeanne@st.com>
-Date: Fri, 18 Nov 2022 16:14:37 +0100
-Subject: [PATCH 02/23] ARM 5.10.153-stm32mp1-r2.2 CLOCK
+From 238e3d483920bfa7a40666bbe9b5dca697cb4973 Mon Sep 17 00:00:00 2001
+From: Akshat Kumar <akshat.kumar02@st.com>
+Date: Mon, 25 Sep 2023 15:13:35 +0530
+Subject: [PATCH 02/23] ARM 5.10.188-stm32mp1-r2.3-rc1 CLOCK
 
-Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
 ---
  drivers/clk/clk-composite.c               |   15 +
- drivers/clk/clk-stm32mp1.c                | 1153 ++++++++++++++++-----
+ drivers/clk/clk-stm32mp1.c                | 1155 ++++++++++++++++-----
  drivers/clk/clk.c                         |    7 +-
  drivers/clocksource/timer-stm32-lp.c      |    4 +-
  include/dt-bindings/clock/stm32mp1-clks.h |   33 +
- 5 files changed, 945 insertions(+), 267 deletions(-)
+ 5 files changed, 946 insertions(+), 268 deletions(-)
 
 diff --git a/drivers/clk/clk-composite.c b/drivers/clk/clk-composite.c
-index 2ddb54f7d3ab..b49ecd1b9e56 100644
+index 2ddb54f7d..b49ecd1b9 100644
 --- a/drivers/clk/clk-composite.c
 +++ b/drivers/clk/clk-composite.c
 @@ -41,6 +41,18 @@ static unsigned long clk_composite_recalc_rate(struct clk_hw *hw,
@@ -46,7 +45,7 @@ index 2ddb54f7d3ab..b49ecd1b9e56 100644
  			clk_composite_ops->determine_rate =
  				clk_composite_determine_rate;
 diff --git a/drivers/clk/clk-stm32mp1.c b/drivers/clk/clk-stm32mp1.c
-index a875649df8b8..ddaf7dc9bf1c 100644
+index a875649df..225abff6e 100644
 --- a/drivers/clk/clk-stm32mp1.c
 +++ b/drivers/clk/clk-stm32mp1.c
 @@ -5,15 +5,28 @@
@@ -977,7 +976,8 @@ index a875649df8b8..ddaf7dc9bf1c 100644
 +	GATE_MP1(CK_CSI, "ck_csi", "clk-csi",
 +		 CLK_IS_CRITICAL, RCC_OCENSETR, 4, 0),
  	GATE(CK_LSI, "ck_lsi", "clk-lsi", 0, RCC_RDLSICR, 0, 0),
- 	GATE(CK_LSE, "ck_lse", "clk-lse", 0, RCC_BDCR, 0, 0),
+-	GATE(CK_LSE, "ck_lse", "clk-lse", 0, RCC_BDCR, 0, 0),
++	GATE(CK_LSE, "ck_lse", "clk-lse", CLK_IS_CRITICAL, RCC_BDCR, 0, 0),
  
  	FIXED_FACTOR(CK_HSE_DIV2, "clk-hse-div2", "ck_hse", 0, 1, 2),
  
@@ -1127,7 +1127,7 @@ index a875649df8b8..ddaf7dc9bf1c 100644
 -	COMPOSITE(RTC, "ck_rtc", rtc_src, CLK_OPS_PARENT_ENABLE |
 -		   CLK_SET_RATE_PARENT,
 +	COMPOSITE(RTC, "ck_rtc", rtc_src,
-+		  CLK_OPS_PARENT_ENABLE | CLK_SET_RATE_PARENT,
++		  CLK_OPS_PARENT_ENABLE | CLK_SET_RATE_PARENT | CLK_IS_CRITICAL,
  		  _GATE(RCC_BDCR, 20, 0),
  		  _MUX(RCC_BDCR, 16, 2, 0),
 -		  _NO_DIV),
@@ -1700,10 +1700,10 @@ index a875649df8b8..ddaf7dc9bf1c 100644
 +}
 +core_initcall(stm32mp1_clocks_init);
 diff --git a/drivers/clk/clk.c b/drivers/clk/clk.c
-index b355d3d40f63..5eb399f235c1 100644
+index 3575afe16..1a316e677 100644
 --- a/drivers/clk/clk.c
 +++ b/drivers/clk/clk.c
-@@ -1760,6 +1760,7 @@ static void clk_reparent(struct clk_core *core, struct clk_core *new_parent)
+@@ -1771,6 +1771,7 @@ static void clk_reparent(struct clk_core *core, struct clk_core *new_parent)
  	core->parent = new_parent;
  }
  
@@ -1711,7 +1711,7 @@ index b355d3d40f63..5eb399f235c1 100644
  static struct clk_core *__clk_set_parent_before(struct clk_core *core,
  					   struct clk_core *parent)
  {
-@@ -1788,7 +1789,8 @@ static struct clk_core *__clk_set_parent_before(struct clk_core *core,
+@@ -1799,7 +1800,8 @@ static struct clk_core *__clk_set_parent_before(struct clk_core *core,
  
  	/* enable old_parent & parent if CLK_OPS_PARENT_ENABLE is set */
  	if (core->flags & CLK_OPS_PARENT_ENABLE) {
@@ -1721,7 +1721,7 @@ index b355d3d40f63..5eb399f235c1 100644
  		clk_core_prepare_enable(parent);
  	}
  
-@@ -1822,7 +1824,8 @@ static void __clk_set_parent_after(struct clk_core *core,
+@@ -1833,7 +1835,8 @@ static void __clk_set_parent_after(struct clk_core *core,
  	/* re-balance ref counting if CLK_OPS_PARENT_ENABLE is set */
  	if (core->flags & CLK_OPS_PARENT_ENABLE) {
  		clk_core_disable_unprepare(parent);
@@ -1732,7 +1732,7 @@ index b355d3d40f63..5eb399f235c1 100644
  }
  
 diff --git a/drivers/clocksource/timer-stm32-lp.c b/drivers/clocksource/timer-stm32-lp.c
-index db2841d0beb8..90c10f378df2 100644
+index db2841d0b..90c10f378 100644
 --- a/drivers/clocksource/timer-stm32-lp.c
 +++ b/drivers/clocksource/timer-stm32-lp.c
 @@ -168,9 +168,7 @@ static int stm32_clkevent_lp_probe(struct platform_device *pdev)
@@ -1747,7 +1747,7 @@ index db2841d0beb8..90c10f378df2 100644
  		ret = dev_pm_set_wake_irq(&pdev->dev, irq);
  		if (ret)
 diff --git a/include/dt-bindings/clock/stm32mp1-clks.h b/include/dt-bindings/clock/stm32mp1-clks.h
-index 4cdaf135829c..ec7b1a93200f 100644
+index 4cdaf1358..ec7b1a932 100644
 --- a/include/dt-bindings/clock/stm32mp1-clks.h
 +++ b/include/dt-bindings/clock/stm32mp1-clks.h
 @@ -179,6 +179,12 @@
@@ -1796,5 +1796,5 @@ index 4cdaf135829c..ec7b1a93200f 100644
 +
  #endif /* _DT_BINDINGS_STM32MP1_CLKS_H_ */
 -- 
-2.17.1
+2.25.1
 

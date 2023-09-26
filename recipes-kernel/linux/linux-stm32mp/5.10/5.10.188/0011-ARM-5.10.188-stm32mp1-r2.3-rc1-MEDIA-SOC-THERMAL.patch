@@ -1,12 +1,11 @@
-From 01060b070a7b8e49fd2928b3a8397606649a305c Mon Sep 17 00:00:00 2001
-From: Romuald JEANNE <romuald.jeanne@st.com>
-Date: Fri, 18 Nov 2022 16:19:08 +0100
-Subject: [PATCH 11/23] ARM 5.10.153-stm32mp1-r2.2 MEDIA-SOC-THERMAL
+From 37f0ee4d087aaeef0281a9589492ec5ac75db2fe Mon Sep 17 00:00:00 2001
+From: Akshat Kumar <akshat.kumar02@st.com>
+Date: Mon, 25 Sep 2023 21:02:34 +0530
+Subject: [PATCH 11/23] ARM 5.10.188-stm32mp1-r2.3-rc1 MEDIA-SOC-THERMAL
 
-Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
 ---
  drivers/media/i2c/ov5640.c                | 111 +++++++---
- drivers/media/platform/stm32/stm32-dcmi.c | 183 +++++++++++++---
+ drivers/media/platform/stm32/stm32-dcmi.c | 205 ++++++++++++++----
  drivers/media/v4l2-core/v4l2-fwnode.c     |   3 +
  drivers/soc/Kconfig                       |   1 +
  drivers/soc/Makefile                      |   1 +
@@ -17,7 +16,7 @@ Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
  drivers/thermal/st/stm_thermal.c          |  30 +--
  include/dt-bindings/soc/stm32-hdp.h       | 108 ++++++++++
  include/media/v4l2-fwnode.h               |   2 +
- 12 files changed, 834 insertions(+), 78 deletions(-)
+ 12 files changed, 849 insertions(+), 85 deletions(-)
  create mode 100644 drivers/soc/st/Kconfig
  create mode 100644 drivers/soc/st/Makefile
  create mode 100644 drivers/soc/st/stm32_hdp.c
@@ -25,7 +24,7 @@ Signed-off-by: Romuald JEANNE <romuald.jeanne@st.com>
  create mode 100644 include/dt-bindings/soc/stm32-hdp.h
 
 diff --git a/drivers/media/i2c/ov5640.c b/drivers/media/i2c/ov5640.c
-index 8f0812e85901..d7d36ad863ea 100644
+index 92a5f9aff..720783aea 100644
 --- a/drivers/media/i2c/ov5640.c
 +++ b/drivers/media/i2c/ov5640.c
 @@ -65,6 +65,7 @@
@@ -326,10 +325,10 @@ index 8f0812e85901..d7d36ad863ea 100644
  		ret = hdl->error;
  		goto free_ctrls;
 diff --git a/drivers/media/platform/stm32/stm32-dcmi.c b/drivers/media/platform/stm32/stm32-dcmi.c
-index 233e4d3feacd..beb628ac2f9c 100644
+index 233e4d3fe..8a3c0773d 100644
 --- a/drivers/media/platform/stm32/stm32-dcmi.c
 +++ b/drivers/media/platform/stm32/stm32-dcmi.c
-@@ -95,6 +95,9 @@ enum state {
+@@ -95,12 +95,15 @@ enum state {
  #define MIN_HEIGHT	16U
  #define MAX_HEIGHT	2592U
  
@@ -339,6 +338,13 @@ index 233e4d3feacd..beb628ac2f9c 100644
  #define TIMEOUT_MS	1000
  
  #define OVERRUN_ERROR_THRESHOLD	3
+ 
+ struct dcmi_graph_entity {
+-	struct v4l2_async_subdev asd;
++	struct v4l2_async_subdev *asd;
+ 
+ 	struct device_node *remote_node;
+ 	struct v4l2_subdev *source;
 @@ -120,7 +123,7 @@ struct dcmi_framesize {
  struct dcmi_buf {
  	struct vb2_v4l2_buffer	vb;
@@ -464,7 +470,41 @@ index 233e4d3feacd..beb628ac2f9c 100644
  static struct media_entity *dcmi_find_source(struct stm32_dcmi *dcmi)
  {
  	struct media_entity *entity = &dcmi->vdev->entity;
-@@ -778,6 +815,23 @@ static int dcmi_start_streaming(struct vb2_queue *vq, unsigned int count)
+@@ -748,6 +785,33 @@ static int dcmi_start_streaming(struct vb2_queue *vq, unsigned int count)
+ 	if (ret)
+ 		goto err_media_pipeline_stop;
+ 
++	/* Check if snapshop mode is necessary for jpeg capture */
++	if (dcmi->sd_format->fourcc == V4L2_PIX_FMT_JPEG) {
++		unsigned int rate;
++		struct v4l2_streamparm p = {
++			.type = V4L2_BUF_TYPE_VIDEO_CAPTURE
++		};
++		struct v4l2_fract frame_interval = {1, 30};
++
++		ret = v4l2_g_parm_cap(dcmi->vdev, dcmi->entity.source, &p);
++		if (!ret)
++			frame_interval = p.parm.capture.timeperframe;
++
++		rate = dcmi->fmt.fmt.pix.sizeimage *
++		       frame_interval.denominator / frame_interval.numerator;
++
++		/*
++		 * If rate exceed DMA capabilities, switch to snapshot mode
++		 * to ensure that current DMA transfer is elapsed before
++		 * capturing a new JPEG.
++		 */
++		if (rate > MAX_DMA_BANDWIDTH) {
++			val |= CR_CM;
++			dev_dbg(dcmi->dev, "Capture rate is too high for continuous mode (%d > %d bytes/s), switch to snapshot mode\n",
++				rate, MAX_DMA_BANDWIDTH);
++		}
++	}
++
+ 	spin_lock_irq(&dcmi->irqlock);
+ 
+ 	/* Set bus width */
+@@ -778,16 +842,29 @@ static int dcmi_start_streaming(struct vb2_queue *vq, unsigned int count)
  	if (dcmi->bus.flags & V4L2_MBUS_PCLK_SAMPLE_RISING)
  		val |= CR_PCKPOL;
  
@@ -488,40 +528,16 @@ index 233e4d3feacd..beb628ac2f9c 100644
  	reg_write(dcmi->regs, DCMI_CR, val);
  
  	/* Set crop */
-@@ -785,8 +839,31 @@ static int dcmi_start_streaming(struct vb2_queue *vq, unsigned int count)
+ 	if (dcmi->do_crop)
  		dcmi_set_crop(dcmi);
  
- 	/* Enable jpeg capture */
+-	/* Enable jpeg capture */
 -	if (dcmi->sd_format->fourcc == V4L2_PIX_FMT_JPEG)
 -		reg_set(dcmi->regs, DCMI_CR, CR_CM);/* Snapshot mode */
-+	if (dcmi->sd_format->fourcc == V4L2_PIX_FMT_JPEG) {
-+		unsigned int rate;
-+		struct v4l2_streamparm p = {
-+			.type = V4L2_BUF_TYPE_VIDEO_CAPTURE
-+		};
-+		struct v4l2_fract frame_interval = {1, 30};
-+
-+		ret = v4l2_g_parm_cap(dcmi->vdev, dcmi->entity.source, &p);
-+		if (!ret)
-+			frame_interval = p.parm.capture.timeperframe;
-+
-+		rate = dcmi->fmt.fmt.pix.sizeimage *
-+		       frame_interval.denominator / frame_interval.numerator;
-+
-+		/*
-+		 * If rate exceed DMA capabilities, switch to snapshot mode
-+		 * to ensure that current DMA transfer is elapsed before
-+		 * capturing a new JPEG.
-+		 */
-+		if (rate > MAX_DMA_BANDWIDTH) {
-+			reg_set(dcmi->regs, DCMI_CR, CR_CM);/* Snapshot mode */
-+			dev_dbg(dcmi->dev, "Capture rate is too high for continuous mode (%d > %d bytes/s), switch to snapshot mode\n",
-+				rate, MAX_DMA_BANDWIDTH);
-+		}
-+	}
- 
+-
  	/* Enable dcmi */
  	reg_set(dcmi->regs, DCMI_CR, CR_ENABLE);
+ 
 @@ -883,7 +960,7 @@ static void dcmi_stop_streaming(struct vb2_queue *vq)
  
  	/* Stop all pending DMA operations */
@@ -616,7 +632,46 @@ index 233e4d3feacd..beb628ac2f9c 100644
  		dev_dbg(dcmi->dev, "DCMI is now linked to \"%s\"\n",
  			subdev->name);
  
-@@ -1844,6 +1954,7 @@ static int dcmi_probe(struct platform_device *pdev)
+@@ -1786,6 +1896,7 @@ static int dcmi_graph_parse(struct stm32_dcmi *dcmi, struct device_node *node)
+ {
+ 	struct device_node *ep = NULL;
+ 	struct device_node *remote;
++	struct v4l2_async_subdev *asd;
+ 
+ 	ep = of_graph_get_next_endpoint(node, ep);
+ 	if (!ep)
+@@ -1796,10 +1907,18 @@ static int dcmi_graph_parse(struct stm32_dcmi *dcmi, struct device_node *node)
+ 	if (!remote)
+ 		return -EINVAL;
+ 
++	asd = kcalloc(1, sizeof(struct v4l2_async_subdev), GFP_KERNEL);
++	if (!asd) {
++		of_node_put(remote);
++		return -ENOMEM;
++	}
++
+ 	/* Remote node to connect */
+ 	dcmi->entity.remote_node = remote;
+-	dcmi->entity.asd.match_type = V4L2_ASYNC_MATCH_FWNODE;
+-	dcmi->entity.asd.match.fwnode = of_fwnode_handle(remote);
++	asd->match_type = V4L2_ASYNC_MATCH_FWNODE;
++	asd->match.fwnode = of_fwnode_handle(remote);
++	dcmi->entity.asd = asd;
++
+ 	return 0;
+ }
+ 
+@@ -1816,8 +1935,7 @@ static int dcmi_graph_init(struct stm32_dcmi *dcmi)
+ 
+ 	v4l2_async_notifier_init(&dcmi->notifier);
+ 
+-	ret = v4l2_async_notifier_add_subdev(&dcmi->notifier,
+-					     &dcmi->entity.asd);
++	ret = v4l2_async_notifier_add_subdev(&dcmi->notifier, dcmi->entity.asd);
+ 	if (ret) {
+ 		dev_err(dcmi->dev, "Failed to add subdev notifier\n");
+ 		of_node_put(dcmi->entity.remote_node);
+@@ -1844,6 +1962,7 @@ static int dcmi_probe(struct platform_device *pdev)
  	struct stm32_dcmi *dcmi;
  	struct vb2_queue *q;
  	struct dma_chan *chan;
@@ -624,7 +679,7 @@ index 233e4d3feacd..beb628ac2f9c 100644
  	struct clk *mclk;
  	int irq;
  	int ret = 0;
-@@ -1860,7 +1971,9 @@ static int dcmi_probe(struct platform_device *pdev)
+@@ -1860,7 +1979,9 @@ static int dcmi_probe(struct platform_device *pdev)
  
  	dcmi->rstc = devm_reset_control_get_exclusive(&pdev->dev, NULL);
  	if (IS_ERR(dcmi->rstc)) {
@@ -635,7 +690,7 @@ index 233e4d3feacd..beb628ac2f9c 100644
  		return PTR_ERR(dcmi->rstc);
  	}
  
-@@ -1882,9 +1995,18 @@ static int dcmi_probe(struct platform_device *pdev)
+@@ -1882,9 +2003,18 @@ static int dcmi_probe(struct platform_device *pdev)
  		dev_err(&pdev->dev, "CSI bus not supported\n");
  		return -ENODEV;
  	}
@@ -654,7 +709,7 @@ index 233e4d3feacd..beb628ac2f9c 100644
  
  	irq = platform_get_irq(pdev, 0);
  	if (irq <= 0)
-@@ -1920,6 +2042,12 @@ static int dcmi_probe(struct platform_device *pdev)
+@@ -1920,6 +2050,12 @@ static int dcmi_probe(struct platform_device *pdev)
  		return ret;
  	}
  
@@ -667,7 +722,7 @@ index 233e4d3feacd..beb628ac2f9c 100644
  	spin_lock_init(&dcmi->irqlock);
  	mutex_init(&dcmi->lock);
  	mutex_init(&dcmi->dma_lock);
-@@ -1975,15 +2103,6 @@ static int dcmi_probe(struct platform_device *pdev)
+@@ -1975,15 +2111,6 @@ static int dcmi_probe(struct platform_device *pdev)
  	}
  	dcmi->vdev->entity.flags |= MEDIA_ENT_FL_DEFAULT;
  
@@ -683,7 +738,7 @@ index 233e4d3feacd..beb628ac2f9c 100644
  	/* Buffer queue */
  	q->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
  	q->io_modes = VB2_MMAP | VB2_READ | VB2_DMABUF;
-@@ -2004,7 +2123,7 @@ static int dcmi_probe(struct platform_device *pdev)
+@@ -2004,7 +2131,7 @@ static int dcmi_probe(struct platform_device *pdev)
  
  	ret = dcmi_graph_init(dcmi);
  	if (ret < 0)
@@ -692,7 +747,7 @@ index 233e4d3feacd..beb628ac2f9c 100644
  
  	/* Reset device */
  	ret = reset_control_assert(dcmi->rstc);
-@@ -2030,7 +2149,10 @@ static int dcmi_probe(struct platform_device *pdev)
+@@ -2030,7 +2157,10 @@ static int dcmi_probe(struct platform_device *pdev)
  	return 0;
  
  err_cleanup:
@@ -703,7 +758,7 @@ index 233e4d3feacd..beb628ac2f9c 100644
  err_media_entity_cleanup:
  	media_entity_cleanup(&dcmi->vdev->entity);
  err_device_release:
-@@ -2052,6 +2174,7 @@ static int dcmi_remove(struct platform_device *pdev)
+@@ -2052,6 +2182,7 @@ static int dcmi_remove(struct platform_device *pdev)
  
  	v4l2_async_notifier_unregister(&dcmi->notifier);
  	v4l2_async_notifier_cleanup(&dcmi->notifier);
@@ -712,7 +767,7 @@ index 233e4d3feacd..beb628ac2f9c 100644
  	v4l2_device_unregister(&dcmi->v4l2_dev);
  	media_device_cleanup(&dcmi->mdev);
 diff --git a/drivers/media/v4l2-core/v4l2-fwnode.c b/drivers/media/v4l2-core/v4l2-fwnode.c
-index dfc53d11053f..7d0e2f5d1700 100644
+index dfc53d110..7d0e2f5d1 100644
 --- a/drivers/media/v4l2-core/v4l2-fwnode.c
 +++ b/drivers/media/v4l2-core/v4l2-fwnode.c
 @@ -356,6 +356,9 @@ v4l2_fwnode_endpoint_parse_parallel_bus(struct fwnode_handle *fwnode,
@@ -726,7 +781,7 @@ index dfc53d11053f..7d0e2f5d1700 100644
  	default:
  		bus->flags = flags;
 diff --git a/drivers/soc/Kconfig b/drivers/soc/Kconfig
-index 425ab6f7e375..30afdfbfd9cc 100644
+index 425ab6f7e..30afdfbfd 100644
 --- a/drivers/soc/Kconfig
 +++ b/drivers/soc/Kconfig
 @@ -15,6 +15,7 @@ source "drivers/soc/renesas/Kconfig"
@@ -738,7 +793,7 @@ index 425ab6f7e375..30afdfbfd9cc 100644
  source "drivers/soc/tegra/Kconfig"
  source "drivers/soc/ti/Kconfig"
 diff --git a/drivers/soc/Makefile b/drivers/soc/Makefile
-index 36452bed86ef..6b957db9a9bb 100644
+index 36452bed8..6b957db9a 100644
 --- a/drivers/soc/Makefile
 +++ b/drivers/soc/Makefile
 @@ -21,6 +21,7 @@ obj-y				+= renesas/
@@ -751,7 +806,7 @@ index 36452bed86ef..6b957db9a9bb 100644
  obj-y				+= ti/
 diff --git a/drivers/soc/st/Kconfig b/drivers/soc/st/Kconfig
 new file mode 100644
-index 000000000000..8ab604999db4
+index 000000000..8ab604999
 --- /dev/null
 +++ b/drivers/soc/st/Kconfig
 @@ -0,0 +1,17 @@
@@ -774,7 +829,7 @@ index 000000000000..8ab604999db4
 +endif # ARCH_STM32
 diff --git a/drivers/soc/st/Makefile b/drivers/soc/st/Makefile
 new file mode 100644
-index 000000000000..85905b7688ed
+index 000000000..85905b768
 --- /dev/null
 +++ b/drivers/soc/st/Makefile
 @@ -0,0 +1,2 @@
@@ -782,7 +837,7 @@ index 000000000000..85905b7688ed
 +obj-$(CONFIG_STM32_HDP) += stm32_hdp.o
 diff --git a/drivers/soc/st/stm32_hdp.c b/drivers/soc/st/stm32_hdp.c
 new file mode 100644
-index 000000000000..47687ebd1ffd
+index 000000000..47687ebd1
 --- /dev/null
 +++ b/drivers/soc/st/stm32_hdp.c
 @@ -0,0 +1,242 @@
@@ -1030,7 +1085,7 @@ index 000000000000..47687ebd1ffd
 +module_platform_driver(hdp_driver);
 diff --git a/drivers/soc/st/stm32_pm_domain.c b/drivers/soc/st/stm32_pm_domain.c
 new file mode 100644
-index 000000000000..0386624c20f2
+index 000000000..0386624c2
 --- /dev/null
 +++ b/drivers/soc/st/stm32_pm_domain.c
 @@ -0,0 +1,212 @@
@@ -1247,7 +1302,7 @@ index 000000000000..0386624c20f2
 +}
 +core_initcall(stm32_pm_domains_init);
 diff --git a/drivers/thermal/st/stm_thermal.c b/drivers/thermal/st/stm_thermal.c
-index 5fd3fb8912a6..1e065a3323f9 100644
+index 5fd3fb891..1e065a332 100644
 --- a/drivers/thermal/st/stm_thermal.c
 +++ b/drivers/thermal/st/stm_thermal.c
 @@ -82,8 +82,7 @@
@@ -1331,7 +1386,7 @@ index 5fd3fb8912a6..1e065a3323f9 100644
  
 diff --git a/include/dt-bindings/soc/stm32-hdp.h b/include/dt-bindings/soc/stm32-hdp.h
 new file mode 100644
-index 000000000000..d98665327281
+index 000000000..d98665327
 --- /dev/null
 +++ b/include/dt-bindings/soc/stm32-hdp.h
 @@ -0,0 +1,108 @@
@@ -1444,7 +1499,7 @@ index 000000000000..d98665327281
 +
 +#endif /* _DT_BINDINGS_STM32_HDP_H */
 diff --git a/include/media/v4l2-fwnode.h b/include/media/v4l2-fwnode.h
-index ed0840f3d5df..598822e23e9e 100644
+index ed0840f3d..598822e23 100644
 --- a/include/media/v4l2-fwnode.h
 +++ b/include/media/v4l2-fwnode.h
 @@ -49,11 +49,13 @@ struct v4l2_fwnode_bus_mipi_csi2 {
@@ -1462,5 +1517,5 @@ index ed0840f3d5df..598822e23e9e 100644
  
  /**
 -- 
-2.17.1
+2.25.1
 
