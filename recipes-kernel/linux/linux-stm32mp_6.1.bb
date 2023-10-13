@@ -42,6 +42,7 @@ SRC_URI += " \
     file://${LINUX_VERSION}/${LINUX_VERSION}${LINUX_SUBVERSION}/0023-v6.1-stm32mp-r1-DEVICETREE.patch \
     file://${LINUX_VERSION}/${LINUX_VERSION}${LINUX_SUBVERSION}/0024-v6.1-stm32mp-r1-CONFIG.patch \
     file://${LINUX_VERSION}/${LINUX_VERSION}${LINUX_SUBVERSION}/0025-v6.1-stm32mp-r1.1.patch \
+    file://${LINUX_VERSION}/${LINUX_VERSION}${LINUX_SUBVERSION}/0026-v6.1-stm32mp-r1.1-dmaengine-stm32.patch \
     "
 
 LINUX_TARGET = "stm32mp"
