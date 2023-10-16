@@ -38,9 +38,9 @@ UBOOT_EXTLINUX_BOOTPREFIXES:target-emmc = "${DEVICE:EMMC}_"
 UBOOT_EXTLINUX_BOOTPREFIXES:target-nand = "${DEVICE:NAND}_"
 # Define ROOT overrides for each target
 UBOOT_EXTLINUX_ROOT:target-nand = "ubi.mtd=UBI rootfstype=ubifs root=ubi0:rootfs"
-UBOOT_EXTLINUX_ROOT:target-sdcard = "root=PARTUUID=${DEVICE_PARTUUID_ROOTFS:SDCARD}"
+UBOOT_EXTLINUX_ROOT:target-sdcard ??= "root=PARTUUID=${DEVICE_PARTUUID_ROOTFS:SDCARD}"
 UBOOT_EXTLINUX_ROOT:target-nor = "root=/dev/mtdblock6"
-UBOOT_EXTLINUX_ROOT:target-emmc = "root=PARTUUID=${DEVICE_PARTUUID_ROOTFS:EMMC}"
+UBOOT_EXTLINUX_ROOT:target-emmc ??= "root=PARTUUID=${DEVICE_PARTUUID_ROOTFS:EMMC}"
 # Define INITRD overrides for nand target
 UBOOT_EXTLINUX_INITRD:target-nand = ""
 
