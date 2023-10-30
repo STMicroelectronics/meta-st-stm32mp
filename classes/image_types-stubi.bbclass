@@ -8,7 +8,7 @@ write_ubi_config() {
 	cat <<EOF > ubinize${vname}-${IMAGE_NAME}.cfg
 [${UBI_SECTION}]
 mode=ubi
-image=${IMGDEPLOYDIR}/${IMAGE_NAME}${vname}${IMAGE_NAME_SUFFIX}.${UBI_IMGTYPE}
+image=${IMGDEPLOYDIR}/${IMAGE_NAME}${vname}.${UBI_IMGTYPE}
 vol_id=0
 vol_type=${UBI_VOLTYPE}
 vol_name=${UBI_VOLNAME}
