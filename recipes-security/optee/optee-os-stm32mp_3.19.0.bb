@@ -9,6 +9,9 @@ SRC_URI += " \
     file://fonts.tar.gz;subdir=git;name=fonts  \
     file://0001-3.19.0-stm32mp-r1.patch \
     file://0002-${OPTEE_VERSION}-${OPTEE_SUBVERSION}-${OPTEE_RELEASE}.patch \
+    \
+    file://0002-GCC-core_mmu_get_mem_by_type-Werror-enum-int-mismatc.patch \
+    file://0004-gcc-Processing_is_tee_symm-Werror-enum-int-mismatch.patch \
     "
 
 SRC_URI[fonts.sha256sum] = "4941e8bb6d8ac377838e27b214bf43008c496a24a8f897e0b06433988cbd53b2"
