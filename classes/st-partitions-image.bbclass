@@ -80,10 +80,17 @@ python __anonymous () {
                     # Manage IMAGE_SUMMARY_LIST configuration according to PARTITIONS_IMAGE set
                     if d.getVar('ENABLE_IMAGE_LICENSE_SUMMARY') == "1":
                         if items[2] != '':
-                            image_summary_list += items[0] + ':' + items[2] + ';'
+                            if d.expand(items[1])[-2:] != 'fs':
+                                image_summary_list += items[0] + ':' + items[2] + ':' + items[1] + 'fs;'
+                            else:
+                                image_summary_list += items[0] + ':' + items[2] + ':' + items[1] + ';'
                         else:
                             # Set '/' as default mountpoint for rootfs in IMAGE_SUMMARY_LIST
-                            image_summary_list += items[0] + ':' + '/' + ';'
+                            if d.expand(items[1])[-2:] != 'fs':
+                                image_summary_list += items[0] + ':' + '/' + ':' + items[1] + 'fs;'
+                            else:
+                                image_summary_list += items[0] + ':' + '/' + ':' + items[1] + ';'
+
                     break
 
     # Reset IMAGE_LIST_SUMMARY with computed partition configuration
@@ -121,7 +128,7 @@ python __anonymous () {
                     # Manage multiubi volume build enable for current image
                     if bb.utils.contains('IMAGE_FSTYPES', 'multiubi', True, False, d) and d.getVar('ENABLE_MULTIVOLUME_UBI') == "1":
                         bb.debug(1, "Appending 'st_multivolume_ubifs' to IMAGE_POSTPROCESS_COMMAND.")
-                        d.appendVar('IMAGE_POSTPROCESS_COMMAND', 'st_multivolume_ubifs;')
+                        d.appendVar('IMAGE_POSTPROCESS_COMMAND', ' st_multivolume_ubifs;')
 
     # -----------------------------------------------------------------------------
     # Make sure that 'wic' image fstype is properly configured for partition image handling
@@ -172,6 +179,7 @@ python image_rootfs_image_clean_task(){
             items = v.split(',')
             _img_partition=d.expand(items[0])
             _img_mountpoint=d.expand(items[2])
+            _img_suffix=d.expand(items[1])
 
             # Do not search for the rootfs
             if not items[2]:
@@ -197,7 +205,7 @@ python image_rootfs_image_clean_task(){
 
             # Manifest file of the partition to check packages are in that partition
             manif_file = os.path.join(deploy_image_dir, "images", machine,
-                         _img_partition + "-" + distro + "-" + machine + ".manifest")
+                         _img_partition + "-" + distro + "-" + machine + "."+ _img_suffix +".manifest")
             try:
                 manifest_content = open(manif_file, "r")
                 contents = manifest_content.read().splitlines()
