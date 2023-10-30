@@ -73,6 +73,7 @@ do_configure:append() {
 do_install:append() {
     # Install KERNEL_IMAGETYPE for kernel-imagebootfs package
     install -m 0644 ${KERNEL_OUTPUT_DIR}/${KERNEL_IMAGETYPE} ${D}/${KERNEL_IMAGEDEST}
+    install -d ${D}/${sysconfdir}/modprobe.d/
 
     if ${@bb.utils.contains('MACHINE_FEATURES','gpu','true','false',d)}; then
         # when ACCEPT_EULA are filled
