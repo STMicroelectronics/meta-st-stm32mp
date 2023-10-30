@@ -329,7 +329,7 @@ def partImage2partConfig(config, fstype, d):
         bin_suffix = '-${MACHINE}'
     else:
         bin_suffix = '-${DISTRO}-${MACHINE}'
-    bin_name = items[0] + bin_suffix + '.' + fstype
+    bin_name = items[0] + bin_suffix + '.' + items[1] + '.'+ fstype
     # Set string for PARTITIONS_CONFIG item: <binary_name>,<partlabel>,<size>,<type>
     part_format = bin_name + ',' + items[1] + ',' + items[3] + ',' + items[4]
     return part_format
@@ -418,7 +418,7 @@ def partImage2ubiVolConfig(d, config):
         bin_suffix = '-${MACHINE}'
     else:
         bin_suffix = '-${DISTRO}-${MACHINE}'
-    bin_name = items[0] + bin_suffix
+    bin_name = items[0] + bin_suffix + '.' + items[1]
     # Set string for STM32MP_UBI_VOLUME item: <binary_name>,<partlabel>,<size>,<type>
     part_format = bin_name + ',' + items[1] + ',' + items[3] + ',' + items[4]
     return part_format
