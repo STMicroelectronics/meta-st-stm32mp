@@ -103,16 +103,16 @@ do_deploy:append() {
 }
 do_deploy[depends] += " virtual/kernel:do_package "
 
-python() {
-    fitimage_signed = d.getVar('UBOOT_SIGN_ENABLE')
-    devicetree = d.getVar('KERNEL_DEVICETREE').split()
-    machine_features = d.getVar('MACHINE_FEATURES')
-    if 'fit' in machine_features:
-        if fitimage_signed is not None and fitimage_signed == "1":
-            if len(devicetree) > 1:
-                bb.fatal("The signature of FIT image work only when there is only "
-                         "one DEVICE-TREE specified")
-}
+# python() {
+#     fitimage_signed = d.getVar('UBOOT_SIGN_ENABLE')
+#     devicetree = d.getVar('KERNEL_DEVICETREE').split()
+#     machine_features = d.getVar('MACHINE_FEATURES')
+#     if 'fit' in machine_features:
+#         if fitimage_signed is not None and fitimage_signed == "1":
+#             if len(devicetree) > 1:
+#                 bb.fatal("The signature of FIT image work only when there is only "
+#                          "one DEVICE-TREE specified")
+# }
 
 # ---------------------------------------------------------------------
 # Support checking the kernel load address parameter: expecting proper value for ST kernel.
