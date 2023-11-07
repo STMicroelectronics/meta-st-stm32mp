@@ -78,6 +78,13 @@ def init_keylist_from(keylist, keyinput, soclist, d):
 
 python __anonymous() {
     if d.getVar('SIGN_ENABLE') == "1" or d.getVar('ENCRYPT_ENABLE') == "1":
+
+        # Signing process is dedicated to "target" recipe only:
+        # Make sure to discard native and nativesdk
+        for native_class in ['native', 'nativesdk']:
+            if bb.data.inherits_class(native_class, d):
+                return
+
         # Check for SIGN_TOOL configuration
         signtool = d.getVar('SIGN_TOOL') or ""
         if not signtool:
@@ -114,5 +121,4 @@ python __anonymous() {
                 raise bb.parse.SkipRecipe("[sign-stm32mp] You cannot use ENCRYPT_FIP_KEY_PATH_LIST as it is internal to sign-stm32mp.bbclass.")
             # Init ENCRYPT_KEY_PATH_LIST from ENCRYPT_KEY settings
             init_keylist_from('ENCRYPT_FIP_KEY_PATH_LIST', 'ENCRYPT_FIP_KEY', 'STM32MP_ENCRYPT_SOC_NAME', d)
-
 }
