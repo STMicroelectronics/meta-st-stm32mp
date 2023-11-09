@@ -122,13 +122,13 @@ python __anonymous () {
                         # We need to make sure the manifest file is deployed as we need it for 'image_rootfs_image_clean_task'
                         d.appendVarFlag('do_image', 'depends', ' %s:do_populate_lic_deploy' % partition)
                     bb.debug(1, "Appending 'image_rootfs_image_clean_task' to IMAGE_PREPROCESS_COMMAND.")
-                    d.appendVar('IMAGE_PREPROCESS_COMMAND', 'image_rootfs_image_clean_task;')
+                    d.appendVar('IMAGE_PREPROCESS_COMMAND', ' image_rootfs_image_clean_task ')
                     bb.debug(1, "Set DEPLOY_BUILDINFO_FILE to '1' to allow to deploy build info file for rootfs build.")
                     d.setVar('DEPLOY_BUILDINFO_FILE', '1')
                     # Manage multiubi volume build enable for current image
                     if bb.utils.contains('IMAGE_FSTYPES', 'multiubi', True, False, d) and d.getVar('ENABLE_MULTIVOLUME_UBI') == "1":
                         bb.debug(1, "Appending 'st_multivolume_ubifs' to IMAGE_POSTPROCESS_COMMAND.")
-                        d.appendVar('IMAGE_POSTPROCESS_COMMAND', ' st_multivolume_ubifs;')
+                        d.appendVar('IMAGE_POSTPROCESS_COMMAND', ' st_multivolume_ubifs ')
 
     # -----------------------------------------------------------------------------
     # Make sure that 'wic' image fstype is properly configured for partition image handling

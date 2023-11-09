@@ -29,15 +29,15 @@ IMAGE_LINGUAS = ""
 LDCONFIGDEPEND = ""
 
 # Remove from IMAGE_PREPROCESS_COMMAND useless buildinfo
-IMAGE_PREPROCESS_COMMAND:remove = "buildinfo;"
+IMAGE_PREPROCESS_COMMAND:remove = "buildinfo"
 # Remove from IMAGE_PREPROCESS_COMMAND the prelink_image as it could be run after
 # we clean rootfs folder leading to cp error if '/etc/' folder is missing:
 #   cp: cannot create regular file
 #   ‘/local/YOCTO/build/tmp-glibc/work/stm32mp1-openstlinux_weston-linux-gnueabi/st-image-userfs/1.0-r0/rootfs/etc/prelink.conf’:
 #   No such file or directory
-IMAGE_PREPROCESS_COMMAND:remove = "prelink_image;"
+IMAGE_PREPROCESS_COMMAND:remove = "prelink_image"
 
-IMAGE_PREPROCESS_COMMAND:append = "reformat_rootfs;"
+IMAGE_PREPROCESS_COMMAND:append = "reformat_rootfs"
 
 # Cleanup rootfs newly created
 reformat_rootfs() {

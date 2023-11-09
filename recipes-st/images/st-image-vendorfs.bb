@@ -15,5 +15,5 @@ PACKAGE_INSTALL += " \
 "
 
 # Remove specific systemd task
-IMAGE_PREPROCESS_COMMAND:remove = "systemd-systemctl-native;"
-IMAGE_PREPROCESS_COMMAND:remove = "systemd_preset_all;"
+IMAGE_PREPROCESS_COMMAND:remove = "systemd-systemctl-native"
+IMAGE_PREPROCESS_COMMAND:remove = "systemd_preset_all"
