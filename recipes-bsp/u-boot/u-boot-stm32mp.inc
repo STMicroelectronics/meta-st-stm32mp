@@ -133,6 +133,11 @@ do_compile:append() {
                                 if [ $k -eq $i ]; then
                                     binarysuffix=$(echo ${binary} | cut -d'.' -f2)
                                     install -m 644 ${B}/${config}/${binary} ${B}/${config}/u-boot-${devicetree}.${binarysuffix}
+                                    if [ "x${UBOOT_SIGN_ENABLE}" = "x1" ] ; then
+                                            ubootdevicetree="${B}/${config}/u-boot-${devicetree}.${binarysuffix}"
+                                            namewithoutsignature="${B}/${config}/u-boot-${devicetree}-without-signature.${binarysuffix}"
+                                            cp $ubootdevicetree $namewithoutsignature
+                                    fi
                                 fi
                             done
                             unset k
@@ -209,23 +214,17 @@ do_deploy:append() {
                                     fi
 
                                     if [ "${UBOOT_SIGN_ENABLE}" = "1" -a -n "${UBOOT_DTB_BINARY}" ] ; then
-                                        # rm previous installed binaries
-                                        if [ -e "${DEPLOYDIR}/${UBOOT_DTB_BINARY}" ]; then
-                                            rm ${DEPLOYDIR}/${UBOOT_DTB_BINARY}
-                                        fi
-                                        if [ -e "${DEPLOYDIR}/${UBOOT_DTB_SYMLINK}" ]; then
-                                            rm ${DEPLOYDIR}/${UBOOT_DTB_SYMLINK}
-                                        fi
-                                        if [ -e "${DEPLOYDIR}/${DEPLOYDIR}/${UBOOT_NODTB_SYMLINK}" ]; then
-                                            rm ${DEPLOYDIR}/${UBOOT_NODTB_SYMLINK} ${DEPLOYDIR}/${UBOOT_NODTB_BINARY}
-                                        fi
-                                        if [ -e "${UBOOT_DTB_BINARY}" ]; then
-                                            install u-boot-${MACHINE}-${devicetree}-${PV}-${PR}.dtb ${DEPLOYDIR}/
-                                            install u-boot-${MACHINE}-${devicetree}.dtb ${DEPLOYDIR}/
-                                        fi
-                                        if [ -f "${UBOOT_NODTB_BINARY}" ]; then
-                                            install u-boot-nodtb-${soc_suffix}-${PV}-${PR}.bin ${DEPLOYDIR}/
-                                        fi
+                                        ${UBOOT_MKIMAGE_SIGN} \
+                                                ${@'-D "${UBOOT_MKIMAGE_DTCOPTS}"' if len('${UBOOT_MKIMAGE_DTCOPTS}') else ''} \
+                                                -F -k "${UBOOT_SIGN_KEYDIR}" \
+                                                -K "${B}/${config}/u-boot-${devicetree}.${binarysuffix}" \
+                                                -r ${B}/fitImage-linux \
+                                                ${UBOOT_MKIMAGE_SIGN_ARGS}
+
+                                        cp ${B}/${config}/u-boot-${devicetree}.${binarysuffix} ${B}/${config}/u-boot-${devicetree}-with-signature.${binarysuffix}
+                                        install -m 644 ${B}/${config}/u-boot-${devicetree}-without-signature.${binarysuffix} ${DEPLOYDIR}${SUBFOLDER}/
+                                        install -m 644 ${B}/${config}/u-boot-${devicetree}-with-signature.${binarysuffix} ${DEPLOYDIR}${SUBFOLDER}/
+                                        install -m 644 ${B}/${config}/u-boot-${devicetree}.${binarysuffix} ${DEPLOYDIR}${SUBFOLDER}/
                                     fi
                                 done
                             fi
@@ -237,23 +236,6 @@ do_deploy:append() {
             done
         else
             bbfatal "Wrong u-boot-stm32mp configuration: please make sure to use UBOOT_CONFIG through BOOTSCHEME_LABELS config"
-        fi
-    fi
-
-    if [ "x${UBOOT_SIGN_ENABLE}" = "x1" ] ; then
-        #  work only there is only one devicetree
-        # get name of u-boot devicetree without signature
-        ubootdevicetree=`ls -1 ${DEPLOYDIR}/*.dtb | head -n 1`
-        namewithoutsignature=`echo $ubootdevicetree | sed "s/\.dtb/-without-signature.dtb/g"`
-        namewithsignature=`echo $ubootdevicetree | sed "s/\.dtb/-with-signature.dtb/g"`
-        mv $ubootdevicetree $namewithoutsignature
-        if [ -e ${B}/fitImage-linux ]; then
-            #get name of devicetree with signature
-            namedtb=`${B}/fitImage-linux`
-            cp $namedtb $namewithsignature
-            cp $namedtb $ubootdevicetree
-        else
-            bbfatal "no fitImage-linux available"
         fi
     fi
 }
