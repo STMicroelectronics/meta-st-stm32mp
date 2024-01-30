@@ -33,6 +33,9 @@ EOF
                     for binary in ${UBOOT_BINARIES}; do
                         k=$(expr $k + 1);
                         if [ $k -eq $i ]; then
+                            if echo ${type} | grep '^fastboot-' ; then
+                                continue
+                            fi
                             type_suffix=$(echo ${type} | cut -d'_' -f1)
                             type_filter=$(echo ${type} | cut -d'_' -f2)
                             [ "${type_suffix}" = "${type_filter}" ] && type_filter=""
