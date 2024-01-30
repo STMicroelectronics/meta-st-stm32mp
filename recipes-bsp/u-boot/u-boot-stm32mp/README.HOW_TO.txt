@@ -158,6 +158,26 @@ To compile U-Boot source code for a specific config:
 To compile U-Boot source code and overwrite the default FIP artifacts with built artifacts:
     $> make -f $PWD/../Makefile.sdk DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot all
 
+5.3 Compilation with support for fastboot support
+-------------------------------------------------
+Fastboot is a feature in U-Boot which can improve a lot the speed of binary downloading.
+Fastboot is, for the moment, only supported on SD-Card and eMMC. And only one mode is
+supported at a given time. It means that if your U-Boot supports fastboot on SD-Card
+then it's not availabe on eMMC. To support it on eMMC, you must use another U-BOOT.
+
+To enable fastboot on the right mass storage, simply apply the right fragment
+into the right defconfig:
+  - fastboot on SD-Card for stm32mp15:
+    $ cat $PWD/../fragment-04-fastboot_mmc0.fb_cfg >> configs/stm32mp15_defconfig
+  - fastboot on eMMC for stm32mp15:
+    $ cat $PWD/../fragment-05-fastboot_mmc1.fb_cfg >> configs/stm32mp15_defconfig
+  - fastboot on SD-Card for stm32mp13:
+    $ cat $PWD/../fragment-04-fastboot_mmc0.fb_cfg >> configs/stm32mp13_defconfig
+  - fastboot on eMMC for stm32mp13:
+    $ cat $PWD/../fragment-05-fastboot_mmc1.fb_cfg >> configs/stm32mp13_defconfig
+
+Then build U-Boot as explained in chapter 5.
+
 ---------------------------
 6. Update software on board
 ---------------------------
