@@ -1,9 +1,10 @@
-From 1114fa4cbc859f4a0cc5e19f267c66634888c798 Mon Sep 17 00:00:00 2001
-From: Romuald Jeanne <romuald.jeanne@st.com>
-Date: Tue, 25 Jul 2023 10:45:56 +0200
-Subject: [PATCH 10/22] v5.15-stm32mp-r2.1 REMOTEPROC-RPMSG
+From 26e4fe976141751ac7a644c3f01fec3c8ae06b05 Mon Sep 17 00:00:00 2001
+From: vermaash <ashish.verma@st.com>
+Date: Mon, 15 Jul 2024 15:01:04 +0530
+Subject: [PATCH 10/22] v5.15-stm32mp-r2.2 REMOTEPROC-RPMSG Signed-off-by:
+ vermaash <ashish.verma@st.com>
 
-Signed-off-by: Romuald Jeanne <romuald.jeanne@st.com>
+Change-Id: I5036ab5e4ba53df3775597e982652192a83d0e27
 ---
  Documentation/staging/remoteproc.rst |  22 +
  Documentation/staging/tee.rst        |  30 +
@@ -13,7 +14,7 @@ Signed-off-by: Romuald Jeanne <romuald.jeanne@st.com>
  drivers/remoteproc/rproc_srm_core.c  | 303 ++++++++++
  drivers/remoteproc/rproc_srm_core.h  |  98 ++++
  drivers/remoteproc/rproc_srm_dev.c   | 744 ++++++++++++++++++++++++
- drivers/remoteproc/stm32_rproc.c     | 324 +++++++----
+ drivers/remoteproc/stm32_rproc.c     | 326 +++++++----
  drivers/remoteproc/tee_remoteproc.c  | 378 +++++++++++++
  drivers/rpmsg/Kconfig                |   8 +
  drivers/rpmsg/Makefile               |   1 +
@@ -23,7 +24,7 @@ Signed-off-by: Romuald Jeanne <romuald.jeanne@st.com>
  drivers/rpmsg/rpmsg_char.h           |  46 ++
  drivers/rpmsg/rpmsg_core.c           |  36 +-
  drivers/rpmsg/rpmsg_ctrl.c           | 243 ++++++++
- drivers/rpmsg/rpmsg_internal.h       |  12 +-
+ drivers/rpmsg/rpmsg_internal.h       |   8 +-
  drivers/rpmsg/virtio_rpmsg_bus.c     |  12 +-
  drivers/tee/amdtee/amdtee_private.h  |   8 +-
  drivers/tee/amdtee/core.c            |  22 +-
@@ -44,7 +45,7 @@ Signed-off-by: Romuald Jeanne <romuald.jeanne@st.com>
  include/linux/tee_remoteproc.h       | 101 ++++
  include/uapi/linux/rpmsg.h           |  10 +
  include/uapi/linux/tee.h             |  36 +-
- 39 files changed, 4292 insertions(+), 582 deletions(-)
+ 39 files changed, 4291 insertions(+), 581 deletions(-)
  create mode 100644 drivers/remoteproc/rproc_srm_core.c
  create mode 100644 drivers/remoteproc/rproc_srm_core.h
  create mode 100644 drivers/remoteproc/rproc_srm_dev.c
@@ -1391,7 +1392,7 @@ index 000000000000..e47654af3e3a
 +MODULE_DESCRIPTION("Remoteproc System Resource Manager driver - dev");
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/remoteproc/stm32_rproc.c b/drivers/remoteproc/stm32_rproc.c
-index aba3df1d1bf5..5c7cdeae917e 100644
+index aba3df1d1bf5..ccaee788394b 100644
 --- a/drivers/remoteproc/stm32_rproc.c
 +++ b/drivers/remoteproc/stm32_rproc.c
 @@ -20,13 +20,11 @@
@@ -1598,6 +1599,15 @@ index aba3df1d1bf5..5c7cdeae917e 100644
  		dev_warn(&rproc->dev, "no resource table found for this firmware\n");
  
  	return 0;
+@@ -293,7 +439,7 @@ static void stm32_rproc_mb_vq_work(struct work_struct *work)
+ 
+ 	mutex_lock(&rproc->lock);
+ 
+-	if (rproc->state != RPROC_RUNNING)
++	if (rproc->state != RPROC_RUNNING && rproc->state != RPROC_ATTACHED)
+ 		goto unlock_mutex;
+ 
+ 	if (rproc_vq_interrupt(rproc, mb->vq_id) == IRQ_NONE)
 @@ -406,30 +552,6 @@ static int stm32_rproc_request_mbox(struct rproc *rproc)
  	return -EPROBE_DEFER;
  }
@@ -2293,10 +2303,10 @@ index 8d452656f0ee..58e3b382e316 100644
  obj-$(CONFIG_RPMSG_MTK_SCP)	+= mtk_rpmsg.o
  qcom_glink-objs			:= qcom_glink_native.o qcom_glink_ssr.o
 diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native.c
-index fd4c2f0fa4b1..0a7dabf3f329 100644
+index 35e7291aa969..fd8741d1d7b2 100644
 --- a/drivers/rpmsg/qcom_glink_native.c
 +++ b/drivers/rpmsg/qcom_glink_native.c
-@@ -1643,7 +1643,7 @@ static int qcom_glink_create_chrdev(struct qcom_glink *glink)
+@@ -1649,7 +1649,7 @@ static int qcom_glink_create_chrdev(struct qcom_glink *glink)
  	rpdev->dev.parent = glink->dev;
  	rpdev->dev.release = qcom_glink_device_release;
  
@@ -2760,7 +2770,7 @@ index 000000000000..117d9cbc52f0
 +
 +#endif /*__RPMSG_CHRDEV_H__ */
 diff --git a/drivers/rpmsg/rpmsg_core.c b/drivers/rpmsg/rpmsg_core.c
-index a71de08acc7b..41648ad9f8a6 100644
+index 8bb78c747e30..d0612589d872 100644
 --- a/drivers/rpmsg/rpmsg_core.c
 +++ b/drivers/rpmsg/rpmsg_core.c
 @@ -20,6 +20,9 @@
@@ -2801,7 +2811,7 @@ index a71de08acc7b..41648ad9f8a6 100644
  /*
   * match a rpmsg channel with a channel info struct.
   * this is used to make sure we're not creating rpmsg devices for channels
-@@ -641,10 +665,17 @@ static int __init rpmsg_init(void)
+@@ -670,10 +694,17 @@ static int __init rpmsg_init(void)
  {
  	int ret;
  
@@ -2821,7 +2831,7 @@ index a71de08acc7b..41648ad9f8a6 100644
  	return ret;
  }
  postcore_initcall(rpmsg_init);
-@@ -652,6 +683,7 @@ postcore_initcall(rpmsg_init);
+@@ -681,6 +712,7 @@ postcore_initcall(rpmsg_init);
  static void __exit rpmsg_fini(void)
  {
  	bus_unregister(&rpmsg_bus);
@@ -3079,7 +3089,7 @@ index 000000000000..107da70fdbaa
 +MODULE_ALIAS("rpmsg:" KBUILD_MODNAME);
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/rpmsg/rpmsg_internal.h b/drivers/rpmsg/rpmsg_internal.h
-index a76c344253bf..d4b23fd019a8 100644
+index 7985af92aa48..a22cd4abe7d1 100644
 --- a/drivers/rpmsg/rpmsg_internal.h
 +++ b/drivers/rpmsg/rpmsg_internal.h
 @@ -18,6 +18,8 @@
@@ -3107,7 +3117,7 @@ index a76c344253bf..d4b23fd019a8 100644
  };
  
  struct device *rpmsg_find_device(struct device *parent,
-@@ -82,16 +86,16 @@ struct rpmsg_device *rpmsg_create_channel(struct rpmsg_device *rpdev,
+@@ -82,13 +86,13 @@ struct rpmsg_device *rpmsg_create_channel(struct rpmsg_device *rpdev,
  int rpmsg_release_channel(struct rpmsg_device *rpdev,
  			  struct rpmsg_channel_info *chinfo);
  /**
@@ -3121,12 +3131,7 @@ index a76c344253bf..d4b23fd019a8 100644
 -static inline int rpmsg_chrdev_register_device(struct rpmsg_device *rpdev)
 +static inline int rpmsg_ctrldev_register_device(struct rpmsg_device *rpdev)
  {
--	strcpy(rpdev->id.name, "rpmsg_chrdev");
--	rpdev->driver_override = "rpmsg_chrdev";
-+	strcpy(rpdev->id.name, "rpmsg_ctrl");
-+	rpdev->driver_override = "rpmsg_ctrl";
- 
- 	return rpmsg_register_device(rpdev);
+ 	return rpmsg_register_device_override(rpdev, "rpmsg_ctrl");
  }
 diff --git a/drivers/rpmsg/virtio_rpmsg_bus.c b/drivers/rpmsg/virtio_rpmsg_bus.c
 index b03e7404212f..1c54fe2fac5b 100644
@@ -3197,7 +3202,7 @@ index 6d0f7062bb87..73c183510c26 100644
  int amdtee_cancel_req(struct tee_context *ctx, u32 cancel_id, u32 session);
  
 diff --git a/drivers/tee/amdtee/core.c b/drivers/tee/amdtee/core.c
-index 372d64756ed6..78511ae99b91 100644
+index 3c15f6a9e91c..00921c613f0e 100644
 --- a/drivers/tee/amdtee/core.c
 +++ b/drivers/tee/amdtee/core.c
 @@ -230,7 +230,9 @@ static void destroy_session(struct kref *ref)
@@ -3232,7 +3237,7 @@ index 372d64756ed6..78511ae99b91 100644
  	if (arg->ret != TEEC_SUCCESS) {
  		pr_err("open_session failed %d\n", arg->ret);
  		handle_unload_ta(ta_handle);
-@@ -404,12 +411,19 @@ void amdtee_unmap_shmem(struct tee_shm *shm)
+@@ -406,12 +413,19 @@ void amdtee_unmap_shmem(struct tee_shm *shm)
  
  int amdtee_invoke_func(struct tee_context *ctx,
  		       struct tee_ioctl_invoke_arg *arg,
@@ -3253,7 +3258,7 @@ index 372d64756ed6..78511ae99b91 100644
  	/* Check that the session is valid */
  	mutex_lock(&session_list_mutex);
  	sess = find_session(ctxdata, arg->session);
-@@ -422,7 +436,7 @@ int amdtee_invoke_func(struct tee_context *ctx,
+@@ -424,7 +438,7 @@ int amdtee_invoke_func(struct tee_context *ctx,
  	if (!sess)
  		return -EINVAL;
  
@@ -6049,10 +6054,10 @@ index 6fb4400333fb..36304fe6accd 100644
   * tee_shm_put() - Decrease reference count on a shared memory handle
   * @shm:	Shared memory handle
 diff --git a/include/linux/rpmsg.h b/include/linux/rpmsg.h
-index a8dcf8a9ae88..02fa9116cd60 100644
+index a63c5a4ff3e1..523c98b96cb4 100644
 --- a/include/linux/rpmsg.h
 +++ b/include/linux/rpmsg.h
-@@ -186,6 +186,8 @@ int rpmsg_trysend_offchannel(struct rpmsg_endpoint *ept, u32 src, u32 dst,
+@@ -190,6 +190,8 @@ int rpmsg_trysend_offchannel(struct rpmsg_endpoint *ept, u32 src, u32 dst,
  __poll_t rpmsg_poll(struct rpmsg_endpoint *ept, struct file *filp,
  			poll_table *wait);
  
@@ -6060,8 +6065,8 @@ index a8dcf8a9ae88..02fa9116cd60 100644
 +
  #else
  
- static inline int rpmsg_register_device(struct rpmsg_device *rpdev)
-@@ -296,6 +298,14 @@ static inline __poll_t rpmsg_poll(struct rpmsg_endpoint *ept,
+ static inline int rpmsg_register_device_override(struct rpmsg_device *rpdev,
+@@ -306,6 +308,14 @@ static inline __poll_t rpmsg_poll(struct rpmsg_endpoint *ept,
  	return 0;
  }
  
@@ -6318,5 +6323,5 @@ index 25a6c534beb1..157ec3dbd8b8 100644
   * struct tee_ioctl_invoke_func_arg - Invokes a function in a Trusted
   * Application
 -- 
-2.17.1
+2.25.1
 

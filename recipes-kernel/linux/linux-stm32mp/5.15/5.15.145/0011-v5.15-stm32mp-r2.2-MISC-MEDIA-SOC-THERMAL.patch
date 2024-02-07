@@ -1,14 +1,15 @@
-From 7ec3e513a3c37c2e20b1f2545f6cb84e4422b045 Mon Sep 17 00:00:00 2001
-From: Romuald Jeanne <romuald.jeanne@st.com>
-Date: Tue, 25 Jul 2023 10:50:21 +0200
-Subject: [PATCH 11/22] v5.15-stm32mp-r2.1 MISC-MEDIA-SOC-THERMAL
+From d5f2321bfee10ccb9483b4134a58e88fc6f5da87 Mon Sep 17 00:00:00 2001
+From: vermaash <ashish.verma@st.com>
+Date: Mon, 15 Jul 2024 15:21:30 +0530
+Subject: [PATCH 11/22] v5.15-stm32mp-r2.2 MISC-MEDIA-SOC-THERMAL
 
-Signed-off-by: Romuald Jeanne <romuald.jeanne@st.com>
+Change-Id: I0ba3b9d8b8dcac0fe0d4e233a5f18e38f657c990
+Signed-off-by: vermaash <ashish.verma@st.com>
 ---
  CONTRIBUTING.md                               |   30 +
  MAINTAINERS                                   |   17 +
  SECURITY.md                                   |    8 +
- drivers/char/hw_random/stm32-rng.c            |  229 +-
+ drivers/char/hw_random/stm32-rng.c            |  402 +++-
  drivers/firmware/Kconfig                      |    2 +-
  drivers/gpio/gpiolib-acpi.c                   |    3 +
  drivers/gpio/gpiolib-of.c                     |    7 +
@@ -50,7 +51,7 @@ Signed-off-by: Romuald Jeanne <romuald.jeanne@st.com>
  include/linux/smscphy.h                       |   20 +
  include/media/mipi-csi2.h                     |   45 +
  include/media/v4l2-fwnode.h                   |    2 +
- 45 files changed, 7805 insertions(+), 257 deletions(-)
+ 45 files changed, 7958 insertions(+), 277 deletions(-)
  create mode 100644 CONTRIBUTING.md
  create mode 100644 SECURITY.md
  create mode 100644 drivers/media/i2c/gc2145.c
@@ -107,10 +108,10 @@ index 000000000000..3d1bacd78a54
 +
 +Merge will not be done directly in GitHub but it will need first to follow internal integration process before public deliver in a standard release. The Pull request will stay open until it is merged and delivered.
 diff --git a/MAINTAINERS b/MAINTAINERS
-index 2bf1ad0fb2a6..f27b6574d93e 100644
+index 9216b9c85ce9..b75cb5229a71 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -7743,6 +7743,14 @@ F:	kernel/futex/*
+@@ -7744,6 +7744,14 @@ F:	kernel/futex/*
  F:	tools/perf/bench/futex*
  F:	tools/testing/selftests/futex/
  
@@ -125,7 +126,7 @@ index 2bf1ad0fb2a6..f27b6574d93e 100644
  GATEWORKS SYSTEM CONTROLLER (GSC) DRIVER
  M:	Tim Harvey <tharvey@gateworks.com>
  M:	Robert Jones <rjones@gateworks.com>
-@@ -11720,6 +11728,15 @@ T:	git git://linuxtv.org/media_tree.git
+@@ -11721,6 +11729,15 @@ T:	git git://linuxtv.org/media_tree.git
  F:	Documentation/devicetree/bindings/media/st,stm32-dcmi.yaml
  F:	drivers/media/platform/stm32/stm32-dcmi.c
  
@@ -156,41 +157,47 @@ index 000000000000..4b3e4e6ba5e1
 +As such, by submitting Your Report to ST, You agree that You have the right to do so, and You grant to ST the rights to use the Report for purposes related to security vulnerability analysis, testing, correction, patching, reporting and any other related purpose or function.
 +By submitting Your Report, You agree that ST’s [Privacy Policy](https://www.st.com/content/st_com/en/common/privacy-portal.html) applies to all related communications.
 diff --git a/drivers/char/hw_random/stm32-rng.c b/drivers/char/hw_random/stm32-rng.c
-index bc22178f83e8..e0a8025b45db 100644
+index bc22178f83e8..ae1c36f275c5 100644
 --- a/drivers/char/hw_random/stm32-rng.c
 +++ b/drivers/char/hw_random/stm32-rng.c
-@@ -16,22 +16,36 @@
+@@ -16,58 +16,206 @@
  #include <linux/reset.h>
  #include <linux/slab.h>
  
 -#define RNG_CR 0x00
 -#define RNG_CR_RNGEN BIT(2)
 -#define RNG_CR_CED BIT(5)
-+#define RNG_CR		0x00
-+#define RNG_CR_RNGEN	BIT(2)
-+#define RNG_CR_CED	BIT(5)
-+#define RNG_CR_CONDRST	BIT(30)
-+#define RNG_CR_CONFLOCK	BIT(31)
- 
+-
 -#define RNG_SR 0x04
 -#define RNG_SR_SEIS BIT(6)
 -#define RNG_SR_CEIS BIT(5)
 -#define RNG_SR_DRDY BIT(0)
-+#define RNG_SR		0x04
-+#define RNG_SR_SEIS	BIT(6)
-+#define RNG_SR_CEIS	BIT(5)
-+#define RNG_SR_DRDY	BIT(0)
- 
+-
 -#define RNG_DR 0x08
++#define RNG_CR			0x00
++#define RNG_CR_RNGEN		BIT(2)
++#define RNG_CR_CED		BIT(5)
++#define RNG_CR_CLKDIV_SHIFT	16
++#define RNG_CR_CONDRST		BIT(30)
++#define RNG_CR_CONFLOCK		BIT(31)
++
++#define RNG_SR			0x04
++#define RNG_SR_DRDY		BIT(0)
++#define RNG_SR_CECS		BIT(1)
++#define RNG_SR_SECS		BIT(2)
++#define RNG_SR_CEIS		BIT(5)
++#define RNG_SR_SEIS		BIT(6)
++
 +#define RNG_DR		0x08
 +
 +#define RNG_NIST_CONFIG_A	0x0F00D00
 +#define RNG_NIST_CONFIG_B	0x1801000
 +#define RNG_NIST_CONFIG_MASK	GENMASK(25, 8)
 +
-+#define RNG_MAX_NOISE_CLK_FREQ	3000000
++#define RNG_NB_RECOVER_TRIES	3
 +
 +struct stm32_rng_data {
++	uint	max_clock_rate;
 +	bool	has_cond_reset;
 +};
  
@@ -204,7 +211,184 @@ index bc22178f83e8..e0a8025b45db 100644
  	bool ced;
  };
  
-@@ -79,39 +93,168 @@ static int stm32_rng_read(struct hwrng *rng, void *data, size_t max, bool wait)
++/*
++ * Extracts from the STM32 RNG specification when RNG supports CONDRST.
++ *
++ * When a noise source (or seed) error occurs, the RNG stops generating
++ * random numbers and sets to “1” both SEIS and SECS bits to indicate
++ * that a seed error occurred. (...)
++ *
++ * 1. Software reset by writing CONDRST at 1 and at 0 (see bitfield
++ * description for details). This step is needed only if SECS is set.
++ * Indeed, when SEIS is set and SECS is cleared it means RNG performed
++ * the reset automatically (auto-reset).
++ * 2. If SECS was set in step 1 (no auto-reset) wait for CONDRST
++ * to be cleared in the RNG_CR register, then confirm that SEIS is
++ * cleared in the RNG_SR register. Otherwise just clear SEIS bit in
++ * the RNG_SR register.
++ * 3. If SECS was set in step 1 (no auto-reset) wait for SECS to be
++ * cleared by RNG. The random number generation is now back to normal.
++ */
++static int stm32_rng_conceal_seed_error_cond_reset(struct stm32_rng_private *priv)
++{
++	struct device *dev = (struct device *)priv->rng.priv;
++	u32 sr = readl_relaxed(priv->base + RNG_SR);
++	u32 cr = readl_relaxed(priv->base + RNG_CR);
++	int err;
++
++	if (sr & RNG_SR_SECS) {
++		/* Conceal by resetting the subsystem (step 1.) */
++		writel_relaxed(cr | RNG_CR_CONDRST, priv->base + RNG_CR);
++		writel_relaxed(cr & ~RNG_CR_CONDRST, priv->base + RNG_CR);
++	} else {
++		/* RNG auto-reset (step 2.) */
++		writel_relaxed(sr & ~RNG_SR_SEIS, priv->base + RNG_SR);
++		goto end;
++	}
++
++	err = readl_relaxed_poll_timeout_atomic(priv->base + RNG_CR, cr, !(cr & RNG_CR_CONDRST), 10,
++						100000);
++	if (err) {
++		dev_err(dev, "%s: timeout %x\n", __func__, sr);
++		return err;
++	}
++
++	/* Check SEIS is cleared (step 2.) */
++	if (readl_relaxed(priv->base + RNG_SR) & RNG_SR_SEIS)
++		return -EINVAL;
++
++	err = readl_relaxed_poll_timeout_atomic(priv->base + RNG_SR, sr, !(sr & RNG_SR_SECS), 10,
++						100000);
++	if (err) {
++		dev_err(dev, "%s: timeout %x\n", __func__, sr);
++		return err;
++	}
++
++end:
++	return 0;
++}
++
++/*
++ * Extracts from the STM32 RNG specification, when CONDRST is not supported
++ *
++ * When a noise source (or seed) error occurs, the RNG stops generating
++ * random numbers and sets to “1” both SEIS and SECS bits to indicate
++ * that a seed error occurred. (...)
++ *
++ * The following sequence shall be used to fully recover from a seed
++ * error after the RNG initialization:
++ * 1. Clear the SEIS bit by writing it to “0”.
++ * 2. Read out 12 words from the RNG_DR register, and discard each of
++ * them in order to clean the pipeline.
++ * 3. Confirm that SEIS is still cleared. Random number generation is
++ * back to normal.
++ */
++static int stm32_rng_conceal_seed_error_sw_reset(struct stm32_rng_private *priv)
++{
++	unsigned int i = 0;
++	u32 sr = readl_relaxed(priv->base + RNG_SR);
++
++	writel_relaxed(sr & ~RNG_SR_SEIS, priv->base + RNG_SR);
++
++	for (i = 12; i != 0; i--)
++		(void)readl_relaxed(priv->base + RNG_DR);
++
++	if (readl_relaxed(priv->base + RNG_SR) & RNG_SR_SEIS)
++		return -EINVAL;
++
++	return 0;
++}
++
++static int stm32_rng_conceal_seed_error(struct hwrng *rng)
++{
++	struct stm32_rng_private *priv = container_of(rng, struct stm32_rng_private, rng);
++
++	dev_dbg((struct device *)priv->rng.priv, "Concealing seed error\n");
++
++	if (priv->data->has_cond_reset)
++		return stm32_rng_conceal_seed_error_cond_reset(priv);
++	else
++		return stm32_rng_conceal_seed_error_sw_reset(priv);
++};
++
++
+ static int stm32_rng_read(struct hwrng *rng, void *data, size_t max, bool wait)
+ {
+-	struct stm32_rng_private *priv =
+-	    container_of(rng, struct stm32_rng_private, rng);
++	struct stm32_rng_private *priv = container_of(rng, struct stm32_rng_private, rng);
++	unsigned int i = 0;
++	int retval = 0, err = 0;
+ 	u32 sr;
+-	int retval = 0;
+ 
+ 	pm_runtime_get_sync((struct device *) priv->rng.priv);
+ 
+ 	while (max > sizeof(u32)) {
+ 		sr = readl_relaxed(priv->base + RNG_SR);
+-		/* Manage timeout which is based on timer and take */
+-		/* care of initial delay time when enabling rng	*/
++		/*
++		 * Manage timeout which is based on timer and take
++		 * care of initial delay time when enabling the RNG.
++		 */
+ 		if (!sr && wait) {
+-			retval = readl_relaxed_poll_timeout_atomic(priv->base
++			err = readl_relaxed_poll_timeout_atomic(priv->base
+ 								   + RNG_SR,
+ 								   sr, sr,
+ 								   10, 50000);
+-			if (retval)
++			if (err) {
+ 				dev_err((struct device *)priv->rng.priv,
+ 					"%s: timeout %x!\n", __func__, sr);
++				break;
++			}
++		} else if (!sr) {
++			/* The FIFO is being filled up */
++			break;
+ 		}
+ 
+-		/* If error detected or data not ready... */
+ 		if (sr != RNG_SR_DRDY) {
+-			if (WARN_ONCE(sr & (RNG_SR_SEIS | RNG_SR_CEIS),
+-					"bad RNG status - %x\n", sr))
++			if (sr & RNG_SR_SEIS) {
++				err = stm32_rng_conceal_seed_error(rng);
++				i++;
++				if (err && i > RNG_NB_RECOVER_TRIES) {
++					dev_err((struct device *)priv->rng.priv,
++						"Couldn't recover from seed error\n");
++					return -ENOTRECOVERABLE;
++				}
++
++				continue;
++			}
++
++			if (WARN_ONCE((sr & RNG_SR_CEIS), "RNG clock too slow - %x\n", sr))
+ 				writel_relaxed(0, priv->base + RNG_SR);
+-			break;
+ 		}
+ 
++		/* Late seed error case: DR being 0 is an error status */
+ 		*(u32 *)data = readl_relaxed(priv->base + RNG_DR);
++		if (!*(u32 *)data) {
++			err = stm32_rng_conceal_seed_error(rng);
++			i++;
++			if (err && i > RNG_NB_RECOVER_TRIES) {
++				dev_err((struct device *)priv->rng.priv,
++					"Couldn't recover from seed error");
++				return -ENOTRECOVERABLE;
++			}
++
++			continue;
++		}
+ 
++		i = 0;
+ 		retval += sizeof(u32);
+ 		data += sizeof(u32);
+ 		max -= sizeof(u32);
+@@ -79,54 +227,182 @@ static int stm32_rng_read(struct hwrng *rng, void *data, size_t max, bool wait)
  	return retval || !wait ? retval : -EIO;
  }
  
@@ -222,7 +406,7 @@ index bc22178f83e8..e0a8025b45db 100644
 +	 * No need to handle the case when clock-div > 0xF as it is physically
 +	 * impossible
 +	 */
-+	while ((clock_rate >> clock_div) > RNG_MAX_NOISE_CLK_FREQ)
++	while ((clock_rate >> clock_div) > priv->data->max_clock_rate)
 +		clock_div++;
 +
 +	pr_debug("RNG clk rate : %lu\n", clk_get_rate(priv->clk) >> clock_div);
@@ -255,7 +439,8 @@ index bc22178f83e8..e0a8025b45db 100644
 +		uint clock_div = stm32_rng_clock_freq_restrain(rng);
 +
 +		reg &= ~RNG_NIST_CONFIG_MASK;
-+		reg |= RNG_CR_CONDRST | RNG_NIST_CONFIG_B | clock_div;
++		reg |= RNG_CR_CONDRST | RNG_NIST_CONFIG_B |
++		       (clock_div << RNG_CR_CLKDIV_SHIFT);
 +		writel_relaxed(reg, priv->base + RNG_CR);
 +		reg &= ~RNG_CR_CONDRST;
 +		reg |= RNG_CR_CONFLOCK;
@@ -264,6 +449,7 @@ index bc22178f83e8..e0a8025b45db 100644
 +							(!(reg & RNG_CR_CONDRST)),
 +							10, 50000);
 +		if (err) {
++			clk_disable_unprepare(priv->clk);
 +			dev_err((struct device *)priv->rng.priv,
 +				"%s: timeout %x!\n", __func__, reg);
 +			return -EINVAL;
@@ -298,14 +484,14 @@ index bc22178f83e8..e0a8025b45db 100644
 +
 +	return 0;
 +}
-+
+ 
+-	writel_relaxed(0, priv->base + RNG_CR);
 +#ifdef CONFIG_PM
 +static int stm32_rng_runtime_suspend(struct device *dev)
 +{
 +	u32 reg;
 +	struct stm32_rng_private *priv = dev_get_drvdata(dev);
- 
--	writel_relaxed(0, priv->base + RNG_CR);
++
 +	reg = readl_relaxed(priv->base + RNG_CR);
 +	reg &= ~RNG_CR_RNGEN;
 +	priv->pm_cr = reg;
@@ -357,10 +543,12 @@ index bc22178f83e8..e0a8025b45db 100644
 +
 +static const struct stm32_rng_data stm32mp13_rng_data = {
 +	.has_cond_reset = true,
++	.max_clock_rate = 48000000,
 +};
 +
 +static const struct stm32_rng_data stm32_rng_data = {
 +	.has_cond_reset = false,
++	.max_clock_rate = 48000000,
 +};
 +
 +static const struct of_device_id stm32_rng_match[] = {
@@ -382,7 +570,24 @@ index bc22178f83e8..e0a8025b45db 100644
  	struct device *dev = &ofdev->dev;
  	struct device_node *np = ofdev->dev.of_node;
  	struct stm32_rng_private *priv;
-@@ -143,13 +286,18 @@ static int stm32_rng_probe(struct platform_device *ofdev)
+-	struct resource res;
+-	int err;
++	struct resource *res;
+ 
+ 	priv = devm_kzalloc(dev, sizeof(struct stm32_rng_private), GFP_KERNEL);
+ 	if (!priv)
+ 		return -ENOMEM;
+ 
+-	err = of_address_to_resource(np, 0, &res);
+-	if (err)
+-		return err;
+-
+-	priv->base = devm_ioremap_resource(dev, &res);
++	priv->base = devm_platform_get_and_ioremap_resource(ofdev, 0, &res);
+ 	if (IS_ERR(priv->base))
+ 		return PTR_ERR(priv->base);
+ 
+@@ -143,13 +419,18 @@ static int stm32_rng_probe(struct platform_device *ofdev)
  
  	priv->ced = of_property_read_bool(np, "clock-error-detect");
  
@@ -404,7 +609,7 @@ index bc22178f83e8..e0a8025b45db 100644
  	priv->rng.read = stm32_rng_read;
  	priv->rng.priv = (unsigned long) dev;
  	priv->rng.quality = 900;
-@@ -161,47 +309,6 @@ static int stm32_rng_probe(struct platform_device *ofdev)
+@@ -161,47 +442,6 @@ static int stm32_rng_probe(struct platform_device *ofdev)
  	return devm_hwrng_register(dev, &priv->rng);
  }
  
@@ -512,7 +717,7 @@ index 7a96eb626a08..e37a619aed56 100644
  	if (of_property_read_bool(np, "input"))
  		*dflags |= GPIOD_IN;
 diff --git a/drivers/gpio/gpiolib.c b/drivers/gpio/gpiolib.c
-index 8c041a8dd9d8..73737407cc82 100644
+index f9fdd117c654..a4741f82335c 100644
 --- a/drivers/gpio/gpiolib.c
 +++ b/drivers/gpio/gpiolib.c
 @@ -421,8 +421,16 @@ static int devprop_gpiochip_set_names(struct gpio_chip *chip)
@@ -550,7 +755,7 @@ index 8c041a8dd9d8..73737407cc82 100644
  	if (ret)
  		goto err_remove_from_list;
  
-@@ -3869,9 +3879,11 @@ int gpiod_configure_flags(struct gpio_desc *desc, const char *con_id,
+@@ -3882,9 +3892,11 @@ int gpiod_configure_flags(struct gpio_desc *desc, const char *con_id,
  	if (lflags & GPIO_OPEN_SOURCE)
  		set_bit(FLAG_OPEN_SOURCE, &desc->flags);
  
@@ -564,7 +769,7 @@ index 8c041a8dd9d8..73737407cc82 100644
  		return -EINVAL;
  	}
  
-@@ -3879,6 +3891,8 @@ int gpiod_configure_flags(struct gpio_desc *desc, const char *con_id,
+@@ -3892,6 +3904,8 @@ int gpiod_configure_flags(struct gpio_desc *desc, const char *con_id,
  		set_bit(FLAG_PULL_UP, &desc->flags);
  	else if (lflags & GPIO_PULL_DOWN)
  		set_bit(FLAG_PULL_DOWN, &desc->flags);
@@ -637,7 +842,7 @@ index bb2e1cbffba7..8acf3d4d8d75 100644
  	if (!tsdata) {
  		dev_err(&client->dev, "failed to allocate driver data.\n");
 diff --git a/drivers/input/touchscreen/goodix.c b/drivers/input/touchscreen/goodix.c
-index 166d36b2626e..819880e7d00c 100644
+index 1492f051331a..6372d47f68ac 100644
 --- a/drivers/input/touchscreen/goodix.c
 +++ b/drivers/input/touchscreen/goodix.c
 @@ -16,6 +16,7 @@
@@ -666,7 +871,7 @@ index 166d36b2626e..819880e7d00c 100644
  
  	return IRQ_HANDLED;
  }
-@@ -1155,10 +1156,35 @@ static int goodix_ts_probe(struct i2c_client *client,
+@@ -1174,10 +1175,35 @@ static int goodix_ts_probe(struct i2c_client *client,
  			   const struct i2c_device_id *id)
  {
  	struct goodix_ts_data *ts;
@@ -702,7 +907,7 @@ index 166d36b2626e..819880e7d00c 100644
  	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
  		dev_err(&client->dev, "I2C check functionality failed.\n");
  		return -ENXIO;
-@@ -1206,6 +1232,26 @@ static int goodix_ts_probe(struct i2c_client *client,
+@@ -1225,6 +1251,26 @@ static int goodix_ts_probe(struct i2c_client *client,
  		error = goodix_reset(ts);
  		if (error)
  			return error;
@@ -729,7 +934,7 @@ index 166d36b2626e..819880e7d00c 100644
  	}
  
  	error = goodix_i2c_test(client);
-@@ -1307,6 +1353,7 @@ static int __maybe_unused goodix_suspend(struct device *dev)
+@@ -1326,6 +1372,7 @@ static int __maybe_unused goodix_suspend(struct device *dev)
  	 * sooner, delay 58ms here.
  	 */
  	msleep(58);
@@ -2725,7 +2930,7 @@ index 000000000000..222e47d76321
 +MODULE_DESCRIPTION("GalaxyCore GC2145 sensor driver");
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/media/i2c/ov5640.c b/drivers/media/i2c/ov5640.c
-index a141552531f7..5ec6addf777b 100644
+index 13144e87f47a..7eb0adf99073 100644
 --- a/drivers/media/i2c/ov5640.c
 +++ b/drivers/media/i2c/ov5640.c
 @@ -65,6 +65,7 @@
@@ -3503,7 +3708,7 @@ index a141552531f7..5ec6addf777b 100644
  	sensor->xclk = devm_clk_get(dev, "xclk");
  	if (IS_ERR(sensor->xclk)) {
 diff --git a/drivers/media/i2c/st-mipid02.c b/drivers/media/i2c/st-mipid02.c
-index f630b88cbfaa..b69e5baafb2e 100644
+index cf55c57a7970..1627483b93bb 100644
 --- a/drivers/media/i2c/st-mipid02.c
 +++ b/drivers/media/i2c/st-mipid02.c
 @@ -50,6 +50,7 @@
@@ -7352,7 +7557,7 @@ index 000000000000..e737a48cfd66
 +MODULE_DESCRIPTION("STMicroelectronics STM32 Digital Camera Memory Interface with Pixel Processor driver");
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/media/v4l2-core/v4l2-fwnode.c b/drivers/media/v4l2-core/v4l2-fwnode.c
-index 843259c304bb..1259d094a61b 100644
+index 5d2eaad1fa68..628de97b6e68 100644
 --- a/drivers/media/v4l2-core/v4l2-fwnode.c
 +++ b/drivers/media/v4l2-core/v4l2-fwnode.c
 @@ -345,6 +345,9 @@ v4l2_fwnode_endpoint_parse_parallel_bus(struct fwnode_handle *fwnode,
@@ -9366,5 +9571,5 @@ index 7ab033b819eb..065ce8d26fa6 100644
  
  /**
 -- 
-2.17.1
+2.25.1
 

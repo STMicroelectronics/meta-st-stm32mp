@@ -1,9 +1,10 @@
-From 56ee138f53ea518a8d1bf9178496e6a4ed65a582 Mon Sep 17 00:00:00 2001
-From: Romuald Jeanne <romuald.jeanne@st.com>
-Date: Tue, 25 Jul 2023 10:43:45 +0200
-Subject: [PATCH 09/22] v5.15-stm32mp-r2.1 I2C-IIO-IRQCHIP
+From 6afde7c5686c126781552b2fc30bdf277a82d854 Mon Sep 17 00:00:00 2001
+From: vermaash <ashish.verma@st.com>
+Date: Mon, 15 Jul 2024 14:40:56 +0530
+Subject: [PATCH 09/22] v5.15-stm32mp-r2.2 I2C-IIO-IRQCHIP
 
-Signed-off-by: Romuald Jeanne <romuald.jeanne@st.com>
+Change-Id: I212f24d7b0aa19c041788eb76b053527ee04af78
+Signed-off-by: vermaash <ashish.verma@st.com>
 ---
  drivers/i2c/busses/i2c-stm32f7.c   | 265 ++++-----
  drivers/iio/adc/sd_adc_modulator.c |  89 ++-
@@ -19,7 +20,7 @@ Signed-off-by: Romuald Jeanne <romuald.jeanne@st.com>
  11 files changed, 1793 insertions(+), 424 deletions(-)
 
 diff --git a/drivers/i2c/busses/i2c-stm32f7.c b/drivers/i2c/busses/i2c-stm32f7.c
-index 50d5ae81d227..791baea3623b 100644
+index b26c3ee63609..7680491bb7fc 100644
 --- a/drivers/i2c/busses/i2c-stm32f7.c
 +++ b/drivers/i2c/busses/i2c-stm32f7.c
 @@ -410,6 +410,12 @@ static const struct stm32f7_i2c_setup stm32mp15_setup = {
@@ -35,7 +36,7 @@ index 50d5ae81d227..791baea3623b 100644
  static inline void stm32f7_i2c_set_bits(void __iomem *reg, u32 mask)
  {
  	writel_relaxed(readl_relaxed(reg) | mask, reg);
-@@ -1424,7 +1430,7 @@ static irqreturn_t stm32f7_i2c_slave_isr_event(struct stm32f7_i2c_dev *i2c_dev)
+@@ -1427,7 +1433,7 @@ static irqreturn_t stm32f7_i2c_slave_isr_event(struct stm32f7_i2c_dev *i2c_dev)
  	status = readl_relaxed(i2c_dev->base + STM32F7_I2C_ISR);
  
  	/* Slave transmitter mode */
@@ -44,7 +45,7 @@ index 50d5ae81d227..791baea3623b 100644
  		i2c_slave_event(i2c_dev->slave_running,
  				I2C_SLAVE_READ_PROCESSED,
  				&val);
-@@ -1434,7 +1440,8 @@ static irqreturn_t stm32f7_i2c_slave_isr_event(struct stm32f7_i2c_dev *i2c_dev)
+@@ -1437,7 +1443,8 @@ static irqreturn_t stm32f7_i2c_slave_isr_event(struct stm32f7_i2c_dev *i2c_dev)
  	}
  
  	/* Transfer Complete Reload for Slave receiver mode */
@@ -54,7 +55,7 @@ index 50d5ae81d227..791baea3623b 100644
  		/*
  		 * Read data byte then set NBYTES to receive next byte or NACK
  		 * the current received byte
-@@ -1460,7 +1467,7 @@ static irqreturn_t stm32f7_i2c_slave_isr_event(struct stm32f7_i2c_dev *i2c_dev)
+@@ -1463,7 +1470,7 @@ static irqreturn_t stm32f7_i2c_slave_isr_event(struct stm32f7_i2c_dev *i2c_dev)
  	}
  
  	/* STOP received */
@@ -63,7 +64,7 @@ index 50d5ae81d227..791baea3623b 100644
  		/* Disable interrupts */
  		stm32f7_i2c_disable_irq(i2c_dev, STM32F7_I2C_XFER_IRQ_MASK);
  
-@@ -1492,17 +1499,11 @@ static irqreturn_t stm32f7_i2c_slave_isr_event(struct stm32f7_i2c_dev *i2c_dev)
+@@ -1495,17 +1502,11 @@ static irqreturn_t stm32f7_i2c_slave_isr_event(struct stm32f7_i2c_dev *i2c_dev)
  static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
  {
  	struct stm32f7_i2c_dev *i2c_dev = data;
@@ -85,7 +86,7 @@ index 50d5ae81d227..791baea3623b 100644
  
  	status = readl_relaxed(i2c_dev->base + STM32F7_I2C_ISR);
  
-@@ -1514,6 +1515,29 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
+@@ -1517,6 +1518,29 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
  	if (status & STM32F7_I2C_ISR_RXNE)
  		stm32f7_i2c_read_rx_data(i2c_dev);
  
@@ -115,7 +116,7 @@ index 50d5ae81d227..791baea3623b 100644
  	/* NACK received */
  	if (status & STM32F7_I2C_ISR_NACKF) {
  		dev_dbg(i2c_dev->dev, "<%s>: Receive NACK (addr %x)\n",
-@@ -1521,38 +1545,33 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
+@@ -1524,38 +1548,33 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
  		writel_relaxed(STM32F7_I2C_ICR_NACKCF, base + STM32F7_I2C_ICR);
  		if (i2c_dev->use_dma) {
  			stm32f7_i2c_disable_dma_req(i2c_dev);
@@ -169,7 +170,7 @@ index 50d5ae81d227..791baea3623b 100644
  		} else if (f7_msg->smbus) {
  			stm32f7_i2c_smbus_rep_start(i2c_dev);
  		} else {
-@@ -1562,47 +1581,18 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
+@@ -1565,47 +1584,18 @@ static irqreturn_t stm32f7_i2c_isr_event(int irq, void *data)
  		}
  	}
  
@@ -226,7 +227,7 @@ index 50d5ae81d227..791baea3623b 100644
  		i2c_dev->master_mode = false;
  		complete(&i2c_dev->complete);
  	}
-@@ -1610,10 +1600,11 @@ static irqreturn_t stm32f7_i2c_isr_event_thread(int irq, void *data)
+@@ -1613,10 +1603,11 @@ static irqreturn_t stm32f7_i2c_isr_event_thread(int irq, void *data)
  	return IRQ_HANDLED;
  }
  
@@ -239,7 +240,7 @@ index 50d5ae81d227..791baea3623b 100644
  	void __iomem *base = i2c_dev->base;
  	struct device *dev = i2c_dev->dev;
  	struct stm32_i2c_dma *dma = i2c_dev->dma;
-@@ -1623,8 +1614,7 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
+@@ -1626,8 +1617,7 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
  
  	/* Bus error */
  	if (status & STM32F7_I2C_ISR_BERR) {
@@ -249,7 +250,7 @@ index 50d5ae81d227..791baea3623b 100644
  		writel_relaxed(STM32F7_I2C_ICR_BERRCF, base + STM32F7_I2C_ICR);
  		stm32f7_i2c_release_bus(&i2c_dev->adap);
  		f7_msg->result = -EIO;
-@@ -1632,21 +1622,19 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
+@@ -1635,21 +1625,19 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
  
  	/* Arbitration loss */
  	if (status & STM32F7_I2C_ISR_ARLO) {
@@ -274,7 +275,7 @@ index 50d5ae81d227..791baea3623b 100644
  		writel_relaxed(STM32F7_I2C_ICR_ALERTCF, base + STM32F7_I2C_ICR);
  		i2c_handle_smbus_alert(i2c_dev->alert->ara);
  		return IRQ_HANDLED;
-@@ -1665,7 +1653,7 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
+@@ -1668,7 +1656,7 @@ static irqreturn_t stm32f7_i2c_isr_error(int irq, void *data)
  	/* Disable dma */
  	if (i2c_dev->use_dma) {
  		stm32f7_i2c_disable_dma_req(i2c_dev);
@@ -283,7 +284,7 @@ index 50d5ae81d227..791baea3623b 100644
  	}
  
  	i2c_dev->master_mode = false;
-@@ -1702,6 +1690,9 @@ static int stm32f7_i2c_xfer(struct i2c_adapter *i2c_adap,
+@@ -1705,6 +1693,9 @@ static int stm32f7_i2c_xfer(struct i2c_adapter *i2c_adap,
  						i2c_dev->adap.timeout);
  	ret = f7_msg->result;
  	if (ret) {
@@ -293,7 +294,7 @@ index 50d5ae81d227..791baea3623b 100644
  		/*
  		 * It is possible that some unsent data have already been
  		 * written into TXDR. To avoid sending old data in a
-@@ -1716,7 +1707,7 @@ static int stm32f7_i2c_xfer(struct i2c_adapter *i2c_adap,
+@@ -1719,7 +1710,7 @@ static int stm32f7_i2c_xfer(struct i2c_adapter *i2c_adap,
  		dev_dbg(i2c_dev->dev, "Access to slave 0x%x timed out\n",
  			i2c_dev->msg->addr);
  		if (i2c_dev->use_dma)
@@ -302,7 +303,7 @@ index 50d5ae81d227..791baea3623b 100644
  		stm32f7_i2c_wait_free_bus(i2c_dev);
  		ret = -ETIMEDOUT;
  	}
-@@ -1761,6 +1752,9 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
+@@ -1764,6 +1755,9 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
  					      i2c_dev->adap.timeout);
  	ret = f7_msg->result;
  	if (ret) {
@@ -312,7 +313,7 @@ index 50d5ae81d227..791baea3623b 100644
  		/*
  		 * It is possible that some unsent data have already been
  		 * written into TXDR. To avoid sending old data in a
-@@ -1774,7 +1768,7 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
+@@ -1777,7 +1771,7 @@ static int stm32f7_i2c_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
  	if (!timeout) {
  		dev_dbg(dev, "Access to slave 0x%x timed out\n", f7_msg->addr);
  		if (i2c_dev->use_dma)
@@ -321,7 +322,7 @@ index 50d5ae81d227..791baea3623b 100644
  		stm32f7_i2c_wait_free_bus(i2c_dev);
  		ret = -ETIMEDOUT;
  		goto pm_free;
-@@ -2163,8 +2157,11 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
+@@ -2166,8 +2160,11 @@ static int stm32f7_i2c_probe(struct platform_device *pdev)
  		goto clk_free;
  	}
  
@@ -335,7 +336,7 @@ index 50d5ae81d227..791baea3623b 100644
  	if (ret) {
  		dev_err(&pdev->dev, "Failed to request irq error %i\n",
  			irq_error);
-@@ -2343,63 +2340,23 @@ static int stm32f7_i2c_remove(struct platform_device *pdev)
+@@ -2346,63 +2343,23 @@ static int stm32f7_i2c_remove(struct platform_device *pdev)
  	return 0;
  }
  
@@ -401,7 +402,7 @@ index 50d5ae81d227..791baea3623b 100644
  	cr1 = readl_relaxed(i2c_dev->base + STM32F7_I2C_CR1);
  	if (cr1 & STM32F7_I2C_CR1_PE)
  		stm32f7_i2c_clr_bits(i2c_dev->base + STM32F7_I2C_CR1,
-@@ -2415,29 +2372,48 @@ static int __maybe_unused stm32f7_i2c_regs_restore(struct stm32f7_i2c_dev *i2c_d
+@@ -2418,29 +2375,48 @@ static int __maybe_unused stm32f7_i2c_regs_restore(struct stm32f7_i2c_dev *i2c_d
  	writel_relaxed(backup_regs->oar1, i2c_dev->base + STM32F7_I2C_OAR1);
  	writel_relaxed(backup_regs->oar2, i2c_dev->base + STM32F7_I2C_OAR2);
  	stm32f7_i2c_write_fm_plus_bits(i2c_dev, true);
@@ -461,7 +462,7 @@ index 50d5ae81d227..791baea3623b 100644
  
  	return 0;
  }
-@@ -2447,16 +2423,12 @@ static int __maybe_unused stm32f7_i2c_resume(struct device *dev)
+@@ -2450,16 +2426,12 @@ static int __maybe_unused stm32f7_i2c_resume(struct device *dev)
  	struct stm32f7_i2c_dev *i2c_dev = dev_get_drvdata(dev);
  	int ret;
  
@@ -483,7 +484,7 @@ index 50d5ae81d227..791baea3623b 100644
  
  	i2c_mark_adapter_resumed(&i2c_dev->adap);
  
-@@ -2472,6 +2444,7 @@ static const struct dev_pm_ops stm32f7_i2c_pm_ops = {
+@@ -2475,6 +2447,7 @@ static const struct dev_pm_ops stm32f7_i2c_pm_ops = {
  static const struct of_device_id stm32f7_i2c_match[] = {
  	{ .compatible = "st,stm32f7-i2c", .data = &stm32f7_setup},
  	{ .compatible = "st,stm32mp15-i2c", .data = &stm32mp15_setup},
@@ -2879,7 +2880,7 @@ index 4afc1f528b78..4f230e2a7692 100644
  enum stm32_dfsdm_sinc_order {
  	DFSDM_FASTSINC_ORDER, /* FastSinc filter type */
 diff --git a/drivers/irqchip/irq-stm32-exti.c b/drivers/irqchip/irq-stm32-exti.c
-index 33c76710f845..78bc38d1f5a9 100644
+index 9c150c402f0b..a8363100aed0 100644
 --- a/drivers/irqchip/irq-stm32-exti.c
 +++ b/drivers/irqchip/irq-stm32-exti.c
 @@ -14,6 +14,7 @@
@@ -3177,7 +3178,7 @@ index 33c76710f845..78bc38d1f5a9 100644
  
  static unsigned long stm32_exti_pending(struct irq_chip_generic *gc)
  {
-@@ -504,6 +544,16 @@ static void stm32_exti_h_unmask(struct irq_data *d)
+@@ -505,6 +545,16 @@ static void stm32_exti_h_unmask(struct irq_data *d)
  		irq_chip_unmask_parent(d);
  }
  
@@ -3194,7 +3195,7 @@ index 33c76710f845..78bc38d1f5a9 100644
  static int stm32_exti_h_set_type(struct irq_data *d, unsigned int type)
  {
  	struct stm32_exti_chip_data *chip_data = irq_data_get_irq_chip_data(d);
-@@ -539,6 +589,9 @@ static int stm32_exti_h_set_type(struct irq_data *d, unsigned int type)
+@@ -540,6 +590,9 @@ static int stm32_exti_h_set_type(struct irq_data *d, unsigned int type)
  unlock:
  	raw_spin_unlock(&chip_data->rlock);
  
@@ -3204,7 +3205,7 @@ index 33c76710f845..78bc38d1f5a9 100644
  	return err;
  }
  
-@@ -556,6 +609,9 @@ static int stm32_exti_h_set_wake(struct irq_data *d, unsigned int on)
+@@ -557,6 +610,9 @@ static int stm32_exti_h_set_wake(struct irq_data *d, unsigned int on)
  
  	raw_spin_unlock(&chip_data->rlock);
  
@@ -3214,7 +3215,7 @@ index 33c76710f845..78bc38d1f5a9 100644
  	return 0;
  }
  
-@@ -565,53 +621,74 @@ static int stm32_exti_h_set_affinity(struct irq_data *d,
+@@ -566,53 +622,74 @@ static int stm32_exti_h_set_affinity(struct irq_data *d,
  	if (d->parent_data->chip)
  		return irq_chip_set_affinity_parent(d, dest, force);
  
@@ -3308,7 +3309,7 @@ index 33c76710f845..78bc38d1f5a9 100644
  }
  
  static int stm32_exti_h_retrigger(struct irq_data *d)
-@@ -629,8 +706,11 @@ static int stm32_exti_h_retrigger(struct irq_data *d)
+@@ -630,8 +707,11 @@ static int stm32_exti_h_retrigger(struct irq_data *d)
  static struct irq_chip stm32_exti_h_chip = {
  	.name			= "stm32-exti-h",
  	.irq_eoi		= stm32_exti_h_eoi,
@@ -3320,7 +3321,7 @@ index 33c76710f845..78bc38d1f5a9 100644
  	.irq_retrigger		= stm32_exti_h_retrigger,
  	.irq_set_type		= stm32_exti_h_set_type,
  	.irq_set_wake		= stm32_exti_h_set_wake,
-@@ -642,8 +722,10 @@ static struct irq_chip stm32_exti_h_chip_direct = {
+@@ -643,8 +723,10 @@ static struct irq_chip stm32_exti_h_chip_direct = {
  	.name			= "stm32-exti-h-direct",
  	.irq_eoi		= irq_chip_eoi_parent,
  	.irq_ack		= irq_chip_ack_parent,
@@ -3333,7 +3334,7 @@ index 33c76710f845..78bc38d1f5a9 100644
  	.irq_retrigger		= irq_chip_retrigger_hierarchy,
  	.irq_set_type		= irq_chip_set_type_parent,
  	.irq_set_wake		= stm32_exti_h_set_wake,
-@@ -651,34 +733,109 @@ static struct irq_chip stm32_exti_h_chip_direct = {
+@@ -652,34 +734,109 @@ static struct irq_chip stm32_exti_h_chip_direct = {
  	.irq_set_affinity	= IS_ENABLED(CONFIG_SMP) ? irq_chip_set_affinity_parent : NULL,
  };
  
@@ -3451,7 +3452,7 @@ index 33c76710f845..78bc38d1f5a9 100644
  		p_fwspec.param[2] = IRQ_TYPE_LEVEL_HIGH;
  
  		return irq_domain_alloc_irqs_parent(dm, virq, 1, &p_fwspec);
-@@ -710,8 +867,6 @@ stm32_exti_host_data *stm32_exti_host_init(const struct stm32_exti_drv_data *dd,
+@@ -711,8 +868,6 @@ stm32_exti_host_data *stm32_exti_host_init(const struct stm32_exti_drv_data *dd,
  		goto free_chips_data;
  	}
  
@@ -3460,7 +3461,7 @@ index 33c76710f845..78bc38d1f5a9 100644
  	return host_data;
  
  free_chips_data:
-@@ -743,7 +898,8 @@ stm32_exti_chip_data *stm32_exti_chip_init(struct stm32_exti_host_data *h_data,
+@@ -744,7 +899,8 @@ stm32_exti_chip_data *stm32_exti_chip_init(struct stm32_exti_host_data *h_data,
  	 * clear registers to avoid residue
  	 */
  	writel_relaxed(0, base + stm32_bank->imr_ofst);
@@ -3470,7 +3471,7 @@ index 33c76710f845..78bc38d1f5a9 100644
  
  	pr_info("%pOF: bank%d\n", node, bank_idx);
  
-@@ -824,6 +980,8 @@ static int __init stm32_exti_init(const struct stm32_exti_drv_data *drv_data,
+@@ -825,6 +981,8 @@ static int __init stm32_exti_init(const struct stm32_exti_drv_data *drv_data,
  }
  
  static const struct irq_domain_ops stm32_exti_h_domain_ops = {
@@ -3479,7 +3480,7 @@ index 33c76710f845..78bc38d1f5a9 100644
  	.alloc	= stm32_exti_h_domain_alloc,
  	.free	= irq_domain_free_irqs_common,
  	.xlate = irq_domain_xlate_twocell,
-@@ -832,13 +990,17 @@ static const struct irq_domain_ops stm32_exti_h_domain_ops = {
+@@ -833,13 +991,17 @@ static const struct irq_domain_ops stm32_exti_h_domain_ops = {
  static void stm32_exti_remove_irq(void *data)
  {
  	struct irq_domain *domain = data;
@@ -3498,7 +3499,7 @@ index 33c76710f845..78bc38d1f5a9 100644
  	return 0;
  }
  
-@@ -846,16 +1008,20 @@ static int stm32_exti_probe(struct platform_device *pdev)
+@@ -847,16 +1009,20 @@ static int stm32_exti_probe(struct platform_device *pdev)
  {
  	int ret, i;
  	struct device *dev = &pdev->dev;
@@ -3521,7 +3522,7 @@ index 33c76710f845..78bc38d1f5a9 100644
  	/* check for optional hwspinlock which may be not available yet */
  	ret = of_hwspin_lock_get_id(np, 0);
  	if (ret == -EPROBE_DEFER)
-@@ -916,6 +1082,48 @@ static int stm32_exti_probe(struct platform_device *pdev)
+@@ -917,6 +1083,48 @@ static int stm32_exti_probe(struct platform_device *pdev)
  	if (ret)
  		return ret;
  
@@ -3570,7 +3571,7 @@ index 33c76710f845..78bc38d1f5a9 100644
  	stm32_exti_h_syscore_init(host_data);
  
  	return 0;
-@@ -924,6 +1132,7 @@ static int stm32_exti_probe(struct platform_device *pdev)
+@@ -925,6 +1133,7 @@ static int stm32_exti_probe(struct platform_device *pdev)
  /* platform driver only for MP1 */
  static const struct of_device_id stm32_exti_ids[] = {
  	{ .compatible = "st,stm32mp1-exti", .data = &stm32mp1_drv_data},
@@ -3618,5 +3619,5 @@ index e0b67784ac1e..0c768e06a798 100644
  unsigned int irq_create_fwspec_mapping(struct irq_fwspec *fwspec)
  {
 -- 
-2.17.1
+2.25.1
 
