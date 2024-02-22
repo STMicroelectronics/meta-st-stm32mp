@@ -26,6 +26,7 @@ SRC_URI += "\
     file://0008-ARM-v2021.10-stm32mp-r2-MISC-DRIVERS.patch \
     file://0009-ARM-v2021.10-stm32mp-r2-DEVICETREE.patch \
     file://0010-ARM-v2021.10-stm32mp-r2.1.patch \
+    file://0011-ARM-v2021.10-stm32mp-r2.2.patch \
     \
     file://0099-Add-external-var-to-allow-build-of-new-devicetree-fi.patch \
 "
@@ -35,7 +36,7 @@ SRC_URI += "${@bb.utils.contains('ST_UBOOT_DEBUG_TRACE', '1', '', 'file://0098-s
 
 U_BOOT_VERSION = "v2021.10"
 U_BOOT_SUBVERSION = "stm32mp"
-U_BOOT_RELEASE = "r2.1"
+U_BOOT_RELEASE = "r2.2"
 
 PV = "${U_BOOT_VERSION}-${U_BOOT_SUBVERSION}-${U_BOOT_RELEASE}"
 
@@ -52,7 +53,7 @@ S = "${WORKDIR}/git"
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/u-boot.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV:class-devupstream = "d1bbf3f7edb786fe854034810355e750b08a9851"
+SRCREV:class-devupstream = "85cc9c336e3d6db02b36988bd7702011a970771b"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

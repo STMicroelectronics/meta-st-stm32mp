@@ -1,0 +1,129 @@
+From 060932157f5d8dc8127c4423dbbc9a102ea90243 Mon Sep 17 00:00:00 2001
+From: vermaash <ashish.verma@st.com>
+Date: Fri, 12 Jul 2024 14:44:51 +0530
+Subject: [PATCH] v2021.10-stm32mp-r2.2
+
+Signed-off-by: vermaash <ashish.verma@st.com>
+---
+ arch/arm/dts/stm32mp13-u-boot.dtsi | 10 +++----
+ drivers/rng/stm32mp1_rng.c         | 43 ++++++++++++++++++++++++++----
+ 2 files changed, 43 insertions(+), 10 deletions(-)
+
+diff --git a/arch/arm/dts/stm32mp13-u-boot.dtsi b/arch/arm/dts/stm32mp13-u-boot.dtsi
+index 4a6d2616382..6f69f29ad94 100644
+--- a/arch/arm/dts/stm32mp13-u-boot.dtsi
++++ b/arch/arm/dts/stm32mp13-u-boot.dtsi
+@@ -41,6 +41,11 @@
+ 
+ 			status = "okay";
+ 		};
++
++		/* pre-reloc probe = reserve video frame buffer in video_reserve() */
++		display-controller@5a001000 {
++			u-boot,dm-pre-proper;
++		};
+ 	};
+ };
+ 
+@@ -88,11 +93,6 @@
+ 	u-boot,dm-pre-reloc;
+ };
+ 
+-/* pre-reloc probe = reserve video frame buffer in video_reserve() */
+-&ltdc {
+-	u-boot,dm-pre-proper;
+-};
+-
+ &pinctrl {
+ 	u-boot,dm-pre-reloc;
+ };
+diff --git a/drivers/rng/stm32mp1_rng.c b/drivers/rng/stm32mp1_rng.c
+index 89da78c6c8b..2ab40504d7e 100644
+--- a/drivers/rng/stm32mp1_rng.c
++++ b/drivers/rng/stm32mp1_rng.c
+@@ -18,10 +18,11 @@
+ #include <linux/iopoll.h>
+ #include <linux/kernel.h>
+ 
+-#define RNG_CR		0x00
+-#define RNG_CR_RNGEN	BIT(2)
+-#define RNG_CR_CED	BIT(5)
+-#define RNG_CR_CONDRST	BIT(30)
++#define RNG_CR			0x00
++#define RNG_CR_RNGEN		BIT(2)
++#define RNG_CR_CED		BIT(5)
++#define RNG_CR_CLKDIV_SHIFT	16
++#define RNG_CR_CONDRST		BIT(30)
+ 
+ #define RNG_SR		0x04
+ #define RNG_SR_SEIS	BIT(6)
+@@ -31,7 +32,15 @@
+ 
+ #define RNG_DR		0x08
+ 
++/*
++ * struct stm32_rng_data - RNG compat data
++ *
++ * @max_clock_rate:	Max RNG clock frequency, in Hertz
++ * @has_cond_reset:	True if conditionnal reset is supported
++ *
++ */
+ struct stm32_rng_data {
++	uint max_clock_rate;
+ 	bool has_cond_reset;
+ };
+ 
+@@ -86,6 +95,26 @@ static int stm32_rng_read(struct udevice *dev, void *data, size_t len)
+ 	return 0;
+ }
+ 
++static uint stm32_rng_clock_freq_restrain(struct stm32_rng_plat *pdata)
++{
++	ulong clock_rate = 0;
++	uint clock_div = 0;
++
++	clock_rate = clk_get_rate(&pdata->clk);
++
++	/*
++	 * Get the exponent to apply on the CLKDIV field in RNG_CR register.
++	 * No need to handle the case when clock-div > 0xF as it is physically
++	 * impossible.
++	 */
++	while ((clock_rate >> clock_div) > pdata->data->max_clock_rate)
++		clock_div++;
++
++	log_debug("RNG clk rate : %lu\n", clk_get_rate(&pdata->clk) >> clock_div);
++
++	return clock_div;
++}
++
+ static int stm32_rng_init(struct stm32_rng_plat *pdata)
+ {
+ 	int err;
+@@ -100,7 +129,9 @@ static int stm32_rng_init(struct stm32_rng_plat *pdata)
+ 	/* Disable CED */
+ 	cr |= RNG_CR_CED;
+ 	if (pdata->data->has_cond_reset) {
+-		cr |= RNG_CR_CONDRST;
++		uint clock_div = stm32_rng_clock_freq_restrain(pdata);
++
++		cr |= RNG_CR_CONDRST | (clock_div << RNG_CR_CLKDIV_SHIFT);
+ 		writel(cr, pdata->base + RNG_CR);
+ 		cr &= ~RNG_CR_CONDRST;
+ 		writel(cr, pdata->base + RNG_CR);
+@@ -174,10 +205,12 @@ static const struct dm_rng_ops stm32_rng_ops = {
+ 
+ static const struct stm32_rng_data stm32mp13_rng_data = {
+ 	.has_cond_reset = true,
++	.max_clock_rate = 48000000,
+ };
+ 
+ static const struct stm32_rng_data stm32_rng_data = {
+ 	.has_cond_reset = false,
++	.max_clock_rate = 48000000,
+ };
+ 
+ static const struct udevice_id stm32_rng_match[] = {
+-- 
+2.25.1
+
