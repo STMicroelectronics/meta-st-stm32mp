@@ -5,6 +5,7 @@ LIC_FILES_CHKSUM = "file://share/info/gcc.info;md5=520901b4e94df9b4e99ad47d88719
 SRC_URI = "https://developer.arm.com/-/media/Files/downloads/gnu/11.3.rel1/binrel/arm-gnu-toolchain-11.3.rel1-x86_64-arm-none-eabi.tar.xz;name=gcc-arm-x86"
 SRC_URI[gcc-arm-x86.sha256sum] = "d420d87f68615d9163b99bbb62fe69e85132dc0a8cd69fca04e813597fe06121"
 
+LIC_FILES_CHKSUM:aarch64 = "file://share/info/gcc.info;md5=f9c63f062ae6cdc4e0d0cc9106b6a469"
 SRC_URI:aarch64 = "https://developer.arm.com/-/media/Files/downloads/gnu/11.3.rel1/binrel/arm-gnu-toolchain-11.3.rel1-aarch64-arm-none-eabi.tar.xz;name=gcc-arm-aarch64"
 SRC_URI[gcc-arm-aarch64.sha256sum] = "6c713c11d018dcecc16161f822517484a13af151480bbb722badd732412eb55e"
 
