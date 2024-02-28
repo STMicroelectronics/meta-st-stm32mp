@@ -12,6 +12,7 @@ PV = "11"
 
 S = "${WORKDIR}/arm-gnu-toolchain-11.3.rel1-x86_64-arm-none-eabi"
 S:aarch64 = "${WORKDIR}/arm-gnu-toolchain-11.3.rel1-aarch64-arm-none-eabi"
+LIC_FILES_CHKSUM:aarch64 = "file://share/info/gcc.info;md5=f9c63f062ae6cdc4e0d0cc9106b6a469"
 
 do_install() {
     install -d ${D}/${datadir}/gcc-arm-none-eabi
