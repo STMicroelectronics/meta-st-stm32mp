@@ -40,12 +40,12 @@ M4COPRO_IMAGE_INSTALL = "${@bb.utils.contains('MACHINE_FEATURES', 'm4copro', '${
 # optee
 # =========================================================================
 OPTEE_LIST ?= "\
-    virtual/optee-os \
+    virtual-optee-os \
     "
 OPTEE_IMAGE_INSTALL = "${@bb.utils.contains('COMBINED_FEATURES', 'optee', '${OPTEE_LIST}', '', d)} "
 
 OPTEE_BINARY ?= "\
-    virtual/optee-os \
+    virtual-optee-os \
     "
 OPTEE_BINARY_INSTALL = "${@bb.utils.contains('MACHINE_FEATURES', 'optee', '${OPTEE_BINARY}', '', d)} "
 

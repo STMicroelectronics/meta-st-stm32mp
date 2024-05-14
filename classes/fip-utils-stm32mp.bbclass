@@ -69,7 +69,7 @@ FIP_SIGN_SUFFIX ??= "${@bb.utils.contains('SIGN_ENABLE', '1', '${SIGN_SUFFIX}', 
 
 # Define FIP dependency build
 FIP_DEPENDS += "virtual/bootloader"
-FIP_DEPENDS += "${@bb.utils.contains('MACHINE_FEATURES', 'optee', 'virtual/optee-os', '', d)}"
+FIP_DEPENDS += "${@bb.utils.contains('MACHINE_FEATURES', 'optee', 'virtual-optee-os', '', d)}"
 FIP_DEPENDS:class-nativesdk = ""
 
 # -----------------------------------------------
