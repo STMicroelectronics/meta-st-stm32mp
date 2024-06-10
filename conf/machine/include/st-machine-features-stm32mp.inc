@@ -16,9 +16,9 @@ GPU_IMAGE_INSTALL = "${@bb.utils.contains('MACHINE_FEATURES', 'gpu', '${GPU_LIST
 # =========================================================================
 # alsa
 # =========================================================================
-ALSA_LIST ?= "\
-    alsa-state-stm32mp1 \
-    "
+ALSA_LIST ?= ""
+ALSA_LIST:stm32mp1common ?= " alsa-state-stm32mp1"
+ALSA_LIST:stm32mp2common ?= " alsa-state-stm32mp2"
 ALSA_IMAGE_INSTALL = "${@bb.utils.contains('COMBINED_FEATURES', 'alsa', '${ALSA_LIST}', '', d)} "
 
 # =========================================================================
@@ -35,6 +35,15 @@ M4COPRO_LIST ?= "\
     m4projects-stm32mp1 \
     "
 M4COPRO_IMAGE_INSTALL = "${@bb.utils.contains('MACHINE_FEATURES', 'm4copro', '${M4COPRO_LIST}', '', d)}"
+
+# =========================================================================
+# m3copro
+# =========================================================================
+M33COPRO_LIST ?= "\
+    m33projects-stm32mp2 \
+    "
+M33COPRO_IMAGE_INSTALL = "${@bb.utils.contains('MACHINE_FEATURES', 'm33copro', '${M33COPRO_LIST}', '', d)}"
+
 
 # =========================================================================
 # optee
@@ -81,6 +90,7 @@ MACHINE_EXTRA_RRECOMMENDS:append = " \
     ${ALSA_IMAGE_INSTALL}       \
     ${BLUETOOTH_IMAGE_INSTALL}  \
     ${M4COPRO_IMAGE_INSTALL}    \
+    ${M33COPRO_IMAGE_INSTALL}   \
     ${OPTEE_IMAGE_INSTALL}      \
     ${PCI_IMAGE_INSTALL}        \
     ${WIFI_IMAGE_INSTALL}       \

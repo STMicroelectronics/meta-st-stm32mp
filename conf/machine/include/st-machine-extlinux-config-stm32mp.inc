@@ -16,6 +16,7 @@ UBOOT_EXTLINUX_SPLASH:stm32mp13 ?= "${UBOOT_SPLASH_LANDSCAPE_IMAGE}"
 
 UBOOT_EXTLINUX_KERNEL_ARGS ?= "rootwait rw"
 UBOOT_EXTLINUX_KERNEL_ARGS:append = " ${@bb.utils.contains('ST_DEBUG_TRACE', '1', '', '${ST_CMD_LINE_DEBUG_TRACE}', d)} "
+UBOOT_EXTLINUX_KERNEL_ARGS:append:stm32mp2common = " earlyprintk earlycon"
 
 # -----------------------------------------------------------------------------
 # Configurations
