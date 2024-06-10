@@ -4,6 +4,8 @@
 # Define device storage name and type mapping
 # -----------------------------------------------------------------------------
 DEVICE_STORAGE ?= "EMMC:mmc1, NAND:nand0, NOR:nor0, SDCARD:mmc0, SPINAND:spi-nand0"
+DEVICE_STORAGE:stm32mp1common ?= "EMMC:mmc1, NAND:nand0, NOR:nor0, SDCARD:mmc0, SPINAND:spi-nand0"
+DEVICE_STORAGE:stm32mp2common ?= "EMMC:mmc1, NAND:nand0, NOR:nor1, SDCARD:mmc0, SPINAND:spi-nand0"
 
 # -----------------------------------------------------------------------------
 # Define device storage name alias
@@ -23,6 +25,7 @@ DEVICE_STORAGE_TYPES += "mmc2"
 DEVICE_STORAGE_TYPES += "nand0"
 DEVICE_STORAGE_TYPES += "nor0"
 DEVICE_STORAGE_TYPES += "spi-nand0"
+DEVICE_STORAGE_TYPES += "nor1"
 
 python () {
     """
@@ -81,18 +84,12 @@ DEVICE_START_OFFSET_BOOT1:EMMC ?= "boot2"
 # Configure the rootfs partition uid used in gpt partition table for EMMC
 DEVICE_PARTUUID_ROOTFS:EMMC ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS:${DEVICE:EMMC}')) or ''}"
 
-# Configure the list of boards that enable EMMC
-DEVICE_BOARD_ENABLE:EMMC += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', '${STM32MP_DT_FILES_EMMC}', '', d)}"
-
 # -----------------------------------------------------------------------------
 # NAND
 DEVICE_START_OFFSET:NAND   ?= "0x00000000"
 # 8 Gbit
 DEVICE_MAX_OFFSET:NAND     ?= "0x40000000"
 DEVICE_ALIGNMENT_SIZE:NAND ?= "0x00040000"
-
-# Configure the list of boards that enable NAND
-DEVICE_BOARD_ENABLE:NAND   += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256', '${STM32MP_DT_FILES_NAND}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # NOR
@@ -103,9 +100,6 @@ DEVICE_ALIGNMENT_SIZE:NOR  ?= "0x00010000"
 
 # Configure the rootfs partition uid used in gpt partition table for NOR
 DEVICE_PARTUUID_ROOTFS:NOR ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS:${DEVICE:NOR}')) or ''}"
-
-# Configure the list of boards that enable NOR
-DEVICE_BOARD_ENABLE:NOR    += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'nor', 'nor-sdcard' ], '${STM32MP_DT_FILES_NOR}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # SDCARD
@@ -120,18 +114,12 @@ DEVICE_ALIGNMENT_SIZE:SDCARD  ?= "0x00000200"
 # Configure the rootfs partition uid used in gpt partition table for SDCARD
 DEVICE_PARTUUID_ROOTFS:SDCARD ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS:${DEVICE:SDCARD}')) or ''}"
 
-# Configure the list of boards that enable SDCARD
-DEVICE_BOARD_ENABLE:SDCARD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', [ 'sdcard', 'nor-sdcard', 'nor' ], '${STM32MP_DT_FILES_SDCARD}', '', d)}"
-
 # -----------------------------------------------------------------------------
 # SPI NAND
 DEVICE_START_OFFSET:SPINAND   ?= "0x00000000"
 # 2 Gbit
 DEVICE_MAX_OFFSET:SPINAND     ?= "0x10000000"
 DEVICE_ALIGNMENT_SIZE:SPINAND ?= "0x00020000"
-
-# Configure the list of boards that enable SPINAND
-DEVICE_BOARD_ENABLE:SPINAND += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'spinand-2-128', '${STM32MP_DT_FILES_SPINAND}', '', d)}"
 
 # -----------------------------------------------------------------------------
 # Fixed configuration from U-Boot source code
@@ -140,6 +128,7 @@ DEVICE_PARTUUID_ROOTFS:mmc0 ?= "e91c4e10-16e6-4c0e-bd0e-77becf4a3582"
 DEVICE_PARTUUID_ROOTFS:mmc1 ?= "491f6117-415d-4f53-88c9-6e0de54deac6"
 DEVICE_PARTUUID_ROOTFS:mmc2 ?= "fd58f1c7-be0d-4338-8ee9-ad8f050aeb18"
 DEVICE_PARTUUID_ROOTFS:nor0 ?= ""
+DEVICE_PARTUUID_ROOTFS:nor1 ?= ""
 
 DEVICE_TYPEUUID_FIP = "19d5df83-11b0-457b-be2c-7559c13142a5"
 DEVICE_PARTUUID_FIP_A = "4fd84c93-54ef-463f-a7ef-ae25ff887087"
