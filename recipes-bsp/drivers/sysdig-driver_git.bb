@@ -6,10 +6,16 @@ HOMEPAGE = "http://www.sysdig.org/"
 LICENSE = "GPL-2.0-only"
 LIC_FILES_CHKSUM = "file://COPYING;md5=f8fee3d59797546cffab04f3b88b2d44"
 
-SRC_URI = "git://github.com/draios/sysdig.git;protocol=https;branch=master"
-SRCREV = "aa82b2fb329ea97a8ade31590954ddaa675e1728"
+SRC_URI = "git://github.com/draios/sysdig.git;branch=dev;protocol=https;name=sysdig \
+           git://github.com/falcosecurity/libs;protocol=https;branch=master;name=falco;subdir=git/falcosecurity-libs \
+           file://0001-Add-cstdint-for-uintXX_t-types.patch;patchdir=./falcosecurity-libs \
+           file://0001-cmake-Pass-PROBE_NAME-via-CFLAGS.patch \
+          "
+SRCREV_sysdig = "4fb6288275f567f63515df0ff0a6518043ecfa9b"
+SRCREV_falco = "caa0e4d0044fdaaebab086592a97f0c7f32aeaa9"
+SRCREV_FORMAT = "sysdig"
 
-PV = "0.24.2+git${SRCPV}"
+PV = "0.28.0+git${SRCPV}"
 
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 
@@ -18,11 +24,20 @@ S = "${WORKDIR}/git"
 # Inherit of cmake for configure step
 inherit cmake pkgconfig
 
-DEPENDS = "luajit zlib ncurses"
-DEPENDS += "jsoncpp openssl curl jq"
-DEPENDS += "tbb"
-DEPENDS += "libb64"
-DEPENDS += "elfutils"
+JIT ?= "jit"
+JIT:mipsarchn32 = ""
+JIT:mipsarchn64 = ""
+JIT:riscv64 = ""
+JIT:riscv32 = ""
+JIT:powerpc = ""
+JIT:powerpc64le = ""
+JIT:powerpc64 = ""
+
+DEPENDS += "libb64 lua${JIT} zlib c-ares grpc-native grpc curl ncurses jsoncpp \
+            tbb jq openssl elfutils protobuf protobuf-native jq-native valijson"
+#DEPENDS += "googletest"
+
+RDEPENDS:${PN} = "bash"
 
 OECMAKE_GENERATOR = "Unix Makefiles"
 
@@ -30,18 +45,14 @@ EXTRA_OECMAKE = ' -DBUILD_DRIVER="ON" \
                   -DBUILD_BPF="OFF" \
                   -DENABLE_DKMS="OFF" \
                   -DDIR_ETC="/etc" \
+                  -DUSE_BUNDLED_DEPS=OFF \
+                  -DMINIMAL_BUILD=ON \
+                  -DCREATE_TEST_TARGETS=OFF \
+                  -DDIR_ETC=${sysconfdir} \
+                  -DLUA_INCLUDE_DIR=${STAGING_INCDIR}/luajit-2.1 \
+                  -DFALCOSECURITY_LIBS_SOURCE_DIR=${S}/falcosecurity-libs \
+                  -DVALIJSON_INCLUDE="${STAGING_LIBDIR_NATIVE}" \
                 '
-
-EXTRA_OECMAKE += ' -DUSE_BUNDLED_LUAJIT="OFF" \
-                   -DUSE_BUNDLED_ZLIB="OFF" \
-                   -DUSE_BUNDLED_NCURSES="OFF" \
-                   -DUSE_BUNDLED_JSONCPP="OFF" \
-                   -DUSE_BUNDLED_OPENSSL="OFF" \
-                   -DUSE_BUNDLED_CURL="OFF" \
-                   -DUSE_BUNDLED_B64="OFF" \
-                   -DUSE_BUNDLED_JQ="OFF" \
-                   -DUSE_BUNDLED_TBB="OFF" \
-                 '
 
 # Inherit of module class for driver building
 inherit module
@@ -50,16 +61,18 @@ DEPENDS += "virtual/kernel"
 
 export KERNELDIR = "${STAGING_KERNEL_BUILDDIR}"
 
-MAKE_TARGETS = "all"
+cmake_do_compile[noexec] = "1"
+cmake_do_install[noexec] = "1"
 
-# Compile prepend for cmake build first
-do_compile:prepend() {
-	cmake_runcmake_build --target ${OECMAKE_TARGET_COMPILE}
+do_configure:prepend() {
+    bbwarn "This kernel module REQUESTED to have CONFIG_FTRACE, CONFIG_TRACING, CONFIG_TRACEPOINTS activated"
 }
-
+do_compile:prepend() {
+    cd ${B}/driver/src
+}
 do_install() {
 	install -d ${D}${nonarch_base_libdir}/modules/${KERNEL_VERSION}/extra/
-	install -m 0755 ${B}/driver/sysdig-probe.ko ${D}${nonarch_base_libdir}/modules/${KERNEL_VERSION}/extra/
+	install -m 0755 ${B}/driver/src/scap.ko ${D}${nonarch_base_libdir}/modules/${KERNEL_VERSION}/extra/
 }
 
 FILES:${PN} += " ${base_libdir}/modules/${KERNEL_VERSION}/extra "
