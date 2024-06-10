@@ -21,12 +21,15 @@ MACHINEOVERRIDES =. "stcommon:"
 STM32MP_SOC_NAME = ""
 STM32MP_SOC_NAME:append:stm32mp15common = " stm32mp15 "
 STM32MP_SOC_NAME:append:stm32mp13common = " stm32mp13 "
+STM32MP_SOC_NAME:append:stm32mp25common = " stm32mp25 "
 # Take care of nativesdk override use case
 STM32MP_SOC_NAME:append:class-nativesdk = " stm32mp15 "
 STM32MP_SOC_NAME:append:class-nativesdk = " stm32mp13 "
+STM32MP_SOC_NAME:append:class-nativesdk = " stm32mp25 "
 
 STM32MP_ENCRYPT_SOC_NAME = ""
 STM32MP_ENCRYPT_SOC_NAME:append:stm32mp13common = " stm32mp13 "
+STM32MP_ENCRYPT_SOC_NAME:append:stm32mp25common = " stm32mp25 "
 
 # =========================================================================
 # boot scheme
@@ -74,12 +77,26 @@ RDEPENDS:${KERNEL_PACKAGE_NAME}-base = ""
 # Ship all kernel modules by default
 MACHINE_EXTRA_RRECOMMENDS = " kernel-modules ${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'kernel-imageefi', 'kernel-imagebootfs', d)}"
 
+# Default external-dt init
+EXTERNAL_DT_ENABLED ?= "0"
+EXTERNAL_DEVICETREE_EMMC    ??= ""
+EXTERNAL_DEVICETREE_NAND    ??= ""
+EXTERNAL_DEVICETREE_NOR     ??= ""
+EXTERNAL_DEVICETREE_SDCARD  ??= ""
+EXTERNAL_DEVICETREE_SPINAND ??= ""
+
 # Default device tree list per supported storages
 STM32MP_DT_FILES_EMMC    ??= ""
 STM32MP_DT_FILES_NAND    ??= ""
 STM32MP_DT_FILES_NOR     ??= ""
 STM32MP_DT_FILES_SDCARD  ??= ""
 STM32MP_DT_FILES_SPINAND ??= ""
+
+STM32MP_DT_FILES_EMMC:append    = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_EMMC}', '', d)}"
+STM32MP_DT_FILES_NAND:append    = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_NAND}', '', d)}"
+STM32MP_DT_FILES_NOR:append     = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_NOR}', '', d)}"
+STM32MP_DT_FILES_SDCARD:append  = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_SDCARD}', '', d)}"
+STM32MP_DT_FILES_SPINAND:append = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_SPINAND}', '', d)}"
 
 STM32MP_DT_FILES_ALL += "${STM32MP_DT_FILES_EMMC}"
 STM32MP_DT_FILES_ALL += "${STM32MP_DT_FILES_NAND}"
@@ -113,6 +130,7 @@ MACHINE_EXTRA_RRECOMMENDS:append = " ${@bb.utils.contains('DISTRO_FEATURES','sys
 ENABLE_FLASHLAYOUT_CONFIG_FWUP ?= "1"
 # Force ENABLE_FLASHLAYOUT_CONFIG_FWUP because only fw-update mapping for flashlayout is supported
 ENABLE_FLASHLAYOUT_CONFIG_FWUP:stm32mp1common = "1"
+ENABLE_FLASHLAYOUT_CONFIG_FWUP:stm32mp2common = "1"
 
 # =========================================================================
 # Image
@@ -126,13 +144,13 @@ ENABLE_IMAGE_LICENSE_SUMMARY ?= "1"
 ENABLE_IMAGE_CVE_SUMMARY ?= "1"
 
 ST_MAIN_COMPONENTS:stm32mp1common = "tf-a-stm32mp, optee-os-stm32mp, u-boot-stm32mp, linux-stm32mp"
+ST_MAIN_COMPONENTS:stm32mp2common = "tf-a-stm32mp, tf-m-stm32mp, optee-os-stm32mp, u-boot-stm32mp, linux-stm32mp"
 
 # Partitions configuration
 IMAGE_CLASSES += "st-partitions-image"
 
 # UBI Configuration
 IMAGE_CLASSES += "image_types-stubi"
-
 
 # Define UBI labels to build
 #   Naming rules for UBI partitions:
@@ -209,8 +227,15 @@ ST_DEBUG_TRACE ?= "1"
 # Kernel
 # =========================================================================
 # Kernel image type
+KERNEL_DEFAULT_NAME = "uImage"
+KERNEL_DEFAULT_NAME:aarch64 = "Image.gz"
+
+# arm32 bits
 KERNEL_EFI_NAME = "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'zImage', 'uImage', d)}"
 KERNEL_EFI_ALT_NAME = "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'uImage', 'zImage', d)}"
+# arm64 bits
+KERNEL_EFI_NAME:aarch64 = "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'Image', 'Image.gz', d)}"
+KERNEL_EFI_ALT_NAME:aarch64 = "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'Image.gz', 'Image', d)}"
 
 KERNEL_IMAGETYPE     = "${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'fitImage', '${KERNEL_EFI_NAME}', d)}"
 KERNEL_ALT_IMAGETYPE = " vmlinux "
@@ -230,9 +255,13 @@ UBOOT_ENTRYPOINT = "0xC4000000"
 
 # List of device tree to install
 KERNEL_DEVICETREE ?= "${STM32MP_KERNEL_DEVICETREE}"
-STM32MP_KERNEL_DEVICETREE += "${@' '.join('%s.dtb' % d for d in '${STM32MP_DEVICETREE}'.split())}"
-STM32MP_KERNEL_DEVICETREE += "${@' '.join('%s.dtb' % d for d in '${CUBE_M4_EXAMPLES_DT}'.split())}"
-STM32MP_KERNEL_DEVICETREE += "${@' '.join('%s.dtb' % d for d in '${LINUX_A7_EXAMPLES_DT}'.split())}"
+KERNEL_SUB_PATH = ""
+KERNEL_SUB_PATH:aarch64 = "st/"
+
+STM32MP_KERNEL_DEVICETREE += "${@' '.join('${KERNEL_SUB_PATH}%s.dtb' % d for d in '${STM32MP_DEVICETREE}'.split())}"
+STM32MP_KERNEL_DEVICETREE += "${@' '.join('${KERNEL_SUB_PATH}%s.dtb' % d for d in '${CUBE_M4_EXAMPLES_DT}'.split())}"
+STM32MP_KERNEL_DEVICETREE += "${@' '.join('${KERNEL_SUB_PATH}%s.dtb' % d for d in '${LINUX_A7_EXAMPLES_DT}'.split())}"
+STM32MP_KERNEL_DEVICETREE += "${@' '.join('${KERNEL_SUB_PATH}%s.dtb' % d for d in '${CUBE_M33_EXAMPLES_DT}'.split())}"
 
 # Set LOADADDR
 # Set this address to 0xC2000040, which is 0xC2000000 + 0x40.
@@ -256,6 +285,14 @@ UBOOT_CONFIG:append:stm32mp15common = " ${@bb.utils.contains('STM32MP_DEVICETREE
 UBOOT_CONFIG:append:stm32mp15common = " ${@bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'fastboot-sdcard_stm32mp15', '', d), '', d)} "
 UBOOT_CONFIG:append:stm32mp15common = " ${@bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'fastboot-emmc_stm32mp15', '', d), '', d)} "
 # STM32mp13
+UBOOT_CONFIG:append:stm32mp13common = " ${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'default_stm32mp13', '', d)} "
+UBOOT_CONFIG:append:stm32mp13common = " ${@bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'programmer_stm32mp13', '', d)} "
+UBOOT_CONFIG:append:stm32mp13common = " ${@bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'fastboot-sdcard_stm32mp13', '', d), '', d)} "
+# STM32mp25
+UBOOT_CONFIG:append:stm32mp25common = " ${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'default_stm32mp25', '', d)} "
+UBOOT_CONFIG:append:stm32mp25common = " ${@bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'programmer_stm32mp25', '', d)} "
+UBOOT_CONFIG:append:stm32mp25common = " ${@bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'fastboot-sdcard_stm32mp25', '', d), '', d)} "
+UBOOT_CONFIG:append:stm32mp25common = " ${@bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'fastboot-emmc_stm32mp25', '', d), '', d)} "
 
 # Define U-boot splashscreen file naming
 UBOOT_SPLASH_PORTRAIT_IMAGE = "splash_portrait"
@@ -282,11 +319,15 @@ MACHINE_EXTRA_RRECOMMENDS:append:stm32mp1common = " \
 "
 
 ST_UBOOT_DEBUG_TRACE ?= "${@bb.utils.contains('ST_DEBUG_TRACE', '1', '1', '0', d)}"
+
 # =========================================================================
 # trusted-firmware-a
 # =========================================================================
 # Add optionnaly trusted-firmware-a
 EXTRA_IMAGEDEPENDS += "virtual/trusted-firmware-a"
+
+# Configure the TF-A tool platform to use to generate the TF-A tools
+TF_A_TOOLS_PLATFORM ?= "stm32mp2"
 
 # Configure trusted-firmware-a build
 # Manage specific config settings
@@ -317,6 +358,14 @@ TF_A_MTD_START_OFFSET_NOR     ?= "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFI
 TF_A_MTD_START_OFFSET_SPINAND ?= "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '0', '0x00100000', '0x00200000', d)}"
 
 ST_TF_A_DEBUG_TRACE ?= "${@bb.utils.contains('ST_DEBUG_TRACE', '1', '1', '0', d)}"
+
+# =========================================================================
+# trusted-firmware-m
+# =========================================================================
+# Add optionnaly trusted-firmware-m
+# List of trusted-firmware-m device tree to use
+TF_M_DEVICETREE ?= "${STM32MP_DEVICETREE}"
+
 # =========================================================================
 # optee
 # =========================================================================
@@ -325,9 +374,20 @@ OPTEE_CONF = "${STM32MP_DEVICETREE}"
 OPTEE_CONF += "${@bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', '${STM32MP_DEVICETREE_PROGRAMMER}', '', d)}"
 
 ST_OPTEE_DEBUG_TRACE ?= "${@bb.utils.contains('ST_DEBUG_TRACE', '1', '1', '0', d)}"
+
+# =========================================================================
+# M33Project
+# =========================================================================
+# Trustzone enable or not on M33 co-processor
+# if Trustzone is enabled, that mean we need to have TF-M as dependency
+# By default, it's enabled
+M33PROJECT_TF_M_TRUSTZONE ??= "1"
+
 # =========================================================================
 # fip
 # =========================================================================
+# Add fip binaries generation
+EXTRA_IMAGEDEPENDS += "fip-stm32mp"
 
 # Configure fip build
 FIP_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'optee-emmc', '', d)}"
@@ -346,6 +406,10 @@ FIPTOOL_WRAPPER ?= "fiptool-stm32mp"
 # Manage specific config to sign FIP
 FIP_SIGN_SUFFIX ?= "${@bb.utils.contains('SIGN_ENABLE', '1', '${SIGN_SUFFIX}', '', d)}"
 FIP_ENCRYPT_SUFFIX ?= "${@bb.utils.contains('ENCRYPT_ENABLE', '1', '${ENCRYPT_SUFFIX}', '', d)}"
+
+# Configure use of BL31
+FIP_BL31_ENABLE = "0"
+FIP_BL31_ENABLE:stm32mp2common = "1"
 
 # -----------------------------------------------
 # Define config for each FIP_CONFIG
@@ -377,7 +441,6 @@ FIP_CONFIG[fastboot-sdcard] ?= "optee,${STM32MP_DT_FILES_SDCARD},fastboot,optee-
 # =========================================================================
 ELF_DEBUG_ENABLE = "1"
 
-
 # =========================================================================
 # M4 copro
 # =========================================================================
@@ -393,10 +456,30 @@ M4_INSTALLDIR = "${STM32MP_USERFS_MOUNTPOINT}"
 M4_PACKAGE_4USERFS = "${@bb.utils.contains('ST_USERFS','1','1','0',d)}"
 
 # =========================================================================
+# M33 copro
+# =========================================================================
+# Define the devicetree for M33 examples
+CUBE_M33_EXAMPLES_DT ?= ""
+
+# Define the name of default copro firmware executed @boot time
+# This name is cherry picked from list defined in m33projects-stm32mp2.bb
+DEFAULT_COPRO_FIRMWARE = "OpenAMP_TTY_echo_CM33_NonSecure"
+
+# Define M33 example installation dir
+M33_INSTALLDIR = "${STM32MP_USERFS_MOUNTPOINT}"
+M33_PACKAGE_4USERFS = "${@bb.utils.contains('ST_USERFS','1','1','0',d)}"
+
+# =========================================================================
 # GCNANO userland configuration
 # =========================================================================
 # Configure use of vendorfs if enable to install gcnano libs
 GCNANO_USERLAND_OUTPUT_LIBDIR = "${@bb.utils.contains('ST_VENDORFS', '1', '${STM32MP_VENDORFS_MOUNTPOINT}/lib', '${libdir}', d)}"
 
 # =========================================================================
+# WESTON HDMI configuration
 # =========================================================================
+# Configure the size screen use by weston with HDMI screen
+# 720p: 1280x720
+# 1080p: 1920x1080
+WESTON_HDMI_MODE:stm32mp1common ?= "1280x720"
+WESTON_HDMI_MODE:stm32mp2common ?= "1920x1080"
