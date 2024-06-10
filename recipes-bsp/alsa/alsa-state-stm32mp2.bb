@@ -12,16 +12,15 @@ PV = "1.0"
 
 # Machine generic
 SRC_URI = " \
-    file://asound-stm32mp15yx-ev.conf   \
-    file://asound-stm32mp15yx-dk.conf   \
-    \
-    file://asound-stm32mp15yx-ev.state  \
-    file://asound-stm32mp15yx-dk.state  \
+    file://asound-stm32mp25yx-dk.conf \
+    file://asound-stm32mp25yx-dk.state \
+    file://asound-stm32mp25yx-ev1.conf \
+    file://asound-stm32mp25yx-ev1.state \
     "
 
 S = "${WORKDIR}"
 
-COMPATIBLE_MACHINE = "(stm32mpcommon)"
+COMPATIBLE_MACHINE = "(stm32mp2common)"
 RDEPENDS:${PN} = "alsa-state alsa-state-script"
 
 do_install() {
@@ -31,16 +30,16 @@ do_install() {
     install -m 0644 ${WORKDIR}/*.state ${D}${localstatedir}/lib/alsa
 
     # create link to support all packages configuration
-    for p in a b c d e f;
+    for p in a b c d e f; # a b c d e f
     do
-        for n in 1 3 7;
+        for n in 7; # 1 3 7
         do
             cd ${D}${sysconfdir}/
-            ln -sf asound-stm32mp15yx-ev.conf asound-stm32mp15$n$p-ev.conf
-            ln -sf asound-stm32mp15yx-dk.conf asound-stm32mp15$n$p-dk.conf
+            ln -sf asound-stm32mp25yx-dk.conf asound-stm32mp25$n$p-dk.conf
+            ln -sf asound-stm32mp25yx-dk.conf asound-stm32mp25$n$p-ev1.conf
             cd ${D}${localstatedir}/lib/alsa
-            ln -sf asound-stm32mp15yx-ev.state asound-stm32mp15$n$p-ev.state
-            ln -sf asound-stm32mp15yx-dk.state asound-stm32mp15$n$p-dk.state
+            ln -sf asound-stm32mp25yx-dk.state asound-stm32mp25$n$p-dk.state
+            ln -sf asound-stm32mp25yx-dk.state asound-stm32mp25$n$p-ev1.state
         done
     done
 }
