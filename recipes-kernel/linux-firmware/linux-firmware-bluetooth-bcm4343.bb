@@ -10,9 +10,9 @@ NO_GENERIC_LICENSE[Firmware-cypress-bcm4343] = "LICENCE.cypress"
 inherit allarch
 
 SRC_URI = "git://github.com/murata-wireless/cyw-bt-patch;protocol=https;branch=master"
-SRCREV = "c5f1b13697d4ac8eec2cb6f21636085fbb55acd1"
+SRCREV = "9d24c254dae92af99ddfd661a4ea30af69190038"
 
-PV = "3.0"
+PV = "3.1"
 
 S = "${WORKDIR}/git"
 
@@ -21,8 +21,15 @@ PACKAGES =+ "${PN}-cypress-license"
 do_install() {
     install -d ${D}${nonarch_base_libdir}/firmware/brcm/
 
-    install -m 644 ${S}/BCM4343A1_001.002.009.0093.0395.1DX.hcd ${D}${nonarch_base_libdir}/firmware/brcm/BCM43430A1.hcd
+    # 43430
+    install -m 644 ${S}/BCM43430A1_001.002.009.0159.0528.1DX.hcd ${D}${nonarch_base_libdir}/firmware/brcm/BCM43430A1.hcd
     install -m 644 ${S}/LICENCE.cypress ${D}${nonarch_base_libdir}/firmware/LICENCE.cypress_bcm4343
+    # 43439
+    install -m 644 ${S}/CYW4343A2_001.003.016.0031.0000.1YN.hcd ${D}${nonarch_base_libdir}/firmware/brcm/BCM4343A2.hcd
+    cd ${D}${nonarch_base_libdir}/firmware/brcm/
+    ln -sf BCM4343A2.hcd BCM.st,stm32mp257f-dk.hcd
+    ln -sf BCM4343A2.hcd BCM.st,stm32mp257f-dk-ca35tdcid-ostl.hcd
+    ln -sf BCM4343A2.hcd BCM.st,stm32mp257f-dk-ca35tdcid-ostl-m33-examples.hcd
 }
 
 LICENSE:${PN} = "Firmware-cypress-bcm4343"
