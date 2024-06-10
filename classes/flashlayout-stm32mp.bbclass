@@ -267,15 +267,16 @@ def get_device(bootscheme, config, partition, partition_ori, d):
     # Set device configuration
     device_configs = expand_var('FLASHLAYOUT_PARTITION_DEVICE', bootscheme, config, partition, d)
     bb.debug(1, '>>> Selected FLASHLAYOUT_PARTITION_DEVICE: %s' % device_configs)
-
+    # Init default_device and device to empty string
+    default_device = ''
+    device = ''
     if len(device_configs.split(',')) == 1:
         bb.debug(1, '>>> Only one device configuration set for %s partition for %s label for %s bootscheme' % (partition, config, bootscheme))
         device = device_configs.split(':')[0]
+        # Set default_device to device
+        default_device = device
     else:
         bb.debug(1, '>>> Multiple device configurations set for %s partition for %s label for %s bootscheme' % (partition, config, bootscheme))
-        # Init default_device and device to empty string
-        default_device = ''
-        device = ''
         for device_config in device_configs.split(','):
             cfg_devc = device_config.split(':')[0].strip()
             cfg_part = device_config.split(':')[1] or 'default'
@@ -292,9 +293,10 @@ def get_device(bootscheme, config, partition, partition_ori, d):
                 # Find out if any device is configured for current partition
                 for p in cfg_part.split():
                     if p == partition or p == partition_ori:
+                        if device != '':
+                            bb.fatal('Found two device configuration for %s partition for %s label for %s bootscheme in FLASHLAYOUT_PARTITION_DEVICE var' % (partition, config, bootscheme))
                         device = cfg_devc
-                        break
-        # If 'device' is still empty for current partition, check if we can apply default device configuration
+        # If 'device' is still empty for current partition, apply default device configuration
         if device == '':
             if default_device == '':
                 bb.fatal('Not able to get device configuration for %s partition for %s label for %s bootscheme' % (partition, config, bootscheme))
@@ -303,7 +305,7 @@ def get_device(bootscheme, config, partition, partition_ori, d):
                 device = default_device
     bb.debug(1, '>>> New device configured: %s' % device)
     # Return the value computed
-    return device
+    return (device, default_device)
 
 def get_device_alias(device_type, labeltype, d):
     """
@@ -316,7 +318,7 @@ def get_device_alias(device_type, labeltype, d):
         # Need to select the proper alias name for current selection
         for alias_name in device_alias.split():
             # Check if proposed labeltype is enabled
-            enabled_labeltypes = d.getVar('DEVICE_BOARD_ENABLE:%s' % alias_name) or "none"
+            enabled_labeltypes = d.getVar('STM32MP_DT_FILES_%s' % alias_name) or "none"
             if labeltype in enabled_labeltypes:
                 device_name = alias_name
                 break
@@ -419,7 +421,7 @@ def get_offset(new_offset, copy, current_device, bootscheme, config, partition, 
     # Return offset, next offset and max offset
     return str(offset), str(next_offset), str(max_offset)
 
-def get_binaryname(labeltype, device, bootscheme, config, partition, d):
+def get_binaryname(labeltype, device, device_default, bootscheme, config, partition, partition_ori, d):
     """
     Return proper binary name to use in flashlayout file by applying any specific
     computation (replacement, etc)
@@ -432,14 +434,18 @@ def get_binaryname(labeltype, device, bootscheme, config, partition, d):
     # Set 'device' to alias name in lower case
     if device != 'none':
         device = get_device_alias(device, labeltype, d).lower()
+    elif device_default != 'none':
+        device = get_device_alias(device_default, labeltype, d).lower()
     # Init pattern to look for with current config value
     update_patterns = '<BOOTSCHEME>;' + bootscheme
     update_patterns += ' ' + '<CONFIG>;' + config.replace("-","_")
     update_patterns += ' ' + '<DEVICE>;' + device
     update_patterns += ' ' + '<TYPE>;' + labeltype
     bb.debug(1, '>>> Default substitution patterns: %s' % update_patterns)
-
     replace_patterns = expand_var('FLASHLAYOUT_PARTITION_REPLACE_PATTERNS', bootscheme, config, partition, d)
+    replace_patterns_ori = expand_var('FLASHLAYOUT_PARTITION_REPLACE_PATTERNS', bootscheme, config, partition_ori, d)
+    if ( replace_patterns == 'none' or replace_patterns == d.getVar('FLASHLAYOUT_PARTITION_REPLACE_PATTERNS') ) and replace_patterns != replace_patterns_ori:
+        replace_patterns = replace_patterns_ori
     if replace_patterns != 'none':
         bb.debug(1, '>>> Substitution pattern addons: %s' % replace_patterns)
         # Append substitution patterns to update pattern list
@@ -611,7 +617,7 @@ python do_create_flashlayout_config() {
                                 # Update partition type if needed
                                 if int(partition_copy) > 1:
                                     partition_type += '(' + partition_copy + ')'
-                                partition_device = get_device(bootscheme, config, partition, part,d)
+                                partition_device, partition_device_default = get_device(bootscheme, config, partition, part, d)
                                 # Reset partition_nextoffset to 'none' in case partition device has changed
                                 if partition_device != partition_prevdevice:
                                     partition_nextoffset = "none"
@@ -620,7 +626,7 @@ python do_create_flashlayout_config() {
                                 # Get partition offset
                                 partition_offset, partition_nextoffset, partition_maxoffset = get_offset(partition_nextoffset, partition_copy, partition_device, bootscheme, config, partition, labeltype, d)
                                 # Get binary name
-                                partition_bin2load = get_binaryname(labeltype, partition_device, bootscheme, config, partition, d)
+                                partition_bin2load = get_binaryname(labeltype, partition_device, partition_device_default, bootscheme, config, partition, part, d)
                                 # Be verbose in log file
                                 bb.debug(1, '>>> Layout inputs: %s' % fl_file.name)
                                 bb.debug(1, '>>> FLASHLAYOUT_PARTITION_ENABLE:      %s' % partition_enable)
@@ -659,11 +665,11 @@ python do_create_flashlayout_config() {
                                             break
                                 # Get the supported labels for current storage device
                                 partition_device_alias = get_device_alias(partition_device, labeltype, d)
-                                partition_type_supported_labels = d.getVar('DEVICE_BOARD_ENABLE:%s' % partition_device_alias) or "none"
+                                partition_type_supported_labels = expand_var('STM32MP_DT_FILES_%s' % partition_device_alias, bootscheme, config, partition, d) or "none"
                                 # Check if partition type is supported for the current label
                                 if partition_device != 'none' and current_label not in partition_type_supported_labels.split():
                                     bb.debug(1, '>>> FLASHLAYOUT_PARTITION_DEVICE (%s, alias %s) is not supported for current label (%s): partition %s not appended in flashlayout file' % (partition_device, partition_device_alias, current_label, partition_name))
-                                    bb.debug(1, '>>> DEVICE_BOARD_ENABLE:%s: %s' % (partition_device_alias, partition_type_supported_labels))
+                                    bb.debug(1, '>>> STM32MP_DT_FILES_%s: %s' % (partition_device_alias, partition_type_supported_labels))
                                     continue
                                 # Write to flashlayout file the partition configuration
                                 fl_file.write('%s\t%s\t%s\t%s\t%s\t%s\t%s\n' %
@@ -747,26 +753,32 @@ python flashlayout_partition_config() {
     import re
     # Init partition and flashlayout configuration vars
     partconfvar = 'FLASHLAYOUT_CONFIG_LABELS'
-    partitionsconfigflags = d.getVarFlags(partconfvar)
-    # The "doc" varflag is special, we don't want to see it here
-    partitionsconfigflags.pop('doc', None)
-    partitionsconfig = (d.getVar(partconfvar) or "").split()
-    if len(partitionsconfig) > 0:
+    # Set bootschemes for partition var override configuration
+    bootschemes = d.getVar('FLASHLAYOUT_BOOTSCHEME_LABELS')
+    if not bootschemes:
+        bb.fatal("FLASHLAYOUT_BOOTSCHEME_LABELS not defined, nothing to do")
+    if not bootschemes.strip():
+        bb.fatal("No bootschemes, nothing to do")
+    # Make sure there is no '_' in FLASHLAYOUT_BOOTSCHEME_LABELS
+    for bootscheme in bootschemes.split():
+        if re.match('.*_.*', bootscheme):
+            bb.fatal("Please remove all '_' for bootschemes defined in FLASHLAYOUT_BOOTSCHEME_LABELS")
+    bb.debug(1, 'FLASHLAYOUT_BOOTSCHEME_LABELS: %s' % bootschemes)
+    for bootscheme in bootschemes.split():
+        bb.debug(1, '*** Loop for bootscheme label: %s' % bootscheme)
 
-        # Set bootschemes for partition var override configuration
-        bootschemes = d.getVar('FLASHLAYOUT_BOOTSCHEME_LABELS')
-        if not bootschemes:
-            bb.fatal("FLASHLAYOUT_BOOTSCHEME_LABELS not defined, nothing to do")
-        if not bootschemes.strip():
-            bb.fatal("No bootschemes, nothing to do")
-        # Make sure there is no '_' in FLASHLAYOUT_BOOTSCHEME_LABELS
-        for bootscheme in bootschemes.split():
-            if re.match('.*_.*', bootscheme):
-                bb.fatal("Please remove all '_' for bootschemes defined in FLASHLAYOUT_BOOTSCHEME_LABELS")
-        bb.debug(1, 'FLASHLAYOUT_BOOTSCHEME_LABELS: %s' % bootschemes)
+        # Append 'bootscheme' to OVERRIDES
+        localdata = bb.data.createCopy(d)
+        overrides = localdata.getVar('OVERRIDES')
+        if not overrides:
+            bb.fatal('OVERRIDES not defined')
+        localdata.setVar('OVERRIDES', bootscheme + ':' + overrides)
 
-        for bootscheme in bootschemes.split():
-            bb.debug(1, '*** Loop for bootscheme label: %s' % bootscheme)
+        partitionsconfigflags = localdata.getVarFlags(partconfvar)
+        # The "doc" varflag is special, we don't want to see it here
+        partitionsconfigflags.pop('doc', None)
+        partitionsconfig = (localdata.getVar(partconfvar) or "").split()
+        if len(partitionsconfig) > 0:
 
             for config in partitionsconfig:
                 for f, v in partitionsconfigflags.items():
