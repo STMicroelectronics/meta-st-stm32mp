@@ -8,11 +8,13 @@ require openocd-stm32mp.inc
 SRC_URI = "git://github.com/openocd-org/openocd.git;protocol=https;branch=master;name=openocd "
 
 SRCREV_FORMAT = "openocd"
-SRCREV_openocd = "fdf17dba569ac8aca0771c28b661e3722d776541"
+SRCREV_openocd = "2c8376b79d104a855bd3a559e59edf330309bcad"
 
-PV = "0.11.0+dev.${SRCPV}"
+PV = "0.12.0+dev.${SRCPV}-stm32mp25-r1-rc2"
 
-SRC_URI += ""
+SRC_URI += " \
+    file://0001-v0.12.0-stm32mp-r1.patch \
+    "
 
 # Use jimtcl master branch to fix RANLIB issue in kirkstone and commit it
 # to prevent "-dirty" suffix to openocd version.

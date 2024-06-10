@@ -1,0 +1,634 @@
+From ea1ca7e0c1805f290dcc3a8e5bc246b1b0bea1d5 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+Date: Thu, 23 May 2024 13:01:40 +0200
+Subject: [PATCH] v0.12.0-stm32mp-r1
+
+Signed-off-by: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+---
+ src/server/gdb_server.c     |  10 +-
+ src/target/armv8.c          | 180 ++++++++++++++++++++++++---------
+ src/target/armv8_dpm.c      |   4 +-
+ src/target/target.c         |  12 ++-
+ tcl/board/stm32mp25x_dk.cfg |  11 +++
+ tcl/target/stm32mp25x.cfg   | 191 ++++++++++++++++++++++++++++++++++++
+ 6 files changed, 351 insertions(+), 57 deletions(-)
+ create mode 100644 tcl/board/stm32mp25x_dk.cfg
+ create mode 100644 tcl/target/stm32mp25x.cfg
+
+diff --git a/src/server/gdb_server.c b/src/server/gdb_server.c
+index dfd7cd520..ccb9b65b8 100644
+--- a/src/server/gdb_server.c
++++ b/src/server/gdb_server.c
+@@ -1233,6 +1233,8 @@ static int gdb_get_reg_value_as_str(struct target *target, char *tstr, struct re
+ 			tstr[len] = '\0';
+ 			return ERROR_OK;
+ 	}
++	memset(tstr, '0', len);
++	tstr[len] = '\0';
+ 	return ERROR_FAIL;
+ }
+ 
+@@ -1277,7 +1279,9 @@ static int gdb_get_registers_packet(struct connection *connection,
+ 	for (i = 0; i < reg_list_size; i++) {
+ 		if (!reg_list[i] || reg_list[i]->exist == false || reg_list[i]->hidden)
+ 			continue;
+-		if (gdb_get_reg_value_as_str(target, reg_packet_p, reg_list[i]) != ERROR_OK) {
++		retval = gdb_get_reg_value_as_str(target, reg_packet_p, reg_list[i]);
++		if (retval != ERROR_OK && gdb_report_register_access_error) {
++			LOG_DEBUG("Couldn't get register %s.", reg_list[i]->name);
+ 			free(reg_packet);
+ 			free(reg_list);
+ 			return gdb_error(connection, retval);
+@@ -1395,7 +1399,9 @@ static int gdb_get_register_packet(struct connection *connection,
+ 
+ 	reg_packet = calloc(DIV_ROUND_UP(reg_list[reg_num]->size, 8) * 2 + 1, 1); /* plus one for string termination null */
+ 
+-	if (gdb_get_reg_value_as_str(target, reg_packet, reg_list[reg_num]) != ERROR_OK) {
++	retval = gdb_get_reg_value_as_str(target, reg_packet, reg_list[reg_num]);
++	if (retval != ERROR_OK && gdb_report_register_access_error) {
++		LOG_DEBUG("Couldn't get register %s.", reg_list[reg_num]->name);
+ 		free(reg_packet);
+ 		free(reg_list);
+ 		return gdb_error(connection, retval);
+diff --git a/src/target/armv8.c b/src/target/armv8.c
+index bf582ff80..b54ef13d3 100644
+--- a/src/target/armv8.c
++++ b/src/target/armv8.c
+@@ -278,10 +278,14 @@ static int armv8_get_pauth_mask(struct armv8_common *armv8, uint64_t *mask)
+ static int armv8_read_reg(struct armv8_common *armv8, int regnum, uint64_t *regval)
+ {
+ 	struct arm_dpm *dpm = &armv8->dpm;
++	unsigned int curel = armv8_curel_from_core_mode(dpm->arm->core_mode);
+ 	int retval;
+ 	uint32_t value;
+ 	uint64_t value_64;
+ 
++	if (!regval)
++		return ERROR_FAIL;
++
+ 	switch (regnum) {
+ 	case 0 ... 30:
+ 		retval = dpm->instr_read_data_dcc_64(dpm,
+@@ -311,46 +315,85 @@ static int armv8_read_reg(struct armv8_common *armv8, int regnum, uint64_t *regv
+ 		value_64 = value;
+ 		break;
+ 	case ARMV8_ELR_EL1:
++		if (curel < SYSTEM_CUREL_EL1) {
++			LOG_DEBUG("ELR_EL1 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
+ 		retval = dpm->instr_read_data_r0_64(dpm,
+ 				ARMV8_MRS(SYSTEM_ELR_EL1, 0), &value_64);
+ 		break;
+ 	case ARMV8_ELR_EL2:
++		if (curel < SYSTEM_CUREL_EL2) {
++			LOG_DEBUG("ELR_EL2 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
+ 		retval = dpm->instr_read_data_r0_64(dpm,
+ 				ARMV8_MRS(SYSTEM_ELR_EL2, 0), &value_64);
+ 		break;
+ 	case ARMV8_ELR_EL3:
++		if (curel < SYSTEM_CUREL_EL3) {
++			LOG_DEBUG("ELR_EL3 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
+ 		retval = dpm->instr_read_data_r0_64(dpm,
+ 				ARMV8_MRS(SYSTEM_ELR_EL3, 0), &value_64);
+ 		break;
+ 	case ARMV8_ESR_EL1:
+-		retval = dpm->instr_read_data_r0(dpm,
+-				ARMV8_MRS(SYSTEM_ESR_EL1, 0), &value);
+-		value_64 = value;
++		if (curel < SYSTEM_CUREL_EL1) {
++			LOG_DEBUG("ESR_EL1 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
++		retval = dpm->instr_read_data_r0_64(dpm,
++				ARMV8_MRS(SYSTEM_ESR_EL1, 0), &value_64);
+ 		break;
+ 	case ARMV8_ESR_EL2:
+-		retval = dpm->instr_read_data_r0(dpm,
+-				ARMV8_MRS(SYSTEM_ESR_EL2, 0), &value);
+-		value_64 = value;
++		if (curel < SYSTEM_CUREL_EL2) {
++			LOG_DEBUG("ESR_EL2 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
++		retval = dpm->instr_read_data_r0_64(dpm,
++				ARMV8_MRS(SYSTEM_ESR_EL2, 0), &value_64);
+ 		break;
+ 	case ARMV8_ESR_EL3:
+-		retval = dpm->instr_read_data_r0(dpm,
+-				ARMV8_MRS(SYSTEM_ESR_EL3, 0), &value);
+-		value_64 = value;
++		if (curel < SYSTEM_CUREL_EL3) {
++			LOG_DEBUG("ESR_EL3 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
++		retval = dpm->instr_read_data_r0_64(dpm,
++				ARMV8_MRS(SYSTEM_ESR_EL3, 0), &value_64);
+ 		break;
+ 	case ARMV8_SPSR_EL1:
+-		retval = dpm->instr_read_data_r0(dpm,
+-				ARMV8_MRS(SYSTEM_SPSR_EL1, 0), &value);
+-		value_64 = value;
++		if (curel < SYSTEM_CUREL_EL1) {
++			LOG_DEBUG("SPSR_EL1 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
++		retval = dpm->instr_read_data_r0_64(dpm,
++				ARMV8_MRS(SYSTEM_SPSR_EL1, 0), &value_64);
+ 		break;
+ 	case ARMV8_SPSR_EL2:
+-		retval = dpm->instr_read_data_r0(dpm,
+-				ARMV8_MRS(SYSTEM_SPSR_EL2, 0), &value);
+-		value_64 = value;
++		if (curel < SYSTEM_CUREL_EL2) {
++			LOG_DEBUG("SPSR_EL2 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
++		retval = dpm->instr_read_data_r0_64(dpm,
++				ARMV8_MRS(SYSTEM_SPSR_EL2, 0), &value_64);
+ 		break;
+ 	case ARMV8_SPSR_EL3:
+-		retval = dpm->instr_read_data_r0(dpm,
+-				ARMV8_MRS(SYSTEM_SPSR_EL3, 0), &value);
+-		value_64 = value;
++		if (curel < SYSTEM_CUREL_EL3) {
++			LOG_DEBUG("SPSR_EL3 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
++		retval = dpm->instr_read_data_r0_64(dpm,
++				ARMV8_MRS(SYSTEM_SPSR_EL3, 0), &value_64);
+ 		break;
+ 	case ARMV8_PAUTH_CMASK:
+ 	case ARMV8_PAUTH_DMASK:
+@@ -361,10 +404,8 @@ static int armv8_read_reg(struct armv8_common *armv8, int regnum, uint64_t *regv
+ 		break;
+ 	}
+ 
+-	if (retval == ERROR_OK && regval)
++	if (retval == ERROR_OK)
+ 		*regval = value_64;
+-	else
+-		retval = ERROR_FAIL;
+ 
+ 	return retval;
+ }
+@@ -395,6 +436,7 @@ static int armv8_read_reg_simdfp_aarch64(struct armv8_common *armv8, int regnum,
+ static int armv8_write_reg(struct armv8_common *armv8, int regnum, uint64_t value_64)
+ {
+ 	struct arm_dpm *dpm = &armv8->dpm;
++	unsigned int curel = armv8_curel_from_core_mode(dpm->arm->core_mode);
+ 	int retval;
+ 	uint32_t value;
+ 
+@@ -434,46 +476,85 @@ static int armv8_write_reg(struct armv8_common *armv8, int regnum, uint64_t valu
+ 		break;
+ 	/* registers clobbered by taking exception in debug state */
+ 	case ARMV8_ELR_EL1:
++		if (curel < SYSTEM_CUREL_EL1) {
++			LOG_DEBUG("ELR_EL1 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
+ 		retval = dpm->instr_write_data_r0_64(dpm,
+ 				ARMV8_MSR_GP(SYSTEM_ELR_EL1, 0), value_64);
+ 		break;
+ 	case ARMV8_ELR_EL2:
++		if (curel < SYSTEM_CUREL_EL2) {
++			LOG_DEBUG("ELR_EL2 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
+ 		retval = dpm->instr_write_data_r0_64(dpm,
+ 				ARMV8_MSR_GP(SYSTEM_ELR_EL2, 0), value_64);
+ 		break;
+ 	case ARMV8_ELR_EL3:
++		if (curel < SYSTEM_CUREL_EL3) {
++			LOG_DEBUG("ELR_EL3 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
+ 		retval = dpm->instr_write_data_r0_64(dpm,
+ 				ARMV8_MSR_GP(SYSTEM_ELR_EL3, 0), value_64);
+ 		break;
+ 	case ARMV8_ESR_EL1:
+-		value = value_64;
+-		retval = dpm->instr_write_data_r0(dpm,
+-				ARMV8_MSR_GP(SYSTEM_ESR_EL1, 0), value);
++		if (curel < SYSTEM_CUREL_EL1) {
++			LOG_DEBUG("ESR_EL1 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
++		retval = dpm->instr_write_data_r0_64(dpm,
++				ARMV8_MSR_GP(SYSTEM_ESR_EL1, 0), value_64);
+ 		break;
+ 	case ARMV8_ESR_EL2:
+-		value = value_64;
+-		retval = dpm->instr_write_data_r0(dpm,
+-				ARMV8_MSR_GP(SYSTEM_ESR_EL2, 0), value);
++		if (curel < SYSTEM_CUREL_EL2) {
++			LOG_DEBUG("ESR_EL2 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
++		retval = dpm->instr_write_data_r0_64(dpm,
++				ARMV8_MSR_GP(SYSTEM_ESR_EL2, 0), value_64);
+ 		break;
+ 	case ARMV8_ESR_EL3:
+-		value = value_64;
+-		retval = dpm->instr_write_data_r0(dpm,
+-				ARMV8_MSR_GP(SYSTEM_ESR_EL3, 0), value);
++		if (curel < SYSTEM_CUREL_EL3) {
++			LOG_DEBUG("ESR_EL3 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
++		retval = dpm->instr_write_data_r0_64(dpm,
++				ARMV8_MSR_GP(SYSTEM_ESR_EL3, 0), value_64);
+ 		break;
+ 	case ARMV8_SPSR_EL1:
+-		value = value_64;
+-		retval = dpm->instr_write_data_r0(dpm,
+-				ARMV8_MSR_GP(SYSTEM_SPSR_EL1, 0), value);
++		if (curel < SYSTEM_CUREL_EL1) {
++			LOG_DEBUG("SPSR_EL1 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
++		retval = dpm->instr_write_data_r0_64(dpm,
++				ARMV8_MSR_GP(SYSTEM_SPSR_EL1, 0), value_64);
+ 		break;
+ 	case ARMV8_SPSR_EL2:
+-		value = value_64;
+-		retval = dpm->instr_write_data_r0(dpm,
+-				ARMV8_MSR_GP(SYSTEM_SPSR_EL2, 0), value);
++		if (curel < SYSTEM_CUREL_EL2) {
++			LOG_DEBUG("SPSR_EL2 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
++		retval = dpm->instr_write_data_r0_64(dpm,
++				ARMV8_MSR_GP(SYSTEM_SPSR_EL2, 0), value_64);
+ 		break;
+ 	case ARMV8_SPSR_EL3:
+-		value = value_64;
+-		retval = dpm->instr_write_data_r0(dpm,
+-				ARMV8_MSR_GP(SYSTEM_SPSR_EL3, 0), value);
++		if (curel < SYSTEM_CUREL_EL3) {
++			LOG_DEBUG("SPSR_EL3 not accessible in EL%u", curel);
++			retval = ERROR_FAIL;
++			break;
++		}
++		retval = dpm->instr_write_data_r0_64(dpm,
++				ARMV8_MSR_GP(SYSTEM_SPSR_EL3, 0), value_64);
+ 		break;
+ 	default:
+ 		retval = ERROR_FAIL;
+@@ -512,6 +593,9 @@ static int armv8_read_reg32(struct armv8_common *armv8, int regnum, uint64_t *re
+ 	uint32_t value = 0;
+ 	int retval;
+ 
++	if (!regval)
++		return ERROR_FAIL;
++
+ 	switch (regnum) {
+ 	case ARMV8_R0 ... ARMV8_R14:
+ 		/* return via DCC:  "MCR p14, 0, Rnum, c0, c5, 0" */
+@@ -559,7 +643,7 @@ static int armv8_read_reg32(struct armv8_common *armv8, int regnum, uint64_t *re
+ 				ARMV4_5_MRC(15, 4, 0, 5, 2, 0),
+ 				&value);
+ 		break;
+-	case ARMV8_ESR_EL3: /* FIXME: no equivalent in aarch32? */
++	case ARMV8_ESR_EL3: /* no equivalent in aarch32 */
+ 		retval = ERROR_FAIL;
+ 		break;
+ 	case ARMV8_SPSR_EL1: /* mapped to SPSR_svc */
+@@ -587,7 +671,7 @@ static int armv8_read_reg32(struct armv8_common *armv8, int regnum, uint64_t *re
+ 		break;
+ 	}
+ 
+-	if (retval == ERROR_OK && regval)
++	if (retval == ERROR_OK)
+ 		*regval = value;
+ 
+ 	return retval;
+@@ -695,7 +779,7 @@ static int armv8_write_reg32(struct armv8_common *armv8, int regnum, uint64_t va
+ 				ARMV4_5_MCR(15, 4, 0, 5, 2, 0),
+ 				value);
+ 		break;
+-	case ARMV8_ESR_EL3: /* FIXME: no equivalent in aarch32? */
++	case ARMV8_ESR_EL3: /* no equivalent in aarch32 */
+ 		retval = ERROR_FAIL;
+ 		break;
+ 	case ARMV8_SPSR_EL1: /* mapped to SPSR_svc */
+@@ -1504,23 +1588,23 @@ static const struct {
+ 
+ 	{ ARMV8_ELR_EL1, "ELR_EL1", 64, ARMV8_64_EL1H, REG_TYPE_CODE_PTR, "banked", "net.sourceforge.openocd.banked",
+ 														NULL},
+-	{ ARMV8_ESR_EL1, "ESR_EL1", 32, ARMV8_64_EL1H, REG_TYPE_UINT32, "banked", "net.sourceforge.openocd.banked",
++	{ ARMV8_ESR_EL1, "ESR_EL1", 64, ARMV8_64_EL1H, REG_TYPE_UINT64, "banked", "net.sourceforge.openocd.banked",
+ 														NULL},
+-	{ ARMV8_SPSR_EL1, "SPSR_EL1", 32, ARMV8_64_EL1H, REG_TYPE_UINT32, "banked", "net.sourceforge.openocd.banked",
++	{ ARMV8_SPSR_EL1, "SPSR_EL1", 64, ARMV8_64_EL1H, REG_TYPE_UINT64, "banked", "net.sourceforge.openocd.banked",
+ 														NULL},
+ 
+ 	{ ARMV8_ELR_EL2, "ELR_EL2", 64, ARMV8_64_EL2H, REG_TYPE_CODE_PTR, "banked", "net.sourceforge.openocd.banked",
+ 														NULL},
+-	{ ARMV8_ESR_EL2, "ESR_EL2", 32, ARMV8_64_EL2H, REG_TYPE_UINT32, "banked", "net.sourceforge.openocd.banked",
++	{ ARMV8_ESR_EL2, "ESR_EL2", 64, ARMV8_64_EL2H, REG_TYPE_UINT64, "banked", "net.sourceforge.openocd.banked",
+ 														NULL},
+-	{ ARMV8_SPSR_EL2, "SPSR_EL2", 32, ARMV8_64_EL2H, REG_TYPE_UINT32, "banked", "net.sourceforge.openocd.banked",
++	{ ARMV8_SPSR_EL2, "SPSR_EL2", 64, ARMV8_64_EL2H, REG_TYPE_UINT64, "banked", "net.sourceforge.openocd.banked",
+ 														NULL},
+ 
+ 	{ ARMV8_ELR_EL3, "ELR_EL3", 64, ARMV8_64_EL3H, REG_TYPE_CODE_PTR, "banked", "net.sourceforge.openocd.banked",
+ 														NULL},
+-	{ ARMV8_ESR_EL3, "ESR_EL3", 32, ARMV8_64_EL3H, REG_TYPE_UINT32, "banked", "net.sourceforge.openocd.banked",
++	{ ARMV8_ESR_EL3, "ESR_EL3", 64, ARMV8_64_EL3H, REG_TYPE_UINT64, "banked", "net.sourceforge.openocd.banked",
+ 														NULL},
+-	{ ARMV8_SPSR_EL3, "SPSR_EL3", 32, ARMV8_64_EL3H, REG_TYPE_UINT32, "banked", "net.sourceforge.openocd.banked",
++	{ ARMV8_SPSR_EL3, "SPSR_EL3", 64, ARMV8_64_EL3H, REG_TYPE_UINT64, "banked", "net.sourceforge.openocd.banked",
+ 														NULL},
+ 	{ ARMV8_PAUTH_DMASK, "pauth_dmask", 64, ARM_MODE_ANY, REG_TYPE_UINT64, NULL, "org.gnu.gdb.aarch64.pauth", NULL},
+ 	{ ARMV8_PAUTH_CMASK, "pauth_cmask", 64, ARM_MODE_ANY, REG_TYPE_UINT64, NULL, "org.gnu.gdb.aarch64.pauth", NULL},
+diff --git a/src/target/armv8_dpm.c b/src/target/armv8_dpm.c
+index 8bb24f225..271bd91c3 100644
+--- a/src/target/armv8_dpm.c
++++ b/src/target/armv8_dpm.c
+@@ -677,7 +677,7 @@ static int dpmv8_read_reg(struct arm_dpm *dpm, struct reg *r, unsigned regnum)
+ 	}
+ 
+ 	if (retval != ERROR_OK)
+-		LOG_ERROR("Failed to read %s register", r->name);
++		LOG_DEBUG("Failed to read %s register", r->name);
+ 
+ 	return retval;
+ }
+@@ -719,7 +719,7 @@ static int dpmv8_write_reg(struct arm_dpm *dpm, struct reg *r, unsigned regnum)
+ 	}
+ 
+ 	if (retval != ERROR_OK)
+-		LOG_ERROR("Failed to write %s register", r->name);
++		LOG_DEBUG("Failed to write %s register", r->name);
+ 
+ 	return retval;
+ }
+diff --git a/src/target/target.c b/src/target/target.c
+index 5168305de..243f07780 100644
+--- a/src/target/target.c
++++ b/src/target/target.c
+@@ -5365,17 +5365,19 @@ COMMAND_HANDLER(handle_target_reset)
+ 		return ERROR_FAIL;
+ 	}
+ 
+-	if (target->defer_examine)
+-		target_reset_examined(target);
+-
+ 	/* determine if we should halt or not. */
+ 	target->reset_halt = (a != 0);
+ 	/* When this happens - all workareas are invalid. */
+ 	target_free_all_working_areas_restore(target, 0);
+ 
+ 	/* do the assert */
+-	if (n->value == NVP_ASSERT)
+-		return target->type->assert_reset(target);
++	if (n->value == NVP_ASSERT) {
++		int retval = target->type->assert_reset(target);
++		if (target->defer_examine)
++			target_reset_examined(target);
++		return retval;
++	}
++
+ 	return target->type->deassert_reset(target);
+ }
+ 
+diff --git a/tcl/board/stm32mp25x_dk.cfg b/tcl/board/stm32mp25x_dk.cfg
+new file mode 100644
+index 000000000..e99a88508
+--- /dev/null
++++ b/tcl/board/stm32mp25x_dk.cfg
+@@ -0,0 +1,11 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++
++# Script for stm32mp25x DISCO board
++
++source [find interface/stlink-dap.cfg]
++
++transport select dapdirect_swd
++
++source [find target/stm32mp25x.cfg]
++
++reset_config srst_only
+diff --git a/tcl/target/stm32mp25x.cfg b/tcl/target/stm32mp25x.cfg
+new file mode 100644
+index 000000000..b5c882950
+--- /dev/null
++++ b/tcl/target/stm32mp25x.cfg
+@@ -0,0 +1,191 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++
++# STMicroelectronics STM32MP25x
++# STM32MP25x devices support both JTAG and SWD transports.
++
++# HLA does not support multi-cores nor custom CSW nor AP other than 0
++if { [using_hla] } {
++	echo "ERROR: HLA transport cannot work with this target."
++	shutdown
++}
++
++source [find target/swj-dp.tcl]
++source [find mem_helper.tcl]
++
++if { [info exists CHIPNAME] } {
++	set _CHIPNAME $CHIPNAME
++} else {
++	set _CHIPNAME stm32mp25x
++}
++
++# Set to 0 to prevent CPU examine. Default examine them
++if { ! [info exists EN_CA35_0] } { set EN_CA35_0 1 }
++if { ! [info exists EN_CA35_1] } { set EN_CA35_1 1 }
++if { ! [info exists EN_CM33] }   { set EN_CM33   1 }
++if { ! [info exists EN_CM0P] }   { set EN_CM0P   1 }
++
++set _ENDIAN little
++
++# jtag scan chain
++if { [info exists CPUTAPID] } {
++	set _CPUTAPID $CPUTAPID
++} else {
++	if { [using_jtag] } {
++		set _CPUTAPID 0x6ba00477
++	} {
++		set _CPUTAPID 0x6ba02477
++	}
++}
++
++# Chip Level TAP Controller, only in jtag mode
++if { [info exists CLCTAPID] } {
++	set _CLCTAPID $CLCTAPID
++} else {
++	set _CLCTAPID 0x16505041
++}
++
++swj_newdap $_CHIPNAME tap -expected-id $_CPUTAPID -irlen 4 -ircapture 0x01 -irmask 0x0f
++if { [using_jtag] } {
++	swj_newdap $_CHIPNAME.clc tap -expected-id $_CLCTAPID -irlen 5
++}
++
++dap create $_CHIPNAME.dap -chain-position $_CHIPNAME.tap
++
++# define AXI & APB Memory Access Ports
++# NOTE: do not change the order of target create
++target create $_CHIPNAME.ap0 mem_ap -dap $_CHIPNAME.dap -ap-num 0
++target create $_CHIPNAME.axi mem_ap -dap $_CHIPNAME.dap -ap-num 4
++target create $_CHIPNAME.ap2 mem_ap -dap $_CHIPNAME.dap -ap-num 2 -defer-examine
++target create $_CHIPNAME.ap8 mem_ap -dap $_CHIPNAME.dap -ap-num 8 -defer-examine
++
++# define the first Cortex-A35
++cti create $_CHIPNAME.cti.a35_0 -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x80220000
++target create $_CHIPNAME.a35_0 aarch64 -dap $_CHIPNAME.dap -dbgbase 0x80210000 -ap-num 0 -cti $_CHIPNAME.cti.a35_0 -defer-examine
++
++# define the second Cortex-A35
++cti create $_CHIPNAME.cti.a35_1 -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x80320000
++target create $_CHIPNAME.a35_1 aarch64 -dap $_CHIPNAME.dap -dbgbase 0x80310000 -ap-num 0 -cti $_CHIPNAME.cti.a35_1 -defer-examine
++
++# define the Cortex-M33
++target create $_CHIPNAME.m33 cortex_m -dap $_CHIPNAME.dap -ap-num 8 -defer-examine
++cti create $_CHIPNAME.cti.m33 -dap $_CHIPNAME.dap -ap-num 8 -baseaddr 0xe0042000
++
++# define the Cortex-M0+
++target create $_CHIPNAME.m0p cortex_m -dap $_CHIPNAME.dap -ap-num 2 -defer-examine
++cti create $_CHIPNAME.cti.m0p -dap $_CHIPNAME.dap -ap-num 2 -baseaddr 0xf0000000
++
++# define the system CTIs
++cti create $_CHIPNAME.cti.sys0 -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x80090000
++cti create $_CHIPNAME.cti.sys1 -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x800a0000
++
++targets $_CHIPNAME.a35_0
++
++target smp $_CHIPNAME.a35_0 $_CHIPNAME.a35_1
++
++reset_config srst_gates_jtag srst_pulls_trst
++
++adapter speed 5000
++adapter srst pulse_width 200
++# wait 1 seconds for bootrom
++adapter srst delay 1000
++
++# set CSW for AXI
++$_CHIPNAME.dap apsel 4
++$_CHIPNAME.dap apcsw 0x12800000
++
++# mmw with target selection
++proc target_mmw {target reg setbits clearbits} {
++	set val [eval $target read_memory $reg 32 1]
++	set val [expr {($val & ~$clearbits) | $setbits}]
++	eval $target mww $reg $val
++}
++
++lappend _telnet_autocomplete_skip _enable_debug
++# Uses AP0 and AXI
++proc _enable_debug {} {
++	# set debug enable bits in DBGMCU_CR to get ap2/cm0+ and ap8/cm33 visible
++	# set DBG_SWD_SEL_N bit in DBGMCU_CR to get ap2/cm0+ on main debug interface
++	$::_CHIPNAME.ap0 mww 0x80010004 0x17
++
++	# set bits C3LPEN and C3EN in RCC_C3CFGR to enable AP2 and CM0+ clock
++	target_mmw $::_CHIPNAME.axi 0x54200490 6 0
++
++	# Freeze watchdogs on CPU halt
++	$::_CHIPNAME.axi mww 0x4a010008 0x00000000
++	$::_CHIPNAME.axi mww 0x4a01003c 0x00000026
++	$::_CHIPNAME.axi mww 0x4a010040 0x00000038
++	$::_CHIPNAME.axi mww 0x4a010044 0x00000400
++	$::_CHIPNAME.axi mww 0x4a010048 0x00000400
++	$::_CHIPNAME.axi mww 0x4a01004c 0x00000600
++}
++
++lappend _telnet_autocomplete_skip _handshake_with_wrapper
++# Uses AP0
++proc _handshake_with_wrapper { halt } {
++	# Check for new handshake on DBGMCU_CR, otherwise switch to legacy one
++
++	# Wrapper inits 0x04, OpenOCD sets 0x07, wrapper replies 0x01
++	set dbgmcu_cr [eval $::_CHIPNAME.ap0 read_memory 0x80010004 32 1]
++	if {[expr {($dbgmcu_cr & 0x07) == 0x04}]} {
++		if { $halt } {
++			$::_CHIPNAME.ap0 mww 0x80010004 [expr {$dbgmcu_cr | 0x03}]
++		} else {
++			$::_CHIPNAME.ap0 mww 0x80010004 [expr {$dbgmcu_cr | 0x02}]
++		}
++		set dbgmcu_cr [eval $::_CHIPNAME.ap0 read_memory 0x80010004 32 1]
++		if {[expr {($dbgmcu_cr & 0x07) != 0x01}]} {
++			echo "\nWARNING: FSBL wrapper not detected. Board in dev boot mode?\n"
++		}
++		return
++	}
++
++	# Skip legacy, as it requires CA35_0
++	if { ! $::EN_CA35_0 } { return }
++
++	echo "INFO: Check for legacy wrapper"
++
++	# set few bits in CPU0 DBG_CLAIM to verify write permission
++	# FSBL wrapper will clear CPU0 DBG_CLAIM[0]
++	# toggle CPU0 DBG_CLAIM[0]
++	$::_CHIPNAME.ap0 mww 0x80210fa0 0x0b
++	set claim [$::_CHIPNAME.ap0 read_memory 0x80210fa4 32 1]
++	if {[expr {$claim & 0xfe}] != 0x0a} {
++		error "ERROR: cannot write in DBG_CLAIM. Missing FSBL wrapper?"
++	}
++	if {[expr {$claim & 1}]} {
++		echo "\nWARNING: FSBL wrapper not detected. Board in dev boot mode?\n"
++	}
++	$::_CHIPNAME.ap0 mww 0x80210fa4 0x0b
++}
++
++$_CHIPNAME.m33 configure -event reset-assert        { }
++$_CHIPNAME.m0p configure -event reset-assert        { }
++
++$_CHIPNAME.ap0 configure -event reset-assert-post   { adapter assert srst }
++
++$_CHIPNAME.ap0 configure -event reset-deassert-pre  {
++	adapter deassert srst deassert trst
++	catch {dap init}
++	catch {$::_CHIPNAME.dap apid 0}
++	$::_CHIPNAME.ap0 arp_examine
++	if { $::EN_CA35_0 } { $::_CHIPNAME.a35_0 arp_examine }
++	if { $::EN_CA35_1 } { $::_CHIPNAME.a35_1 arp_examine }
++}
++
++$_CHIPNAME.ap0 configure -event reset-deassert-post { $::_CHIPNAME.ap0 arp_examine; _handshake_with_wrapper $halt }
++$_CHIPNAME.axi configure -event reset-deassert-post {
++	$::_CHIPNAME.axi arp_examine
++	_enable_debug
++	if { $::EN_CA35_0 } { $::_CHIPNAME.a35_0 arp_examine;  if {$halt} {$::_CHIPNAME.a35_0 arp_halt} }
++	if { $::EN_CA35_1 } { $::_CHIPNAME.a35_1 arp_examine;  if {$halt} {$::_CHIPNAME.a35_1 arp_halt} }
++	if { $::EN_CM0P }   { $::_CHIPNAME.ap2 arp_examine; $::_CHIPNAME.m0p arp_examine }
++	if { $::EN_CM33 }   { $::_CHIPNAME.ap8 arp_examine; $::_CHIPNAME.m33 arp_examine; if {$halt} {$::_CHIPNAME.m33 arp_halt} }
++}
++
++$_CHIPNAME.axi configure -event examine-end         {
++	_enable_debug
++	if { $::EN_CA35_0 } { $::_CHIPNAME.a35_0 arp_examine }
++	if { $::EN_CA35_1 } { $::_CHIPNAME.a35_1 arp_examine }
++	if { $::EN_CM33 }   { $::_CHIPNAME.ap8 arp_examine; $::_CHIPNAME.m33 arp_examine }
++	if { $::EN_CM0P }   { $::_CHIPNAME.ap2 arp_examine; $::_CHIPNAME.m0p arp_examine }
++}
+-- 
+2.34.1
+
