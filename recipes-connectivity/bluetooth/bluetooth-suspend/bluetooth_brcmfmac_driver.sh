@@ -21,6 +21,11 @@ stm32mp157c-dk2*)
 stm32mp157f-dk2*)
 	# supported
 	;;
+
+stm32mp257f-dk*)
+	# supported
+	;;
+
 	*)
 	exit 1;
 esac
