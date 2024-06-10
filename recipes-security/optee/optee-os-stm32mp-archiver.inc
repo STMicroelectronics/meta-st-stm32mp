@@ -17,8 +17,13 @@ archiver_create_makefile_for_sdk() {
 SRC_PATH ?= \$(PWD)
 BLD_PATH ?= \$(SRC_PATH)/../build
 DEPLOYDIR ?= \$(SRC_PATH)/../deploy
+FIPTOOLDIR ?= \$(SRC_PATH)/..
+
+# Set default FIP config
+FIP_CONFIG ?= ${@' '.join(d for d in '${FIP_CONFIG}'.split() if not 'fastboot-' in d)}
 
 # Set default optee-os config
+DEVICETREE ?=
 CFG_EMBED_DTB_SOURCE_FILE ?= ${OPTEE_CONF}
 
 # Remove default variables
@@ -26,7 +31,8 @@ LDFLAGS =
 CFLAGS =
 CPPFLAGS =
 # Define default make options
-EXTRA_OEMAKE = $(echo "${EXTRA_OEMAKE}" | sed "s|LIBGCC_LOCATE_CFLAGS=[^ ]* |LIBGCC_LOCATE_CFLAGS=\$(KCFLAGS) |")
+EXTRA_OEMAKE = $(echo "${EXTRA_OEMAKE}" | sed "s|LIBGCC_LOCATE_CFLAGS=[^ ]* |LIBGCC_LOCATE_CFLAGS=\$(KCFLAGS) |" | \
+                sed 's,CFG_EXT_DTS='"${STAGING_EXTDT_DIR}/${EXTDT_DIR_OPTEE}"',CFG_EXT_DTS=\$(EXTDT_DIR)/'"${EXTDT_DIR_OPTEE}"',')
 
 # Set dependencies list for building all
 DEPS = optee
@@ -41,6 +47,7 @@ help:
 	@echo "  SRC_PATH  = \$(SRC_PATH)"
 	@echo "  BLD_PATH  = \$(BLD_PATH)"
 	@echo "  DEPLOYDIR = \$(DEPLOYDIR)"
+	@echo "  EXTDT_DIR = \$(EXTDT_DIR)"
 	@echo
 	@echo "FIP configuration:"
 	@echo "  Do not forget to set FIP deploydir folders (such as FIP_DEPLOYDIR_ROOT) to provide path to needed binaries"
@@ -84,8 +91,9 @@ optee:
 	fi
 
 fip: optee
-	FIP_DEPLOYDIR_OPTEE=\$(DEPLOYDIR) FIP_DEVICETREE="\$(CFG_EMBED_DTB_SOURCE_FILE)" FIP_CONFIG="optee" FIP_BL32_CONF="optee" fiptool-stm32mp
-
+	for fipconfig in \$(FIP_CONFIG) ; do \\
+		FIP_DEPLOYDIR_OPTEE=\$(DEPLOYDIR) FIP_CONFIG="\$\$fipconfig" \$(if \$(DEVICETREE),FIP_DEVICETREE="\$(DEVICETREE)") \$(FIPTOOLDIR)/fiptool-stm32mp || exit 1;\\
+	done
 clean:
 	@echo "Removing \$(BLD_PATH) ..."
 	@rm -rf \$(BLD_PATH)
