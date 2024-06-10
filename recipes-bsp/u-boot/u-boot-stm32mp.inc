@@ -1,20 +1,25 @@
-require recipes-bsp/u-boot/u-boot.inc
-
 FILESEXTRAPATHS:prepend := "${THISDIR}/u-boot-stm32mp:"
 
+require recipes-bsp/u-boot/u-boot.inc
+
+inherit external-dt
+inherit fip-utils-stm32mp
+
+# Include U-BOOT config definitions
+require u-boot-stm32mp-config.inc
+
+B = "${WORKDIR}/build"
 # Configure build dir for externalsrc class usage through devtool
 EXTERNALSRC_BUILD:pn-${PN} = "${WORKDIR}/build"
-B = "${WORKDIR}/build"
 
-SRC_URI:append:stm32mp1common = " file://fragment-04-fastboot_mmc0.fb_cfg;subdir=fragments/features"
-SRC_URI:append:stm32mp1common = " file://fragment-05-fastboot_mmc1.fb_cfg;subdir=fragments/features"
+SRC_URI:append = " ${@bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot', 'file://fragment-04-fastboot_mmc0.fb_cfg;subdir=fragments/features', '', d)}"
+SRC_URI:append = " ${@bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot', 'file://fragment-05-fastboot_mmc1.fb_cfg;subdir=fragments/features', '', d)}"
+
+EXTRA_OEMAKE += "${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', 'EXT_DTS=${STAGING_EXTDT_DIR}/${EXTDT_DIR_UBOOT}', '', d)}"
 
 # Configure for debug elf
 ELF_DEBUG_ENABLE ?= "1"
 UBOOT_ELF = "${@'u-boot' if d.getVar('ELF_DEBUG_ENABLE') == '1' else ''}"
-
-# Init UBOOT_DEVICETREE list if not configured
-UBOOT_DEVICETREE ?= ""
 
 # Init default MTDPART configurations
 UBOOT_MTDPART_CHECK_ENABLE ??= ""
@@ -171,143 +176,127 @@ do_configure:append() {
 # Append compile to handle specific device tree compilation
 #
 do_compile:append() {
-    if [ -n "${UBOOT_DEVICETREE}" ]; then
-        if [ -n "${UBOOT_CONFIG}" ]; then
-            unset i j k
-            for config in ${UBOOT_MACHINE}; do
-                i=$(expr $i + 1);
-                for type in ${UBOOT_CONFIG}; do
-                    j=$(expr $j + 1);
-                    if [ $j -eq $i ]; then
-                        # Get short suffix for current type
-                        type_suffix=$(echo ${type} | cut -d'_' -f1)
-                        type_filter=$(echo ${type} | cut -d'_' -f2)
-                        [ "${type_suffix}" = "${type_filter}" ] && type_filter=""
-                        for devicetree in ${UBOOT_DEVICETREE}; do
-                            if [ -n "${type_filter}" ]; then
-                                if [ "$(echo ${devicetree} | grep -c ${type_filter})" -eq 1 ]; then
-                                    bbnote "The ${type_filter} filter for ${type_suffix} config matches ${devicetree} device tree. Go for build..."
-                                else
-                                    bbnote "The ${type_filter} filter for ${type_suffix} config doesn't match ${devicetree} device tree. Skip build!"
-                                    continue
+    if [ -n "${UBOOT_CONFIG}" ]; then
+        unset i j k
+        for config in ${UBOOT_MACHINE}; do
+            i=$(expr $i + 1);
+            # Initialize devicetree list
+            uboot_devicetree=$(echo ${UBOOT_DEVICETREE} | cut -d',' -f${i})
+            for type in ${UBOOT_CONFIG}; do
+                j=$(expr $j + 1);
+                if [ $j -eq $i ]; then
+                    # Get short suffix for current type
+                    type_suffix=$(echo ${type} | cut -d'_' -f1)
+                    for devicetree in ${uboot_devicetree}; do
+                        # Cleanup previous build artifact
+                        [ -f "${B}/${config}/dts/dt.dtb" ] && rm "${B}/${config}/dts/dt.dtb"
+                        # Build target
+                        oe_runmake -C ${S} O=${B}/${config} DEVICE_TREE=${devicetree} DEVICE_TREE_EXT=${devicetree}.dtb
+                        # Install specific binary
+                        for binary in ${UBOOT_BINARIES}; do
+                            k=$(expr $k + 1);
+                            if [ $k -eq $i ]; then
+                                binarysuffix=$(echo ${binary} | cut -d'.' -f2)
+                                install -m 644 ${B}/${config}/${binary} ${B}/${config}/u-boot-${devicetree}.${binarysuffix}
+                                if [ "x${UBOOT_SIGN_ENABLE}" = "x1" ] ; then
+                                        ubootdevicetree="${B}/${config}/u-boot-${devicetree}.${binarysuffix}"
+                                        namewithoutsignature="${B}/${config}/u-boot-${devicetree}-without-signature.${binarysuffix}"
+                                        cp $ubootdevicetree $namewithoutsignature
                                 fi
                             fi
-                            # Cleanup previous build artifact
-                            [ -f "${B}/${config}/dts/dt.dtb" ] && rm "${B}/${config}/dts/dt.dtb"
-                            # Build target
-                            oe_runmake -C ${S} O=${B}/${config} DEVICE_TREE=${devicetree} DEVICE_TREE_EXT=${devicetree}.dtb
-                            # Install specific binary
-                            for binary in ${UBOOT_BINARIES}; do
-                                k=$(expr $k + 1);
-                                if [ $k -eq $i ]; then
-                                    binarysuffix=$(echo ${binary} | cut -d'.' -f2)
-                                    install -m 644 ${B}/${config}/${binary} ${B}/${config}/u-boot-${devicetree}.${binarysuffix}
-                                    if [ "x${UBOOT_SIGN_ENABLE}" = "x1" ] ; then
-                                            ubootdevicetree="${B}/${config}/u-boot-${devicetree}.${binarysuffix}"
-                                            namewithoutsignature="${B}/${config}/u-boot-${devicetree}-without-signature.${binarysuffix}"
-                                            cp $ubootdevicetree $namewithoutsignature
-                                    fi
-                                fi
-                            done
-                            unset k
                         done
-                    fi
-                done
-                unset j
+                        unset k
+                    done
+                fi
             done
-        else
-            bbfatal "Wrong u-boot-stm32mp configuration: please make sure to use UBOOT_CONFIG through BOOTSCHEME_LABELS config"
-        fi
+            unset j
+        done
     fi
 }
 
 # -----------------------------------------------------------------------------
 # Append deploy to handle specific device tree binary deployement
 #
-do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/u-boot"
-do_deploy:append() {
-    if [ -n "${UBOOT_DEVICETREE}" ]; then
-        if [ -n "${UBOOT_CONFIG}" ]; then
-            # Clean deploydir from any available binary first
-            # This allows to only install the devicetree binary ones
-            rm -rf ${DEPLOYDIR}
-            install -d ${DEPLOYDIR}
+export_binaries() {
+    local dest="${1}"
 
-            unset i j k
-            for config in ${UBOOT_MACHINE}; do
-                i=$(expr $i + 1)
-                for type in ${UBOOT_CONFIG}; do
-                    j=$(expr $j + 1)
-                    if [ $j -eq $i ]; then
-                        for binary in ${UBOOT_BINARIES}; do
-                            k=$(expr $k + 1)
-                            if [ $k -eq $i ]; then
-                                binarysuffix=$(echo ${binary} | cut -d'.' -f2)
-                                # Manage subfolder in case of u-boot.img
-                                if [ "${binarysuffix}" = "img" ]; then
-                                    SUBFOLDER="/${type}"
-                                else
-                                    SUBFOLDER=""
+    if [ -n "${UBOOT_CONFIG}" ]; then
+        # Clean deploydir from any available binary first
+        # This allows to only install the devicetree binary ones
+
+        unset i j k
+        for config in ${UBOOT_MACHINE}; do
+            i=$(expr $i + 1)
+            # Initialize devicetree list
+            uboot_devicetree=$(echo ${UBOOT_DEVICETREE} | cut -d',' -f${i})
+            for type in ${UBOOT_CONFIG}; do
+                j=$(expr $j + 1)
+                if [ $j -eq $i ]; then
+                    for binary in ${UBOOT_BINARIES}; do
+                        k=$(expr $k + 1)
+                        if [ $k -eq $i ]; then
+                            binarysuffix=$(echo ${binary} | cut -d'.' -f2)
+                            # Install destination folder
+                            install -d ${dest}
+                            [ -n "${ELF_DEBUG_ENABLE}" ] && install -d ${dest}/debug
+                            # Get short suffix for current type
+                            type_suffix=$(echo ${type} | cut -d'_' -f1)
+                            for devicetree in ${uboot_devicetree}; do
+                                # Install u-boot binary
+                                install -m 644 ${B}/${config}/u-boot-${devicetree}.${binarysuffix} ${dest}
+                                # Init soc suffix
+                                soc_suffix=""
+                                if [ -n "${STM32MP_SOC_NAME}" ]; then
+                                    for soc in ${STM32MP_SOC_NAME}; do
+                                        [ "$(echo ${devicetree} | grep -c ${soc})" -eq 1 ] && soc_suffix="-${soc}"
+                                    done
                                 fi
-                                # Install destination folder
-                                install -d ${DEPLOYDIR}${SUBFOLDER}
-                                [ -n "${ELF_DEBUG_ENABLE}" ] && install -d ${DEPLOYDIR}${SUBFOLDER}/debug
-                                # Get short suffix for current type
-                                type_suffix=$(echo ${type} | cut -d'_' -f1)
-                                type_filter=$(echo ${type} | cut -d'_' -f2)
-                                [ "${type_suffix}" = "${type_filter}" ] && type_filter=""
-                                for devicetree in ${UBOOT_DEVICETREE}; do
-                                    if [ -n "${type_filter}" ]; then
-                                        if [ "$(echo ${devicetree} | grep -c ${type_filter})" -eq 1 ]; then
-                                            bbnote "The ${type_filter} filter for ${type_suffix} config matches ${devicetree} device tree. Go for binary deploy..."
-                                        else
-                                            bbnote "The ${type_filter} filter for ${type_suffix} config doesn't match ${devicetree} device tree. Skip binary deploy!"
-                                            continue
-                                        fi
-                                    fi
-                                    # Install u-boot binary
-                                    install -m 644 ${B}/${config}/u-boot-${devicetree}.${binarysuffix} ${DEPLOYDIR}${SUBFOLDER}/
-                                    # Init soc suffix
-                                    soc_suffix=""
-                                    if [ -n "${STM32MP_SOC_NAME}" ]; then
-                                        for soc in ${STM32MP_SOC_NAME}; do
-                                            [ "$(echo ${devicetree} | grep -c ${soc})" -eq 1 ] && soc_suffix="-${soc}"
-                                        done
-                                    fi
-                                    # Install 'u-boot-nodtb.bin' binary in case '*.dtb' binary installation configured
-                                    if [ "${binarysuffix}" = "dtb" ]; then
-                                        install -m 644 ${B}/${config}/u-boot-nodtb.bin ${DEPLOYDIR}${SUBFOLDER}/u-boot-nodtb${soc_suffix}-${type_suffix}.bin
-                                    fi
-                                    if [ -n "${UBOOT_ELF}" ]; then
-                                        install -m 644 ${B}/${config}/${UBOOT_ELF} ${DEPLOYDIR}${SUBFOLDER}/debug/u-boot${soc_suffix}.${UBOOT_ELF_SUFFIX}
-                                    fi
+                                # Install 'u-boot-nodtb.bin' binary in case '*.dtb' binary installation configured
+                                if [ "${binarysuffix}" = "dtb" ]; then
+                                    install -m 644 ${B}/${config}/u-boot-nodtb.bin ${dest}/u-boot-nodtb${soc_suffix}-${type_suffix}.bin
+                                fi
+                                if [ -n "${UBOOT_ELF}" ]; then
+                                    install -m 644 ${B}/${config}/${UBOOT_ELF} ${dest}/debug/u-boot${soc_suffix}-${type_suffix}.${UBOOT_ELF_SUFFIX}
+                                fi
 
-                                    if [ "${UBOOT_SIGN_ENABLE}" = "1" -a -n "${UBOOT_DTB_BINARY}" ] ; then
-                                        ${UBOOT_MKIMAGE_SIGN} \
-                                                ${@'-D "${UBOOT_MKIMAGE_DTCOPTS}"' if len('${UBOOT_MKIMAGE_DTCOPTS}') else ''} \
-                                                -F -k "${UBOOT_SIGN_KEYDIR}" \
-                                                -K "${B}/${config}/u-boot-${devicetree}.${binarysuffix}" \
-                                                -r ${B}/fitImage-linux \
-                                                ${UBOOT_MKIMAGE_SIGN_ARGS}
+                                if [ "${UBOOT_SIGN_ENABLE}" = "1" -a -n "${UBOOT_DTB_BINARY}" ] ; then
+                                    ${UBOOT_MKIMAGE_SIGN} \
+                                            ${@'-D "${UBOOT_MKIMAGE_DTCOPTS}"' if len('${UBOOT_MKIMAGE_DTCOPTS}') else ''} \
+                                            -F -k "${UBOOT_SIGN_KEYDIR}" \
+                                            -K "${B}/${config}/u-boot-${devicetree}.${binarysuffix}" \
+                                            -r ${B}/fitImage-linux \
+                                            ${UBOOT_MKIMAGE_SIGN_ARGS}
 
-                                        cp ${B}/${config}/u-boot-${devicetree}.${binarysuffix} ${B}/${config}/u-boot-${devicetree}-with-signature.${binarysuffix}
-                                        install -m 644 ${B}/${config}/u-boot-${devicetree}-without-signature.${binarysuffix} ${DEPLOYDIR}${SUBFOLDER}/
-                                        install -m 644 ${B}/${config}/u-boot-${devicetree}-with-signature.${binarysuffix} ${DEPLOYDIR}${SUBFOLDER}/
-                                        install -m 644 ${B}/${config}/u-boot-${devicetree}.${binarysuffix} ${DEPLOYDIR}${SUBFOLDER}/
-                                    fi
-                                done
-                            fi
-                        done
-                        unset k
-                    fi
-                done
-                unset j
+                                    cp ${B}/${config}/u-boot-${devicetree}.${binarysuffix} ${B}/${config}/u-boot-${devicetree}-with-signature.${binarysuffix}
+                                    install -m 644 ${B}/${config}/u-boot-${devicetree}-without-signature.${binarysuffix} ${dest}/
+                                    install -m 644 ${B}/${config}/u-boot-${devicetree}-with-signature.${binarysuffix} ${dest}/
+                                    install -m 644 ${B}/${config}/u-boot-${devicetree}.${binarysuffix} ${dest}/
+                                fi
+                            done
+                        fi
+                    done
+                    unset k
+                fi
             done
-        else
-            bbfatal "Wrong u-boot-stm32mp configuration: please make sure to use UBOOT_CONFIG through BOOTSCHEME_LABELS config"
-        fi
+            unset j
+        done
     fi
 }
+
+do_install:append() {
+    export_binaries ${D}${FIP_DIR_UBOOT}
+}
+
+do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}${FIP_DIR_UBOOT}"
+do_deploy() {
+    export_binaries ${DEPLOYDIR}
+}
+addtask deploy before do_build after do_install
+
+PACKAGES =+ "${PN}-fip"
+
+FILES:${PN}-fip = "${FIP_DIR_UBOOT}"
+SYSROOT_DIRS:append = " ${FIP_DIR_UBOOT}"
 
 # ---------------------------------------------------------------------
 # Avoid QA Issue: No GNU_HASH in the elf binary
@@ -319,3 +308,4 @@ INSANE_SKIP:${PN} += "textrel"
 # ---------------------------------------------------------------------
 # Avoid QA Issue: contains reference to TMPDIR [buildpaths]
 INSANE_SKIP:${PN} += "buildpaths"
+

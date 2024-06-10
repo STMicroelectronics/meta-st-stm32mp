@@ -7,6 +7,8 @@ LICENSE = "GPL-2.0-or-later"
 PROVIDES += "u-boot"
 RPROVIDES:${PN} += "u-boot"
 
+COMPATIBLE_MACHINE = "(stm32mpcommon)"
+
 # ---------------------------------
 # Configure archiver use
 # ---------------------------------
