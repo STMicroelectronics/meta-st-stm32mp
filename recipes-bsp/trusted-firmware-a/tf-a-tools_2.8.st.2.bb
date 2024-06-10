@@ -5,4 +5,4 @@ SUMMARY = "Cert_create & Fiptool for fip generation for Trusted Firmware-A"
 LICENSE = "BSD-3-Clause"
 
 # Configure settings
-TFA_PLATFORM  = "stm32mp1"
+TFA_PLATFORM = "${TF_A_TOOLS_PLATFORM}"

@@ -21,6 +21,9 @@ If you have never configured you git configuration:
     $ git config --global user.name "your_name"
     $ git config --global user.email "your_email@example.com"
 
+External device tree is extracted. If this is not the case, please follow the
+README_HOW_TO.txt in ../external-dt.
+
 ---------------------------------------
 2. Initialize cross-compilation via SDK
 ---------------------------------------
@@ -38,7 +41,7 @@ sourced the sdk environment.
 3. Prepare TF-A source
 ----------------------
 If not already done, extract the sources from Developer Package tarball, for example:
-    $ tar xf en.SOURCES-stm32mp1-*.tar.xz
+    $ tar xf en.SOURCES-stm32mp*-*.tar.xz
 
 In the TF-A source directory (sources/*/##BP##-##PR##),
 you have one TF-A source tarball, the patches and one Makefile:
@@ -81,6 +84,7 @@ have 3 solutions to use git:
     $ git checkout -b WORKING
     $ for p in `ls -1 ../*.patch`; do git am $p; done
 
+
 4.3 Get Git from Arm Software community and apply STMicroelectronics patches
 ---------------------------------------------------------------
     URL: git:/git.trustedfirmware.org/TF-A/trusted-firmware-a.git
@@ -98,6 +102,12 @@ have 3 solutions to use git:
 Since OpenSTLinux activates FIP by default, FIP_artifacts directory path must be specified before launching compilation
   - In case of using SOURCES-xxxx.tar.gz of Developer package the FIP_DEPLOYDIR_ROOT must be set as below:
     $> export FIP_DEPLOYDIR_ROOT=$PWD/../../FIP_artifacts
+To use the external device tree feature, EXTDT_DIR variable must be set to the root location of external DT
+as specified in the README.HOW_TO.txt of external-dt
+    $> export EXTDT_DIR=<external DT location>
+To use the STM32MP DDR firmware, FWDDR_DIR variable must be set to the root location of STM32MP DDR firmware
+as specified in the README.HOW_TO.txt of stm32mp-ddr-phy
+    $> export FWDDR_DIR=<stm32mp ddr firmware location>
 
 The build results for this component are available in DEPLOYDIR (Default: $PWD/../deploy).
 If needed, this deploy directory can be specified by adding "DEPLOYDIR=<your_deploy_dir_path>" compilation option to the build command line below.
@@ -108,9 +118,10 @@ To list TF-A source code compilation configurations:
 To compile TF-A source code:
     $ make -f $PWD/../Makefile.sdk all
 To compile TF-A source code for a specific config:
-    $ make -f $PWD/../Makefile.sdk TF_A_DEVICETREE=stm32mp157c-ev1 TF_A_CONFIG=trusted ELF_DEBUG_ENABLE='1' all
+    $ make -f $PWD/../Makefile.sdk TF_A_DEVICETREE=stm32mp157f-ev1 TF_A_CONFIG=optee-sdcard ELF_DEBUG_ENABLE='1' all
         NB: TF_A_DEVICETREE flag must be set to switch to correct board configuration.
 To compile TF-A source code and overwrite the default FIP artifacts with built artifacts:
+    $> rm -rf $FIP_DEPLOYDIR_ROOT/arm-trusted-firmware/*
     $> make -f $PWD/../Makefile.sdk DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware all
 
 ---------------------------
@@ -122,17 +133,17 @@ Please use STM32CubeProgrammer to update the boot partitions, find more informat
 7. Update Starter Package with TF-A compilation outputs
 ---------------------------
 If not already done, extract the artifacts from Starter Package tarball, for example:
-    # tar xf en.FLASH-stm32mp1-*.tar.xz
+    # tar xf en.FLASH-stm32mp*-*.tar.xz
 
 Move to Starter Package root folder,
     #> cd <your_starter_package_dir_path>
 Cleanup Starter Package from original TF-A artifacts first
-    #> rm -rf images/stm32mp1/arm-trusted-firmware/*
-    #> rm -rf images/stm32mp1/fip/*
+    #> rm -rf images/stm32mp*/arm-trusted-firmware/*
+    #> rm -rf images/stm32mp*/fip/*
 Update Starter Package with new FSBL binaries from <DEPLOYDIR> folder
-    #> DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware && cp -rvf $DEPLOYDIR/* images/stm32mp1/arm-trusted-firmware/
-        NB: if <DEPLOYDIR> has not been overide at compilation step, use default path: <tf-a source code folder>/../deploy
+    #> DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/arm-trusted-firmware && cp -rvf $DEPLOYDIR/* images/stm32mp*/arm-trusted-firmware/
+        NB: if <DEPLOYDIR> has not been overriden at compilation step, use default path: <tf-a source code folder>/../deploy
 Update Starter Package with new fip artifacts from <FIP_DEPLOYDIR_ROOT>/fip folder:
-    #> cp -rvf $FIP_DEPLOYDIR_ROOT/fip/* images/stm32mp1/fip/
+    #> cp -rvf $FIP_DEPLOYDIR_ROOT/fip/* images/stm32mp*/fip/
 
 Then the new Starter Package is ready to use for "Image flashing" on board (more information on wiki website https://wiki.st.com/stm32mpu).

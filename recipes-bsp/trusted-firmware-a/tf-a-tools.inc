@@ -3,6 +3,8 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/tf-a-tools:"
 SRC_URI:append = " \
     file://0001-FIX-GCC-tools-overwrite.patch \
     file://0001-tools-allow-to-use-a-root-key-password-from-command-.patch \
+    \
+    file://create_st_fip_binary.sh \
     "
 
 DEPENDS += "dtc-native openssl"
@@ -43,6 +45,8 @@ do_install() {
         ${B}/tools/cert_create/cert_create \
         ${B}/tools/encrypt_fw/encrypt_fw \
         ${D}${bindir}
+
+    install -m 0755 ${WORKDIR}/create_st_fip_binary.sh ${D}${bindir}
 }
 
 BBCLASSEXTEND += "native nativesdk"
