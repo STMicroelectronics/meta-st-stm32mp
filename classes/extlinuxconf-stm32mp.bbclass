@@ -77,6 +77,7 @@ UBOOT_EXTLINUX_FIT ??= "0"
 UBOOT_EXTLINUX_CONSOLE ??= "console=${console},${baudrate}"
 UBOOT_EXTLINUX_LABELS ??= "linux"
 UBOOT_EXTLINUX_FDT ??= ""
+UBOOT_EXTLINUX_FDTOVERLAYS ??= ""
 UBOOT_EXTLINUX_FDTDIR ??= "../"
 UBOOT_EXTLINUX_KERNEL_IMAGE ?= "/${KERNEL_IMAGETYPE}"
 UBOOT_EXTLINUX_KERNEL_ARGS ?= "rootwait rw"
@@ -109,7 +110,13 @@ def create_extlinux_file(cfile, labels, data):
                 cfgfile.write('TIMEOUT %s\n' % (timeout))
 
             if len(labels.split()) > 1:
-                default = localdata.getVar('UBOOT_EXTLINUX_DEFAULT_LABEL')
+                default = None
+                for label in labels.split():
+                    if localdata.getVar('UBOOT_EXTLINUX_DEFAULT_LABEL:%s' % label):
+                        default = localdata.getVar('UBOOT_EXTLINUX_DEFAULT_LABEL:%s' % label)
+                        break
+                if default is None:
+                    default = localdata.getVar('UBOOT_EXTLINUX_DEFAULT_LABEL')
                 if default:
                     cfgfile.write('DEFAULT %s\n' % (default))
 
@@ -155,6 +162,10 @@ def create_extlinux_file(cfile, labels, data):
                     cfgfile.write('LABEL %s\n\tKERNEL %s\n' % (menu_description, kernel_image))
 
                 kernel_args = localdata.getVar('UBOOT_EXTLINUX_KERNEL_ARGS')
+
+                fdtoverlay = localdata.getVar('UBOOT_EXTLINUX_FDTOVERLAYS')
+                if fdtoverlay:
+                    cfgfile.write('\tFDTOVERLAYS %s\n'% fdtoverlay)
 
                 initrd = localdata.getVar('UBOOT_EXTLINUX_INITRD')
                 if initrd:
