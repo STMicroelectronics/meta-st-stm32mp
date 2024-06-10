@@ -3,15 +3,21 @@ COMPATIBLE_MACHINE = "(stm32mpcommon)"
 #for EFI
 include ${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'conf/image-uefi.conf', '', d)}
 inherit kernel
+inherit external-dt
+inherit multilib_header
+
+# For FIT image to expand properly for UBOOT_CONFIG vars
+include ${@["", "recipes-bsp/u-boot/u-boot-stm32mp-config.inc"][(bb.data.inherits_class('uboot-config', d))]}
 
 DEPENDS += "openssl-native util-linux-native libyaml-native"
+DEPENDS += "unifdef-native bison-native rsync-native"
 
 B = "${WORKDIR}/build"
 # Configure build dir for externalsrc class usage through devtool
 EXTERNALSRC_BUILD:pn-${PN} = "${WORKDIR}/build"
 
 # To share config fragments between layers
-FILESEXTRAPATHS:prepend := "${THISDIR}:"
+FILESEXTRAPATHS:prepend := "${THISDIR}:${THISDIR}/linux-stm32mp:"
 
 do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/kernel"
 
@@ -19,6 +25,7 @@ do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/kernel"
 # Module kernel signature
 KERNEL_SIGN_ENABLE ?= "0"
 EXTRA_OEMAKE += "${@oe.utils.ifelse(d.getVar('KERNEL_SIGN_ENABLE') == '1', 'INSTALL_MOD_STRIP=1','')}"
+EXTRA_OEMAKE += "${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', 'KBUILD_EXTDTS=${STAGING_EXTDT_DIR}/${EXTDT_DIR_LINUX}', '', d)}"
 
 # Deploy kernel config file to deploy folder
 KERNEL_CONFIG_DEPLOY ??= "0"
@@ -70,10 +77,25 @@ do_configure:append() {
 }
 
 # ---------------------------------------------------------------------
+# stub for devicetree which are located on st directory
+do_install:prepend() {
+    if [ -d "${B}/arch/${ARCH}/boot/dts/st" ]; then
+        for dtbf in ${KERNEL_DEVICETREE}; do
+            if [ -n "${KERNEL_SUB_PATH}" -a -e "${B}/arch/${ARCH}/boot/dts/${KERNEL_SUB_PATH}${dtbf}" ]; then
+                install -m 0644 "${B}/arch/${ARCH}/boot/dts/${KERNEL_SUB_PATH}${dtbf}" "${B}/arch/${ARCH}/boot/dts/"
+            else
+                if [ -z "${KERNEL_SUB_PATH}" -a -e "${B}/arch/${ARCH}/boot/dts/st/${dtbf}" ]; then
+                    install -m 0644 "${B}/arch/${ARCH}/boot/dts/st/${dtbf}" "${B}/arch/${ARCH}/boot/dts/"
+                fi
+            fi
+        done
+    fi
+}
 do_install:append() {
     # Install KERNEL_IMAGETYPE for kernel-imagebootfs package
     install -m 0644 ${KERNEL_OUTPUT_DIR}/${KERNEL_IMAGETYPE} ${D}/${KERNEL_IMAGEDEST}
 
+    install -d ${D}/${sysconfdir}/modprobe.d
     if ${@bb.utils.contains('MACHINE_FEATURES','gpu','true','false',d)}; then
         # when ACCEPT_EULA are filled
         echo "blacklist etnaviv" > ${D}/${sysconfdir}/modprobe.d/blacklist.conf
@@ -89,6 +111,13 @@ do_install:append() {
         install -d ${D}${EFI_PREFIX}/dtb
         install -m 0664 ${D}${EFI_PREFIX}/*.dtb ${D}${EFI_PREFIX}/dtb/
     fi
+
+    # install header for sdk
+    oe_runmake headers_install INSTALL_HDR_PATH=${D}${prefix}/src/linux-header-${LINUX_VERSION}
+    # Kernel should not be exporting this header
+    rm -f ${D}${prefix}/src/linux-header-${LINUX_VERSION}/include/scsi/scsi.h
+    # The ..install.cmd conflicts between various configure runs
+    find ${D}${prefix}/src/linux-header-${LINUX_VERSION} -name ..install.cmd | xargs rm -f
 }
 # ---------------------------------------------------------------------
 do_deploy:append() {
@@ -103,16 +132,6 @@ do_deploy:append() {
 }
 do_deploy[depends] += " virtual/kernel:do_package "
 
-# python() {
-#     fitimage_signed = d.getVar('UBOOT_SIGN_ENABLE')
-#     devicetree = d.getVar('KERNEL_DEVICETREE').split()
-#     machine_features = d.getVar('MACHINE_FEATURES')
-#     if 'fit' in machine_features:
-#         if fitimage_signed is not None and fitimage_signed == "1":
-#             if len(devicetree) > 1:
-#                 bb.fatal("The signature of FIT image work only when there is only "
-#                          "one DEVICE-TREE specified")
-# }
 
 # ---------------------------------------------------------------------
 # Support checking the kernel load address parameter: expecting proper value for ST kernel.
