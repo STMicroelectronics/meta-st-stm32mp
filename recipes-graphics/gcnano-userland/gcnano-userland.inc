@@ -10,39 +10,51 @@ PROVIDES = "\
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv2', 'virtual/libgles2', '', d)}  \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv2', 'virtual/libgles3', '', d)}  \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'vg', 'virtual/libopenvg', '', d)}     \
+    ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'vx', 'virtual/libopenvx', '', d)}     \
     "
 
 PACKAGES += "\
     gcnano-ldconf                                                                                           \
     libgal-gcnano libgal-gcnano-dev                                                                         \
+    \
+    ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'cl', 'libopencl-gcnano libopencl-gcnano-dev', '', d)}     \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'egl', 'libegl-gcnano libegl-gcnano-dev', '', d)}          \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'gbm', 'libgbm-gcnano libgbm-gcnano-dev', '', d)}          \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv1', 'libgles1-gcnano libgles1-gcnano-dev', '', d)}   \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv2', 'libgles2-gcnano libgles2-gcnano-dev', '', d)}   \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv2', 'libgles3-gcnano-dev', '', d)}                   \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'vg', 'libopenvg-gcnano libopenvg-gcnano-dev', '', d)}     \
+    ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'vulkan', 'libvulkan-driver-gcnano libvulkan-driver-gcnano-dev', '', d)} \
+    ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'vx', 'libopenvx-gcnano libopenvx-gcnano-dev', '', d)}     \
+    ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'vx', 'libovxkernels-gcnano libovxkernels-gcnano-dev', '', d)} \
+    \
+    ${@bb.utils.contains_any('GCNANO_PACKAGECONFIG', 'glesv1 glesv2 vg vulkan', 'libglslc-gcnano libglslc-gcnano-dev', '', d)}  \
+    ${@bb.utils.contains_any('GCNANO_PACKAGECONFIG', 'cl vx', 'libclc-gcnano libclc-gcnano-dev', '', d)}                        \
+    ${@bb.utils.contains_any('GCNANO_PACKAGECONFIG', 'cl vulkan', 'libspirv-gcnano libspirv-gcnano-dev', '', d)}    \
     "
 
 GCNANO_BACKEND ??= "multi"
 GCNANO_VERSION ??= "6"
 GCNANO_DATE ??= ""
 
-# Init the gcnano library version
-GCNANO_LIBVERSION ?= "${GCNANO_VERSION}.${GCNANO_BACKEND}"
+GCNANO_MACHINE:stm32mp1common = "stm32mp1"
+GCNANO_MACHINE:stm32mp2common = "stm32mp2"
 
 # Init the gcnano build type
 GCNANO_FLAVOUR ??= "release"
 
 # Init the gcnano tarball file name
-GCNANO_TAR_FILENAME ?= "gcnano-userland-${GCNANO_BACKEND}-${GCNANO_VERSION}-${GCNANO_DATE}"
+GCNANO_TAR_FILENAME ?= "gcnano-userland-${GCNANO_BACKEND}-${GCNANO_MACHINE}-${GCNANO_VERSION}-${GCNANO_DATE}"
 
 # Configure gcnano output library dir
 GCNANO_USERLAND_OUTPUT_LIBDIR ??= "${libdir}"
 
 GCNANO_USERLAND_LDCONF ?= "gcnano.conf"
+GCNANO_OPENCL_ICD ?= "VeriSilicon.icd"
+GCNANO_VULKAN_ICD ?= "VeriSilicon_icd.json"
 
 # Configure the pkgconfig settings
-PKGCONFIG_DV ??= "22.0.3"
+PKGCONFIG_DV ??= "23.0.3"
 PKGCONFIG_PREFIX ??= "${exec_prefix}"
 
 do_compile:append() {
@@ -81,8 +93,20 @@ gcnano_install_lib() {
     install -m 0755 -d ${gcnano_incdir_install}/KHR
     install -m 0644 ${gcnano_incdir}/KHR/* ${gcnano_incdir_install}/KHR
 
+    # Install compiler libraries when needed
+    needs_clc="false"
+    needs_glslc="false"
+    needs_spirv="false"
+
     for lib in ${GCNANO_PACKAGECONFIG}; do
         case ${lib} in
+            "cl")
+                # Install libraries
+                find ${gcnano_libdir}/* -type f -name libOpenCL*.so.* -exec install -m 0555 '{}' ${gcnano_libdir_install}/ \;
+                # Request CLC and SPIR-V
+                needs_clc="true"
+                needs_spirv="true"
+                ;;
             "egl")
                 # Install libraries
                 find ${gcnano_libdir}/* -type f -name libEGL.so.* -exec install -m 0555 '{}' ${gcnano_libdir_install}/ \;
@@ -113,12 +137,13 @@ gcnano_install_lib() {
                 # Install pkgconfig
                 install -m 0755 -d ${gcnano_pkgdir_install}
                 install -m 644 ${gcnano_pkgdir}/glesv1_cm.pc ${gcnano_pkgdir_install}/
+                # Request GLSLC
+                needs_glslc="true"
                 ;;
             "glesv2")
                 # Install libraries
-                install -m 0555 ${gcnano_libdir}/libGLSLC.so ${gcnano_libdir_install}/
                 find ${gcnano_libdir}/* -type f -name libGLESv2.so.* -exec install -m 0555 '{}' ${gcnano_libdir_install}/ \;
-                # Install GLESv2 and GLESv3 includes
+                # Install includes GLESv2 and GLESv3
                 install -m 0755 -d ${gcnano_incdir_install}/GLES2
                 install -m 0644 ${gcnano_incdir}/GLES2/* ${gcnano_incdir_install}/GLES2
                 # Hack for weston & kmscube compilation
@@ -129,6 +154,15 @@ gcnano_install_lib() {
                 # Install pkgconfig
                 install -m 0755 -d ${gcnano_pkgdir_install}
                 install -m 644 ${gcnano_pkgdir}/glesv2.pc ${gcnano_pkgdir_install}/
+                # Request GLSLC
+                needs_glslc="true"
+                ;;
+            "vulkan")
+                # Install libraries
+                find ${gcnano_libdir}/* -type f -name libvulkan*.so* -exec install -m 0555 '{}' ${gcnano_libdir_install}/ \;
+                # Request GLSLC and SPIR-V
+                needs_glslc="true"
+                needs_spirv="true"
                 ;;
             "vg")
                 # Install libraries
@@ -139,9 +173,46 @@ gcnano_install_lib() {
                 # Install pkgconfig
                 install -m 0755 -d ${gcnano_pkgdir_install}
                 install -m 644 ${gcnano_pkgdir}/vg.pc ${gcnano_pkgdir_install}/
+                # Request GLSLC
+                needs_glslc="true"
+                ;;
+            "vx")
+                # Install libraries
+                find ${gcnano_libdir}/* -type f -name libOpenVX*.so* -exec install -m 0555 '{}' ${gcnano_libdir_install}/ \;
+                install -m 0555 ${gcnano_libdir}/libArchModelSw.so ${gcnano_libdir_install}/
+                install -m 0555 ${gcnano_libdir}/libNNArchPerf.so ${gcnano_libdir_install}/
+                install -m 0555 ${gcnano_libdir}/libovxlib.so ${gcnano_libdir_install}/
+                install -m 0555 ${gcnano_libdir}/libNNGPUBinary.so ${gcnano_libdir_install}/
+                install -m 0555 ${gcnano_libdir}/libNNVXCBinary.so ${gcnano_libdir_install}/
+                install -m 0555 ${gcnano_libdir}/libOvx12VXCBinary.so ${gcnano_libdir_install}/
+                install -m 0555 ${gcnano_libdir}/libOvxGPUVXCBinary.so ${gcnano_libdir_install}/
+                # Install includes
+                install -m 0755 -d ${gcnano_incdir_install}/VX
+                install -m 0644 ${gcnano_incdir}/VX/* ${gcnano_incdir_install}/VX
+                # Request CLC
+                needs_clc="true"
+                # To allow building OpenVX kernel program from OpenCL kernel source code,
+                # cl_viv_vx_ext.h must be installed at runtime
+                install -m 0755 -d ${gcnano_incdir_install}/CL
+                install -m 644 ${gcnano_incdir}/CL/cl_viv_vx_ext.h ${gcnano_incdir_install}/CL
                 ;;
         esac
     done
+
+    # Install libCLC
+    if [ "${needs_clc}" = "true" ]; then
+        find ${gcnano_libdir}/* -type f -name libCLC.so -exec install -m 0555 '{}' ${gcnano_libdir_install}/ \;
+    fi
+
+    # Install libGLSLC
+    if [ "${needs_glslc}" = "true" ]; then
+        find ${gcnano_libdir}/* -type f -name libGLSLC.so -exec install -m 0555 '{}' ${gcnano_libdir_install}/ \;
+    fi
+
+    # Install libSPIRV
+    if [ "${needs_spirv}" = "true" ]; then
+        find ${gcnano_libdir}/* -type f -name libSPIRV_viv.so -exec install -m 0555 '{}' ${gcnano_libdir_install}/ \;
+    fi
 }
 
 # Install utility for gcano-userland:
@@ -183,6 +254,10 @@ gcnano_install_symlinks() {
     cd "${PWD}"
 }
 
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+SRC_URI:append = " ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'vulkan', 'file://vulkan_icd.json.template', '', d)}"
+SRC_URI:append = " ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'vx', 'file://openvx_profile.sh.template', '', d)}"
+
 do_install() {
     # Update pkgconfig files info
     for pkg_file in $(find ${B}/pkgconfig/* -type f -name *.pc); do
@@ -195,15 +270,33 @@ do_install() {
                         "${B}/pkgconfig"                    "${D}${libdir}/pkgconfig"
 
     # Manage creation of additional development symlinks to solve missing libs issue on SDK side
-    # when GCNANO_USERLAND_OUTPUT_LIBDIR differs from libdir
     gcnano_install_symlinks "${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}" "${D}${libdir}"
-    if [ "${GCNANO_USERLAND_OUTPUT_LIBDIR}" != "${libdir}" ]; then
-        gcnano_install_symlinks "${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}" "${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}"
-    fi
 
     if [ -s "${B}/${GCNANO_USERLAND_LDCONF}" ]; then
         install -d ${D}${sysconfdir}/ld.so.conf.d/
         install -m 0644 "${B}/${GCNANO_USERLAND_LDCONF}" ${D}${sysconfdir}/ld.so.conf.d/
+    fi
+
+    # Generate OpenCL ICD
+    if [ -n "$(echo ${GCNANO_PACKAGECONFIG} | grep 'cl')" ]; then
+        install -m 0755 -d "${D}${sysconfdir}/OpenCL/vendors"
+        find "${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}" -type f -name "libOpenCL*.so*" | sed s"%${D}%%" > "${D}${sysconfdir}/OpenCL/vendors/${GCNANO_OPENCL_ICD}"
+    fi
+
+    # Generate Vulkan ICD
+    if [ -n "$(echo ${GCNANO_PACKAGECONFIG} | grep 'vulkan')" ]; then
+        vklib=$(find "${D}${GCNANO_USERLAND_OUTPUT_LIBDIR}" -type f -name "libvulkan*.so*" | sed s"%${D}%%")
+        vkvers=$(echo ${vklib} | awk -F'.so.' '{print $2}')
+
+        install -m 0755 -d "${D}${sysconfdir}/vulkan/icd.d"
+        sed -e "s#%VULKANLIB%#${vklib}#" -e "s#%VULKANVERSION%#${vkvers}#" ${WORKDIR}/vulkan_icd.json.template > ${D}${sysconfdir}/vulkan/icd.d/${GCNANO_VULKAN_ICD}
+    fi
+
+    # Install profile script to export required environment variables to allow OpenVX kernel program
+    # to be built at runtime
+    if [ -n "$(echo ${GCNANO_PACKAGECONFIG} | grep 'vx')" ]; then
+        install -m 0755 -d "${D}${sysconfdir}/profile.d"
+        sed "s#%VIVANTE_SDK_DIR%#${exec_prefix}#" ${WORKDIR}/openvx_profile.sh.template > ${D}${sysconfdir}/profile.d/openvx_profile.sh
     fi
 }
 
@@ -219,7 +312,10 @@ python __anonymous() {
               ("glesv1", "libgles1", "libglesv1-cm1"),
               ("glesv2", "libgles2", "libglesv2-2"),
               ("glesv2", "libgles3"),
-              ("vg", "libopenvg")):
+              ("vg", "libopenvg"),
+              ("vx", "libopenvx"),
+              ("cl", "libopencl"),
+              ("vulkan", "libvulkan-driver")):
         if not p[0] in pkgconfig:
             continue
 
@@ -237,8 +333,8 @@ python __anonymous() {
 
         # For -dev, the first element is both the Debian and original name
         fullp += "-dev"
-        if fullp not in pkgs:
-            rpkgs = p[1] + "-dev"
+        if fullp in pkgs:
+            rpkgs = " ".join([f"{q}-dev" for q in p[1:]])
             d.setVar("DEBIAN_NOAUTONAME:" + fullp, "1")
             d.appendVar("RREPLACES:" + fullp, rpkgs)
             d.appendVar("RPROVIDES:" + fullp, rpkgs)
@@ -250,36 +346,54 @@ python __anonymous() {
 # NOTE: it's mandatory to libEGL.so, libGLESv2.so and libOpenVG.so availabale on filesystem
 # because gcnano userland library try to make a dlopen on this library (with specific .so extension)
 FILES:${PN} = ""
-FILES:gcnano-ldconf = "${sysconfdir}/"
+FILES:gcnano-ldconf = "${sysconfdir}/ld.so.conf.d/*"
 FILES:libgal-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGAL.so"
 FILES:libgal-gcnano += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libVSC.so"
-FILES:libegl-gcnano = "${@oe.utils.ifelse(d.getVar('GCNANO_USERLAND_OUTPUT_LIBDIR') != d.getVar('libdir'), '${GCNANO_USERLAND_OUTPUT_LIBDIR}/libEGL.so*','${GCNANO_USERLAND_OUTPUT_LIBDIR}/libEGL.so.*')}"
-FILES:libgbm-gcnano = "${@oe.utils.ifelse(d.getVar('GCNANO_USERLAND_OUTPUT_LIBDIR') != d.getVar('libdir'), '${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm.so*','${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm.so.*')}"
+FILES:libegl-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libEGL.so.* ${libdir}/libEGL.so*"
+FILES:libgbm-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm.so.* ${libdir}/libgbm.so.*"
 FILES:libgbm-gcnano += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libgbm_viv.so"
-FILES:libgles1-gcnano = "${@oe.utils.ifelse(d.getVar('GCNANO_USERLAND_OUTPUT_LIBDIR') != d.getVar('libdir'), '${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv1_CM.so*','${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv1_CM.so.*')}"
-FILES:libgles2-gcnano = "${@oe.utils.ifelse(d.getVar('GCNANO_USERLAND_OUTPUT_LIBDIR') != d.getVar('libdir'), '${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv2.so*','${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv2.so.*')}"
-FILES:libgles2-gcnano += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLSLC.so"
-FILES:libopenvg-gcnano = "${@oe.utils.ifelse(d.getVar('GCNANO_USERLAND_OUTPUT_LIBDIR') != d.getVar('libdir'), '${GCNANO_USERLAND_OUTPUT_LIBDIR}/libOpenVG*.so*','${GCNANO_USERLAND_OUTPUT_LIBDIR}/libOpenVG*.so.*')}"
+FILES:libgles1-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv1_CM.so.* ${libdir}/libGLESv1_CM.so*"
+FILES:libgles2-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLESv2.so.* ${libdir}/libGLESv2.so*"
+FILES:libopenvg-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libOpenVG.so.* ${libdir}/libOpenVG.so*"
+FILES:libopenvx-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libOpenVX*.so* ${libdir}/libOpenVX.so.*"
+FILES:libopenvx-gcnano += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libArchModelSw.so"
+FILES:libopenvx-gcnano += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libNNArchPerf.so"
+FILES:libopenvx-gcnano += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libovxlib.so"
+FILES:libopenvx-gcnano += "${includedir}/CL/cl_viv_vx_ext.h ${sysconfdir}/profile.d/*"
+FILES:libovxkernels-gcnano += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libNNGPUBinary.so"
+FILES:libovxkernels-gcnano += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libNNVXCBinary.so"
+FILES:libovxkernels-gcnano += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libOvx12VXCBinary.so"
+FILES:libovxkernels-gcnano += "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libOvxGPUVXCBinary.so"
+FILES:libopencl-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libOpenCL_VSI.so.* ${libdir}/libOpenCL_VSI.so.*"
+FILES:libopencl-gcnano += "${sysconfdir}/OpenCL/vendors/*"
+FILES:libvulkan-driver-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libvulkan_VSI.so.* ${libdir}/libvulkan_VSI.so.*"
+FILES:libvulkan-driver-gcnano += "${sysconfdir}/vulkan/icd.d/*"
+FILES:libglslc-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libGLSLC.so"
+FILES:libclc-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libCLC.so"
+FILES:libspirv-gcnano = "${GCNANO_USERLAND_OUTPUT_LIBDIR}/libSPIRV_viv.so"
 
 FILES:${PN}-dev = ""
-FILES:libgal-gcnano-dev = ""
+FILES:libgal-gcnano-dev = "${libdir}/libGAL.so ${libdir}/libVSC.so"
 FILES:libegl-gcnano-dev = "${includedir}/EGL ${includedir}/KHR ${libdir}/pkgconfig/egl.pc"
-FILES:libgbm-gcnano-dev = "${includedir}/gbm.h ${libdir}/pkgconfig/gbm.pc"
-FILES:libgles1-gcnano-dev = "${includedir}/GLES ${libdir}/pkgconfig/glesv1*.pc"
+FILES:libgbm-gcnano-dev = "${libdir}/libgbm.so ${libdir}/libgbm_viv.so ${includedir}/gbm.h ${libdir}/pkgconfig/gbm.pc"
+FILES:libgles1-gcnano-dev = "${includedir}/GLES ${libdir}/pkgconfig/glesv1_cm.pc"
 FILES:libgles2-gcnano-dev = "${includedir}/GLES2 ${libdir}/pkgconfig/glesv2.pc"
+FILES:libopenvg-gcnano-dev = "${includedir}/VG ${libdir}/pkgconfig/vg.pc"
 FILES:libgles3-gcnano-dev = "${includedir}/GLES3"
 FILES:libopenvg-gcnano-dev = "${includedir}/VG ${libdir}/pkgconfig/vg.pc"
-# Append additional symlinks to *-dev packages for delivered shared libs
-# when GCNANO_USERLAND_OUTPUT_LIBDIR differs from libdir
-FILES:libgal-gcnano-dev += "${libdir}/libGAL.so"
-FILES:libgal-gcnano-dev += "${libdir}/libVSC.so"
-FILES:libegl-gcnano-dev += "${@oe.utils.ifelse(d.getVar('GCNANO_USERLAND_OUTPUT_LIBDIR') != d.getVar('libdir'), '${libdir}/libEGL.so*','${libdir}/libEGL.so')}"
-FILES:libgbm-gcnano-dev += "${@oe.utils.ifelse(d.getVar('GCNANO_USERLAND_OUTPUT_LIBDIR') != d.getVar('libdir'), '${libdir}/libgbm.so*','${libdir}/libgbm.so')}"
-FILES:libgbm-gcnano-dev += "${libdir}/libgbm_viv.so"
-FILES:libgles1-gcnano-dev += "${@oe.utils.ifelse(d.getVar('GCNANO_USERLAND_OUTPUT_LIBDIR') != d.getVar('libdir'), '${libdir}/libGLESv1*.so*','${libdir}/libGLESv1*.so')}"
-FILES:libgles2-gcnano-dev += "${@oe.utils.ifelse(d.getVar('GCNANO_USERLAND_OUTPUT_LIBDIR') != d.getVar('libdir'), '${libdir}/libGLESv2.so*','${libdir}/libGLESv2.so')}"
-FILES:libgles2-gcnano-dev += "${libdir}/libGLSLC.so"
-FILES:libopenvg-gcnano-dev += "${@oe.utils.ifelse(d.getVar('GCNANO_USERLAND_OUTPUT_LIBDIR') != d.getVar('libdir'), '${libdir}/libOpenVG*.so*','${libdir}/libOpenVG*.so')}"
+FILES:libopenvx-gcnano-dev = "${libdir}/libOpenVX.so ${libdir}/libOpenVXU.so ${includedir}/VX"
+FILES:libopenvx-gcnano-dev += "${libdir}/libArchModelSw.so"
+FILES:libopenvx-gcnano-dev += "${libdir}/libNNArchPerf.so"
+FILES:libopenvx-gcnano-dev += "${libdir}/libovxlib.so"
+FILES:libovxkernels-gcnano-dev += "${libdir}/libNNGPUBinary.so"
+FILES:libovxkernels-gcnano-dev += "${libdir}/libNNVXCBinary.so"
+FILES:libovxkernels-gcnano-dev += "${libdir}/libOvx12VXCBinary.so"
+FILES:libovxkernels-gcnano-dev += "${libdir}/libOvxGPUVXCBinary.so"
+FILES:libopencl-gcnano-dev = "${libdir}/libOpenCL_VSI.so"
+FILES:libvulkan-driver-gcnano-dev = "${libdir}/libvulkan_VSI.so"
+FILES:libglslc-gcnano-dev = "${libdir}/libGLSLC.so"
+FILES:libclc-gcnano-dev += "${libdir}/libCLC.so"
+FILES:libspirv-gcnano-dev = "${libdir}/libSPIRV_viv.so"
 
 # Set gcnano-userland package with runtime dependencies on all packages
 RDEPENDS:${PN} += "\
@@ -289,9 +403,19 @@ RDEPENDS:${PN} += "\
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv1', 'libgles1-gcnano', '', d)}  \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'glesv2', 'libgles2-gcnano', '', d)}  \
     ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'vg', 'libopenvg-gcnano', '', d)}     \
+    ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'cl', 'libopencl-gcnano', '', d)}     \
+    ${@bb.utils.contains('GCNANO_PACKAGECONFIG', 'vulkan', 'libvulkan-driver-gcnano', '', d)} \
     "
 
-RDEPENDS:libgles3-gcnano-dev += "libgles2-gcnano-dev"
+RDEPENDS:libgles1-gcnano += "libglslc-gcnano"
+RDEPENDS:libgles2-gcnano += "libglslc-gcnano"
+RDEPENDS:libopenvg-gcnano += "libglslc-gcnano"
+
+RDEPENDS:libopencl-gcnano += "libclc-gcnano libspirv-gcnano"
+RDEPENDS:libopenvx-gcnano += "libclc-gcnano libovxkernels-gcnano"
+RDEPENDS:libvulkan-driver-gcnano += "libglslc-gcnano libspirv-gcnano"
+
+RDEPENDS:libgles2-gcnano-dev += "libgles3-gcnano-dev"
 
 # Generate empty gcnano-userland package to install all dependencies
 ALLOW_EMPTY:${PN} = "1"
@@ -303,10 +427,17 @@ INSANE_SKIP:libgbm-gcnano += "ldflags"
 INSANE_SKIP:libgles1-gcnano += "ldflags"
 INSANE_SKIP:libgles2-gcnano += "ldflags"
 INSANE_SKIP:libopenvg-gcnano += "ldflags"
+INSANE_SKIP:libopenvx-gcnano += "ldflags"
+INSANE_SKIP:libovxkernels-gcnano += "ldflags"
+INSANE_SKIP:libclc-gcnano += "ldflags"
+INSANE_SKIP:libopencl-gcnano += "ldflags"
+INSANE_SKIP:libvulkan-driver-gcnano += "ldflags"
+INSANE_SKIP:libglslc-gcnano += "ldflags"
+INSANE_SKIP:libspirv-gcnano += "ldflags"
 
 # Avoid QA Issue: non -dev/-dbg/nativesdk- package contains symlink .so
+INSANE_SKIP:libegl-gcnano += "dev-so"
 INSANE_SKIP:libgles1-gcnano += "dev-so"
 INSANE_SKIP:libgles2-gcnano += "dev-so"
-INSANE_SKIP:libegl-gcnano += "dev-so"
-INSANE_SKIP:libgbm-gcnano += "dev-so"
 INSANE_SKIP:libopenvg-gcnano += "dev-so"
+INSANE_SKIP:libopenvx-gcnano += "dev-so"
