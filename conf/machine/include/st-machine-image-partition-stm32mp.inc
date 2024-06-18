@@ -86,7 +86,7 @@ PARTITIONS_BOOTLOADER_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand
 PARTITIONS_BOOTLOADER_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', 'nor sdcard', '', d)}"
 PARTITIONS_BOOTLOADER_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'nor', '', d)}"
 PARTITIONS_BOOTLOADER_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', bb.utils.contains('MACHINE_FEATURES', 'efi', 'sdcard sdcard-EFI', 'sdcard', d), '', d)}"
-PARTITIONS_BOOTLOADER_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-2-128-128', 'nand-2-128-128', '', d)}"
+PARTITIONS_BOOTLOADER_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-2-128-256', 'nand-2-128-256', '', d)}"
 PARTITIONS_BOOTLOADER_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256-512', 'nand-4-256-512', '', d)}"
 
 # <binary_name>,<partlabel>,<size>,<type>,<copy>
@@ -98,7 +98,7 @@ PARTITIONS_BOOTLOADER_CONFIG[emmc] ?= "\
     ${@ '${STM32MP_SSBL2_DATA},${STM32MP_SSBL2_NAME},${STM32MP_SSBL2_SIZE},FIP,1' if '${STM32MP_SSBL2_NAME}' and bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', True, False, d) else ''} \
     ${@ '${STM32MP_UENV_DATA},${STM32MP_UENV_NAME},${STM32MP_UENV_SIZE},ENV,1' if '${STM32MP_UENV_NAME}' else ''} \
     "
-PARTITIONS_BOOTLOADER_CONFIG[nand-2-128-128] ?= "\
+PARTITIONS_BOOTLOADER_CONFIG[nand-2-128-256] ?= "\
     ${@ '${STM32MP_FSBL1_DATA},${STM32MP_FSBL1_NAME},${STM32MP_FSBL1_SIZE_UBOOT},Binary,2' if '${STM32MP_FSBL1_NAME}' else ''} \
     ${@ '${STM32MP_METADATA_DATA},${STM32MP_METADATA_NAME},${STM32MP_METADATA_SIZE_UBOOT},FWU_MDATA,2' if '${STM32MP_METADATA_NAME}' else ''} \
     ${@ '${STM32MP_SSBL1_DATA},${STM32MP_SSBL1_NAME},${STM32MP_SSBL1_SIZE},FIP,' + bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', '2', '1', d) if '${STM32MP_SSBL1_NAME}' else ''} \
@@ -248,7 +248,7 @@ PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256-1024
 PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'nor', '', d)}"
 PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', 'sdcard', '', d)}"
 PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', bb.utils.contains('MACHINE_FEATURES', 'efi', 'sdcard sdcard-EFI', 'sdcard', d), '', d)}"
-PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-2-128-128', 'nand-2-128-128', '', d)}"
+PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-2-128-256', 'nand-2-128-256', '', d)}"
 PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256-512', 'nand-4-256-512', '', d)}"
 
 # <binary_name>,<partlabel>,<size>,<type>,<copy>
@@ -267,7 +267,7 @@ PARTITIONS_CONFIG[sdcard] ?= "\
 PARTITIONS_CONFIG[sdcard-EFI] ?= "\
     ${@' '.join(['%s' % partImage2partConfig(d, config, 'vfat' if config == 'efi' else '${PARTITIONS_SUFFIX}') for config in d.getVar('PARTITIONS_LIST_EFI').split()])} \
 "
-PARTITIONS_CONFIG[nand-2-128-128] ?= "\
+PARTITIONS_CONFIG[nand-2-128-256] ?= "\
     ${STM32MP_UBIFS_DATA},${STM32MP_UBIFS_NAME},${STM32MP_UBIFS_SIZE},System,1 \
 "
 PARTITIONS_CONFIG[nand-4-256-512]   ?= "\
@@ -293,7 +293,7 @@ STM32MP_MULTIUBI_UENV2_SIZE ?= "${STM32MP_MULTIUBI_UENV1_SIZE}"
 # limit size of rootfs
 STM32MP_ROOTFS_SIZE:nand_4_256_1024 ?= "${STM32MP_ROOTFS_MAXSIZE_NAND}"
 STM32MP_ROOTFS_SIZE:nand_4_256_512 ?= "512000"
-STM32MP_ROOTFS_SIZE:nand_2_128_128 ?= "129536"
+STM32MP_ROOTFS_SIZE:nand_2_128_256 ?= "129536"
 
 STM32MP_UBI_VOLUME_nand_4_256_1024 ?= "\
     ${STM32MP_MULTIUBI_UENV1_NAME},${STM32MP_MULTIUBI_UENV1_LABEL},${STM32MP_MULTIUBI_UENV1_SIZE},empty \
@@ -304,7 +304,7 @@ STM32MP_UBI_VOLUME_nand_4_256_512 ?= "\
     ${STM32MP_MULTIUBI_UENV1_NAME},${STM32MP_MULTIUBI_UENV1_LABEL},${STM32MP_MULTIUBI_UENV1_SIZE},empty \
     ${@' '.join(['%s' % partImage2partConfig(d, config) for config in d.getVar('PARTITIONS_LIST').split()])} \
     "
-STM32MP_UBI_VOLUME_nand_2_128_128 ?= "\
+STM32MP_UBI_VOLUME_nand_2_128_256 ?= "\
     ${STM32MP_MULTIUBI_UENV1_NAME},${STM32MP_MULTIUBI_UENV1_LABEL},${STM32MP_MULTIUBI_UENV1_SIZE},empty \
     ${@' '.join(['%s' % partImage2partConfig(d, config) for config in d.getVar('PARTITIONS_LIST').split()])} \
     "
