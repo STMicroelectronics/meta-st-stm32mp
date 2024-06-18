@@ -10,3 +10,5 @@ EXTRA_OEMAKE:append:stm32mp2common = " SOC_PLATFORM=st-mp2"
 EXTRA_OEMAKE:append = " DEBUG=0"
 EXTRA_OEMAKE:append = " -C ${STAGING_KERNEL_BUILDDIR} M=${S}"
 EXTRA_OEMAKE:append = " AQROOT=${S}"
+
+do_create_runtime_spdx[depends] += "virtual/kernel:do_create_runtime_spdx"

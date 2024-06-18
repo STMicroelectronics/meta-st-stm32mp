@@ -80,3 +80,5 @@ FILES:${PN} += " ${base_libdir}/modules/${KERNEL_VERSION}/extra "
 KERNEL_MODULES_META_PACKAGE = ""
 
 RDEPENDS:${PN} = "bash"
+
+do_create_runtime_spdx[depends] += "virtual/kernel:do_create_runtime_spdx"
