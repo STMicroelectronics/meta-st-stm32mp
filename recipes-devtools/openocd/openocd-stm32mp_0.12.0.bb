@@ -15,11 +15,3 @@ PV = "0.12.0+dev.${SRCPV}-stm32mp-r2"
 SRC_URI += " \
     file://0001-v0.12.0-stm32mp-r2.patch \
     "
-
-# Use jimtcl master branch to fix RANLIB issue in kirkstone and commit it
-# to prevent "-dirty" suffix to openocd version.
-# To be removed after a new jimtcl release get used by openocd.
-do_configure:prepend() {
-	git add jimtcl
-	git commit --allow-empty -m "Update jimtcl"
-}
