@@ -6,6 +6,31 @@ project_name=$(basename $(pwd))
 # By default the firmware is non secure
 fw_type="NonSecure"
 
+TARGET_REMOTEPROC_NAME="m0"
+REMOTEPROC_DIR="/sys/class/remoteproc"
+
+get_remoteproc_sysfs_entry() {
+    rproc_class_dir=""
+    for device in "$REMOTEPROC_DIR"/remoteproc*; do
+        # Extract the device number
+        device_number=$(basename "$device" | sed 's/remoteproc//')
+
+        # Check if the name matches the target name
+        if [ -f "$REMOTEPROC_DIR/remoteproc$device_number/name" ]; then
+            name=$(cat "$REMOTEPROC_DIR/remoteproc$device_number/name")
+            if [ "$name" == "$TARGET_REMOTEPROC_NAME" ]; then
+                echo "Found matching remoteproc device: remoteproc$device_number"
+                rproc_class_dir="/sys/class/remoteproc/remoteproc$device_number/"
+                break
+            fi
+        fi
+    done
+    if [ -z "$rproc_class_dir" ]; then
+        echo "[ERROR] no sysfs entry for m0 found on /sys/class/remoteproc/"
+        exit 1
+    fi
+}
+
 usage()
 {
    # Display Help
@@ -35,6 +60,8 @@ done
 shift $((OPTIND-1))
 
 action=$1
+
+get_remoteproc_sysfs_entry
 
 case $action in
     start) ;;

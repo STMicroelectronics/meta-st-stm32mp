@@ -54,9 +54,37 @@ ucsi_stop_workaround() {
     fi
 }
 
+
+rproc_class_dir="/sys/class/remoteproc/remoteproc0/"
+TARGET_REMOTEPROC_NAME="m33"
+REMOTEPROC_DIR="/sys/class/remoteproc"
+
+get_remoteproc_sysfs_entry() {
+    rproc_class_dir=""
+    for device in "$REMOTEPROC_DIR"/remoteproc*; do
+        # Extract the device number
+        device_number=$(basename "$device" | sed 's/remoteproc//')
+
+        # Check if the name matches the target name
+        if [ -f "$REMOTEPROC_DIR/remoteproc$device_number/name" ]; then
+            name=$(cat "$REMOTEPROC_DIR/remoteproc$device_number/name")
+            if [ "$name" == "$TARGET_REMOTEPROC_NAME" ]; then
+                echo "Found matching remoteproc device: remoteproc$device_number"
+                rproc_class_dir="/sys/class/remoteproc/remoteproc$device_number/"
+                break
+            fi
+        fi
+    done
+    if [ -z "$rproc_class_dir" ]; then
+        echo "[ERROR] no sysfs entry for m33 found on /sys/class/remoteproc/"
+        exit 1
+    fi
+}
+
 firmware_load_stop() {
+    get_remoteproc_sysfs_entry
     # Stop the firmware
-    if [ "$(cat /sys/class/remoteproc/remoteproc0/state)" = "running" ]; then
+    if [ "$(cat $rproc_class_dir/state)" = "running" ]; then
         if [ -n "$DEFAULT_PROJECT" ]; then
             cd $DEFAULT_PROJECT
             ucsi_stop_workaround

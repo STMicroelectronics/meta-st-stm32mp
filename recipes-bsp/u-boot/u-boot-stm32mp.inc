@@ -149,11 +149,6 @@ do_compile:append() {
                             if [ $k -eq $i ]; then
                                 binarysuffix=$(echo ${binary} | cut -d'.' -f2)
                                 install -m 644 ${B}/${config}/${binary} ${B}/${config}/u-boot-${devicetree}.${binarysuffix}
-                                if [ "x${UBOOT_SIGN_ENABLE}" = "x1" ] ; then
-                                        ubootdevicetree="${B}/${config}/u-boot-${devicetree}.${binarysuffix}"
-                                        namewithoutsignature="${B}/${config}/u-boot-${devicetree}-without-signature.${binarysuffix}"
-                                        cp $ubootdevicetree $namewithoutsignature
-                                fi
                             fi
                         done
                         unset k
@@ -210,18 +205,18 @@ export_binaries() {
                                     install -m 644 ${B}/${config}/${UBOOT_ELF} ${dest}/debug/u-boot${soc_suffix}-${type_suffix}.${UBOOT_ELF_SUFFIX}
                                 fi
 
-                                if [ "${UBOOT_SIGN_ENABLE}" = "1" -a -n "${UBOOT_DTB_BINARY}" ] ; then
+                                if [ "${UBOOT_SIGN_ENABLE}" = "1" ] && [ "${UBOOT_SIGN_DEPLOY}" = "1" ]; then
+                                    # Prepare original binary for signature
+                                    mkdir -p "${B}/${config}/${type}"
+                                    cp -f ${B}/${config}/u-boot-${devicetree}.${binarysuffix} ${B}/${config}/${type}/u-boot-${devicetree}.${binarysuffix}
                                     ${UBOOT_MKIMAGE_SIGN} \
                                             ${@'-D "${UBOOT_MKIMAGE_DTCOPTS}"' if len('${UBOOT_MKIMAGE_DTCOPTS}') else ''} \
                                             -F -k "${UBOOT_SIGN_KEYDIR}" \
-                                            -K "${B}/${config}/u-boot-${devicetree}.${binarysuffix}" \
-                                            -r ${B}/fitImage-linux \
-                                            ${UBOOT_MKIMAGE_SIGN_ARGS}
-
-                                    cp ${B}/${config}/u-boot-${devicetree}.${binarysuffix} ${B}/${config}/u-boot-${devicetree}-with-signature.${binarysuffix}
-                                    install -m 644 ${B}/${config}/u-boot-${devicetree}-without-signature.${binarysuffix} ${dest}/
-                                    install -m 644 ${B}/${config}/u-boot-${devicetree}-with-signature.${binarysuffix} ${dest}/
-                                    install -m 644 ${B}/${config}/u-boot-${devicetree}.${binarysuffix} ${dest}/
+                                            -K "${B}/${config}/${type}/u-boot-${devicetree}.${binarysuffix}" \
+                                            ${UBOOT_MKIMAGE_SIGN_ARGS} \
+                                            -r ${B}/fitImage-linux
+                                    # Install signed binary
+                                    install -m 644 ${B}/${config}/${type}/u-boot-${devicetree}.${binarysuffix} ${dest}/u-boot-${devicetree}-with-signature.${binarysuffix}
                                 fi
                             done
                         fi

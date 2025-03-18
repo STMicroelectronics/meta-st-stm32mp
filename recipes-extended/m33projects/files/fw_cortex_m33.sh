@@ -4,6 +4,31 @@ rproc_class_dir="/sys/class/remoteproc/remoteproc0/"
 fmw_dir="/lib/firmware"
 project_name=$(basename $(pwd))
 
+TARGET_REMOTEPROC_NAME="m33"
+REMOTEPROC_DIR="/sys/class/remoteproc"
+
+get_remoteproc_sysfs_entry() {
+    rproc_class_dir=""
+    for device in "$REMOTEPROC_DIR"/remoteproc*; do
+        # Extract the device number
+        device_number=$(basename "$device" | sed 's/remoteproc//')
+
+        # Check if the name matches the target name
+        if [ -f "$REMOTEPROC_DIR/remoteproc$device_number/name" ]; then
+            name=$(cat "$REMOTEPROC_DIR/remoteproc$device_number/name")
+            if [ "$name" == "$TARGET_REMOTEPROC_NAME" ]; then
+                echo "Found matching remoteproc device: remoteproc$device_number"
+                rproc_class_dir="/sys/class/remoteproc/remoteproc$device_number/"
+                break
+            fi
+        fi
+    done
+    if [ -z "$rproc_class_dir" ]; then
+        echo "[ERROR] no sysfs entry for m33 found on /sys/class/remoteproc/"
+        exit 1
+    fi
+}
+
 usage()
 {
    # Display Help
@@ -59,6 +84,8 @@ else
 fi
 action=$1
 
+get_remoteproc_sysfs_entry
+
 case $action in
     start) ;;
 
@@ -80,7 +107,7 @@ if [ $action == "start" ]; then
 
     if [ `cat ${rproc_class_dir}/fw_format` = "TEE" ]; then
         #The firmware is managed by OP-TEE, it must be signed.
-        # get the name based depending on firmware present and -t option 
+        # get the name based depending on firmware present and -t option
         fmw_name="`ls lib/firmware/${fmw_basename}_sign.bin`"
         if [ -z "${fmw_name}" ]; then
            echo  "Error: signed firmware ${fmw_basename}_sign.bin cannot be found"
@@ -131,7 +158,7 @@ fi
 if [ $action == "stop" ]; then
 
     if [ $rproc_state == "offline" ]; then
-        echo "Nothing to do, no Cortex-M fw is running"
+        echo "Nothing to do, no Cortex-M33 fw is running"
     else
         echo stop > $rproc_class_dir/state
     fi
