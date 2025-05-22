@@ -137,8 +137,7 @@ MACHINE_EXTRA_RRECOMMENDS:append = " ${@bb.utils.contains('DISTRO_FEATURES','sys
 # =========================================================================
 # Flashlayout configuration
 # =========================================================================
-#ENABLE_FLASHLAYOUT_CONFIG_FWUP ?= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', '1', '0', d)}"
-ENABLE_FLASHLAYOUT_CONFIG_FWUP ?= "1"
+ENABLE_FLASHLAYOUT_CONFIG_FWUP ?= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', '1', '0', d)}"
 
 # =========================================================================
 # Image
