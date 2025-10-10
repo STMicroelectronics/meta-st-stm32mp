@@ -3,11 +3,9 @@ LICENSE = "Apache-2.0 & MIT & BSD-3-Clause"
 LIC_FILES_CHKSUM = "file://License.md;md5=532c0d9fc2820ec1304ab8e0f227acc7"
 
 SRC_URI = "git://github.com/STMicroelectronics/STM32CubeMP1.git;protocol=https;branch=master"
-SRCREV  = "b9a31179d5bf80b3958c3653153bfd4c3a7fc5d5"
+SRCREV  = "525d2499658d817a9e669eb17e66390906954895"
 
-PV = "1.6.0"
-
-S = "${WORKDIR}/git"
+PV = "1.7.0"
 
 require recipes-extended/m4projects/m4projects.inc
 
