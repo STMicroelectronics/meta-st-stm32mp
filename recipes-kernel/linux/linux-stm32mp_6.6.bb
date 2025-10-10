@@ -6,20 +6,20 @@ LIC_FILES_CHKSUM = "file://COPYING;md5=6bc538ed5bd9a7fc9398086aedcd7e46"
 include linux-stm32mp.inc
 
 LINUX_VERSION = "6.6"
-LINUX_SUBVERSION = ".48"
+LINUX_SUBVERSION = ".78"
 LINUX_TARBASE = "linux-${LINUX_VERSION}${LINUX_SUBVERSION}"
 LINUX_TARNAME = "${LINUX_TARBASE}.tar.xz"
 
 SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v6.x/${LINUX_TARNAME};name=kernel"
 
-SRC_URI[kernel.sha256sum] = "6b16df7b2aba3116b78fdfd8aea0b6cd7abe8f0cb699b04a66d3169141772029"
+SRC_URI[kernel.sha256sum] = "5aa39a9bd555133ad741058f9908a277e6b36bb928481e747d885b50aaaa93ed"
 
 SRC_URI += " \
-    file://${LINUX_VERSION}/${LINUX_VERSION}${LINUX_SUBVERSION}/0001-v6.6-stm32mp-r1.2.patch \
+    file://${LINUX_VERSION}/${LINUX_VERSION}${LINUX_SUBVERSION}/0001-v6.6-stm32mp-r2.patch \
     "
 
 LINUX_TARGET = "stm32mp"
-LINUX_RELEASE = "r1.2"
+LINUX_RELEASE = "r2"
 
 PV = "${LINUX_VERSION}${LINUX_SUBVERSION}-${LINUX_TARGET}-${LINUX_RELEASE}"
 
@@ -36,7 +36,7 @@ S = "${UNPACKDIR}/${LINUX_TARBASE}"
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/linux.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV:class-devupstream = "57d6654e68728d6b6776e688a0f8ece6ecfc1209"
+SRCREV:class-devupstream = "f01241fbba4d879fa770685629b49d42e904e43c"
 #FIXME force the PV to avoid build issue:
 #  do_package: ExpansionError('SRCPV', '${@bb.fetch2.get_srcrev(d)}', FetchError('SRCREV was used yet no valid SCM was found in SRC_URI', None))
 PV:class-devupstream = "${LINUX_VERSION}${LINUX_SUBVERSION}-${LINUX_TARGET}.${SRCPV}"
@@ -57,21 +57,29 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'linux-stm32mp
 # Defconfig
 #
 KERNEL_DEFCONFIG        = "defconfig"
-KERNEL_CONFIG_FRAGMENTS:stm32mp1common = "${@bb.utils.contains('KERNEL_DEFCONFIG', 'defconfig', '${S}/arch/arm/configs/fragment-01-multiv7_cleanup.config', '', d)}"
-KERNEL_CONFIG_FRAGMENTS:append:stm32mp1common = " ${@bb.utils.contains('KERNEL_DEFCONFIG', 'defconfig', '${S}/arch/arm/configs/fragment-02-multiv7_addons.config', '', d)}"
-KERNEL_CONFIG_FRAGMENTS:append:stm32mp1common = " ${@bb.utils.contains('DISTRO_FEATURES', 'systemd', '${UNPACKDIR}/fragments/${LINUX_VERSION}/fragment-03-systemd.config', '', d)} "
-KERNEL_CONFIG_FRAGMENTS:append:stm32mp1common = " ${UNPACKDIR}/fragments/${LINUX_VERSION}/fragment-04-modules.config"
-KERNEL_CONFIG_FRAGMENTS:append:stm32mp1common = " ${@oe.utils.ifelse(d.getVar('KERNEL_SIGN_ENABLE') == '1', '${UNPACKDIR}/fragments/features/${LINUX_VERSION}/optional-fragment-05-signature.config','')} "
-KERNEL_CONFIG_FRAGMENTS:append:stm32mp1common = " ${@bb.utils.contains('MACHINE_FEATURES', 'nosmp', '${UNPACKDIR}/fragments/features/${LINUX_VERSION}/optional-fragment-06-nosmp.config', '', d)} "
-KERNEL_CONFIG_FRAGMENTS:append:stm32mp1common = " ${@bb.utils.contains('MACHINE_FEATURES', 'efi', '${UNPACKDIR}/fragments/features/${LINUX_VERSION}/optional-fragment-07-efi.config', '', d)} "
+KERNEL_CONFIG_FRAGMENTS:arm = " \
+    ${@bb.utils.contains('KERNEL_DEFCONFIG', 'defconfig', '${S}/arch/arm/configs/fragment-01-multiv7_cleanup.config', '', d)} \
+    ${@bb.utils.contains('KERNEL_DEFCONFIG', 'defconfig', '${S}/arch/arm/configs/fragment-02-multiv7_addons.config', '', d)} \
+    "
 
-KERNEL_CONFIG_FRAGMENTS:stm32mp2common = "${@bb.utils.contains('KERNEL_DEFCONFIG', 'defconfig', '${S}/arch/arm64/configs/fragment-01-defconfig-cleanup.config', '', d)}"
-KERNEL_CONFIG_FRAGMENTS:append:stm32mp2common = " ${@bb.utils.contains('KERNEL_DEFCONFIG', 'defconfig', '${S}/arch/arm64/configs/fragment-02-defconfig-addons.config', '', d)}"
-KERNEL_CONFIG_FRAGMENTS:append:stm32mp2common = " ${@bb.utils.contains('DISTRO_FEATURES', 'systemd', '${UNPACKDIR}/fragments/${LINUX_VERSION}/fragment-03-systemd.config', '', d)} "
-KERNEL_CONFIG_FRAGMENTS:append:stm32mp2common = " ${UNPACKDIR}/fragments/${LINUX_VERSION}/fragment-04-modules.config"
-KERNEL_CONFIG_FRAGMENTS:append:stm32mp2common = " ${@oe.utils.ifelse(d.getVar('KERNEL_SIGN_ENABLE') == '1', '${UNPACKDIR}/fragments/features/${LINUX_VERSION}/optional-fragment-05-signature.config','')} "
-KERNEL_CONFIG_FRAGMENTS:append:stm32mp2common = " ${@bb.utils.contains('MACHINE_FEATURES', 'nosmp', '${UNPACKDIR}/fragments/features/${LINUX_VERSION}/optional-fragment-06-nosmp.config', '', d)} "
-KERNEL_CONFIG_FRAGMENTS:append:stm32mp2common = " ${@bb.utils.contains('MACHINE_FEATURES', 'efi', '${UNPACKDIR}/fragments/features/${LINUX_VERSION}/optional-fragment-07-efi.config', '', d)} "
+KERNEL_CONFIG_FRAGMENTS:aarch32 = " \
+    ${@bb.utils.contains('KERNEL_DEFCONFIG', 'defconfig', '${S}/arch/arm/configs/mp2-fragment-01-defconfig-cleanup.config', '', d)} \
+    ${@bb.utils.contains('KERNEL_DEFCONFIG', 'defconfig', '${S}/arch/arm/configs/mp2-fragment-02-defconfig-addons.config', '', d)} \
+    ${@bb.utils.contains('KERNEL_DEFCONFIG', 'defconfig', '${S}/arch/arm/configs/mp2-fragment-03-multiv7-cleanup.config', '', d)} \
+    ${@bb.utils.contains('KERNEL_DEFCONFIG', 'defconfig', '${S}/arch/arm/configs/mp2-fragment-04-multiv7-addons.config', '', d)} \
+    "
+
+KERNEL_CONFIG_FRAGMENTS:aarch64 = " \
+    ${@bb.utils.contains('KERNEL_DEFCONFIG', 'defconfig', '${S}/arch/arm64/configs/fragment-01-defconfig-cleanup.config', '', d)} \
+    ${@bb.utils.contains('KERNEL_DEFCONFIG', 'defconfig', '${S}/arch/arm64/configs/fragment-02-defconfig-addons.config', '', d)} \
+    "
+
+KERNEL_CONFIG_FRAGMENTS:append = " ${@bb.utils.contains('DISTRO_FEATURES', 'systemd', '${UNPACKDIR}/fragments/${LINUX_VERSION}/fragment-03-systemd.config', '', d)} "
+KERNEL_CONFIG_FRAGMENTS:append = " ${UNPACKDIR}/fragments/${LINUX_VERSION}/fragment-04-modules.config"
+KERNEL_CONFIG_FRAGMENTS:append = " ${@oe.utils.ifelse(d.getVar('KERNEL_SIGN_ENABLE') == '1', '${UNPACKDIR}/fragments/features/${LINUX_VERSION}/optional-fragment-05-signature.config','')} "
+KERNEL_CONFIG_FRAGMENTS:append = " ${@bb.utils.contains('MACHINE_FEATURES', 'efi', '${UNPACKDIR}/fragments/features/${LINUX_VERSION}/optional-fragment-07-efi.config', '', d)} "
+KERNEL_CONFIG_FRAGMENTS:append:arm = " ${@bb.utils.contains('MACHINE_FEATURES', 'nosmp', '${UNPACKDIR}/fragments/features/${LINUX_VERSION}/optional-fragment-06-nosmp.config', '', d)} "
+
 
 SRC_URI += "file://${LINUX_VERSION}/fragment-03-systemd.config;subdir=fragments"
 SRC_URI += "file://${LINUX_VERSION}/fragment-04-modules.config;subdir=fragments"
@@ -85,6 +93,12 @@ SRC_URI:class-devupstream += "file://${LINUX_VERSION}/fragment-04-modules.config
 SRC_URI:class-devupstream += "file://${LINUX_VERSION}/optional-fragment-05-signature.config;subdir=fragments/features"
 SRC_URI:class-devupstream += "file://${LINUX_VERSION}/optional-fragment-06-nosmp.config;subdir=fragments/features"
 SRC_URI:class-devupstream += "file://${LINUX_VERSION}/optional-fragment-07-efi.config;subdir=fragments/features"
+
+# add modules dependency
+SRC_URI:append:arm = " file://stm32mp1-snd.conf;subdir=modprobe.d/"
+SRC_URI:append:aarch32 = " file://stm32mp2_ucsi.conf;subdir=modprobe.d/"
+SRC_URI:append:aarch64 = " file://stm32mp2_ucsi.conf;subdir=modprobe.d/"
+
 # -------------------------------------------------------------
 # Kernel Args
 #

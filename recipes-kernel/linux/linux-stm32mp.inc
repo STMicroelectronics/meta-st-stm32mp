@@ -1,4 +1,5 @@
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
+PACKAGE_ARCH:stm32mpcommon = "${MACHINE_ARCH}"
 
 #for EFI
 include ${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'conf/image-uefi.conf', '', d)}
@@ -17,7 +18,7 @@ B = "${WORKDIR}/build"
 EXTERNALSRC_BUILD:pn-${PN} = "${WORKDIR}/build"
 
 # To share config fragments between layers
-FILESEXTRAPATHS:prepend := "${THISDIR}:${THISDIR}/linux-stm32mp:"
+FILESEXTRAPATHS:prepend := "${THISDIR}:${THISDIR}/linux-stm32mp:${THISDIR}/linux-stm32mp/${LINUX_VERSION}:"
 
 do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/kernel"
 
@@ -27,6 +28,8 @@ KERNEL_SIGN_ENABLE ?= "0"
 EXTRA_OEMAKE += "${@oe.utils.ifelse(d.getVar('KERNEL_SIGN_ENABLE') == '1', 'INSTALL_MOD_STRIP=1','')}"
 EXTRA_OEMAKE += "${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', 'KBUILD_EXTDTS=${STAGING_EXTDT_DIR}/${EXTDT_DIR_LINUX}', '', d)}"
 
+# Init default KERNEL_SUB_PATH
+KERNEL_SUB_PATH ??= ""
 # Deploy kernel config file to deploy folder
 KERNEL_CONFIG_DEPLOY ??= "0"
 
@@ -94,6 +97,13 @@ do_configure:append() {
     #oe_runmake -C ${S} O=${B} savedefconfig && cp ${B}/defconfig ${UNPACKDIR}/defconfig.saved
 }
 
+do_compile:prepend() {
+    if [ "${EXTERNAL_DT_ENABLED}" = "1" ]; then
+        dtb_outputdir="${B}/arch/${ARCH}/boot/dts/${KERNEL_SUB_PATH}"
+        [ -e "${dtb_outputdir}" ] && rm -f ${dtb_outputdir}*.dtb
+    fi
+}
+
 # ---------------------------------------------------------------------
 # stub for devicetree which are located on st directory
 do_install:prepend() {
@@ -131,9 +141,14 @@ do_install:append() {
         # when ACCEPT_EULA are filled
         echo "blacklist etnaviv" > ${D}/${sysconfdir}/modprobe.d/blacklist.conf
     fi
-    #snd dependencies
+    if ${@bb.utils.contains('MACHINE_FEATURES','nogpu','true','false',d)}; then
+        # when ACCEPT_EULA are filled
+        echo "blacklist etnaviv" > ${D}/${sysconfdir}/modprobe.d/blacklist.conf
+        echo "blacklist galcore" >> ${D}/${sysconfdir}/modprobe.d/blacklist.conf
+    fi
+    #modprobe dependencies
     install -d ${D}/${sysconfdir}/modprobe.d/
-    echo "softdep snd-soc-cs42l51 pre: snd-soc-cs42l51-i2c" > ${D}/${sysconfdir}/modprobe.d/stm32mp1-snd.conf
+    install -m 0644 ${UNPACKDIR}/modprobe.d/* ${D}/${sysconfdir}/modprobe.d/
 
     # efi
     if ${@bb.utils.contains('MACHINE_FEATURES','efi','true','false',d)}; then
