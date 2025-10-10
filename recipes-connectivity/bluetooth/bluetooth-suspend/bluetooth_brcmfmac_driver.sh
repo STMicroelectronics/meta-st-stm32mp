@@ -31,16 +31,20 @@ stm32mp257f-dk*)
 esac
 
 case $1 in
-bind)
+"bind")
 	echo "bind driver hci_uart";
 	echo "bind driver hci_uart" > /dev/kmsg
-	modprobe -r hci_uart
+	if [ 0 -ne $(lsmod | grep -c 'hci_uart') ]; then
+		modprobe -r hci_uart
+	fi
 	modprobe hci_uart
 	;;
-unbind)
-	echo "unbind driver hci_uart";
-	echo "unbind driver hci_uart" > /dev/kmsg
-	modprobe -r hci_uart
+"unbind")
+	if [ 0 -ne $(lsmod | grep -c 'hci_uart') ]; then
+		echo "unbind driver hci_uart";
+		echo "unbind driver hci_uart" > /dev/kmsg
+		modprobe -r hci_uart
+	fi
 	;;
 *)
 	echo "$0 [bind|unbind]"
