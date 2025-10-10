@@ -105,6 +105,25 @@ python __anonymous() {
             # Init SIGN_KEY_PATH_LIST from SIGN_KEY settings
             init_keylist_from('SIGN_KEY_PATH_LIST', 'SIGN_KEY', 'STM32MP_SOC_NAME', d)
 
+            if  d.getVar('SIGN_COPRO_ENABLE') == "1":
+                signing_copro_key_list = d.getVar('SIGN_COPRO_ECC_PRIV_KEY_PATH_LIST')
+                if signing_copro_key_list:
+                    raise bb.parse.SkipRecipe("[sign-stm32mp] You cannot use SIGN_COPRO_ECC_PRIV_KEY_PATH_LIST as it is internal to sign-stm32mp.bbclass.")
+                # Init SIGN_COPRO_ECC_PRIV_KEY_PATH_LIST from SIGN_KEY settings1
+                init_keylist_from('SIGN_COPRO_ECC_PRIV_KEY_PATH_LIST', 'SIGN_COPRO_ECC_PRIVKEY', 'STM32MP_ENCRYPT_COPRO_SOC_NAME', d)
+
+                signing_copro_key_list = d.getVar('SIGN_COPRO_ECC_INFO_KEY_PATH_LIST')
+                if signing_copro_key_list:
+                    raise bb.parse.SkipRecipe("[sign-stm32mp] You cannot use SIGN_COPRO_ECC_INFO_KEY_PATH_LIST as it is internal to sign-stm32mp.bbclass.")
+                # Init SIGN_COPRO_ECC_INFO_KEY_PATH_LIST from SIGN_KEY settings1
+                init_keylist_from('SIGN_COPRO_ECC_INFO_KEY_PATH_LIST', 'SIGN_COPRO_ECC_INFOKEY', 'STM32MP_ENCRYPT_COPRO_SOC_NAME', d)
+
+                signing_copro_key_list = d.getVar('SIGN_COPRO_ECC_PASS_KEY_PATH_LIST')
+                if signing_copro_key_list:
+                    raise bb.parse.SkipRecipe("[sign-stm32mp] You cannot use SIGN_COPRO_ECC_PASS_KEY_PATH_LIST as it is internal to sign-stm32mp.bbclass.")
+                 # Init SIGN_COPRO_ECC_PASS_KEY_PATH_LIST from SIGN_COPRO_ECC_PASS settings1
+                init_keylist_from('SIGN_COPRO_ECC_PASS_KEY_PATH_LIST', 'SIGN_COPRO_ECC_PASS', 'STM32MP_ENCRYPT_COPRO_SOC_NAME', d)
+
             # If signature are activated, for winning space, the debug parameter will be remove and level of trace decrease
             if (d.getVar('ST_TF_A_DEBUG_TRACE') or "0") == '1':
                 bb.warn("TF-A SIGNATURE: force ST_TF_A_DEBUG_TRACE to '0' to disable DEBUG and decrease log level")
@@ -127,4 +146,13 @@ python __anonymous() {
                 raise bb.parse.SkipRecipe("[sign-stm32mp] You cannot use ENCRYPT_FIP_KEY_PATH_LIST as it is internal to sign-stm32mp.bbclass.")
             # Init ENCRYPT_KEY_PATH_LIST from ENCRYPT_KEY settings
             init_keylist_from('ENCRYPT_FIP_KEY_PATH_LIST', 'ENCRYPT_FIP_KEY', 'STM32MP_ENCRYPT_SOC_NAME', d)
+
+            if d.getVar('ENCRYPT_COPRO_ENABLE') == "1":
+                # Check for internal use of ENCRYPT_COPRO_KEY_PATH_LIST
+                copro_encryptkey_list = d.getVar('ENCRYPT_COPRO_KEY_PATH_LIST')
+                if copro_encryptkey_list:
+                    raise bb.parse.SkipRecipe("[sign-stm32mp] You cannot use ENCRYPT_COPRO_KEY_PATH_LIST as it is internal to sign-stm32mp.bbclass.")
+                # Init ENCRYPT_KEY_PATH_LIST from ENCRYPT_KEY settings
+                init_keylist_from('ENCRYPT_COPRO_KEY_PATH_LIST', 'ENCRYPT_COPRO_KEY', 'STM32MP_ENCRYPT_SOC_NAME', d)
+
 }

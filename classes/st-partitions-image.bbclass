@@ -41,8 +41,8 @@ python __anonymous () {
                 if config == f:
                     items = v.split(',')
                     # Make sure about PARTITIONS_IMAGES contents
-                    if len(items) != 5:
-                        bb.fatal('[PARTITIONS_IMAGES] Only image,label,mountpoint,size,type can be specified!')
+                    if len(items) > 6:
+                        bb.fatal('[PARTITIONS_IMAGES] Only image,label,mountpoint,size,type,[copy] can be specified!')
                     if items[0] == '':
                         bb.fatal('[PARTITIONS_IMAGES] Missing image setting')
                     if items[1] == '':
