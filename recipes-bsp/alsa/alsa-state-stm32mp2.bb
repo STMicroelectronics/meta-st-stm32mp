@@ -12,6 +12,7 @@ PV = "1.0"
 
 # Machine generic
 SRC_URI = " \
+    file://asound-stm32mp21yx-dk.conf \
     file://asound-stm32mp25yx-dk.conf \
     file://asound-stm32mp25yx-dk.state \
     file://asound-stm32mp25yx-ev1.conf \
@@ -42,6 +43,16 @@ do_install() {
             ln -sf asound-stm32mp25yx-ev1.state asound-stm32mp25$n$p-ev1.state
         done
     done
+    # create link to support all packages configuration
+    for p in d f; # a b c d e f
+    do
+        for n in 5; # 1 5
+        do
+            cd ${D}${sysconfdir}/
+            ln -sf asound-stm32mp21yx-dk.conf asound-stm32mp21$n$p-dk.conf
+        done
+    done
+
 }
 
 FILES:${PN} = "${localstatedir}/lib/alsa/*.state ${sysconfdir}/*.conf "
