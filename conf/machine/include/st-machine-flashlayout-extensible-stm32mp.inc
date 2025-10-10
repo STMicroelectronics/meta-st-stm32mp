@@ -20,11 +20,7 @@ FLASHLAYOUT_TYPE_LABELS:extensible = "${@' '.join(dt for dt in '${STM32MP_DT_FIL
 #   NOTE: extensible scheme is ONLY compatible with sdcard and optee bootscheme
 #   So we only set partition labels for this particular configuration
 # -----------------------------------------------------------------------------
-FLASHLAYOUT_PARTITION_LABELS:extensible = "\
-    ${FLASHLAYOUT_PROGRAMMER_SECTIONS} \
-    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'sdcard').split()])} \
-    ${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('PARTITIONS_CONFIG', 'sdcard').split()])} \
-    "
+FLASHLAYOUT_PARTITION_LABELS:extensible  = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'sdcard').split()])}"
 FLASHLAYOUT_PARTITION_LABELS:extensible:remove = "userfs"
 
 # -----------------------------------------------------------------------------

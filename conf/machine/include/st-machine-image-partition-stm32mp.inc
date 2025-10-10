@@ -289,19 +289,22 @@ STM32MP_UBIFS_NAME ?= "ubifs"
 STM32MP_UBIFS_SIZE ?= ""
 
 # Partitions configuration
-PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'emmc', '', d)}"
-PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256-1024', 'nand-4-256-1024', '', d)}"
-PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'nor', '', d)}"
-PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', 'sdcard', '', d)}"
-PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emmc', 'emmc', '', d)}"
-PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', bb.utils.contains('MACHINE_FEATURES', 'efi', 'sdcard sdcard-EFI', 'sdcard', d), '', d)}"
+PARTITIONS_CONFIG += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'emmc nor-emmc nor-nor-emmc', 'emmc', '', d)}"
 PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-2-128-256', 'nand-2-128-256', '', d)}"
 PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256-512', 'nand-4-256-512', '', d)}"
-
+PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256-1024', 'nand-4-256-1024', '', d)}"
+PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'nor', '', d)}"
+PARTITIONS_CONFIG += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'sdcard nor-sdcard nor-nor-sdcard', bb.utils.contains('MACHINE_FEATURES', 'efi', 'sdcard sdcard-EFI', 'sdcard', d), '', d)}"
 
 # <binary_name>,<partlabel>,<size>,<type>,<copy>
 PARTITIONS_CONFIG[emmc] ?= "\
     ${@' '.join(['%s' % partImage2partConfig(d, config, '${PARTITIONS_SUFFIX}') for config in d.getVar('PARTITIONS_LIST').split()])} \
+    "
+PARTITIONS_CONFIG[nand-2-128-256] ?= "\
+    ${STM32MP_UBIFS_DATA},${STM32MP_UBIFS_NAME},${STM32MP_UBIFS_SIZE},System,1 \
+    "
+PARTITIONS_CONFIG[nand-4-256-512] ?= "\
+    ${STM32MP_UBIFS_DATA},${STM32MP_UBIFS_NAME},${STM32MP_UBIFS_SIZE},System,1 \
     "
 PARTITIONS_CONFIG[nand-4-256-1024] ?= "\
     ${STM32MP_UBIFS_DATA},${STM32MP_UBIFS_NAME},${STM32MP_UBIFS_SIZE},System,1 \
@@ -314,13 +317,7 @@ PARTITIONS_CONFIG[sdcard] ?= "\
     "
 PARTITIONS_CONFIG[sdcard-EFI] ?= "\
     ${@' '.join(['%s' % partImage2partConfig(d, config, 'vfat' if config == 'efi' else '${PARTITIONS_SUFFIX}') for config in d.getVar('PARTITIONS_LIST_EFI').split()])} \
-"
-PARTITIONS_CONFIG[nand-2-128-256] ?= "\
-    ${STM32MP_UBIFS_DATA},${STM32MP_UBIFS_NAME},${STM32MP_UBIFS_SIZE},System,1 \
-"
-PARTITIONS_CONFIG[nand-4-256-512]   ?= "\
-    ${STM32MP_UBIFS_DATA},${STM32MP_UBIFS_NAME},${STM32MP_UBIFS_SIZE},System,1 \
-"
+    "
 
 # =========================================================================
 # UBI multi-volume configuration : data, label, size (Kbytes), [empty]

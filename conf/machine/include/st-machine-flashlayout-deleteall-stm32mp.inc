@@ -22,7 +22,7 @@ FLASHLAYOUT_CONFIG_LABELS[board] = "\
 # -----------------------------------------------------------------------------
 # Define label types for each config
 # -----------------------------------------------------------------------------
-FLASHLAYOUT_TYPE_LABELS:deleteall:board = "${STM32MP_DEVICETREE}"
+FLASHLAYOUT_TYPE_LABELS:deleteall:board = "${STM32MP_DEVICETREE_DEFAULT}"
 
 # -----------------------------------------------------------------------------
 # Define partitions to consider for flashlayout file generation
@@ -49,6 +49,7 @@ FLASHLAYOUT_PARTITION_OFFSET:deleteall:emmcboot1 = "${DEVICE_START_OFFSET_BOOT1:
 # The 'deleteall' bootscheme is a trick to generate flashlayout files to clean
 # all memory devices on board. There are no specific 'deleteall' bootloaders
 # so we need to manage specific override for FLASHLAYOUT_PROGRAMMER_SECTIONS binaries
-FLASHLAYOUT_PARTITION_REPLACE_PATTERNS:${STM32MP_FSBL_PROGRAMMER_NAME}:append = " deleteall;optee"
-FLASHLAYOUT_PARTITION_REPLACE_PATTERNS:${STM32MP_SSBL1_PROGRAMMER_NAME}:append = " deleteall;optee"
-FLASHLAYOUT_PARTITION_REPLACE_PATTERNS:${STM32MP_SSBL2_PROGRAMMER_NAME}:append = " deleteall;optee"
+BOOTSCHEME_REPLACE = "${@'opteemin' if bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', True, False, d) and not bb.utils.contains('BOOTSCHEME_LABELS', 'optee', True, False, d) else 'optee'}"
+FLASHLAYOUT_PARTITION_REPLACE_PATTERNS:${STM32MP_FSBL_PROGRAMMER_NAME}:append = " deleteall;${BOOTSCHEME_REPLACE}"
+FLASHLAYOUT_PARTITION_REPLACE_PATTERNS:${STM32MP_SSBL1_PROGRAMMER_NAME}:append = " deleteall;${BOOTSCHEME_REPLACE}"
+FLASHLAYOUT_PARTITION_REPLACE_PATTERNS:${STM32MP_SSBL2_PROGRAMMER_NAME}:append = " deleteall;${BOOTSCHEME_REPLACE}"

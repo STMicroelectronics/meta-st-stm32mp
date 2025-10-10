@@ -47,7 +47,7 @@ BOOTSCHEME_LABELS ??= "optee opteemin fastboot fastboot-opteemin"
 # boot device
 # =========================================================================
 # List of supported boot devices
-BOOTDEVICE_LABELS ??= "emmc nand-4-256-1024 nor-sdcard sdcard nand-4-256-1024-sdcard"
+BOOTDEVICE_LABELS ??= "emmc nor-emmc nand-4-256-1024 nor-sdcard sdcard nand-4-256-1024-sdcard"
 
 # =========================================================================
 # Machine settings
@@ -84,25 +84,74 @@ RDEPENDS:${KERNEL_PACKAGE_NAME}-base = ""
 MACHINE_EXTRA_RRECOMMENDS = " kernel-modules ${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'kernel-imageefi', 'kernel-imagebootfs', d)}"
 
 # Default external-dt init
-EXTERNAL_DT_ENABLED ?= "0"
-EXTERNAL_DEVICETREE_EMMC    ??= ""
-EXTERNAL_DEVICETREE_NAND    ??= ""
-EXTERNAL_DEVICETREE_NOR     ??= ""
-EXTERNAL_DEVICETREE_SDCARD  ??= ""
+EXTERNAL_DT_ENABLED ?= "1"
+
+# Configure use of device tree suffix
+EXTDT_USE_SUFFIX ?= "0"
+EXTDT_SUFFIX_EMMC    ?= ""
+EXTDT_SUFFIX_NAND    ?= ""
+EXTDT_SUFFIX_NOR     ?= ""
+EXTDT_SUFFIX_SDCARD  ?= ""
+EXTDT_SUFFIX_SPINAND ?= ""
+
+# Configure external-dt to consider
+EXTDT_ROOTDIR:stm32mp1common = "stm32mp1/"
+EXTDT_ROOTDIR:stm32mp2common = "${@bb.utils.contains('MACHINE_FEATURES', 'm33td', 'stm32mp2/m33-td/', 'stm32mp2/a35-td/', d)}"
+
+EXTERNAL_DEVICETREE_EMMC ??= ""
+EXTERNAL_DEVICETREE_NAND ??= ""
+EXTERNAL_DEVICETREE_NOR_all   ??= ""
+EXTERNAL_DEVICETREE_NOR_mb    ??= ""
+EXTERNAL_DEVICETREE_NOR_mb_sb ??= ""
+EXTERNAL_DEVICETREE_SDCARD ??= ""
 EXTERNAL_DEVICETREE_SPINAND ??= ""
 
-# Default device tree list per supported storages
-STM32MP_DT_FILES_EMMC    ??= ""
-STM32MP_DT_FILES_NAND    ??= ""
-STM32MP_DT_FILES_NOR     ??= ""
-STM32MP_DT_FILES_SDCARD  ??= ""
+EXTERNAL_DT_ALL += "${EXTERNAL_DEVICETREE_EMMC}"
+EXTERNAL_DT_ALL += "${EXTERNAL_DEVICETREE_NAND}"
+EXTERNAL_DT_ALL += "${EXTERNAL_DEVICETREE_NOR_all}"
+EXTERNAL_DT_ALL += "${EXTERNAL_DEVICETREE_NOR_mb}"
+EXTERNAL_DT_ALL += "${EXTERNAL_DEVICETREE_NOR_mb_sb}"
+EXTERNAL_DT_ALL += "${EXTERNAL_DEVICETREE_SDCARD}"
+EXTERNAL_DT_ALL += "${EXTERNAL_DEVICETREE_SPINAND}"
+# Feed overall external device tree list (without duplicate)
+EXTERNAL_DEVICETREE:append = " ${@' '.join('%s' % dt_file for dt_file in list(dict.fromkeys((d.getVar('EXTERNAL_DT_ALL') or '').split())))} "
+
+EXTERNAL_DT_SUFFIX_ALL += "${@' '.join(dt + d.getVar('EXTDT_SUFFIX_EMMC') for dt in '${EXTERNAL_DEVICETREE_EMMC}'.split())}"
+EXTERNAL_DT_SUFFIX_ALL += "${@' '.join(dt + d.getVar('EXTDT_SUFFIX_NAND') for dt in '${EXTERNAL_DEVICETREE_NAND}'.split())}"
+EXTERNAL_DT_SUFFIX_ALL += "${@' '.join(dt + d.getVar('EXTDT_SUFFIX_NOR') for dt in '${EXTERNAL_DEVICETREE_NOR_all}'.split())}"
+EXTERNAL_DT_SUFFIX_ALL += "${@' '.join(dt + d.getVar('EXTDT_SUFFIX_NOR') for dt in '${EXTERNAL_DEVICETREE_NOR_mb}'.split())}"
+EXTERNAL_DT_SUFFIX_ALL += "${@' '.join(dt + d.getVar('EXTDT_SUFFIX_NOR') for dt in '${EXTERNAL_DEVICETREE_NOR_mb_sb}'.split())}"
+EXTERNAL_DT_SUFFIX_ALL += "${@' '.join(dt + d.getVar('EXTDT_SUFFIX_SDCARD') for dt in '${EXTERNAL_DEVICETREE_SDCARD}'.split())}"
+EXTERNAL_DT_SUFFIX_ALL += "${@' '.join(dt + d.getVar('EXTDT_SUFFIX_SPINAND') for dt in '${EXTERNAL_DEVICETREE_SPINAND}'.split())}"
+# Feed overall external device tree list with suffix (without duplicate)
+EXTERNAL_DEVICETREE_SUFFIX:append = " ${@' '.join('%s' % dt_file for dt_file in list(dict.fromkeys((d.getVar('EXTERNAL_DT_SUFFIX_ALL') or '').split())))} "
+
+# Default device tree list per storage types
+STM32MP_DT_FILES_EMMC ??= ""
+STM32MP_DT_FILES_NAND ??= ""
+STM32MP_DT_FILES_NOR_all   ??= ""
+STM32MP_DT_FILES_NOR_mb    ??= ""
+STM32MP_DT_FILES_NOR_mb_sb ??= ""
+STM32MP_DT_FILES_SDCARD ??= ""
 STM32MP_DT_FILES_SPINAND ??= ""
 
-STM32MP_DT_FILES_EMMC:append    = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_EMMC}', '', d)}"
-STM32MP_DT_FILES_NAND:append    = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_NAND}', '', d)}"
-STM32MP_DT_FILES_NOR:append     = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_NOR}', '', d)}"
-STM32MP_DT_FILES_SDCARD:append  = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_SDCARD}', '', d)}"
+STM32MP_DT_FILES_EMMC:append = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_EMMC}', '', d)}"
+STM32MP_DT_FILES_NAND:append = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_NAND}', '', d)}"
+STM32MP_DT_FILES_NOR_all:append   = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_NOR_all}', '', d)}"
+STM32MP_DT_FILES_NOR_mb:append    = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_NOR_mb}', '', d)}"
+STM32MP_DT_FILES_NOR_mb_sb:append = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_NOR_mb_sb}', '', d)}"
+STM32MP_DT_FILES_SDCARD:append = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_SDCARD}', '', d)}"
 STM32MP_DT_FILES_SPINAND:append = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_SPINAND}', '', d)}"
+
+# NOR configured with all partitions (master boot and filesytems)
+STM32MP_DT_FILES_ALL_NOR += "${STM32MP_DT_FILES_NOR_all}"
+# NOR configured with only master boot partitions
+STM32MP_DT_FILES_ALL_NOR += "${STM32MP_DT_FILES_NOR_mb}"
+# NOR configured with only master and secondary boot partitions
+STM32MP_DT_FILES_ALL_NOR += "${STM32MP_DT_FILES_NOR_mb_sb}"
+# Concatenate all device tree per storage for all partition configurations
+STM32MP_DT_FILES_NOR ??= ""
+STM32MP_DT_FILES_NOR:append = " ${@' '.join(dt_file for dt_file in list(dict.fromkeys((d.getVar('STM32MP_DT_FILES_ALL_NOR') or '').split())))} "
 
 STM32MP_DT_FILES_ALL += "${STM32MP_DT_FILES_EMMC}"
 STM32MP_DT_FILES_ALL += "${STM32MP_DT_FILES_NAND}"
@@ -110,8 +159,14 @@ STM32MP_DT_FILES_ALL += "${STM32MP_DT_FILES_NOR}"
 STM32MP_DT_FILES_ALL += "${STM32MP_DT_FILES_SDCARD}"
 STM32MP_DT_FILES_ALL += "${STM32MP_DT_FILES_SPINAND}"
 
-# Set default supported device tree list (without duplicate)
-STM32MP_DEVICETREE:append = " ${@' '.join('%s' % dt_file for dt_file in list(dict.fromkeys((d.getVar('STM32MP_DT_FILES_ALL') or '').split())))} "
+# Set default supported device tree list without suffix (without duplicate)
+STM32MP_DEVICETREE_DEFAULT = "${@' '.join('%s' % dt_file for dt_file in list(dict.fromkeys((d.getVar('STM32MP_DT_FILES_ALL') or '').split())))}"
+# Set default supported device tree list with suffix expansion (without duplicate)
+STM32MP_DEVICETREE_SUFFIX = "${@' '.join('%s' % dt_file for dt_file in list(dict.fromkeys((d.getVar('STM32MP_DT_FILES_ALL') or '').split())))}"
+STM32MP_DEVICETREE_SUFFIX:remove = "${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE}', '', d)}"
+STM32MP_DEVICETREE_SUFFIX:append = " ${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTERNAL_DEVICETREE_SUFFIX}', '', d)}"
+
+STM32MP_DEVICETREE:append = " ${@bb.utils.contains('EXTDT_USE_SUFFIX', '1', '${STM32MP_DEVICETREE_SUFFIX}', '${STM32MP_DEVICETREE_DEFAULT}', d)}"
 
 # Default for programmer:
 STM32MP_DEVICETREE_PROGRAMMER_ENABLE ??= "1"
@@ -133,6 +188,10 @@ STMP32MP_PROGRAMMER_SERIAL ??= "usb"
 # =========================================================================
 # Enable Software watchdog when sysvinit
 MACHINE_EXTRA_RRECOMMENDS:append = " ${@bb.utils.contains('DISTRO_FEATURES','sysvinit',' watchdog ','',d)} "
+
+# for devicetree OVERLAY
+ST_DEVICE_OVERLAY_ADDONS ??= ""
+MACHINE_EXTRA_RRECOMMENDS:append = "${ST_DEVICE_OVERLAY_ADDONS}"
 
 # =========================================================================
 # Flashlayout configuration
@@ -193,7 +252,7 @@ EXTRA_UBIFS_SIZE_nand_4_256_512 = "1408"
 WKS_IMAGE_FSTYPES ?= ""
 IMAGE_FSTYPES ?= "${WKS_IMAGE_FSTYPES} tar.xz"
 # Append ext4 FSTYPES to default ones for emmc and sdcard volumes
-IMAGE_FSTYPES += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'emmc nor-sdcard nor-emmc nand-4-256-1024-sdcard sdcard', 'ext4', '', d)}"
+IMAGE_FSTYPES += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'emmc nor-sdcard nor-nor-sdcard nor-emmc nor-nor-emmc nand-4-256-1024-sdcard sdcard', 'ext4', '', d)}"
 # Append ubi FSTYPES to default ones for nand volumes
 IMAGE_FSTYPES += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-2-128-256 nand-4-256-512 nand-4-256-1024-sdcard nand-2-128-256-sdcard nand-4-256-512-sdcard', 'multiubi', '', d)}"
 
@@ -432,7 +491,7 @@ FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.co
 FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot-opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'fastboot-opteemin-sdcard', '', d), '', d), '', d)}"
 
 # Define fiptool wrapper name
-FIPTOOL_WRAPPER ?= "fiptool-stm32mp"
+FIPTOOL_WRAPPER ?= "fiptool-stm32mp.${MACHINE}"
 
 # Manage specific config to sign FIP
 FIP_SIGN_SUFFIX ?= "${@bb.utils.contains('SIGN_ENABLE', '1', '${SIGN_SUFFIX}', '', d)}"
