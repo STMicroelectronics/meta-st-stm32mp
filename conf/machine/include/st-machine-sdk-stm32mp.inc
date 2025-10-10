@@ -3,6 +3,7 @@
 # Make sure to provide all expected tools in SDK
 ST_TOOLS_FOR_SDK = " \
     nativesdk-gcc-arm-none-eabi \
+    nativesdk-gcc-arm-none-eabi-staticdev \
     nativesdk-binutils \
     nativesdk-openocd-stm32mp \
     nativesdk-stm32wrapper4dbg \
