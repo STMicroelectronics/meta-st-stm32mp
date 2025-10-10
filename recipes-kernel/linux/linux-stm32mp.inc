@@ -177,8 +177,8 @@ python do_loadaddrcheck() {
 
 PACKAGES =+ "${KERNEL_PACKAGE_NAME}-headers ${KERNEL_PACKAGE_NAME}-imagebootfs"
 FILES:${KERNEL_PACKAGE_NAME}-headers = "${exec_prefix}/src/linux*"
-FILES:${KERNEL_PACKAGE_NAME}-image  += "boot/ ${KERNEL_IMAGEDEST}"
-FILES:${KERNEL_PACKAGE_NAME}-imagebootfs = "boot/*.dtb boot/${KERNEL_IMAGETYPE}"
+FILES:${KERNEL_PACKAGE_NAME}-devicetree += "/${KERNEL_DTBDEST}/*.dtb ${KERNEL_DTBDEST}/*.dtbo"
+FILES:${KERNEL_PACKAGE_NAME}-imagebootfs = "/${KERNEL_IMAGEDEST}/${KERNEL_IMAGETYPE}"
 FILES:${KERNEL_PACKAGE_NAME}-modules += "${sysconfdir}/modprobe.d"
 
 PACKAGES =+ "${@bb.utils.contains('MACHINE_FEATURES', 'efi', '${KERNEL_PACKAGE_NAME}-imageefi', '', d)} "

@@ -88,6 +88,7 @@ RDEPENDS:${KERNEL_PACKAGE_NAME}-base = ""
 
 # Ship all kernel modules by default
 MACHINE_EXTRA_RRECOMMENDS = " kernel-modules ${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'kernel-imageefi', 'kernel-imagebootfs', d)}"
+MACHINE_EXTRA_RRECOMMENDS += "kernel-devicetree"
 
 # Default external-dt init
 EXTERNAL_DT_ENABLED ?= "1"
