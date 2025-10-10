@@ -20,5 +20,6 @@ FILES:${PN} += "${datadir}/gcc-arm-none-eabi"
 
 # Some library files in the tarball are not at the expected place,
 # and it's working. But QA will complain, so skip the complaint on libdir
-INSANE_SKIP:${PN} += "libdir"
-
+INSANE_SKIP:${PN}-dbg:class-nativesdk += "libdir"
+INSANE_SKIP:${PN}:class-nativesdk += "libdir arch"
+INSANE_SKIP:${PN}:class-nativesdk += "already-stripped file-rdeps buildpaths"
