@@ -14,7 +14,7 @@ DEFAULT_SBOOTADDR=${SBOOTADDR:-0x80000000}
 DEFAULT_NSBOOTADDR=${NSBOOTADDR:-0x80100000}
 DEFAULT_UC1_RADIX=${UC1_RADIX:-sign.bin}
 DEFAULT_UC2_RADIX=${UC2_RADIX:-tfm_sign.bin}
-
+DEFAULT_UC3_RADIX=${UC1_RADIX:-sign_enc.bin}
 
 # Variable
 NEED_TO_SIGN=0
@@ -26,6 +26,12 @@ OUTPUT_SIGNATURE=""
 INPUT_SECURE=""
 OUTPUT_SECURE=""
 OUTPUT_SECURE_STRIPPED=0
+ENCRYPT_KEY=""
+SIGN_ECC=0
+SIGN_ECC_PASS_KEY=""
+SIGN_ECC_PRIV_KEY=""
+SIGN_ECC_INFO_KEY=""
+
 SIGNATURE_KEY=""
 OUTPUT_FILE=""
 
@@ -41,12 +47,18 @@ function usage() {
     echo "    NSBOOTADDR: Non Secure load (default: $DEFAULT_NSBOOTADDR)"
     echo "    UC1_RADIX:  Radix to add to output file name (default: $DEFAULT_UC1_RADIX)"
     echo "    UC2_RADIX:  Radix to add to output file name (default: $DEFAULT_UC2_RADIX)"
+    echo "    UC3_RADIX:  Radix to add to output file name (default: $DEFAULT_UC3_RADIX)"
     echo "Parameters:"
     echo "    -h | --help: this help"
     echo "    -i <elf file>| --input-nsecure <elf file>: File to load on non secure address"
     echo "    -I <elf file>| --input-secure <elf file>: File to load on secure address"
     echo "    -k <key file>| --signature-key <key file>: Key use to sign firmware"
     echo "    -o <output file prefix>| --output <output file prefix>: output file prefix (path + prefix)"
+    echo "    -e <key file>| --encrypt-key <key file: key use to encrypt"
+    echo "    -E -p <ecc priv key> -P <ecc info key> [-s <eec passwd>]| "
+    echo "        --sign-ecc --sign-ecc-priv-key <ecc private key> --sign-ecc-info-key <ecc info key> [--sign-ecc-pass <ecc pass>]:"
+    echo "        sign with ecc key"
+
     echo "Example:"
     echo "  $0 -i OpenAMP_TTY_echo_CM33_NonSecure.elf -o OpenAMP_TTY_echo_CM33"
     echo "      -> generate OpenAMP_TTY_echo_CM33-$DEFAULT_UC1_RADIX"
@@ -123,6 +135,49 @@ function verify_optee_key() {
         exit 6
     fi
 }
+function verify_encrypt_key() {
+    if [ -z "$ENCRYPT_KEY" ] ; then
+        echo "[ERROR]: the key \"ENCRYPT_KEY\" is empty."
+        echo "[ERROR]: please specify a valid encryption key."
+        usage
+        exit 7
+    fi
+    # verify if key exist
+    if [ ! -e $ENCRYPT_KEY ]; then
+        echo "[ERROR]: the key \"$ENCRYPT_KEY\" doesn't exist."
+        echo "[ERROR]: please specify a valid encryption key."
+        usage
+        exit 8
+    fi
+}
+function verify_ecc_key() {
+    if [ -z "$SIGN_ECC_PRIV_KEY" ] ; then
+        echo "[ERROR]: the ECC key \"SIGN_ECC_PRIV_KEY\" is empty."
+        echo "[ERROR]: please specify a valid ecc signature key."
+        usage
+        exit 9
+    fi
+    # verify if key exist
+    if [ ! -e $SIGN_ECC_PRIV_KEY ]; then
+        echo "[ERROR]: the key \"$SIGN_ECC_PRIV_KEY\" doesn't exist."
+        echo "[ERROR]: please specify a valid ecc signature key."
+        usage
+        exit 10
+    fi
+    if [ -z "$SIGN_ECC_INFO_KEY" ] ; then
+        echo "[ERROR]: the ECC key \"SIGN_ECC_INFO_KEY\" is empty."
+        echo "[ERROR]: please specify a valid ecc key information."
+        usage
+        exit 11
+    fi
+    # verify if key exist
+    if [ ! -e $SIGN_ECC_INFO_KEY ]; then
+        echo "[ERROR]: the key \"$SIGN_ECC_INFO_KEY\" doesn't exist."
+        echo "[ERROR]: please specify a valid ecc key information."
+        usage
+        exit 12
+    fi
+}
 
 function process_args() {
     # check opt args
@@ -133,13 +188,22 @@ function process_args() {
             usage
             return 0
             ;;
+        -e|--encrypt-key)
+            if [ $# -gt 1 ]; then
+                ENCRYPT_KEY=$2
+                shift
+            fi
+            ;;
+        -E|--sign-ecc)
+            SIGN_ECC=1
+            ;;
         -i|--input-nsecure)
             if [ $# -gt 1 ]; then
                 INPUT_NSECURE=$2
                 shift
             fi
             ;;
-        -i|--input-secure)
+        -I|--input-secure)
             if [ $# -gt 1 ]; then
                 INPUT_SECURE=$2
                 shift
@@ -154,6 +218,24 @@ function process_args() {
         -k|--signature-key)
             if [ $# -gt 1 ]; then
                 SIGNATURE_KEY=$2
+                shift
+            fi
+            ;;
+        -s|--sign-ecc-pass)
+            if [ $# -gt 1 ]; then
+                SIGN_ECC_PASS_KEY=$2
+                shift
+            fi
+            ;;
+        -p|--sign-ecc-priv-key)
+            if [ $# -gt 1 ]; then
+                SIGN_ECC_PRIV_KEY=$2
+                shift
+            fi
+            ;;
+        -P|--sign-ecc-info-key)
+            if [ $# -gt 1 ]; then
+                SIGN_ECC_INFO_KEY=$2
                 shift
             fi
             ;;
@@ -208,40 +290,63 @@ fi
 
 # UC 1: signature / non secure (and no Secure firmware)
 # scripts/sign_rproc_fw.py  --in OpenAMP_TTY_echo_CM33_NonSecure.elf -out sign.bin --key keys/default.pem --plat-tlv BOOTADDR 0x80100000
+# if using ECC key:
+# scripts/sign_rproc_fw.py  --in OpenAMP_TTY_echo_CM33_NonSecure.elf -out ecc.stm32 --key ./keys/privateKey.pem --key_pwd="azerty" --key_type=ECC --key_info ./keys/publicKey.der --plat-tlv BOOTADDR 0x80100000
+
 
 # UC 2: signature / secure and non secure firmware
 # scripts/sign_rproc_fw.py  --in OpenAMP_TTY_echo_CM33_NonSecure.elf --in tfm_s_ipcc.elf --out tfm_sign.bin --key keys/default.pem --plat-tlv BOOTADDR 0x80000000  --plat-tlv BOOTSEC 0x01
 
 # UC 1: signature / non secure (and no Secure firmware)
-if [ -n $INPUT_NSECURE  -a -z "$INPUT_SECURE"]; then
-    # signature / non secure (and no Secure firmware)
-    filename=$(echo $OUTPUT_FILE"_"$DEFAULT_UC1_RADIX)
-    echo "[COPRO CMD] $TA_DEV_KIT_DIR/scripts/sign_rproc_fw.py \\
-            --in $OUTPUT_NSECURE \\
-            --key $SIGNATURE_KEY \\
-            --plat-tlv BOOTADDR $DEFAULT_NSBOOTADDR \\
-            --out $filename"
-    $TA_DEV_KIT_DIR/scripts/sign_rproc_fw.py \
-            --in $OUTPUT_NSECURE \
-            --key $SIGNATURE_KEY \
-            --plat-tlv BOOTADDR $DEFAULT_NSBOOTADDR \
-            --out $filename
+if [ -n "$INPUT_NSECURE"  -a -z "$INPUT_SECURE"]; then
+    # signature command
+    if [ "$SIGN_ECC" = "1" ]; then
+        verify_ecc_key
+        CMD_SIGN="--key $SIGN_ECC_PRIV_KEY --key_pwd=${SIGN_ECC_PASS_KEY} --key_type=ECC --key_info $SIGN_ECC_INFO_KEY"
+    else
+        CMD_SIGN="--key $SIGNATURE_KEY"
+    fi
+
+    if [ -z "$ENCRYPT_KEY" ] ; then
+        # signature / non secure (and no Secure firmware)
+        filename=$(echo $OUTPUT_FILE"_"$DEFAULT_UC1_RADIX)
+        echo "[COPRO CMD] $TA_DEV_KIT_DIR/scripts/sign_rproc_fw.py $CMD_SIGN \\
+                --in $OUTPUT_NSECURE \\
+                --plat-tlv BOOTADDR $DEFAULT_NSBOOTADDR \\
+                --out $filename"
+        $TA_DEV_KIT_DIR/scripts/sign_rproc_fw.py $CMD_SIGN \
+                --in $OUTPUT_NSECURE \
+                --plat-tlv BOOTADDR $DEFAULT_NSBOOTADDR \
+                --out $filename
+    else
+        verify_encrypt_key
+        # signature encryption / non secure (and no Secure firmware)
+        filename=$(echo $OUTPUT_FILE"_"$DEFAULT_UC3_RADIX)
+        echo "[COPRO CMD] $TA_DEV_KIT_DIR/scripts/sign_rproc_fw.py \\
+                --in $OUTPUT_NSECURE $CMD_SIGN \\
+                --enc_key $ENCRYPT_KEY \\
+                --plat-tlv BOOTADDR $DEFAULT_NSBOOTADDR \\
+                --out $filename"
+        $TA_DEV_KIT_DIR/scripts/sign_rproc_fw.py \
+                --in $OUTPUT_NSECURE $CMD_SIGN \
+                --plat-tlv BOOTADDR $DEFAULT_NSBOOTADDR \
+                --out $filename
+
+    fi
 fi
 # UC 2: signature / secure and non secure firmware
 if [ -n "$INPUT_NSECURE" -a -n  "$INPUT_SECURE" ]; then
     #  signature / secure and non secure firmware
     filename=$(echo $OUTPUT_FILE"_"$DEFAULT_UC2_RADIX)
-    echo "[COPRO SECURE CMD] $TA_DEV_KIT_DIR/scripts/sign_rproc_fw.py \\
+    echo "[COPRO SECURE CMD] $TA_DEV_KIT_DIR/scripts/sign_rproc_fw.py --key $SIGNATURE_KEY \\
             --in $OUTPUT_NSECURE \\
             --in $OUTPUT_SECURE  \\
-            --key $SIGNATURE_KEY \\
             --plat-tlv BOOTADDR $DEFAULT_SBOOTADDR \\
             --plat-tlv BOOTSEC 0x01 \\
             --out $filename"
-    $TA_DEV_KIT_DIR/scripts/sign_rproc_fw.py \
+    $TA_DEV_KIT_DIR/scripts/sign_rproc_fw.py --key $SIGNATURE_KEY \
             --in $OUTPUT_NSECURE \
             --in $OUTPUT_SECURE  \
-            --key $SIGNATURE_KEY \
             --plat-tlv BOOTADDR $DEFAULT_SBOOTADDR \
             --plat-tlv BOOTSEC 0x01 \
             --out $filename
