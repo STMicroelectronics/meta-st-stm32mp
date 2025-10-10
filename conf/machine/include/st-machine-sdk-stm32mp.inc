@@ -153,3 +153,6 @@ MULTILIB_ST_AARCH32 = " \
     "
 TOOLCHAIN_HOST_TASK:append:stm32mp2aarch32common = " ${MULTILIB_ST_AARCH32} "
 
+MACHINE_EXTRA_RRECOMMENDS:append = " \
+    ${@bb.utils.contains('ST_ARCHIVER_ENABLE', '1', 'sdk-infos', '', d)} \
+"
