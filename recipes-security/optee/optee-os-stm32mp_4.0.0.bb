@@ -6,15 +6,15 @@ SRC_URI = "git://github.com/OP-TEE/optee_os.git;protocol=https;branch=master"
 SRCREV = "2a5b1d1232f582056184367fb58a425ac7478ec6"
 
 SRC_URI += " \
-    file://fonts.tar.gz;subdir=git;name=fonts \
-    file://0001-4.0.0-stm32mp-r1.2.patch \
+    file://fonts.tar.gz;subdir=${BP};name=fonts \
+    file://0001-4.0.0-stm32mp-r2.patch \
     "
 
 SRC_URI[fonts.sha256sum] = "4941e8bb6d8ac377838e27b214bf43008c496a24a8f897e0b06433988cbd53b2"
 
 OPTEE_VERSION = "4.0.0"
 OPTEE_SUBVERSION = "stm32mp"
-OPTEE_RELEASE = "r1.2"
+OPTEE_RELEASE = "r2"
 
 PV = "${OPTEE_VERSION}-${OPTEE_SUBVERSION}-${OPTEE_RELEASE}"
 
@@ -49,7 +49,7 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'optee-os-stm3
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/optee_os.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV:class-devupstream = "dc74bac3cbb271e524cc55a8319327b59fa65e9c"
+SRCREV:class-devupstream = "a8dd87d45831be900f0aaa44a5e0587269e3df25"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

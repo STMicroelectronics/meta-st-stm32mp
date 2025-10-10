@@ -84,5 +84,10 @@ OPTEE_DEVICETREE_opteemin += "${@' '.join(dt for dt in '${STM32MP_DEVICETREE_PRO
 OPTEE_DEVICETREE_opteemin += "${@' '.join(dt for dt in '${STM32MP_DEVICETREE_PROGRAMMER}'.split() if 'stm32mp23' in dt)}"
 OPTEE_DEVICETREE_opteemin += "${@' '.join(dt for dt in '${STM32MP_DEVICETREE_PROGRAMMER}'.split() if 'stm32mp25' in dt)}"
 
-OPTEE_CONFIG[optee]    = "${OPTEE_DEVICETREE_optee},CFG_STM32MP_PROFILE=secure_and_system_services"
-OPTEE_CONFIG[opteemin] = "${OPTEE_DEVICETREE_opteemin},CFG_STM32MP_PROFILE=system_services"
+OPTEE_CONFIG_OPTS_EXTDT ?= "${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', 'CFG_EXT_DTS=${STAGING_EXTDT_DIR}/${EXTDT_DIR_OPTEE}', '', d)}"
+OPTEE_CONFIG_OPTS_EXTDT_programmer ?= "${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', 'CFG_EXT_DTS=${STAGING_EXTDT_DIR}/${EXTDT_DIR_OPTEE_SERIAL}', '', d)}"
+
+OPTEE_CONFIG[optee]               ?= "${OPTEE_DEVICETREE_optee},${OPTEE_CONFIG_OPTS_EXTDT} CFG_STM32MP_PROFILE=secure_and_system_services"
+OPTEE_CONFIG[opteemin]            ?= "${OPTEE_DEVICETREE_opteemin},${OPTEE_CONFIG_OPTS_EXTDT} CFG_STM32MP_PROFILE=system_services"
+OPTEE_CONFIG[optee-programmer]    ?= "${OPTEE_DEVICETREE_optee},${OPTEE_CONFIG_OPTS_EXTDT_programmer} CFG_STM32MP_PROFILE=secure_and_system_services"
+OPTEE_CONFIG[opteemin-programmer] ?= "${OPTEE_DEVICETREE_opteemin},${OPTEE_CONFIG_OPTS_EXTDT_programmer} CFG_STM32MP_PROFILE=system_services"
