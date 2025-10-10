@@ -1,10 +1,10 @@
 # Copyright (C) 2025 STMicroelectronics - All Rights Reserved#
 SUMMARY = "Addons firmware for BCM4343"
 HOMEPAGE = "https://github.com/murata-wireless"
-LICENSE = "Firmware-cypress-bcm43"
+LICENSE = "Cypress-bcm43xx"
 LIC_FILES_CHKSUM = "file://LICENCE.cypress;md5=cbc5f665d04f741f1e006d2096236ba7"
 
-NO_GENERIC_LICENSE[Firmware-cypress-bcm43] = "LICENCE.cypress"
+NO_GENERIC_LICENSE[Cypress-bcm43xx] = "LICENCE.cypress"
 
 inherit allarch
 
@@ -20,13 +20,11 @@ SRCREV_FORMAT = "murata"
 
 PV = "6.0"
 
-S = "${WORKDIR}/git"
-
 do_install() {
    install -d ${D}${nonarch_base_libdir}/firmware/brcm/
    # ---- 43430-----
    # Install calibration file
-   install -m 0644 ${WORKDIR}/nvram-murata/cyfmac43430-sdio.1DX.txt ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43430-sdio.txt
+   install -m 0644 ${UNPACKDIR}/nvram-murata/cyfmac43430-sdio.1DX.txt ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43430-sdio.txt
    # disable Wakeup on WLAN
    sed -i "s/muxenab=\(.*\)$/#muxenab=\1/g" ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43430-sdio.txt
    # Install calibration file (stm32mp15)
@@ -36,8 +34,8 @@ do_install() {
    install -m 0644 ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43430-sdio.txt ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43430-sdio.st,stm32mp135f-dk.txt
 
    # Take newest murata firmware
-   install -m 0644 ${WORKDIR}/murata/cyfmac43430-sdio.bin ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43430-sdio.bin
-   install -m 0644 ${WORKDIR}/murata/cyfmac43430-sdio.1DX.clm_blob ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43430-sdio.clm_blob
+   install -m 0644 ${UNPACKDIR}/murata/cyfmac43430-sdio.bin ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43430-sdio.bin
+   install -m 0644 ${UNPACKDIR}/murata/cyfmac43430-sdio.1DX.clm_blob ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43430-sdio.clm_blob
 
    # Add symlinks for newest kernel compatibility
    cd ${D}${nonarch_base_libdir}/firmware/brcm/
@@ -47,7 +45,7 @@ do_install() {
 
    # ---- 43439-----
    # Install calibration file
-   install -m 0644 ${WORKDIR}/nvram-murata/cyfmac43439-sdio.1YN.txt ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43439-sdio.txt
+   install -m 0644 ${UNPACKDIR}/nvram-murata/cyfmac43439-sdio.1YN.txt ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43439-sdio.txt
    # disable Wakeup on WLAN
    sed -i "s/muxenab=\(.*\)$/#muxenab=\1/g" ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43439-sdio.txt
    # Install calibration file (stm32mp25)
@@ -55,8 +53,8 @@ do_install() {
    install -m 0644 ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43439-sdio.txt ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43439-sdio.st,stm32mp235f-dk.txt
 
    # Take newest murata firmware
-   install -m 0644 ${WORKDIR}/murata/cyfmac43439-sdio.bin ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43439-sdio.bin
-   install -m 0644 ${WORKDIR}/murata/cyfmac43439-sdio.1YN.clm_blob ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43439-sdio.clm_blob
+   install -m 0644 ${UNPACKDIR}/murata/cyfmac43439-sdio.bin ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43439-sdio.bin
+   install -m 0644 ${UNPACKDIR}/murata/cyfmac43439-sdio.1YN.clm_blob ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43439-sdio.clm_blob
 
    # Add symlinks for newest kernel compatibility
    cd ${D}${nonarch_base_libdir}/firmware/brcm/
@@ -67,19 +65,25 @@ do_install() {
 
    # ---- 4773 ----
    # Install calibration file
-   install -m 0644 ${WORKDIR}/nvram-murata/cyfmac4373-sdio.2AE.txt ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.txt
+   install -m 0644 ${UNPACKDIR}/nvram-murata/cyfmac4373-sdio.2AE.txt ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.txt
    # disable Wakeup on WLAN
    sed -i "s/muxenab=\(.*\)$/#muxenab=\1/g" ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.txt
    # Install calibration file (stm32mp25)
    install -m 0644 ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.txt ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.st,stm32mp215f-dk.txt
+   install -m 0644 ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.txt ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.st,stm32mp215f-dk-ca35tdcid-ostl.txt
 
    # Take newest murata firmware
-   install -m 0644 ${WORKDIR}/murata/cyfmac4373-sdio.2AE.bin ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.bin
-   install -m 0644 ${WORKDIR}/murata/cyfmac4373-sdio.2AE.clm_blob ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.clm_blob
+   install -m 0644 ${UNPACKDIR}/murata/cyfmac4373-sdio.2AE.bin ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.bin
+   install -m 0644 ${UNPACKDIR}/murata/cyfmac4373-sdio.2AE.clm_blob ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.clm_blob
+
+   install -m 644 ${S}/BCM4373A0_001.001.025.0103.0155.FCC.CE.2AE.hcd ${D}${nonarch_base_libdir}/firmware/brcm/BCM4373A0.hcd
+   cd ${D}${nonarch_base_libdir}/firmware/brcm/
+   ln -sf BCM4373A0.hcd BCM.st,stm32mp215f-dk.hcd
 
    # Add symlinks for newest kernel compatibility
    cd ${D}${nonarch_base_libdir}/firmware/brcm/
    ln -sf brcmfmac4373-sdio.bin brcmfmac4373-sdio.st,stm32mp215f-dk.bin
+   ln -sf brcmfmac4373-sdio.bin brcmfmac4373-sdio.st,stm32mp215f-dk-ca35tdcid-ostl.bin
 }
 
 do_install:append:stm32mp1common() {
@@ -113,12 +117,55 @@ do_install:append:stm32mp21common() {
     install -m 644 ${S}/BCM4373A0_001.001.025.0103.0155.FCC.CE.2AE.hcd ${D}${nonarch_base_libdir}/firmware/brcm/BCM4373A0.hcd
     cd ${D}${nonarch_base_libdir}/firmware/brcm/
     ln -sf BCM4373A0.hcd BCM.st,stm32mp215f-dk.hcd
+
+    # Install calibration file (stm32mp25)
+    install -m 0644 ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.txt ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.st,stm32mp215f-dk.txt
+    install -m 0644 ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.txt ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.st,stm32mp215f-dk-ca35tdcid-ostl.txt
+
+    ln -sf brcmfmac4373-sdio.bin brcmfmac4373-sdio.st,stm32mp215f-dk.bin
+    ln -sf brcmfmac4373-sdio.bin brcmfmac4373-sdio.st,stm32mp215f-dk-ca35tdcid-ostl.bin
+}
+
+do_install:append:stm32mp2aarch32common() {
+    install -d ${D}${nonarch_base_libdir}/firmware/brcm/
+
+    # 4373
+    install -m 644 ${S}/LICENCE.cypress ${D}${nonarch_base_libdir}/firmware/LICENCE.cypress_bcm4373
+    install -m 644 ${S}/BCM4373A0_001.001.025.0103.0155.FCC.CE.2AE.hcd ${D}${nonarch_base_libdir}/firmware/brcm/BCM4373A0.hcd
+    cd ${D}${nonarch_base_libdir}/firmware/brcm/
+    ln -sf BCM4373A0.hcd BCM.st,stm32mp215f-dk-aarch32.hcd
+
+    # Install calibration file (stm32mp25)
+    install -m 0644 ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.txt ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.st,stm32mp215f-dk-aarch32.txt
+
+    ln -sf brcmfmac4373-sdio.bin brcmfmac4373-sdio.st,stm32mp215f-dk-aarch32.bin
+}
+do_install:append:stm32mp2m33tdcommon() {
+    install -d ${D}${nonarch_base_libdir}/firmware/brcm/
+
+    # create link for stm32mp2 M33TD
+    # Install calibration file (stm32mp25)
+    install -m 0644 ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43439-sdio.txt ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac43439-sdio.st,stm32mp235f-dk-cm33tdcid-ostl-sdcard.bin
+    # Add symlinks for newest kernel compatibility
+    cd ${D}${nonarch_base_libdir}/firmware/brcm/
+     ln -sf brcmfmac43439-sdio.bin brcmfmac43439-sdio.st,stm32mp235f-dk-cm33tdcid-ostl-sdcard.bin
+
+    # 4373
+    install -m 644 ${S}/LICENCE.cypress ${D}${nonarch_base_libdir}/firmware/LICENCE.cypress_bcm4373
+    install -m 644 ${S}/BCM4373A0_001.001.025.0103.0155.FCC.CE.2AE.hcd ${D}${nonarch_base_libdir}/firmware/brcm/BCM4373A0.hcd
+    cd ${D}${nonarch_base_libdir}/firmware/brcm/
+    ln -sf BCM4373A0.hcd BCM.st,stm32mp215f-dk-cm33tdcid-ostl-sdcard.hcd
+
+    # Install calibration file (stm32mp25)
+    install -m 0644 ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.txt ${D}${nonarch_base_libdir}/firmware/brcm/brcmfmac4373-sdio.st,stm32mp215f-dk-cm33tdcid-ostl-sdcard.txt
+
+    ln -sf brcmfmac4373-sdio.bin brcmfmac4373-sdio.st,stm32mp215f-dk-cm33tdcid-ostl-sdcard.bin
 }
 
 PACKAGES =+ "${PN}-cypress-license"
 
-LICENSE:${PN} = "Firmware-cypress-bcm43"
-LICENSE:${PN}-cypress-license = "Firmware-cypress-bcm43"
+LICENSE:${PN} = "Cypress-bcm43xx"
+LICENSE:${PN}-cypress-license = "Cypress-bcm43xx"
 
 FILES:${PN}-cypress-license = "${nonarch_base_libdir}/firmware/LICENCE.cypress*"
 FILES:${PN} = "${nonarch_base_libdir}/firmware/"
