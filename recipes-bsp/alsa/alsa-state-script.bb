@@ -35,11 +35,14 @@ do_install() {
 
         install -d ${D}${systemd_unitdir}/system
         install -m 644 ${UNPACKDIR}/alsa-state-stm32mp.service ${D}/${systemd_unitdir}/system
-
+    else
+        # sysVinit
+        install -d ${D}${sysconfdir}
+        touch ${D}${sysconfdir}/no-alsa-state-service
     fi
 }
 
-FILES:${PN} = "${systemd_unitdir}/system ${bindir}"
+FILES:${PN} = "${systemd_unitdir}/system ${bindir} ${sysconfdir}"
 
 # -----------------------------------------------------------
 # specific for service
