@@ -264,9 +264,10 @@ python do_create_multiextlinux_config() {
                 for f, v in extra_extlinuxtargetconfigflag.items():
                     if config == f:
                         bb.note(">>> Loop for '%s' extra target config." % config)
-                        if len(v.split()) > 0:
-                            bb.note(">>> Set '%s' to extra_extlinuxlabels." % v)
-                            extra_extlinuxlabels = labels + ' ' + v
+                        v_expanded = d.expand(v)
+                        if len(v_expanded.split()) > 0:
+                            bb.note(">>> Set '%s' to extra_extlinuxlabels." % v_expanded)
+                            extra_extlinuxlabels = labels + ' ' + v_expanded
                             extra_cfile = os.path.join(d.getVar('B'), subdir , config + '_' + 'extlinux.conf')
                         else:
                             bb.note(">>> No extra labels defined, no new config file to create")
@@ -285,7 +286,7 @@ python do_create_multiextlinux_config() {
                     bb.note(">>> Create %s/%s_extlinux.conf file for %s labels" % (subdir, config, extra_extlinuxlabels))
                     create_extlinux_file(extra_cfile, extra_extlinuxlabels, d)
 }
-addtask create_multiextlinux_config before do_compile
+addtask create_multiextlinux_config before do_compile after do_unpack
 
 do_create_multiextlinux_config[dirs] += "${B}"
 do_create_multiextlinux_config[cleandirs] += "${B}"
