@@ -1,5 +1,7 @@
 FILESEXTRAPATHS:prepend := "${THISDIR}/external-dt:"
 
+PACKAGE_ARCH = "${MACHINE_ARCH}"
+
 inherit external-dt
 
 # Make sure to move ${S} to STAGING_EXTDT_DIR. We can't just

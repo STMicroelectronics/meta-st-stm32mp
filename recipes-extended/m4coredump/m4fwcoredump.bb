@@ -5,6 +5,8 @@ LIC_FILES_CHKSUM = "file://${COREBASE}/meta/COPYING.MIT;md5=3da9cfbcb788c80a0384
 
 DEPENDS = "udev"
 
+PACKAGE_ARCH:stm32mpcommon = "${MACHINE_ARCH}"
+
 SRC_URI = " \
     file://85-m4-dump.rules \
     file://stm32mp-m4fwdump.sh \

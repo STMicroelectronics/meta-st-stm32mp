@@ -1,5 +1,7 @@
 FILESEXTRAPATHS:prepend:stm32mpcommon := "${THISDIR}/${PN}:"
 
+PACKAGE_ARCH:stm32mpcommon = "${MACHINE_ARCH}"
+
 SRC_URI:append:stm32mpcommon = " \
        file://busybox-stm32mp.cfg \
        file://0001-miscutils-watchdog-Add-gettimeleft.patch \

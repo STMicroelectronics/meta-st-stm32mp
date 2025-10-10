@@ -7,6 +7,7 @@ inherit sign-stm32mp
 inherit fip-utils-stm32mp
 
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
+PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 DEPENDS += "tf-a-tools-native util-linux-native"
 DEPENDS += "virtual/trusted-firmware-a"

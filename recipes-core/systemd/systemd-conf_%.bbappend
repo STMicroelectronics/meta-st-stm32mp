@@ -1,3 +1,5 @@
+PACKAGE_ARCH:stm32mpcommon = "${MACHINE_ARCH}"
+
 do_install:append:stm32mpcommon() {
     # enable watchdog on systemd configuration
     if ${@bb.utils.contains('MACHINE_FEATURES','watchdog','true','false',d)}; then
