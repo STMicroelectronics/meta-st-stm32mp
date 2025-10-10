@@ -1,21 +1,22 @@
-From 73465990cb262fa20ba7db6f540590df13b3dd35 Mon Sep 17 00:00:00 2001
+From 782404c37e19eac465fd7358f2e89c460c861d3c Mon Sep 17 00:00:00 2001
 From: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
 Date: Mon, 21 Oct 2024 10:45:52 +0200
-Subject: [PATCH] v0.12.0-stm32mp-r2
+Subject: [PATCH] v0.12.0-stm32mp-r2-rc5
 
 ---
-Upstream-Status: Pending
+Upstream-Status: Pending [specific to ST boards]
 
  src/jtag/drivers/stlink_usb.c |  34 ++++--
  src/target/cortex_m.c         |  12 +++
  tcl/board/stm32mp21x_dk.cfg   |  11 ++
  tcl/board/stm32mp23x_dk.cfg   |  11 ++
  tcl/board/stm32mp25x_dk.cfg   |  11 ++
- tcl/target/stm32mp15x.cfg     |   1 +
- tcl/target/stm32mp21x.cfg     | 197 ++++++++++++++++++++++++++++++++++
- tcl/target/stm32mp23x.cfg     | 179 ++++++++++++++++++++++++++++++
- tcl/target/stm32mp25x.cfg     | 191 ++++++++++++++++++++++++++++++++
- 9 files changed, 637 insertions(+), 10 deletions(-)
+ tcl/target/stm32mp13x.cfg     |  56 +++++++---
+ tcl/target/stm32mp15x.cfg     |  96 +++++++++++++----
+ tcl/target/stm32mp21x.cfg     | 182 ++++++++++++++++++++++++++++++++
+ tcl/target/stm32mp23x.cfg     | 168 ++++++++++++++++++++++++++++++
+ tcl/target/stm32mp25x.cfg     | 190 ++++++++++++++++++++++++++++++++++
+ 10 files changed, 725 insertions(+), 46 deletions(-)
  create mode 100644 tcl/board/stm32mp21x_dk.cfg
  create mode 100644 tcl/board/stm32mp23x_dk.cfg
  create mode 100644 tcl/board/stm32mp25x_dk.cfg
@@ -163,24 +164,234 @@ index 000000000..e99a88508
 +source [find target/stm32mp25x.cfg]
 +
 +reset_config srst_only
+diff --git a/tcl/target/stm32mp13x.cfg b/tcl/target/stm32mp13x.cfg
+index bcf25c904..171b43fe9 100644
+--- a/tcl/target/stm32mp13x.cfg
++++ b/tcl/target/stm32mp13x.cfg
+@@ -46,7 +46,7 @@ dap create $_CHIPNAME.dap -chain-position $_CHIPNAME.tap -ignore-syspwrupack
+ # NOTE: do not change the order of target create
+ target create $_CHIPNAME.ap1 mem_ap -dap $_CHIPNAME.dap -ap-num 1
+ target create $_CHIPNAME.axi mem_ap -dap $_CHIPNAME.dap -ap-num 0
+-target create $_CHIPNAME.cpu cortex_a -dap $_CHIPNAME.dap -ap-num 1 -coreid 0 -dbgbase 0xE00D0000
++target create $_CHIPNAME.cpu cortex_a -dap $_CHIPNAME.dap -ap-num 1 -coreid 0 -dbgbase 0xE00D0000 -defer-examine
+ 
+ $_CHIPNAME.cpu cortex_a maskisr on
+ $_CHIPNAME.cpu cortex_a dacrfixup on
+@@ -76,27 +76,55 @@ proc axi_nsecure {} {
+ 
+ axi_secure
+ 
+-proc dbgmcu_enable_debug {} {
++# mmw with target selection
++proc target_mmw {target reg setbits clearbits} {
++	set val [eval $target read_memory $reg 32 1]
++	set val [expr {($val & ~$clearbits) | $setbits}]
++	eval $target mww $reg $val
++}
++
++lappend _telnet_autocomplete_skip _enable_debug
++# Uses AP1
++proc _enable_debug {} {
+ 	# keep clock enabled in low-power
+-	## catch {$::_CHIPNAME.ap1 mww 0xe0081004 0x00000004}
++	catch {$::_CHIPNAME.ap1 mww 0xe0081004 0x00000004}
+ 	# freeze watchdog 1 and 2 on core halted
+ 	catch {$::_CHIPNAME.ap1 mww 0xe008102c 0x00000004}
+ 	catch {$::_CHIPNAME.ap1 mww 0xe008104c 0x00000008}
+ }
+ 
+-proc toggle_cpu_dbg_claim0 {} {
+-	# toggle CPU0 DBG_CLAIM[0]
+-	$::_CHIPNAME.ap1 mww 0xe00d0fa0 1
+-	$::_CHIPNAME.ap1 mww 0xe00d0fa4 1
++lappend _telnet_autocomplete_skip _handshake_with_wrapper
++# Uses AP1
++proc _handshake_with_wrapper { halt } {
++	set dbgmcu_cr 0
++	catch {set dbgmcu_cr [eval $::_CHIPNAME.ap1 read_memory 0xe0081004 32 1]}
++	if {[expr {($dbgmcu_cr & 0x07) == 0x00}]} {
++		echo "\nWARNING: FSBL wrapper not detected. Board in dev boot mode?\n"
++		return
++	}
++
++	if { $halt } {
++		$::_CHIPNAME.ap1 arp_halt
++		$::_CHIPNAME.ap1 mww 0xe00d0300 0
++		target_mmw $::_CHIPNAME.ap1 0xe00d0088 0x00004000 0
++	}
++
++	$::_CHIPNAME.ap1 mww 0xe0081004 0x7
+ }
+ 
+ # FIXME: most of handlers below will be removed once reset framework get merged
+-$_CHIPNAME.ap1 configure -event reset-deassert-pre {
++$_CHIPNAME.ap1 configure -event reset-assert-post   { adapter assert srst }
++
++$_CHIPNAME.ap1 configure -event reset-deassert-pre  {
+ 	adapter deassert srst deassert trst
+-	catch {dap init}
+-	catch {$::_CHIPNAME.dap apid 1}
++	$::_CHIPNAME.ap1 arp_examine
++	_handshake_with_wrapper $halt
++	_enable_debug
++	$::_CHIPNAME.cpu arp_examine
++	if { $halt } { $::_CHIPNAME.cpu arp_halt}
++}
++
++$_CHIPNAME.ap1 configure -event examine-end         {
++	_enable_debug
++	$::_CHIPNAME.cpu arp_examine
+ }
+-$_CHIPNAME.cpu configure -event reset-deassert-pre  {$::_CHIPNAME.cpu arp_examine}
+-$_CHIPNAME.cpu configure -event reset-deassert-post {toggle_cpu_dbg_claim0; dbgmcu_enable_debug}
+-$_CHIPNAME.ap1 configure -event examine-start       {dap init}
+-$_CHIPNAME.ap1 configure -event examine-end         {dbgmcu_enable_debug}
 diff --git a/tcl/target/stm32mp15x.cfg b/tcl/target/stm32mp15x.cfg
-index bcdda73e9..b2fc973ed 100644
+index bcdda73e9..1c1f11439 100644
 --- a/tcl/target/stm32mp15x.cfg
 +++ b/tcl/target/stm32mp15x.cfg
-@@ -121,6 +121,7 @@ proc rcc_enable_traceclk {} {
+@@ -18,6 +18,11 @@ if { [info exists CHIPNAME] } {
+ 	set _CHIPNAME stm32mp15x
+ }
+ 
++# Set to 0 to prevent CPU examine. Default examine them
++if { ! [info exists EN_CA7_0] } { set EN_CA7_0 1 }
++if { ! [info exists EN_CA7_1] } { set EN_CA7_1 1 }
++if { ! [info exists EN_CM4] }   { set EN_CM4   1 }
++
+ if { [info exists CPUTAPID] } {
+ 	set _CPUTAPID $CPUTAPID
+ } else {
+@@ -42,15 +47,13 @@ if { [using_jtag] } {
+ 
+ dap create $_CHIPNAME.dap -chain-position $_CHIPNAME.tap -ignore-syspwrupack
+ 
+-# FIXME: Cortex-M code requires target accessible during reset, but this is not possible in STM32MP1
+-# so defer-examine it until the reset framework get merged
+ # NOTE: keep ap-num and dbgbase to speed-up examine after reset
+ # NOTE: do not change the order of target create
+ target create $_CHIPNAME.ap1 mem_ap -dap $_CHIPNAME.dap -ap-num 1
+ target create $_CHIPNAME.ap2 mem_ap -dap $_CHIPNAME.dap -ap-num 2
+ target create $_CHIPNAME.axi mem_ap -dap $_CHIPNAME.dap -ap-num 0
+-target create $_CHIPNAME.cpu0 cortex_a -dap $_CHIPNAME.dap -ap-num 1 -coreid 0 -dbgbase 0xE00D0000
+-target create $_CHIPNAME.cpu1 cortex_a -dap $_CHIPNAME.dap -ap-num 1 -coreid 1 -dbgbase 0xE00D2000
++target create $_CHIPNAME.cpu0 cortex_a -dap $_CHIPNAME.dap -ap-num 1 -coreid 0 -dbgbase 0xE00D0000 -defer-examine
++target create $_CHIPNAME.cpu1 cortex_a -dap $_CHIPNAME.dap -ap-num 1 -coreid 1 -dbgbase 0xE00D2000 -defer-examine
+ target create $_CHIPNAME.cm4 cortex_m -dap $_CHIPNAME.dap -ap-num 2 -defer-examine
+ 
+ targets $_CHIPNAME.cpu0
+@@ -96,7 +99,16 @@ proc axi_nsecure {} {
+ 
+ axi_secure
+ 
+-proc dbgmcu_enable_debug {} {
++# mmw with target selection
++proc target_mmw {target reg setbits clearbits} {
++	set val [eval $target read_memory $reg 32 1]
++	set val [expr {($val & ~$clearbits) | $setbits}]
++	eval $target mww $reg $val
++}
++
++lappend _telnet_autocomplete_skip _enable_debug
++# Uses AP1
++proc _enable_debug {} {
+ 	# set debug enable bits in DBGMCU_CR to get ap2 and cm4 visible
+ 	catch {$::_CHIPNAME.ap1 mww 0xe0081004 0x00000007}
+ 	# freeze watchdog 1 and 2 on cores halted
+@@ -104,30 +116,70 @@ proc dbgmcu_enable_debug {} {
+ 	catch {$::_CHIPNAME.ap1 mww 0xe008104c 0x00000008}
+ }
+ 
+-proc toggle_cpu0_dbg_claim0 {} {
+-	# toggle CPU0 DBG_CLAIM[0]
+-	$::_CHIPNAME.ap1 mww 0xe00d0fa0 1
+-	$::_CHIPNAME.ap1 mww 0xe00d0fa4 1
++lappend _telnet_autocomplete_skip _handshake_with_wrapper
++# Uses AP1
++proc _handshake_with_wrapper { halt } {
++	set dbgmcu_cr 0
++	catch {set dbgmcu_cr [eval $::_CHIPNAME.ap1 read_memory 0xe0081004 32 1]}
++	if {[expr {($dbgmcu_cr & 0x07) == 0x00}]} {
++		echo "\nWARNING: FSBL wrapper not detected. Board in dev boot mode?\n"
++		return
++	}
++
++	if { $halt }  {
++		$::_CHIPNAME.ap1 arp_halt
++		if { $::EN_CA7_0 } {
++			$::_CHIPNAME.ap1 arp_halt
++			$::_CHIPNAME.ap1 mww 0xe00d0300 0
++			target_mmw $::_CHIPNAME.ap1 0xe00d0088 0x00004000 0
++		}
++	}
++
++	$::_CHIPNAME.ap1 mww 0xe0081004 0x7
+ }
+ 
+-proc detect_cpu1 {} {
++lappend _telnet_autocomplete_skip _detect_cpu1
++# Uses AP1
++proc _detect_cpu1 {} {
++	if { !$::EN_CA7_1 } { return }
++
+ 	set cpu1_prsr [$::_CHIPNAME.ap1 read_memory 0xE00D2314 32 1]
+ 	set dual_core [expr {$cpu1_prsr & 1}]
+-	if {! $dual_core} {$::_CHIPNAME.cpu1 configure -defer-examine}
++	if {!$dual_core} {set ::EN_CA7_1 0}
+ }
+ 
+-proc rcc_enable_traceclk {} {
++lappend _telnet_autocomplete_skip _rcc_enable_traceclk
++proc _rcc_enable_traceclk {} {
+ 	$::_CHIPNAME.ap2 mww 0x5000080c 0x301
  }
  
  # FIXME: most of handler below will be removed once reset framework get merged
+-$_CHIPNAME.ap1  configure -event reset-deassert-pre  {adapter deassert srst deassert trst;catch {dap init};catch {$::_CHIPNAME.dap apid 1}}
+-$_CHIPNAME.ap2  configure -event reset-deassert-pre  {dbgmcu_enable_debug;rcc_enable_traceclk}
+-$_CHIPNAME.cpu0 configure -event reset-deassert-pre  {$::_CHIPNAME.cpu0 arp_examine}
+-$_CHIPNAME.cpu1 configure -event reset-deassert-pre  {$::_CHIPNAME.cpu1 arp_examine allow-defer}
+-$_CHIPNAME.cpu0 configure -event reset-deassert-post {toggle_cpu0_dbg_claim0}
+-$_CHIPNAME.cm4  configure -event reset-deassert-post {$::_CHIPNAME.cm4 arp_examine;if {[$::_CHIPNAME.ap2 curstate] == "halted"} {$::_CHIPNAME.cm4 arp_poll;$::_CHIPNAME.cm4 arp_poll;$::_CHIPNAME.cm4 arp_halt}}
+-$_CHIPNAME.ap1  configure -event examine-start       {dap init}
+-$_CHIPNAME.ap2  configure -event examine-start       {dbgmcu_enable_debug}
+-$_CHIPNAME.cpu0 configure -event examine-end         {detect_cpu1}
+-$_CHIPNAME.ap2  configure -event examine-end         {rcc_enable_traceclk;$::_CHIPNAME.cm4 arp_examine}
 +$_CHIPNAME.cm4  configure -event reset-assert        { }
- $_CHIPNAME.ap1  configure -event reset-deassert-pre  {adapter deassert srst deassert trst;catch {dap init};catch {$::_CHIPNAME.dap apid 1}}
- $_CHIPNAME.ap2  configure -event reset-deassert-pre  {dbgmcu_enable_debug;rcc_enable_traceclk}
- $_CHIPNAME.cpu0 configure -event reset-deassert-pre  {$::_CHIPNAME.cpu0 arp_examine}
++
++$_CHIPNAME.ap1  configure -event reset-assert-post   { adapter assert srst }
++
++$_CHIPNAME.ap1  configure -event reset-deassert-pre  {
++	adapter deassert srst deassert trst
++	$::_CHIPNAME.ap1 arp_examine
++	_handshake_with_wrapper $halt
++	if { $::EN_CA7_0 } { $::_CHIPNAME.cpu0 arp_examine; if { $halt } { $::_CHIPNAME.cpu0 arp_halt }}
++	if { $::EN_CA7_1 } { $::_CHIPNAME.cpu1 arp_examine; if { $halt } { $::_CHIPNAME.cpu1 arp_halt }}
++	_enable_debug
++}
++
++$_CHIPNAME.ap2  configure -event reset-deassert-pre  {
++	_rcc_enable_traceclk
++	if { $::EN_CM4 } {$::_CHIPNAME.cm4 arp_examine; if { $halt } { $::_CHIPNAME.cm4 arp_halt }}
++}
++
++$_CHIPNAME.ap1 configure -event examine-end          {
++	_enable_debug
++	_detect_cpu1
++	if { $::EN_CA7_0 } { $::_CHIPNAME.cpu0 arp_examine }
++	if { $::EN_CA7_1 } { $::_CHIPNAME.cpu1 arp_examine }
++}
++
++$_CHIPNAME.ap2  configure -event examine-end         {
++	_rcc_enable_traceclk
++	if { $::EN_CM4 } {$::_CHIPNAME.cm4 arp_examine}
++}
 diff --git a/tcl/target/stm32mp21x.cfg b/tcl/target/stm32mp21x.cfg
 new file mode 100644
-index 000000000..38eecc81b
+index 000000000..d0c35892c
 --- /dev/null
 +++ b/tcl/target/stm32mp21x.cfg
-@@ -0,0 +1,197 @@
+@@ -0,0 +1,182 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +
 +# STMicroelectronics STM32MP21x
@@ -253,7 +464,7 @@ index 000000000..38eecc81b
 +
 +targets $_CHIPNAME.a35
 +
-+reset_config srst_gates_jtag srst_pulls_trst
++reset_config srst_pulls_trst
 +
 +adapter speed 5000
 +adapter srst pulse_width 200
@@ -286,42 +497,31 @@ index 000000000..38eecc81b
 +}
 +
 +lappend _telnet_autocomplete_skip _handshake_with_wrapper
-+# Uses AP0 and AP1
++# Uses AP0, AP1 and AP3
 +proc _handshake_with_wrapper { halt } {
-+	# Check for new handshake on DBGMCU_CR, otherwise switch to legacy one
-+
-+	# Wrapper inits 0x04, OpenOCD sets 0x07, wrapper replies 0x01
-+#	set dbgmcu_cr [eval $::_CHIPNAME.ap0 read_memory 0x80001004 32 1]
-+#	if {[expr {($dbgmcu_cr & 0x07) == 0x04}]} {
-+#		if { $halt } {
-+#			$::_CHIPNAME.ap0 mww 0x80001004 [expr {$dbgmcu_cr | 0x03}]
-+#		} else {
-+#			$::_CHIPNAME.ap0 mww 0x80001004 [expr {$dbgmcu_cr | 0x02}]
-+#		}
-+#		set dbgmcu_cr [eval $::_CHIPNAME.ap0 read_memory 0x80001004 32 1]
-+#		if {[expr {($dbgmcu_cr & 0x07) != 0x01}]} {
-+#			echo "\nWARNING: FSBL wrapper not detected.\n"
-+#		}
-+#		return
-+#	}
-+
-+	# Skip legacy, as it requires CA35
-+#	if { ! $::EN_CA35 } { return }
-+
-+#	echo "INFO: Check for legacy wrapper"
-+
-+	# set few bits in CPU0 DBG_CLAIM to verify write permission
-+	# FSBL wrapper will clear CPU0 DBG_CLAIM[0]
-+	# toggle CPU0 DBG_CLAIM[0]
-+	$::_CHIPNAME.ap1 mww 0x80210fa0 0x0b
-+	set claim [$::_CHIPNAME.ap1 read_memory 0x80210fa4 32 1]
-+	if {[expr {$claim & 0xfe}] != 0x0a} {
-+		error "ERROR: cannot write in DBG_CLAIM. Missing FSBL wrapper?"
++	set dbgmcu_cr 0
++	catch {set dbgmcu_cr [eval $::_CHIPNAME.ap0 read_memory 0x80001004 32 1]}
++	if {[expr {($dbgmcu_cr & 0x07) == 0x00}]} {
++		echo "\nWARNING: FSBL wrapper not detected. Board in dev boot mode?\n"
++		return
 +	}
-+	if {[expr {$claim & 1}]} {
-+		echo "\nWARNING: FSBL wrapper not detected.\n"
++
++	if { $halt } {
++		if { $::EN_CA35 } {
++			$::_CHIPNAME.ap1 arp_examine
++			$::_CHIPNAME.ap1 arp_halt
++			$::_CHIPNAME.ap1 mww 0x80210300 0
++			target_mmw $::_CHIPNAME.ap1 0x80210088 0x00004000 0
++		}
++		if { $::EN_CM33 } {
++			$::_CHIPNAME.ap3 arp_examine
++			$::_CHIPNAME.ap3 arp_halt
++			$::_CHIPNAME.ap3 mww 0xe000edf0 0xa05f0001
++		}
 +	}
-+	$::_CHIPNAME.ap1 mww 0x80210fa4 0x0b
++
++	# alert wrapper that debugger is ready
++	$::_CHIPNAME.ap0 mww 0x80001004 0x07
 +}
 +
 +lappend _telnet_autocomplete_skip _enable_dbgmcu_on_devboot
@@ -333,7 +533,9 @@ index 000000000..38eecc81b
 +proc _enable_dbgmcu_on_devboot {} {
 +	$::_CHIPNAME.axi mww 0x44230004 0
 +	set boot_pins [expr {[$::_CHIPNAME.axi read_memory 0x44230000 32 1] & 0xf}]
-+	if {$boot_pins != 0x3 && $boot_pins != 0xc} {return 0}
++	if {$boot_pins != 0x3 && $boot_pins != 0xc} {
++		return 0
++	}
 +
 +	set rifsc_rimc_cr [$::_CHIPNAME.axi read_memory 0x42080c00 32 1]
 +	if {$rifsc_rimc_cr != 0x00008710} {
@@ -353,21 +555,15 @@ index 000000000..38eecc81b
 +
 +$_CHIPNAME.m33 configure -event reset-assert        { }
 +
-+$_CHIPNAME.ap0 configure -event reset-assert-post   { adapter assert srst }
++$_CHIPNAME.axi configure -event reset-assert-post   { adapter assert srst }
 +
-+$_CHIPNAME.ap0 configure -event reset-deassert-pre  {
++$_CHIPNAME.axi configure -event reset-deassert-pre  {
 +	adapter deassert srst deassert trst
-+	catch {dap init}
-+	catch {$::_CHIPNAME.dap apid 0}
-+	$::_CHIPNAME.ap0 arp_examine
-+	if { $::EN_CA35 } { $::_CHIPNAME.ap1 arp_examine; $::_CHIPNAME.a35 arp_examine }
-+}
-+
-+$_CHIPNAME.axi configure -event reset-deassert-post {
++	$::_CHIPNAME.axi arp_examine
 +	set is_dev_boot [_enable_dbgmcu_on_devboot]
-+	if {!$is_dev_boot && $::EN_CA35 } { _handshake_with_wrapper $halt}
-+	if { $::EN_CA35 && $halt} {$::_CHIPNAME.a35 arp_halt}
++	if { !$is_dev_boot } { _handshake_with_wrapper $halt}
 +	_enable_debug
++	if { $::EN_CA35 } { $::_CHIPNAME.a35 arp_examine; if {$halt} {$::_CHIPNAME.a35 arp_halt} }
 +	if { $::EN_CM33 } { $::_CHIPNAME.ap3 arp_examine; $::_CHIPNAME.m33 arp_examine; if {$halt} {$::_CHIPNAME.ap3 arp_halt; $::_CHIPNAME.m33 arp_halt} }
 +}
 +
@@ -375,18 +571,18 @@ index 000000000..38eecc81b
 +	set is_dev_boot [_enable_dbgmcu_on_devboot]
 +	if {$is_dev_boot} {echo "Dev boot detected"}
 +	_enable_debug
-+	if { $::EN_CA35 } { $::_CHIPNAME.ap1 arp_examine; $::_CHIPNAME.a35 arp_examine }
++	if { $::EN_CA35 } { $::_CHIPNAME.a35 arp_examine }
 +	if { $::EN_CM33 } { $::_CHIPNAME.ap3 arp_examine; $::_CHIPNAME.m33 arp_examine }
 +}
 diff --git a/tcl/target/stm32mp23x.cfg b/tcl/target/stm32mp23x.cfg
 new file mode 100644
-index 000000000..9cde05b63
+index 000000000..21250e383
 --- /dev/null
 +++ b/tcl/target/stm32mp23x.cfg
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,168 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +
-+# STMicroelectronics STM32MP24x
++# STMicroelectronics STM32MP23x
 +# STM32MP23x devices support both JTAG and SWD transports.
 +
 +# HLA does not support multi-cores nor custom CSW nor AP other than 0
@@ -408,7 +604,6 @@ index 000000000..9cde05b63
 +if { ! [info exists EN_CA35_0] } { set EN_CA35_0 1 }
 +if { ! [info exists EN_CA35_1] } { set EN_CA35_1 1 }
 +if { ! [info exists EN_CM33] }   { set EN_CM33   1 }
-+if { ! [info exists EN_CM0P] }   { set EN_CM0P   1 }
 +
 +set _ENDIAN little
 +
@@ -499,57 +694,47 @@ index 000000000..9cde05b63
 +lappend _telnet_autocomplete_skip _handshake_with_wrapper
 +# Uses AP0
 +proc _handshake_with_wrapper { halt } {
-+	# Check for new handshake on DBGMCU_CR, otherwise switch to legacy one
-+
-+	# Wrapper inits 0x04, OpenOCD sets 0x07, wrapper replies 0x01
-+	set dbgmcu_cr [eval $::_CHIPNAME.ap0 read_memory 0x80010004 32 1]
-+	if {[expr {($dbgmcu_cr & 0x07) == 0x04}]} {
-+		if { $halt } {
-+			$::_CHIPNAME.ap0 mww 0x80010004 [expr {$dbgmcu_cr | 0x03}]
-+		} else {
-+			$::_CHIPNAME.ap0 mww 0x80010004 [expr {$dbgmcu_cr | 0x02}]
-+		}
-+		set dbgmcu_cr [eval $::_CHIPNAME.ap0 read_memory 0x80010004 32 1]
-+		if {[expr {($dbgmcu_cr & 0x07) != 0x01}]} {
-+			echo "\nWARNING: FSBL wrapper not detected. Board in dev boot mode?\n"
-+		}
-+		return
-+	}
-+
-+	# Skip legacy, as it requires CA35_0
-+	if { ! $::EN_CA35_0 } { return }
-+
-+	echo "INFO: Check for legacy wrapper"
-+
-+	# set few bits in CPU0 DBG_CLAIM to verify write permission
-+	# FSBL wrapper will clear CPU0 DBG_CLAIM[0]
-+	# toggle CPU0 DBG_CLAIM[0]
-+	$::_CHIPNAME.ap0 mww 0x80210fa0 0x0b
-+	set claim [$::_CHIPNAME.ap0 read_memory 0x80210fa4 32 1]
-+	if {[expr {$claim & 0xfe}] != 0x0a} {
-+		error "ERROR: cannot write in DBG_CLAIM. Missing FSBL wrapper?"
-+	}
-+	if {[expr {$claim & 1}]} {
++	set dbgmcu_cr 0
++	catch {set dbgmcu_cr [eval $::_CHIPNAME.ap0 read_memory 0x80010004 32 1]}
++	if {[expr {($dbgmcu_cr & 0x07) == 0x00}]} {
 +		echo "\nWARNING: FSBL wrapper not detected. Board in dev boot mode?\n"
++		return;
 +	}
-+	$::_CHIPNAME.ap0 mww 0x80210fa4 0x0b
++
++	if { $halt } {
++		if { $::EN_CA35_0 || $::EN_CA35_1 } {
++			$::_CHIPNAME.ap0 arp_examine
++			$::_CHIPNAME.ap0 arp_halt
++		}
++		if { $::EN_CA35_0 } {
++			$::_CHIPNAME.ap0 mww 0x80210300 0
++			target_mmw $::_CHIPNAME.ap0 0x80210088 0x00004000 0
++		}
++		if { $::EN_CA35_1 } {
++			$::_CHIPNAME.ap0 mww 0x80310300 0
++			target_mmw $::_CHIPNAME.ap0 0x80310088 0x00004000 0
++		}
++		if { $::EN_CM33 } {
++			$::_CHIPNAME.ap8 arp_examine
++			$::_CHIPNAME.ap8 arp_halt
++			$::_CHIPNAME.ap8 mww 0xe000edf0 0xa05f0001
++		}
++	}
++
++	# alert wrapper that debugger is ready
++	$::_CHIPNAME.ap0 mww 0x80010004 0x17
 +}
 +
 +$_CHIPNAME.m33 configure -event reset-assert        { }
 +
-+$_CHIPNAME.ap0 configure -event reset-assert-post   { adapter assert srst }
++$_CHIPNAME.axi configure -event reset-assert-post   { adapter assert srst }
 +
-+$_CHIPNAME.ap0 configure -event reset-deassert-pre  {
++$_CHIPNAME.axi configure -event reset-deassert-pre  {
 +	adapter deassert srst deassert trst
-+	catch {dap init}
-+	catch {$::_CHIPNAME.dap apid 0}
-+	$::_CHIPNAME.ap0 arp_examine
-+	if { $::EN_CA35_0 } { $::_CHIPNAME.a35_0 arp_examine }
-+	if { $::EN_CA35_1 } { $::_CHIPNAME.a35_1 arp_examine }
-+}
 +
-+$_CHIPNAME.ap0 configure -event reset-deassert-post { $::_CHIPNAME.ap0 arp_examine; _handshake_with_wrapper $halt }
-+$_CHIPNAME.axi configure -event reset-deassert-post {
++	$::_CHIPNAME.ap0 arp_examine
++	_handshake_with_wrapper $halt
++
 +	$::_CHIPNAME.axi arp_examine
 +	_enable_debug
 +	if { $::EN_CA35_0 } { $::_CHIPNAME.a35_0 arp_examine;  if {$halt} {$::_CHIPNAME.a35_0 arp_halt} }
@@ -565,10 +750,10 @@ index 000000000..9cde05b63
 +}
 diff --git a/tcl/target/stm32mp25x.cfg b/tcl/target/stm32mp25x.cfg
 new file mode 100644
-index 000000000..b5c882950
+index 000000000..657dd48f3
 --- /dev/null
 +++ b/tcl/target/stm32mp25x.cfg
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,190 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +
 +# STMicroelectronics STM32MP25x
@@ -671,6 +856,12 @@ index 000000000..b5c882950
 +	eval $target mww $reg $val
 +}
 +
++lappend _telnet_autocomplete_skip _enable_ap2_cm0p
++proc _enable_ap2_cm0p {} {
++	# set bits C3LPEN and C3EN in RCC_C3CFGR to enable AP2 and CM0+ clock
++	target_mmw $::_CHIPNAME.axi 0x54200490 6 0
++}
++
 +lappend _telnet_autocomplete_skip _enable_debug
 +# Uses AP0 and AXI
 +proc _enable_debug {} {
@@ -678,8 +869,9 @@ index 000000000..b5c882950
 +	# set DBG_SWD_SEL_N bit in DBGMCU_CR to get ap2/cm0+ on main debug interface
 +	$::_CHIPNAME.ap0 mww 0x80010004 0x17
 +
-+	# set bits C3LPEN and C3EN in RCC_C3CFGR to enable AP2 and CM0+ clock
-+	target_mmw $::_CHIPNAME.axi 0x54200490 6 0
++	if { $::EN_CM0P } {
++		_enable_ap2_cm0p
++	}
 +
 +	# Freeze watchdogs on CPU halt
 +	$::_CHIPNAME.axi mww 0x4a010008 0x00000000
@@ -693,58 +885,48 @@ index 000000000..b5c882950
 +lappend _telnet_autocomplete_skip _handshake_with_wrapper
 +# Uses AP0
 +proc _handshake_with_wrapper { halt } {
-+	# Check for new handshake on DBGMCU_CR, otherwise switch to legacy one
-+
-+	# Wrapper inits 0x04, OpenOCD sets 0x07, wrapper replies 0x01
-+	set dbgmcu_cr [eval $::_CHIPNAME.ap0 read_memory 0x80010004 32 1]
-+	if {[expr {($dbgmcu_cr & 0x07) == 0x04}]} {
-+		if { $halt } {
-+			$::_CHIPNAME.ap0 mww 0x80010004 [expr {$dbgmcu_cr | 0x03}]
-+		} else {
-+			$::_CHIPNAME.ap0 mww 0x80010004 [expr {$dbgmcu_cr | 0x02}]
-+		}
-+		set dbgmcu_cr [eval $::_CHIPNAME.ap0 read_memory 0x80010004 32 1]
-+		if {[expr {($dbgmcu_cr & 0x07) != 0x01}]} {
-+			echo "\nWARNING: FSBL wrapper not detected. Board in dev boot mode?\n"
-+		}
-+		return
-+	}
-+
-+	# Skip legacy, as it requires CA35_0
-+	if { ! $::EN_CA35_0 } { return }
-+
-+	echo "INFO: Check for legacy wrapper"
-+
-+	# set few bits in CPU0 DBG_CLAIM to verify write permission
-+	# FSBL wrapper will clear CPU0 DBG_CLAIM[0]
-+	# toggle CPU0 DBG_CLAIM[0]
-+	$::_CHIPNAME.ap0 mww 0x80210fa0 0x0b
-+	set claim [$::_CHIPNAME.ap0 read_memory 0x80210fa4 32 1]
-+	if {[expr {$claim & 0xfe}] != 0x0a} {
-+		error "ERROR: cannot write in DBG_CLAIM. Missing FSBL wrapper?"
-+	}
-+	if {[expr {$claim & 1}]} {
++	set dbgmcu_cr 0
++	catch {set dbgmcu_cr [eval $::_CHIPNAME.ap0 read_memory 0x80010004 32 1]}
++	if {[expr {($dbgmcu_cr & 0x07) == 0x00}]} {
 +		echo "\nWARNING: FSBL wrapper not detected. Board in dev boot mode?\n"
++		return;
 +	}
-+	$::_CHIPNAME.ap0 mww 0x80210fa4 0x0b
++
++	if { $halt } {
++		if { $::EN_CA35_0 || $::EN_CA35_1 } {
++			$::_CHIPNAME.ap0 arp_examine
++			$::_CHIPNAME.ap0 arp_halt
++		}
++		if { $::EN_CA35_0 } {
++			$::_CHIPNAME.ap0 mww 0x80210300 0
++			target_mmw $::_CHIPNAME.ap0 0x80210088 0x00004000 0
++		}
++		if { $::EN_CA35_1 } {
++			$::_CHIPNAME.ap0 mww 0x80310300 0
++			target_mmw $::_CHIPNAME.ap0 0x80310088 0x00004000 0
++		}
++		if { $::EN_CM33 } {
++			$::_CHIPNAME.ap8 arp_examine
++			$::_CHIPNAME.ap8 arp_halt
++			$::_CHIPNAME.ap8 mww 0xe000edf0 0xa05f0001
++		}
++	}
++
++	# alert wrapper that debugger is ready
++	$::_CHIPNAME.ap0 mww 0x80010004 0x17
 +}
 +
 +$_CHIPNAME.m33 configure -event reset-assert        { }
 +$_CHIPNAME.m0p configure -event reset-assert        { }
 +
-+$_CHIPNAME.ap0 configure -event reset-assert-post   { adapter assert srst }
++$_CHIPNAME.axi configure -event reset-assert-post   { adapter assert srst }
 +
-+$_CHIPNAME.ap0 configure -event reset-deassert-pre  {
++$_CHIPNAME.axi configure -event reset-deassert-pre  {
 +	adapter deassert srst deassert trst
-+	catch {dap init}
-+	catch {$::_CHIPNAME.dap apid 0}
-+	$::_CHIPNAME.ap0 arp_examine
-+	if { $::EN_CA35_0 } { $::_CHIPNAME.a35_0 arp_examine }
-+	if { $::EN_CA35_1 } { $::_CHIPNAME.a35_1 arp_examine }
-+}
 +
-+$_CHIPNAME.ap0 configure -event reset-deassert-post { $::_CHIPNAME.ap0 arp_examine; _handshake_with_wrapper $halt }
-+$_CHIPNAME.axi configure -event reset-deassert-post {
++	$::_CHIPNAME.ap0 arp_examine
++	_handshake_with_wrapper $halt
++
 +	$::_CHIPNAME.axi arp_examine
 +	_enable_debug
 +	if { $::EN_CA35_0 } { $::_CHIPNAME.a35_0 arp_examine;  if {$halt} {$::_CHIPNAME.a35_0 arp_halt} }
@@ -752,6 +934,8 @@ index 000000000..b5c882950
 +	if { $::EN_CM0P }   { $::_CHIPNAME.ap2 arp_examine; $::_CHIPNAME.m0p arp_examine }
 +	if { $::EN_CM33 }   { $::_CHIPNAME.ap8 arp_examine; $::_CHIPNAME.m33 arp_examine; if {$halt} {$::_CHIPNAME.m33 arp_halt} }
 +}
++
++$_CHIPNAME.m0p configure -event examine-start       { _enable_ap2_cm0p }
 +
 +$_CHIPNAME.axi configure -event examine-end         {
 +	_enable_debug
