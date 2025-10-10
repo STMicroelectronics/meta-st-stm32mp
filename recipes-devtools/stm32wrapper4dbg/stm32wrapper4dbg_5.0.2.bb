@@ -4,9 +4,7 @@ LICENSE = "GPL-2.0-or-later | BSD-3-Clause"
 LIC_FILES_CHKSUM = "file://COPYING;md5=7c996e24cb10a869efb08b521b20242f"
 
 SRC_URI = "git://github.com/STMicroelectronics/stm32wrapper4dbg.git;protocol=https;branch=main"
-SRCREV = "5f9e0a0d1f81c77f62c9c84cbfa21bf3efde77b6"
-
-S = "${WORKDIR}/git"
+SRCREV = "84b6f2a944f34bf381ab8d3ad097a9c68a691b85"
 
 BBCLASSEXTEND += "native nativesdk"
 
