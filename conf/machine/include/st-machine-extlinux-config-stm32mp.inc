@@ -85,6 +85,12 @@ UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp157f-ev1] += "stm32mp157f-ev1-m4-exam
 
 UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp135f-dk] += "stm32mp135f-dk-a7-examples"
 
+# Add entry on extlinux for stm32mp257f-ev1 with psci example
+UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp257f-ev1] += "${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', 'stm32mp257f-ev1-psci-osi-examples', '', d)}"
+# Add entry on extlinux for stm32mp215f-dk with psci example
+UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG[stm32mp215f-dk] += "${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', 'stm32mp215f-dk-psci-osi-examples', '', d)}"
+
+
 # -----------------------------------------------------------------------------
 # Configure A7 examples labels
 # -----------------------------------------------------------------------------
@@ -96,6 +102,11 @@ UBOOT_EXTLINUX_FDT:stm32mp157f-dk2-a7-examples = "/stm32mp157f-dk2-a7-examples.d
 UBOOT_EXTLINUX_FDT:stm32mp157f-ev1-a7-examples = "/stm32mp157f-ev1-a7-examples.dtb"
 
 UBOOT_EXTLINUX_FDT:stm32mp135f-dk-a7-examples = "/stm32mp135f-dk-a7-examples.dtb"
+
+# Define devicetree for stm32mp257f-ev1 psci example
+UBOOT_EXTLINUX_FDT:stm32mp257f-ev1-psci-osi-examples = "/stm32mp257f-ev1-psci-osi.dtb"
+# Define devicetree for stm32mp215f-dk psci example
+UBOOT_EXTLINUX_FDT:stm32mp215f-dk-psci-osi-examples = "/stm32mp215f-dk-psci-osi.dtb"
 
 # -----------------------------------------------------------------------------
 # Configure M4 examples labels
