@@ -1,0 +1,142 @@
+From 89a09ca3e4925d199e0a1d9fafed79582d33936a Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+Date: Mon, 20 Jan 2025 11:01:51 +0100
+Subject: [PATCH 1/2] v2.1.0-stm32mp-r1
+
+---
+Upstream-Status: Inappropriate [specific to ST boards]
+
+ app_broker/main_ns.c | 96 +++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 95 insertions(+), 1 deletion(-)
+
+diff --git a/app_broker/main_ns.c b/app_broker/main_ns.c
+index a387803b..96de9380 100644
+--- a/app_broker/main_ns.c
++++ b/app_broker/main_ns.c
+@@ -13,7 +13,7 @@
+ #include "tfm_nsid_manager.h"
+ #include "test_app.h"
+ #include "tfm_plat_ns.h"
+-#include "Driver_USART.h"
++#include "Driver_Common.h"
+ #include "device_cfg.h"
+ #ifdef TFM_NS_MAILBOX_API
+ #include "tfm_multi_core_api.h"
+@@ -25,6 +25,9 @@
+ #include "cmsis.h"
+ #endif
+ 
++#include <tfm_platform_system.h>
++#include <uapi/tfm_ioctl_api.h>
++
+ /**
+  * \brief Modified table template for user defined SVC functions
+  *
+@@ -136,6 +139,93 @@ __WEAK int32_t tfm_ns_cp_init(void)
+     return ARM_DRIVER_OK;
+ }
+ 
++#ifdef STM32_M33TDCID
++__WEAK const char *cpu_status_str[] = {
++	"offline",
++	"suspended",
++	"started",
++	"running",
++	"crashed",
++	"unknow",
++};
++
++void tfm_ns_start_copro(void *argument)
++{
++	struct cpu_info_res cpu_info;
++	int32_t status, err;
++	uint32_t start, ticks;
++
++	UNUSED_VARIABLE(argument);
++
++	err = tfm_platform_cpu_info(0, &cpu_info);
++	if (err != TFM_PLATFORM_ERR_SUCCESS) {
++		LOG_MSG("[NS] [ERR] get cpu 0 info fail: %d\r\n", err);
++		return;
++	}
++
++	if (cpu_info.status < 0 || cpu_info.status >= CPU_LAST) {
++		LOG_MSG("[NS] [ERR] cpu %s error %d\r\n",
++                        cpu_info.name, cpu_info.status);
++		return;
++	}
++
++	if (cpu_info.status != CPU_OFFLINE) {
++		LOG_MSG("[NS] [INF] cpu %s already started\r\n", cpu_info.name);
++		LOG_MSG("[NS] [INF] cpu %s status: %s\r\n",
++			cpu_info.name, cpu_status_str[cpu_info.status]);
++		return;
++	}
++
++	LOG_MSG("[NS] [INF] try to start cpu %s: ", cpu_info.name);
++
++	err = tfm_platform_cpu_start(0, &status);
++	if (err != TFM_PLATFORM_ERR_SUCCESS) {
++		LOG_MSG("cpu start fail err: %d\r\n", err);
++		return;
++	}
++
++	/* Polling status */
++	start = osKernelGetTickCount();
++	while (status == CPU_STARTED) {
++		err = tfm_platform_cpu_info(0, &cpu_info);
++		if (err == TFM_PLATFORM_ERR_SUCCESS) {
++			status = cpu_info.status;
++                } else {
++			LOG_MSG("get cpu 0 info fail: %d ", err);
++			status = CPU_LAST;
++			break;
++		}
++		/* Check end of 1s timeout */
++		ticks = osKernelGetTickCount();
++		if (ticks - start > osKernelGetTickFreq()) {
++			LOG_MSG("timeout ");
++			break;
++		}
++	}
++
++	if (status == CPU_RUNNING) {
++		LOG_MSG("done\r\n");
++	} else {
++		LOG_MSG("failed\r\n");
++		LOG_MSG("[NS] [INF] cpu %s status: %s\r\n",
++			cpu_info.name, cpu_status_str[status]);
++		err = tfm_platform_cpu_stop(0, &status);
++		if (err != TFM_PLATFORM_ERR_SUCCESS) {
++			LOG_MSG("cpu stop fail err: %d\r\n", err);
++			return;
++		}
++	}
++}
++
++static osThreadFunc_t ca35_thread_func = tfm_ns_start_copro;
++static const osThreadAttr_t ca35_thread_attr = {
++    .name = "CA35_thread",
++    .stack_size = 1024U,
++    .tz_module = ((TZ_ModuleId_t)TFM_DEFAULT_NSID),
++    .priority = osPriorityHigh,
++};
++#endif
++
+ /**
+  * \brief main() function
+  */
+@@ -167,6 +257,10 @@ int main(void)
+     (void) osThreadNew(mailbox_thread_func, NULL, &mailbox_thread_attr);
+ #endif
+ 
++#ifdef STM32_M33TDCID
++    (void) osThreadNew(ca35_thread_func, NULL, &ca35_thread_attr);
++#endif
++
+     (void) osThreadNew(thread_func, NULL, &thread_attr);
+ 
+     LOG_MSG("Non-Secure system starting...\r\n");
+-- 
+2.43.0
+
