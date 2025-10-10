@@ -37,12 +37,21 @@ M4COPRO_LIST ?= "\
 M4COPRO_IMAGE_INSTALL = "${@bb.utils.contains('MACHINE_FEATURES', 'm4copro', '${M4COPRO_LIST}', '', d)}"
 
 # =========================================================================
-# m3copro
+# m33copro
 # =========================================================================
 M33COPRO_LIST ?= "\
     m33projects-stm32mp2 \
     "
 M33COPRO_IMAGE_INSTALL = "${@bb.utils.contains('MACHINE_FEATURES', 'm33copro', '${M33COPRO_LIST}', '', d)}"
+
+# =========================================================================
+# m0copro
+# =========================================================================
+M0COPRO_LIST ?= "\
+    m0projects-stm32mp2 \
+    "
+M0COPRO_IMAGE_INSTALL = "${@bb.utils.contains('MACHINE_FEATURES', 'm0copro', '${M0COPRO_LIST}', '', d)}"
+
 
 
 # =========================================================================
@@ -91,6 +100,7 @@ MACHINE_EXTRA_RRECOMMENDS:append = " \
     ${BLUETOOTH_IMAGE_INSTALL}  \
     ${M4COPRO_IMAGE_INSTALL}    \
     ${M33COPRO_IMAGE_INSTALL}   \
+    ${M0COPRO_IMAGE_INSTALL}    \
     ${OPTEE_IMAGE_INSTALL}      \
     ${PCI_IMAGE_INSTALL}        \
     ${WIFI_IMAGE_INSTALL}       \
