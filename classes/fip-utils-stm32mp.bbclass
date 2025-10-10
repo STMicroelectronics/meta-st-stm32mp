@@ -49,6 +49,7 @@ FIP_WRAPPER ??= "${RECIPE_SYSROOT_NATIVE}/${bindir}/create_st_fip_binary.sh"
 # Handle FIP config and set internal vars
 #   FIP_BL32_CONF
 #   FIP_DEVICETREE
+#   FIP_DEVICETREE_SUFFIX
 #   FIP_SEARCH_CONF
 #   FIP_DEVICE_CONF
 python () {
@@ -70,6 +71,8 @@ python () {
         raise bb.parse.SkipRecipe("You cannot use FIP_BL32_CONF as it is internal to FIP_CONFIG var expansion.")
     if (d.getVar('FIP_DEVICETREE') or "").split():
         raise bb.parse.SkipRecipe("You cannot use FIP_DEVICETREE as it is internal to FIP_CONFIG var expansion.")
+    if (d.getVar('FIP_DEVICETREE_SUFFIX') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use FIP_DEVICETREE_SUFFIX as it is internal to FIP_CONFIG var expansion.")
     if (d.getVar('FIP_SEARCH_CONF') or "").split():
         raise bb.parse.SkipRecipe("You cannot use FIP_SEARCH_CONF as it is internal to FIP_CONFIG var expansion.")
     if (d.getVar('FIP_DEVICE_CONF') or "").split():
@@ -86,22 +89,27 @@ python () {
                     if not v.strip():
                         bb.fatal('[FIP_CONFIG] Missing configuration for %s config' % config)
                     items = v.split(',')
-                    if items[0] and len(items) > 4:
-                        raise bb.parse.SkipRecipe('Only <BL32_CONF>, <DT_CONFIG>, <SEARCH_CONF> and <DEVICE_CONF> can be specified! (items={})'.format(items))
+                    if items[0] and len(items) > 5:
+                        raise bb.parse.SkipRecipe('Only <BL32_CONF>, <DT_CONFIG>, <DT_SUFFIX>, <SEARCH_CONF> and <DEVICE_CONF> can be specified! (items={})'.format(items))
                     # Set internal vars
                     if items[0] == fip_config_fw_tfa or items[0] == fip_config_fw_tee:
                         bb.debug(1, "Appending '%s' to FIP_BL32_CONF" % items[0])
-                        d.appendVar('FIP_BL32_CONF', items[0] + ',')
+                        d.appendVar('FIP_BL32_CONF', items[0].strip() + ',')
                     else:
                         bb.fatal('[FIP_CONFIG] Wrong configuration for %s config: %s should be one of %s or %s' % (config,items[0],fip_config_fw_tfa,fip_config_fw_tee))
                     if items[2]:
+                        bb.debug(1, "Appending '%s' to FIP_DEVICETREE_SUFFIX." % items[2])
+                        d.appendVar('FIP_DEVICETREE_SUFFIX', items[2].strip() + ',')
+                    else:
+                        d.appendVar('FIP_DEVICETREE_SUFFIX', '' + ',')
+                    if items[3]:
                         bb.debug(1, "Appending '%s' to FIP_SEARCH_CONF" % items[0])
-                        d.appendVar('FIP_SEARCH_CONF', items[2] + ',')
+                        d.appendVar('FIP_SEARCH_CONF', items[3].strip() + ',')
                     else:
                         bb.fatal('[FIP_CONFIG] Wrong configuration for <UBOOT_CONF>. It must be specified')
-                    if len(items) == 4:
-                        bb.debug(1, "Appending '%s' to FIP_DEVICE_CONF" % items[3])
-                        d.appendVar('FIP_DEVICE_CONF', items[3] + ',')
+                    if len(items) == 5:
+                        bb.debug(1, "Appending '%s' to FIP_DEVICE_CONF" % items[4])
+                        d.appendVar('FIP_DEVICE_CONF', items[4].strip() + ',')
                     else:
                         d.appendVar('FIP_DEVICE_CONF', ',')
                     bb.debug(1, "Appending '%s' to FIP_DEVICETREE" % items[1])
@@ -122,11 +130,13 @@ FIP_CONFIG="\${FIP_CONFIG:-${@' '.join(d for d in '${FIP_CONFIG}'.split() if not
 FIP_BL31_ENABLE="\${FIP_BL31_ENABLE:-${FIP_BL31_ENABLE}}"
 FIP_BL32_CONF=""
 FIP_DEVICETREE="\${FIP_DEVICETREE:-}"
+FIP_DEVICETREE_SUFFIX=
 FIP_SEARCH_CONF=""
 FIP_DEVICE_CONF=""
 # Set default supported configuration for devicetree and bl32 configuration
 declare -A FIP_BL32_CONF_ARRAY
 declare -A FIP_DEVICETREE_ARRAY
+declare -A FIP_DEVICETREE_SUFFIX_ARRAY
 declare -A FIP_SEARCH_CONF_ARRAY
 declare -A FIP_DEVICE_CONF_ARRAY
 EOF
@@ -135,6 +145,7 @@ EOF
         cat << EOF >> ${ARCHIVER_OUTDIR}/${FIPTOOL_WRAPPER}
 FIP_BL32_CONF_ARRAY[${config}]="$(echo ${FIP_BL32_CONF} | cut -d',' -f${i})"
 FIP_DEVICETREE_ARRAY[${config}]="$(echo ${FIP_DEVICETREE} | cut -d',' -f${i})"
+FIP_DEVICETREE_SUFFIX_ARRAY[${config}]="$(echo ${FIP_DEVICETREE_SUFFIX} | cut -d',' -f${i})"
 FIP_SEARCH_CONF_ARRAY[${config}]="$(echo ${FIP_SEARCH_CONF} | cut -d',' -f${i})"
 FIP_DEVICE_CONF_ARRAY[${config}]="$(echo ${FIP_DEVICE_CONF} | cut -d',' -f${i})"
 EOF
@@ -167,6 +178,13 @@ if [ -z "\$FIP_DEVICETREE" ]; then
     # Assigned default supported value
     for config in \$FIP_CONFIG; do
         FIP_DEVICETREE+="\${FIP_DEVICETREE_ARRAY[\${config}]},"
+    done
+fi
+# Manage FIP_DEVICETREE_SUFFIX default init
+if [ -z "\$FIP_DEVICETREE_SUFFIX" ]; then
+    # Assigned default supported value
+    for config in \$FIP_CONFIG; do
+        FIP_DEVICETREE_SUFFIX+="\${FIP_DEVICETREE_SUFFIX_ARRAY[\${config}]},"
     done
 fi
 # Manage FIP_SEARCH_CONF default init
@@ -210,11 +228,13 @@ for config in \$FIP_CONFIG; do
     i=\$(expr \$i + 1)
     bl32_conf=\$(echo \$FIP_BL32_CONF | cut -d',' -f\$i)
     dt_config=\$(echo \$FIP_DEVICETREE | cut -d',' -f\$i)
+    dt_suffix=\$(echo \$FIP_DEVICETREE_SUFFIX | cut -d',' -f\$i)
     search_conf=\$(echo \$FIP_SEARCH_CONF | cut -d',' -f\$i)
     device_conf=\$(echo \$FIP_DEVICE_CONF | cut -d',' -f\$i)
     echo "  \${config}:" ; \\
     echo "    bl32 config value: \${bl32_conf}"
     echo "    devicetree config: \${dt_config}"
+    echo "    devicetree suffix: \${dt_suffix}"
     echo "    search config    : \${search_conf}"
     echo "    device config    : \${device_conf}"
 done
@@ -237,6 +257,7 @@ for config in \$FIP_CONFIG; do
     i=\$(expr \$i + 1)
     bl32_conf=\$(echo \$FIP_BL32_CONF | cut -d',' -f\$i)
     dt_config=\$(echo \$FIP_DEVICETREE | cut -d',' -f\$i)
+    dt_suffix=\$(echo \$FIP_DEVICETREE_SUFFIX | cut -d',' -f\$i)
     search_conf=\$(echo \$FIP_SEARCH_CONF | cut -d',' -f\$i)
     device_conf=\$(echo \$FIP_DEVICE_CONF | cut -d',' -f\$i)
     for dt in \${dt_config}; do
@@ -263,6 +284,10 @@ for config in \$FIP_CONFIG; do
         STORAGE_SEARCH=""
         [ -z "\${device_conf}" ] || STORAGE_SEARCH="--search-storage \${device_conf}"
 
+        # Configure devicetree suffix search
+        DT_SUFFIX_SEARCH=""
+        [ -z "\${dt_suffix}" ] || DT_SUFFIX_SEARCH="--search-devicetree-suffix \${dt_suffix}"
+
         FIP_PARAM_ddr=""
         if [ -d "\$FIP_DEPLOYDIR_FWDDR" ]; then
             FIP_PARAM_ddr="--use-ddr"
@@ -272,6 +297,7 @@ for config in \$FIP_CONFIG; do
                 --use-ddr --generate-only-ddr \\
                 --search-configuration \${config} \\
                 --search-devicetree \${dt} \\
+                \$DT_SUFFIX_SEARCH \\
                 --search-soc-name \${soc_suffix} \\
                 --output \$FIP_DEPLOYDIR_FIP
         fi
@@ -286,6 +312,7 @@ for config in \$FIP_CONFIG; do
                 \$SECOND_CONFSEARCH \\
                 --search-configuration \${config} \\
                 --search-devicetree \${dt} \\
+                \$DT_SUFFIX_SEARCH \\
                 --search-soc-name \${soc_suffix} \\
                 --output \$FIP_DEPLOYDIR_FIP"
         \$FIP_WRAPPER \\
@@ -295,6 +322,7 @@ for config in \$FIP_CONFIG; do
                 \$SECOND_CONFSEARCH \\
                 --search-configuration \${config} \\
                 --search-devicetree \${dt} \\
+                \$DT_SUFFIX_SEARCH \\
                 --search-soc-name \${soc_suffix} \\
                 --output \$FIP_DEPLOYDIR_FIP
     done
