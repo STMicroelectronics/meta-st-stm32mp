@@ -4,8 +4,8 @@ do_image_vfat[depends] += " \
         mtools-native:do_populate_sysroot \
         dosfstools-native:do_populate_sysroot \
         "
-IMAGE_NAME_SUFFIX:pn-st-image-bootfs=".bootfs"
-IMAGE_NAME_SUFFIX:pn-st-image-bootfs-efi=".bootfs"
+IMAGE_NAME_SUFFIX:pn-st-image-bootfs = ".bootfs"
+IMAGE_NAME_SUFFIX:pn-st-image-bootfs-efi = ".bootfs"
 IMAGE_CMD:vfat () {
     label=$(echo ${IMAGE_NAME_SUFFIX} | sed -e "s/\.//")
     # create filesystem

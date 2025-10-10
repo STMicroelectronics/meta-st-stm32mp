@@ -6,7 +6,7 @@ ENCRYPT_FSBL_KEY ??= ""
 ENCRYPT_SUFFIX ??= "_Encrypted"
 
 SIGN_ENABLE ??= "0"
-SIGN_KEY ??=""
+SIGN_KEY ??= ""
 SIGN_KEY_PASS ??= ""
 SIGN_SUFFIX ??= "_Signed"
 
