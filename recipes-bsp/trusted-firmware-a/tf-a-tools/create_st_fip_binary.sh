@@ -45,6 +45,7 @@ INPUT_DIR=""
 SEARCH_CONFIG="NULL"
 SEARCH_STORAGE="NULL"
 SEARCH_DTB="NULL"
+SEARCH_DTB_SUFFIX="NULL"
 SEARCH_SOC_NAME="NULL"
 SEARCH_SECONDARY_CONF="NULL"
 
@@ -108,6 +109,7 @@ function usage() {
     echo "    Search parameters:"
     echo "    -C <configuration>| --search-configuration <configuration>: configuration name for finding file"
     echo "    -D <devicetree>| --search-devicetree <devicetree>: devicetree name for finding file"
+    echo "    -DS <devicetree_suffix>| --search-devicetree-suffix <devicetree_suffix>: devicetree suffix for finding file"
     echo "    -S <storage>| --search-storage <storage>: storage name for finding file"
     echo "    -T <soc name>| --search-soc-name <soc name>: soc name for finding file"
     echo "    -U <configuration>| --search-secondary-config <configuration>: second configuration name for finding file"
@@ -309,6 +311,13 @@ function verify_dtb_parameter() {
         usage 3
     fi
 }
+function verify_dtb_suffix_parameter() {
+    if [ "X$SEARCH_DTB_SUFFIX" = "XNULL" ]; then
+        echo "[ERROR][PARAMETER]: You MUST specify a devicetree suffix (like emmc, sdcard, snor, ...)"
+        echo ""
+        usage 3
+    fi
+}
 function verify_storage_parameter() {
     if [ "X$SEARCH_STORAGE" = "XNULL" ]; then
         echo "[ERROR][PARAMETER]: You MUST specify a storage (like emmc, sdcard, nor-sdcard, ...)"
@@ -355,6 +364,11 @@ function found_file(){
     local file_extension=$3
 
     # Strategy:
+    # file_prefix-<DTB><DTB_SUFFIX>-<STORAGE>.extension
+    # file_prefix-<DTB><DTB_SUFFIX>-<CONFIG>.extension
+    # file_prefix-<DTB><DTB_SUFFIX>-<SECONDARY_CONFIG>-<STORAGE>.extension
+    # file_prefix-<DTB><DTB_SUFFIX>-<SECONDARY_CONFIG>.extension
+    # file_prefix-<DTB><DTB_SUFFIX>.extension
     # file_prefix-<DTB>-<STORAGE>.extension
     # file_prefix-<DTB>-<CONFIG>.extension
     # file_prefix-<DTB>-<SECONDARY_CONFIG>-<STORAGE>.extension
@@ -369,6 +383,15 @@ function found_file(){
     # file_prefix-<SOC NAME>-<SECONDARY_CONFIG>.extension
     # file_prefix-<SOC NAME>.extension
 
+    if [ "X${SEARCH_DTB_SUFFIX}" != "XNULL" ]; then
+        [ -e "$path_search/$file_prefix-$SEARCH_DTB${SEARCH_DTB_SUFFIX}-$SEARCH_STORAGE.$file_extension" ] && echo "$path_search/$file_prefix-$SEARCH_DTB${SEARCH_DTB_SUFFIX}-$SEARCH_STORAGE.$file_extension" && return
+        [ -e "$path_search/$file_prefix-$SEARCH_DTB${SEARCH_DTB_SUFFIX}-$SEARCH_CONFIG.$file_extension" ] && echo "$path_search/$file_prefix-$SEARCH_DTB${SEARCH_DTB_SUFFIX}-$SEARCH_CONFIG.$file_extension" && return
+        for item in $(echo ${SEARCH_SECONDARY_CONF} | tr ':' ' '); do
+            [ -e "$path_search/$file_prefix-$SEARCH_DTB${SEARCH_DTB_SUFFIX}-$item-$SEARCH_STORAGE.$file_extension" ] && echo "$path_search/$file_prefix-$SEARCH_DTB${SEARCH_DTB_SUFFIX}-$item-$SEARCH_STORAGE.$file_extension" && return
+            [ -e "$path_search/$file_prefix-$SEARCH_DTB${SEARCH_DTB_SUFFIX}-$item.$file_extension" ] && echo "$path_search/$file_prefix-$SEARCH_DTB${SEARCH_DTB_SUFFIX}-$item.$file_extension" && return
+        done
+        [ -e "$path_search/$file_prefix-$SEARCH_DTB${SEARCH_DTB_SUFFIX}.$file_extension" ] && echo "$path_search/$file_prefix-$SEARCH_DTB${SEARCH_DTB_SUFFIX}.$file_extension" && return
+    fi
     [ -e "$path_search/$file_prefix-$SEARCH_DTB-$SEARCH_STORAGE.$file_extension" ] && echo "$path_search/$file_prefix-$SEARCH_DTB-$SEARCH_STORAGE.$file_extension" && return
     [ -e "$path_search/$file_prefix-$SEARCH_DTB-$SEARCH_CONFIG.$file_extension" ] && echo "$path_search/$file_prefix-$SEARCH_DTB-$SEARCH_CONFIG.$file_extension" && return
     for item in $(echo ${SEARCH_SECONDARY_CONF} | tr ':' ' '); do
@@ -422,6 +445,13 @@ function process_args() {
             SEARCH_DTB=1
             if [ $# -gt 1 ]; then
                 SEARCH_DTB=$2
+                shift
+            fi
+            ;;
+        -DS|--search-devicetree-suffix)
+            SEARCH_DTB_SUFFIX=1
+            if [ $# -gt 1 ]; then
+                SEARCH_DTB_SUFFIX=$2
                 shift
             fi
             ;;
@@ -521,7 +551,8 @@ fip_certconf_opt=""
 fip_certconf_opt_addons=""
 
 # TF-A firmware: FW config
-fw_config_file=$(found_file "${FIP_DEPLOYDIR_FWCONF}" "$SEARCH_DTB-fw-config" "dtb")
+fw_config_file=$(found_file "${FIP_DEPLOYDIR_FWCONF}" "$SEARCH_DTB${SEARCH_DTB_SUFFIX}-fw-config" "dtb")
+[ "$fw_config_file" = "NOTFOUND" ] && fw_config_file=$(found_file "${FIP_DEPLOYDIR_FWCONF}" "$SEARCH_DTB-fw-config" "dtb")
 fw_config_file_light=$(echo $fw_config_file | sed "s|${FIP_DEPLOYDIR_ROOT}|<PATH>|")
 [ "$fw_config_file" = "NOTFOUND" ] && file_error=1
 [ $file_error -eq 0 ] && fiptool_opt="$fiptool_opt --fw-config $fw_config_file"
@@ -532,8 +563,9 @@ store=$(search_specific_storage_in_name $fw_config_file)
 # TF-A firmware: BL31 for arm64
 if [ $USE_BL31 -eq 1 ]; then
     bl3x_fw_file=$(found_file "${FIP_DEPLOYDIR_BL31}" "tf-a-bl31" "bin")
-    bl3x_dtb_file=$(found_file "${FIP_DEPLOYDIR_BL31}" "$SEARCH_DTB-bl31" "dtb")
     bl3x_fw_file_light=$(echo $bl3x_fw_file | sed "s|${FIP_DEPLOYDIR_ROOT}|<PATH>|")
+    bl3x_dtb_file=$(found_file "${FIP_DEPLOYDIR_BL31}" "$SEARCH_DTB${SEARCH_DTB_SUFFIX}-bl31" "dtb")
+    [ "$bl3x_dtb_file" = "NOTFOUND" ] && bl3x_dtb_file=$(found_file "${FIP_DEPLOYDIR_BL31}" "$SEARCH_DTB-bl31" "dtb")
     bl3x_dtb_file_light=$(echo $bl3x_dtb_file | sed "s|${FIP_DEPLOYDIR_ROOT}|<PATH>|")
     [ "$bl3x_fw_file" = "NOTFOUND" ] && file_error=1
     [ "$bl3x_dtb_file" = "NOTFOUND" ] && file_error=1
@@ -593,7 +625,8 @@ if [ $USE_BL32 -eq 1 ]; then
     bl3x_fw_file=$(found_file "${FIP_DEPLOYDIR_TFA}" "tf-a-bl32" "bin")
     bl3x_fw_file_light=$(echo $bl3x_fw_file | sed "s|${FIP_DEPLOYDIR_ROOT}|<PATH>|")
     [ "$bl3x_fw_file" = "NOTFOUND" ] && file_error=1
-    bl3x_dtb_file=$(found_file "${FIP_DEPLOYDIR_TFA}" "$SEARCH_DTB-bl32" "dtb")
+    bl3x_dtb_file=$(found_file "${FIP_DEPLOYDIR_TFA}" "$SEARCH_DTB${SEARCH_DTB_SUFFIX}-bl32" "dtb")
+    [ "$bl3x_dtb_file" = "NOTFOUND" ] && bl3x_dtb_file=$(found_file "${FIP_DEPLOYDIR_TFA}" "$SEARCH_DTB-bl32" "dtb")
     bl3x_dtb_file_light=$(echo $bl3x_dtb_file | sed "s|${FIP_DEPLOYDIR_ROOT}|<PATH>|")
     [ "$bl3x_fw_file" = "NOTFOUND" ] && file_error=1
     [ $file_error -eq 0 ] && fiptool_opt="$fiptool_opt --tos-fw $bl3x_fw_file"

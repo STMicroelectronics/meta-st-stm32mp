@@ -1,4 +1,4 @@
-FILESEXTRAPATHS:prepend := "${THISDIR}/tf-a-tools:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/tf-a-tools:${THISDIR}/tf-a-stm32mp:"
 
 SRC_URI:append = " \
     file://0001-FIX-GCC-tools-overwrite.patch \
@@ -15,12 +15,12 @@ HOSTCC:class-native = "${BUILD_CC}"
 HOSTCC:class-nativesdk = "${CC}"
 
 EXTRA_OEMAKE += "HOSTCC='${HOSTCC}' OPENSSL_DIR='${STAGING_EXECPREFIXDIR}'"
-EXTRA_OEMAKE += "certtool enctool fiptool"
-EXTRA_OEMAKE += "PLAT=${TFA_PLATFORM}"
+# EXTRA_OEMAKE += "certtool enctool fiptool"
+# EXTRA_OEMAKE += "PLAT=${TFA_PLATFORM}"
 
 do_configure[noexec] = "1"
 
-do_compile:prepend:class-native () {
+do_compile:class-native () {
     # This is still needed to have the native fiptool executing properly by
     # setting the RPATH
     sed -e '/^LDOPTS/ s,$, \$\{BUILD_LDFLAGS},' \
@@ -36,6 +36,14 @@ do_compile:prepend:class-native () {
     sed -e '/^LIB_DIR/ s,$, \$\{BUILD_LDFLAGS},' \
         -e '/^INC_DIR/ s,$, \$\{BUILD_CFLAGS},' \
         -i ${S}/tools/encrypt_fw/Makefile
+
+    oe_runmake PLAT=${TFA_PLATFORM} certtool enctool
+    oe_runmake PLAT_FIPTOOL_HELPER_MK=plat_fiptool/st/stm32mp2/plat_fiptool.mk PLAT_DIR=../../plat/st/stm32mp2 fiptool
+}
+
+do_compile:class-nativesdk () {
+    oe_runmake PLAT=${TFA_PLATFORM} certtool enctool
+    oe_runmake PLAT_FIPTOOL_HELPER_MK=plat_fiptool/st/stm32mp2/plat_fiptool.mk PLAT_DIR=../../plat/st/stm32mp2 fiptool
 }
 
 do_install() {
