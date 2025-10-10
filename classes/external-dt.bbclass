@@ -6,17 +6,37 @@ EXTDT_SRC_PROVIDER ??= "external-dt"
 
 STAGING_EXTDT_DIR ??= "${TMPDIR}/work-shared/${MACHINE}/${EXTDT_SRC_PROVIDER}"
 
-EXTDT_DIR_TF_A  ??= "tf-a"
-EXTDT_DIR_UBOOT ??= "u-boot"
-EXTDT_DIR_TF_M  ??= "tfm"
-EXTDT_DIR_OPTEE ??= "optee"
-EXTDT_DIR_LINUX ??= "linux"
+EXTDT_USE_SUFFIX ??= "0"
+# Init default suffix per storage
+EXTDT_SUFFIX_STORAGE ??= "EMMC NAND NOR SDCARD SPINAND"
+EXTDT_SUFFIX_EMMC    ??= ""
+EXTDT_SUFFIX_NAND    ??= ""
+EXTDT_SUFFIX_NOR     ??= ""
+EXTDT_SUFFIX_SDCARD  ??= ""
+EXTDT_SUFFIX_SPINAND ??= ""
+
+EXTDT_ROOTDIR ??= ""
+
+EXTDT_DIR_TF_A  ??= "${EXTDT_ROOTDIR}tf-a"
+EXTDT_DIR_TF_A_SERIAL  ??= "${EXTDT_ROOTDIR}tf-a"
+EXTDT_DIR_UBOOT ??= "${EXTDT_ROOTDIR}u-boot"
+EXTDT_DIR_UBOOT_SERIAL ??= "${EXTDT_ROOTDIR}u-boot"
+EXTDT_DIR_MCU   ??= "${EXTDT_ROOTDIR}mcuboot"
+EXTDT_DIR_TF_M  ??= "${EXTDT_ROOTDIR}tfm"
+EXTDT_DIR_OPTEE ??= "${EXTDT_ROOTDIR}optee"
+EXTDT_DIR_OPTEE_SERIAL ??= "${EXTDT_ROOTDIR}optee"
+EXTDT_DIR_LINUX ??= "${EXTDT_ROOTDIR}linux"
 
 EXTDT_DIR_CONFIG += "virtual/trusted-firmware-a:${EXTDT_DIR_TF_A}"
 EXTDT_DIR_CONFIG += "virtual/bootloader:${EXTDT_DIR_UBOOT}"
 EXTDT_DIR_CONFIG += "virtual/trusted-firmware-m:${EXTDT_DIR_TF_M}"
 EXTDT_DIR_CONFIG += "virtual-optee-os:${EXTDT_DIR_OPTEE}"
 EXTDT_DIR_CONFIG += "virtual/kernel:${EXTDT_DIR_LINUX}"
+
+EXTDT_DIR_CONFIG += "virtual/lib64-trusted-firmware-a:${EXTDT_DIR_TF_A}"
+EXTDT_DIR_CONFIG += "virtual/lib64-bootloader:${EXTDT_DIR_UBOOT}"
+EXTDT_DIR_CONFIG += "virtual/lib64-trusted-firmware-m:${EXTDT_DIR_TF_M}"
+EXTDT_DIR_CONFIG += "lib64-virtual-optee-os:${EXTDT_DIR_OPTEE}"
 
 EXTDT_FILE_PATTERNS += ".*\.dts$"
 EXTDT_FILE_PATTERNS += ".*\.dtsi$"
@@ -49,7 +69,7 @@ python __anonymous() {
     extdt_src_configure(d, extdt_dir)
 
     bb.debug(1,'[external-dt] Append file-checksums with configure files for do_configure on %s recipe' % package)
-    d.appendVarFlag('do_configure', 'file-checksums', '${@extdt_srctree_configure_hash_files(d)}')
+    d.appendVarFlag('do_configure', 'file-checksums', ' ${@extdt_srctree_configure_hash_files(d)}')
 }
 
 def extdt_srctree_configure_hash_files(d):
@@ -90,7 +110,7 @@ def extdt_src_configure(d, srcdir=None):
             for f in files:
                 for pattern in dtfile_patterns:
                     if re.match(pattern, f):
-                        configure_files += ' ' + os.path.join(root, f)
+                        configure_files += ' ' + os.path.realpath(os.path.join(root, f))
                 bb.debug(1, '[external-dt] Set CONFIGURE_FILES:pn-%s with files searched against proposed patterns (%s)' % (package, dtfile_patterns))
                 d.setVar('CONFIGURE_FILES:pn-%s' % package, configure_files)
 
