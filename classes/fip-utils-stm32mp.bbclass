@@ -27,7 +27,7 @@ ENCTOOL ?= "encrypt_fw"
 # Set FIPTOOL binary name to use
 FIPTOOL ?= "fiptool"
 # Set STM32MP fiptool wrapper
-FIPTOOL_WRAPPER ?= "fiptool-stm32mp"
+FIPTOOL_WRAPPER ?= "fiptool-stm32mp.${MACHINE}"
 
 # Configure default folder path for binaries to package
 FIP_DIR_FIP    ?= "/fip"
