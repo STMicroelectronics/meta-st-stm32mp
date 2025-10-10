@@ -7,9 +7,12 @@ LICENSE = "GPL-2.0-only"
 LIC_FILES_CHKSUM = "file://COPYING;md5=f8fee3d59797546cffab04f3b88b2d44"
 
 SRC_URI = "git://github.com/draios/sysdig.git;branch=dev;protocol=https;name=sysdig \
-           git://github.com/falcosecurity/libs;protocol=https;branch=master;name=falco;subdir=git/falcosecurity-libs \
+           git://github.com/falcosecurity/libs;protocol=https;branch=master;name=falco;subdir=${BP}/falcosecurity-libs \
            file://0001-Add-cstdint-for-uintXX_t-types.patch;patchdir=./falcosecurity-libs \
            file://0001-cmake-Pass-PROBE_NAME-via-CFLAGS.patch \
+           file://0002-fix-driver-fix-build-on-linux-6.2.patch;patchdir=./falcosecurity-libs \
+           file://0003-fix-driver-fixed-6.3-kernel-build-and-verifier-issue.patch;patchdir=./falcosecurity-libs \
+           file://0004-fix-driver-fixed-6.4-kernel-build.patch;patchdir=./falcosecurity-libs \
           "
 SRCREV_sysdig = "4fb6288275f567f63515df0ff0a6518043ecfa9b"
 SRCREV_falco = "caa0e4d0044fdaaebab086592a97f0c7f32aeaa9"
