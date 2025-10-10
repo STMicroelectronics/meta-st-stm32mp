@@ -16,6 +16,7 @@ PACKAGE_INSTALL += " \
     kernel-devicetree \
     stm32mp-extlinux \
     ${@bb.utils.contains('MACHINE_FEATURES', 'splashscreen', 'u-boot-stm32mp-splash', '', d)} \
+    ${ST_DEVICE_OVERLAY_ADDONS} \
 "
 
 # Add specific initrd package to bootfs
