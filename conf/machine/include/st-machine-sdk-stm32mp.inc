@@ -136,6 +136,19 @@ ST_TOOLS_FOR_TARGET_SDK = " \
     kernel-headers \
     "
 
-
 TOOLCHAIN_TARGET_TASK += " bash-dev libgomp-dev ${ST_TOOLS_FOR_TARGET_SDK}"
 TOOLCHAIN_TARGET_TASK:remove:pn-buildtools-tarball = " bash-dev libgomp-dev ${ST_TOOLS_FOR_TARGET_SDK}"
+
+
+# multilib and aarch32
+TOOLCHAIN_HOST_TASK:remove:stm32mp2aarch32common = "packagegroup-cross-canadian-${MACHINE}"
+MULTILIB_ST_AARCH32 = " \
+    binutils-cross-canadian-arm \
+    gcc-cross-canadian-arm \
+    gdb-cross-canadian-arm \
+    meta-environment-${MACHINE} \
+    lib64-optee-os-stm32mp-dev \
+    lib64-optee-os-stm32mp-dev-sdk \
+    "
+TOOLCHAIN_HOST_TASK:append:stm32mp2aarch32common = " ${MULTILIB_ST_AARCH32} "
+
