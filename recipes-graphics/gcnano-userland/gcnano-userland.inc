@@ -54,7 +54,7 @@ GCNANO_OPENCL_ICD ?= "VeriSilicon.icd"
 GCNANO_VULKAN_ICD ?= "VeriSilicon_icd.json"
 
 # Configure the pkgconfig settings
-PKGCONFIG_DV ??= "24.0.5"
+PKGCONFIG_DV ??= "24.0.7"
 PKGCONFIG_PREFIX ??= "${exec_prefix}"
 
 do_compile:append() {

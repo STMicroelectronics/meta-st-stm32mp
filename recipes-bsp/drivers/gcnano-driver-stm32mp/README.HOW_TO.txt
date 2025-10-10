@@ -122,3 +122,32 @@ Cleanup Starter Package from original gcnano kernel module artifacts first
     #> sudo depmod -a -b <your_starter_package_dir_path>/rootfs_mounted $(\ls <your_starter_package_dir_path>/rootfs_mounted/lib/modules)
     #> sudo umount <your_starter_package_dir_path>/rootfs_mounted
     #> rmdir <your_starter_package_dir_path>/rootfs_mounted
+
+---------------------------
+8. Example of compilation usage
+---------------------------
+    $@E> cd ##BP##-##PR##
+    $@E> tar xf ##BP##-##PR##.tar.xz
+    $@E> cd ##BP##
+    $@E> test -d .git || git init . && git add . && git commit -m "gcnano kernel module source code" && git gc
+    $@E> git checkout -b WORKING
+
+    $ cd ..
+    $ cd ..
+    $@P> cd ##BP##-##PR##
+    $@P> cd ##BP##
+##CASE_stm32mp1##    $@C> make SOC_PLATFORM=st-mp1 DEBUG=0 O="${KERNEL_BUILDDIR}" M="${PWD}" AQROOT="${PWD}" -C ${KERNEL_BUILDDIR}
+##CASE_stm32mp2##    $@C> make SOC_PLATFORM=st-mp2 DEBUG=0 O="${KERNEL_BUILDDIR}" M="${PWD}" AQROOT="${PWD}" -C ${KERNEL_BUILDDIR}
+##CASE_stm32mp2-m33td##    $@C> make SOC_PLATFORM=st-mp2 DEBUG=0 O="${KERNEL_BUILDDIR}" M="${PWD}" AQROOT="${PWD}" -C ${KERNEL_BUILDDIR}
+
+    To strip the kernel modules (Optionally):
+    @> find . -name "*.ko" | xargs $STRIP --strip-debug --remove-section=.comment --remove-section=.note --preserve-dates galcore.ko
+
+   # To deploy
+   $@F> export FIP_DEPLOYDIR_ROOT=<your_deploy_dir_path>
+   $@F> mkdir -p ${FIP_DEPLOYDIR_ROOT}/kernel/modules/lib/modules/$(ls -1 ${FIP_DEPLOYDIR_ROOT}/kernel/modules/lib/modules/)/extra
+   $@F> mkdir -p ${FIP_DEPLOYDIR_ROOT}/kernel/modules_stripped/lib/modules/$(ls -1 ${FIP_DEPLOYDIR_ROOT}/kernel/modules/lib/modules/)/extra
+
+   $@F> cp galcore.ko ${FIP_DEPLOYDIR_ROOT}/kernel/modules/lib/modules/$(ls -1 ${FIP_DEPLOYDIR_ROOT}/kernel/modules/lib/modules/)/extra
+   $@F> cp galcore.ko ${FIP_DEPLOYDIR_ROOT}/kernel/modules_stripped/lib/modules/$(ls -1 ${FIP_DEPLOYDIR_ROOT}/kernel/modules/lib/modules/)/extra
+   $@F> find ${FIP_DEPLOYDIR_ROOT}/kernel/modules_stripped/lib/modules/$(ls -1 ${FIP_DEPLOYDIR_ROOT}/kernel/modules/lib/modules/)/extra -name "*.ko" | xargs $STRIP --strip-debug --remove-section=.comment --remove-section=.note --preserve-dates

@@ -4,16 +4,14 @@ LICENSE = "GPL-1.0-only & MIT"
 LIC_FILES_CHKSUM = "file://Makefile;endline=19;md5=9b60522ab24b25fa2833058e76c41216"
 
 SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries.git;protocol=https;branch=gcnano-${GCNANO_VERSION}-binaries"
-SRCREV = "359d5007ef19575f6b8ca3071cf90d3848778ae7"
+SRCREV = "7c181cacf89f918039e64934fdc33fe817a052cd"
 
-GCNANO_VERSION = "6.4.19"
-GCNANO_SUBVERSION:stm32mp1common = "stm32mp1"
-GCNANO_SUBVERSION:stm32mp2common = "stm32mp2"
+GCNANO_VERSION = "6.4.21"
 GCNANO_RELEASE = "r1"
 
-PV = "${GCNANO_VERSION}-${GCNANO_SUBVERSION}-${GCNANO_RELEASE}"
+PV = "${GCNANO_VERSION}-${GCNANO_RELEASE}"
 
-S = "${WORKDIR}/git/${BPN}"
+S = "${UNPACKDIR}/${BP}/${BPN}"
 
 include gcnano-driver-stm32mp.inc
 
