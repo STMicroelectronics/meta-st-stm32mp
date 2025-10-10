@@ -37,6 +37,12 @@ STM32MP_ENCRYPT_SOC_NAME:append:stm32mp21common = " stm32mp21 "
 STM32MP_ENCRYPT_SOC_NAME:append:stm32mp23common = " stm32mp23 "
 STM32MP_ENCRYPT_SOC_NAME:append:stm32mp25common = " stm32mp25 "
 
+STM32MP_ENCRYPT_COPRO_SOC_NAME = ""
+STM32MP_ENCRYPT_COPRO_SOC_NAME:append:stm32mp21common = " stm32mp21 "
+STM32MP_ENCRYPT_COPRO_SOC_NAME:append:stm32mp23common = " stm32mp23 "
+STM32MP_ENCRYPT_COPRO_SOC_NAME:append:stm32mp25common = " stm32mp25 "
+
+
 # =========================================================================
 # boot scheme
 # =========================================================================
@@ -278,9 +284,15 @@ EXTRA_IMAGEDEPENDS:append = " \
 # Signing configuration
 # =========================================================================
 ENCRYPT_ENABLE ?= "0"
+ENCRYPT_COPRO_ENABLE ?= "${@bb.utils.contains('ENCRYPT_ENABLE', '1', '1', '0', d)}"
+# encryption of coprocessor firmware is not supported on stm32mp1
+ENCRYPT_COPRO_ENABLE:stm32mp1common = "0"
 ENCRYPT_SUFFIX ?= "_Encrypted"
 
 SIGN_ENABLE ?= "${@bb.utils.contains('ENCRYPT_ENABLE', '1', '1', '0', d)}"
+SIGN_COPRO_ENABLE ?= "${@bb.utils.contains('SIGN_ENABLE', '1', '1', '0', d)}"
+# signature of coprocessor firmware with hardware verification is not supported on stm32mp1
+SIGN_COPRO_ENABLE:stm32mp1common = "0"
 SIGN_SUFFIX ?= "_Signed"
 
 # =========================================================================
@@ -333,6 +345,8 @@ STM32MP_KERNEL_DEVICETREE += "${@' '.join('${KERNEL_SUB_PATH}%s.dtb' % d for d i
 # 0xC2000000 is the memory address where U-Boot will copy from flash the file uImage and 0x40 is uImage header size (64Bytes).
 # With this value, U-Boot will be able to execute in place the zImage contained in uImage.
 ST_KERNEL_LOADADDR ?= "0xC2000040"
+ST_KERNEL_LOADADDR:stm32mp1common ?= "0xC2000040"
+ST_KERNEL_LOADADDR:stm32mp2common ?= "0x88008000"
 
 # Define the devicetree for Linux A7 examples
 LINUX_A7_EXAMPLES_DT ?= ""
@@ -344,15 +358,17 @@ ST_CMD_LINE_DEBUG_TRACE ?= "loglevel=1 quiet"
 # =========================================================================
 # Define default U-Boot config
 UBOOT_CONFIG ?= ""
+# STM32mp13
+UBOOT_CONFIG:append:stm32mp13common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee opteemin', 'default_stm32mp13', '', d)} "
+UBOOT_CONFIG:append:stm32mp13common = " ${@bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'programmer_stm32mp13', '', d)} "
+UBOOT_CONFIG:append:stm32mp13common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'fastboot fastboot-opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'fastboot-sdcard_stm32mp13', '', d), '', d)} "
+UBOOT_CONFIG:append:stm32mp13common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'fastboot fastboot-opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'fastboot-emmc_stm32mp13', '', d), '', d)} "
+
 # STM32mp15
 UBOOT_CONFIG:append:stm32mp15common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee opteemin', 'default_stm32mp15', '', d)} "
 UBOOT_CONFIG:append:stm32mp15common = " ${@bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'programmer_stm32mp15', '', d)} "
 UBOOT_CONFIG:append:stm32mp15common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'fastboot fastboot-opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'fastboot-sdcard_stm32mp15', '', d), '', d)} "
 UBOOT_CONFIG:append:stm32mp15common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'fastboot fastboot-opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'fastboot-emmc_stm32mp15', '', d), '', d)} "
-# STM32mp13
-UBOOT_CONFIG:append:stm32mp13common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee opteemin', 'default_stm32mp13', '', d)} "
-UBOOT_CONFIG:append:stm32mp13common = " ${@bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'programmer_stm32mp13', '', d)} "
-UBOOT_CONFIG:append:stm32mp13common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'fastboot fastboot-opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'fastboot-sdcard_stm32mp13', '', d), '', d)} "
 
 # STM32mp21
 UBOOT_CONFIG:append:stm32mp21common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee opteemin', 'default_stm32mp21', '', d)} "
@@ -364,7 +380,6 @@ UBOOT_CONFIG:append:stm32mp23common = " ${@bb.utils.contains_any('BOOTSCHEME_LAB
 UBOOT_CONFIG:append:stm32mp23common = " ${@bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'programmer_stm32mp23', '', d)} "
 UBOOT_CONFIG:append:stm32mp23common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'fastboot fastboot-opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'fastboot-sdcard_stm32mp23', '', d), '', d)} "
 UBOOT_CONFIG:append:stm32mp23common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'fastboot fastboot-opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'fastboot-emmc_stm32mp23', '', d), '', d)} "
-
 # STM32mp25
 UBOOT_CONFIG:append:stm32mp25common = " ${@bb.utils.contains_any('BOOTSCHEME_LABELS', 'optee opteemin', 'default_stm32mp25', '', d)} "
 UBOOT_CONFIG:append:stm32mp25common = " ${@bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'programmer_stm32mp25', '', d)} "
@@ -388,37 +403,34 @@ ST_UBOOT_DEBUG_TRACE ?= "${@bb.utils.contains('ST_DEBUG_TRACE', '1', '1', '0', d
 # =========================================================================
 # Add optionnaly trusted-firmware-a
 EXTRA_IMAGEDEPENDS += "virtual/trusted-firmware-a"
-# Add optionnaly trusted-firmware-m
-EXTRA_IMAGEDEPENDS += "${@bb.utils.contains('MACHINE_FEATURES', 'm33td', 'virtual/trusted-firmware-m', '', d)}"
 
 # Configure the TF-A tool platform to use to generate the TF-A tools
 TF_A_TOOLS_PLATFORM ?= "stm32mp2"
 
 # Configure trusted-firmware-a build
 # Manage specific config settings
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'optee-emmc', '', d), '', d)}"
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard', 'optee-nand', '', d), '', d)}"
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nor nor-sdcard', 'optee-nor', '', d), '', d)}"
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'optee-sdcard', '', d), '', d)}"
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-4-256-512 nand-4-256-512-sdcard', 'optee-spinand', '', d), '', d)}"
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'optee-programmer-usb optee-programmer-uart', ' usb uart', d), '', d)}"
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'opteemin-emmc', '', d), '', d)}"
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard', 'opteemin-nand', '', d), '', d)}"
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nor nor-sdcard', 'opteemin-nor', '', d), '', d)}"
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'opteemin-sdcard', '', d), '', d)}"
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-4-256-512 nand-4-256-512-sdcard', 'opteemin-spinand', '', d), '', d)}"
-TF_A_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'opteemin-programmer-usb opteemin-programmer-uart', 'usb uart', d), '', d)}"
-
-# Make sure to add the SDCARD support for m33td nor-sdcard
-TF_A_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'optee-sdcard', '', d), '', d)}"
-FIP_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'optee-sdcard', '', d), '', d)}"
-# Make sure to add the EMMC support for m33td nor-emmc
-TF_A_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emmc', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'optee-emmc', '', d), '', d)}"
-FIP_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emmc', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'optee-emmc', '', d), '', d)}"
-
-# Remove the 'optee-nor' configuration for both TF-A and FIP
-TF_A_CONFIG:remove = "${@bb.utils.contains('BOOTDEVICE_LABELS', 'optee', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'optee-nor', '', d), '', d)}"
-FIP_CONFIG:remove = "${@bb.utils.contains('BOOTDEVICE_LABELS', 'optee', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'optee-nor', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'optee-emmc', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard', 'optee-nand', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-4-256-512 nand-4-256-512-sdcard', 'optee-spinand', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'optee-nor', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emmc', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'optee-emmc', 'optee-nor', d), '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-nor-emmc', 'optee-nor', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'optee-sdcard', 'optee-nor', d), '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-nor-sdcard', 'optee-nor', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'optee-sdcard', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'optee-programmer-usb', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'optee-programmer-uart', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'opteemin-emmc', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard', 'opteemin-nand', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-4-256-512 nand-4-256-512-sdcard', 'opteemin-spinand', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'opteemin-nor', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emmc', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'opteemin-emmc', 'opteemin-nor', d), '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'opteemin-sdcard', 'opteemin-nor', d), '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'opteemin-sdcard', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'opteemin-programmer-usb', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'opteemin-programmer-uart', '', d), '', d)}"
+# Set default supported trusted-firmware-a config list (without duplicate)
+TF_A_CONFIG:append = " ${@' '.join('%s' % tfa_conf for tfa_conf in list(dict.fromkeys((d.getVar('TF_A_CONFIG_ALL') or '').split())))} "
 
 # Append SSP config to TF_A_CONFIG
 TF_A_SSP_ENABLE ?= "0"
@@ -443,8 +455,25 @@ ST_TF_A_DEBUG_TRACE ?= "${@bb.utils.contains('ST_DEBUG_TRACE', '1', '1', '0', d)
 # trusted-firmware-m
 # =========================================================================
 # Add optionnaly trusted-firmware-m
-# List of trusted-firmware-m device tree to use
-TF_M_DEVICETREE ?= "${STM32MP_DEVICETREE}"
+EXTRA_IMAGEDEPENDS += "${@bb.utils.contains('MACHINE_FEATURES', 'm33td', 'virtual/trusted-firmware-m', '', d)}"
+
+# List of supported trusted-firmware-m platform
+TFM_STM_PLATFORM ?= ""
+# STM32mp21
+TFM_STM_PLATFORM:append:stm32mp21common = " stm/stm32mp215f_dk"
+# STM32mp25
+TFM_STM_PLATFORM:append:stm32mp25common = " stm/stm32mp257f_ev1"
+
+# Configure trusted-firmware-m build
+TF_M_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'm33td_emmc', '', d), '', d)}"
+TF_M_CONFIG += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'nor-nor-emmc nor-nor-sdcard', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'm33td_nor', '', d), '', d)}"
+TF_M_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emmc', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'm33td_nor-emmc', '', d), '', d)}"
+TF_M_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'm33td_nor-sdcard', '', d), '', d)}"
+TF_M_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'm33td_sdcard', '', d), '', d)}"
+# Add the config to provide elf file for m33copro secure signature
+TF_M_CONFIG += "${@bb.utils.contains('M33PROJECT_TF_M_TRUSTZONE', '1', 'm33copro', '', d)}"
+
+MACHINE_EXTRA_RRECOMMENDS:append = "${@bb.utils.contains('MACHINE_FEATURES', 'm33td', 'm33tdprojects-starter-stm32mp2', '', d)}"
 
 # =========================================================================
 # optee
@@ -452,6 +481,10 @@ TF_M_DEVICETREE ?= "${STM32MP_DEVICETREE}"
 ## Map OPTEE configuration to device tree list
 OPTEE_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'optee', '', d)}"
 OPTEE_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', 'opteemin', '', d)}"
+
+OPTEE_CONFIG += " ${@bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', bb.utils.contains('BOOTSCHEME_LABELS', 'optee', 'optee-programmer', '', d), '', d)} "
+OPTEE_CONFIG += " ${@bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', 'opteemin-programmer', '', d), '', d)} "
+
 
 ST_OPTEE_DEBUG_TRACE ?= "${@bb.utils.contains('ST_DEBUG_TRACE', '1', '1', '0', d)}"
 
@@ -461,8 +494,9 @@ ST_OPTEE_DEBUG_TRACE ?= "${@bb.utils.contains('ST_DEBUG_TRACE', '1', '1', '0', d
 # Trustzone enable or not on M33 co-processor
 # if Trustzone is enabled, that mean we need to have TF-M as dependency
 # By default, it's enabled
-M33PROJECT_TF_M_TRUSTZONE ??= "1"
+M33PROJECT_TF_M_TRUSTZONE ??= "${@bb.utils.contains('MACHINE_FEATURES', 'm33td', '0', '1', d)}"
 
+STAGING_TFM_BUILDDIR ?= "${TMPDIR}/work-shared/${MACHINE}/tfm-build-artifacts"
 # =========================================================================
 # fip
 # =========================================================================
@@ -470,25 +504,36 @@ M33PROJECT_TF_M_TRUSTZONE ??= "1"
 EXTRA_IMAGEDEPENDS += "fip-stm32mp"
 
 # Configure fip build
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'optee-emmc', '', d), '', d)}"
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-4-256-512 nand-4-256-512-sdcard', 'optee-spinand', '', d), '', d)}"
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard', 'optee-nand', '', d), '', d)}"
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nor nor-sdcard', 'optee-nor', '', d), '', d)}"
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'optee-sdcard', '', d), '', d)}"
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'optee-programmer-${STMP32MP_PROGRAMMER_SERIAL}', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'optee-emmc', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-4-256-512 nand-4-256-512-sdcard', 'optee-spinand', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard', 'optee-nand', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'optee-nor', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emmc', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'optee-emmc', 'optee-nor', d), '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'optee-sdcard', 'optee-nor', d), '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'optee-sdcard', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'optee-programmer-${STMP32MP_PROGRAMMER_SERIAL}', '', d), '', d)}"
 
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'fastboot-emmc', '', d), '', d), '', d)}"
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'fastboot-sdcard', '', d), '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'fastboot-emmc', '', d), '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'fastboot-sdcard', '', d), '', d), '', d)}"
 
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'opteemin-emmc', '', d), '', d)}"
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-4-256-512 nand-4-256-512-sdcard', 'opteemin-spinand', '', d), '', d)}"
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard', 'opteemin-nand', '', d), '', d)}"
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nor nor-sdcard', 'opteemin-nor', '', d), '', d)}"
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'opteemin-sdcard', '', d), '', d)}"
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'opteemin-programmer-${STMP32MP_PROGRAMMER_SERIAL}', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('MACHINE_FEATURES', 'm33td', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nor-nor-emmc nor-nor-sdcard', 'optee-nor', '', d), '', d), '', d)}"
 
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot-opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'fastboot-opteemin-emmc', '', d), '', d), '', d)}"
-FIP_CONFIG += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot-opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'fastboot-opteemin-sdcard', '', d), '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'opteemin-emmc', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-4-256-512 nand-4-256-512-sdcard', 'opteemin-spinand', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard', 'opteemin-nand', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'opteemin-nor', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emmc', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'opteemin-emmc', 'opteemin-nor', d), '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'opteemin-sdcard', 'opteemin-nor', d), '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'opteemin-sdcard', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'opteemin-programmer-${STMP32MP_PROGRAMMER_SERIAL}', '', d), '', d)}"
+
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot-opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'fastboot-opteemin-emmc', '', d), '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTSCHEME_LABELS', 'fastboot-opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'fastboot-opteemin-sdcard', '', d), '', d), '', d)}"
+
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('MACHINE_FEATURES', 'm33td', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nor-nor-emmc nor-nor-sdcard', 'opteemin-nor', '', d), '', d), '', d)}"
+
+# Set default supported fip config list (without duplicate)
+FIP_CONFIG:append = " ${@' '.join('%s' % fip_conf for fip_conf in list(dict.fromkeys((d.getVar('FIP_CONFIG_ALL') or '').split())))} "
 
 # Define fiptool wrapper name
 FIPTOOL_WRAPPER ?= "fiptool-stm32mp.${MACHINE}"
@@ -503,29 +548,30 @@ FIP_BL31_ENABLE:stm32mp2common = "1"
 
 # -----------------------------------------------
 # Define config for each FIP_CONFIG
-#   FIP_CONFIG[config] ?= "<bl32_conf>,<dt_conf>,<search_conf>,<device_conf>"
+#   FIP_CONFIG[config] ?= "<bl32_conf>,<dt_conf>,<dt_suffix,<search_conf>,<device_conf>"
 #
-FIP_CONFIG[optee-emmc]    ?= "optee,${STM32MP_DT_FILES_EMMC},default:optee"
-FIP_CONFIG[optee-nand]    ?= "optee,${STM32MP_DT_FILES_NAND},default:optee"
-FIP_CONFIG[optee-nor]     ?= "optee,${STM32MP_DT_FILES_NOR},default:optee"
-FIP_CONFIG[optee-sdcard]  ?= "optee,${STM32MP_DT_FILES_SDCARD},default:optee"
-FIP_CONFIG[optee-spinand] ?= "optee,${STM32MP_DT_FILES_SPINAND},default:optee"
-FIP_CONFIG[optee-programmer-uart] ?= "optee,${STM32MP_DEVICETREE_PROGRAMMER},programmer:optee-programmer-uart:optee,uart"
-FIP_CONFIG[optee-programmer-usb]  ?= "optee,${STM32MP_DEVICETREE_PROGRAMMER},programmer:optee-programmer-usb:optee,usb"
+FIP_CONFIG[optee-emmc]    ?= "optee,${STM32MP_DT_FILES_EMMC},${EXTDT_SUFFIX_EMMC},default:optee"
+FIP_CONFIG[optee-nand]    ?= "optee,${STM32MP_DT_FILES_NAND},${EXTDT_SUFFIX_NAND},default:optee"
+FIP_CONFIG[optee-nor]     ?= "optee,${STM32MP_DT_FILES_NOR},${EXTDT_SUFFIX_NOR},default:optee"
+FIP_CONFIG[optee-sdcard]  ?= "optee,${STM32MP_DT_FILES_SDCARD},${EXTDT_SUFFIX_SDCARD},default:optee"
+FIP_CONFIG[optee-spinand] ?= "optee,${STM32MP_DT_FILES_SPINAND},${EXTDT_SUFFIX_SPINAND},default:optee"
+FIP_CONFIG[optee-programmer-uart] ?= "optee,${STM32MP_DEVICETREE_PROGRAMMER},,programmer:optee-programmer-uart:optee-programmer,uart"
+FIP_CONFIG[optee-programmer-usb]  ?= "optee,${STM32MP_DEVICETREE_PROGRAMMER},,programmer:optee-programmer-usb:optee-programmer,usb"
 
-FIP_CONFIG[fastboot-emmc]   ?= "optee,${STM32MP_DT_FILES_EMMC},fastboot-emmc:optee,optee-programmer-usb"
-FIP_CONFIG[fastboot-sdcard] ?= "optee,${STM32MP_DT_FILES_SDCARD},fastboot-sdcard:optee,optee-programmer-usb"
+FIP_CONFIG[fastboot-emmc]   ?= "optee,${STM32MP_DT_FILES_EMMC},,fastboot-emmc:optee-programmer,optee-programmer-usb"
+FIP_CONFIG[fastboot-sdcard] ?= "optee,${STM32MP_DT_FILES_SDCARD},,fastboot-sdcard:optee-programmer,optee-programmer-usb"
 
-FIP_CONFIG[opteemin-emmc]    ?= "optee,${STM32MP_DT_FILES_EMMC},default:opteemin"
-FIP_CONFIG[opteemin-nand]    ?= "optee,${STM32MP_DT_FILES_NAND},default:opteemin"
-FIP_CONFIG[opteemin-nor]     ?= "optee,${STM32MP_DT_FILES_NOR},default:opteemin"
-FIP_CONFIG[opteemin-sdcard]  ?= "optee,${STM32MP_DT_FILES_SDCARD},default:opteemin"
-FIP_CONFIG[opteemin-spinand] ?= "optee,${STM32MP_DT_FILES_SPINAND},default:opteemin"
-FIP_CONFIG[opteemin-programmer-uart] ?= "optee,${STM32MP_DEVICETREE_PROGRAMMER},programmer:opteemin-programmer-uart:opteemin,uart"
-FIP_CONFIG[opteemin-programmer-usb] ?= "optee,${STM32MP_DEVICETREE_PROGRAMMER},programmer:opteemin-programmer-usb:opteemin,usb"
+FIP_CONFIG[opteemin-emmc]    ?= "optee,${STM32MP_DT_FILES_EMMC},${EXTDT_SUFFIX_EMMC},default:opteemin"
+FIP_CONFIG[opteemin-nand]    ?= "optee,${STM32MP_DT_FILES_NAND},${EXTDT_SUFFIX_NAND},default:opteemin"
+FIP_CONFIG[opteemin-nor]     ?= "optee,${STM32MP_DT_FILES_NOR},${EXTDT_SUFFIX_NOR},default:opteemin"
+FIP_CONFIG[opteemin-sdcard]  ?= "optee,${STM32MP_DT_FILES_SDCARD},${EXTDT_SUFFIX_SDCARD},default:opteemin"
+FIP_CONFIG[opteemin-spinand] ?= "optee,${STM32MP_DT_FILES_SPINAND},${EXTDT_SUFFIX_SPINAND},default:opteemin"
+FIP_CONFIG[opteemin-programmer-uart] ?= "optee,${STM32MP_DEVICETREE_PROGRAMMER},,programmer:opteemin-programmer-uart:opteemin-programmer,uart"
+FIP_CONFIG[opteemin-programmer-usb] ?= "optee,${STM32MP_DEVICETREE_PROGRAMMER},,programmer:opteemin-programmer-usb:opteemin-programmer,usb"
 
-FIP_CONFIG[fastboot-opteemin-emmc]   ?= "optee,${STM32MP_DT_FILES_EMMC},fastboot-emmc:opteemin,opteemin-emmc"
-FIP_CONFIG[fastboot-opteemin-sdcard] ?= "optee,${STM32MP_DT_FILES_SDCARD},fastboot-sdcard:opteemin,opteemin-sdcard"
+FIP_CONFIG[fastboot-opteemin-emmc]   ?= "optee,${STM32MP_DT_FILES_EMMC},,fastboot-emmc:opteemin-programmer,opteemin-emmc"
+FIP_CONFIG[fastboot-opteemin-sdcard] ?= "optee,${STM32MP_DT_FILES_SDCARD},,fastboot-sdcard:opteemin-programmer,opteemin-sdcard"
+
 
 # =========================================================================
 # Xserver
