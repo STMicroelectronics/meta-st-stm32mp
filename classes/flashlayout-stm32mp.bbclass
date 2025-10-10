@@ -187,8 +187,8 @@ python __anonymous () {
                             if config == f:
                                 items = v.split(',')
                                 # Make sure about PARTITIONS_IMAGES contents
-                                if len(items) > 0 and len(items) != 5:
-                                        bb.fatal('[PARTITIONS_IMAGES] Only image,label,mountpoint,size,type can be specified!')
+                                if len(items) > 0 and len(items) > 6 :
+                                        bb.fatal('[PARTITIONS_IMAGES] Only image,label,mountpoint,size,type,[copy] can be specified!')
                                 # Make sure that we're dealing with partition image and not rootfs image
                                 if items[2] != '':
                                     # Mount point is available, so we're dealing with partition image
@@ -626,7 +626,10 @@ python do_create_flashlayout_config() {
                                 # Get partition offset
                                 partition_offset, partition_nextoffset, partition_maxoffset = get_offset(partition_nextoffset, partition_copy, partition_device, bootscheme, config, partition, labeltype, d)
                                 # Get binary name
-                                partition_bin2load = get_binaryname(labeltype, partition_device, partition_device_default, bootscheme, config, partition, part, d)
+                                if 'E' in partition_enable:
+                                    partition_bin2load = "none"
+                                else:
+                                    partition_bin2load = get_binaryname(labeltype, partition_device, partition_device_default, boot_device_a35, boot_device_m33, bootscheme, config, partition, part, d)
                                 # Be verbose in log file
                                 bb.debug(1, '>>> Layout inputs: %s' % fl_file.name)
                                 bb.debug(1, '>>> FLASHLAYOUT_PARTITION_ENABLE:      %s' % partition_enable)
