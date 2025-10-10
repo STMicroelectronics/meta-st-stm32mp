@@ -13,8 +13,7 @@ SRC_URI = " \
     file://st-m4coredump.service \
     "
 
-S = "${WORKDIR}/sources"
-UNPACKDIR = "${S}"
+S = "${UNPACKDIR}"
 
 inherit systemd
 

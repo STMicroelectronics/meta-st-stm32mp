@@ -19,8 +19,6 @@ PV = "0.28.0+git${SRCPV}"
 
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 
-S = "${WORKDIR}/git"
-
 # Inherit of cmake for configure step
 inherit cmake pkgconfig
 

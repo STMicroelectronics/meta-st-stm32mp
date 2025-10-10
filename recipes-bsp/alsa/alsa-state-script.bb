@@ -17,8 +17,7 @@ SRC_URI = " \
     file://alsa-state-stm32mp.service \
     "
 
-S = "${WORKDIR}/sources"
-UNPACKDIR = "${S}"
+S = "${UNPACKDIR}"
 
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 RDEPENDS:${PN} = "alsa-state"

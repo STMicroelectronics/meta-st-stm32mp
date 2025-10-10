@@ -5,8 +5,7 @@ LIC_FILES_CHKSUM = "file://${COREBASE}/meta/files/common-licenses/BSD-3-Clause;m
 
 SRC_URI = " file://st_copro_firmware_signature.sh"
 
-S = "${WORKDIR}/sources"
-UNPACKDIR = "${S}"
+S = "${UNPACKDIR}"
 
 BBCLASSEXTEND = " native nativesdk"
 

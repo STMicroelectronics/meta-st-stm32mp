@@ -43,8 +43,6 @@ ARCHIVER_ST_REVISION = "${PV}"
 ARCHIVER_COMMUNITY_BRANCH = "master"
 ARCHIVER_COMMUNITY_REVISION = "${U_BOOT_VERSION}"
 
-S = "${WORKDIR}/git"
-
 # ---------------------------------
 # Configure devupstream class usage
 # ---------------------------------

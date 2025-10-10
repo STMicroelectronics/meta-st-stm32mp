@@ -16,8 +16,6 @@ SRCREV_git2cl = "8373c9f74993e218a08819cbcdbab3f3564bbeba"
 SRCREV_jimtcl = "3920cedd1cdd4702720773f0637b780f79be6158"
 SRCREV_libjaylink = "9aa7a5957c07bb6e862fc1a6d3153d109c7407e4"
 
-S = "${WORKDIR}/git"
-
 BBCLASSEXTEND += "native nativesdk"
 
 DEPENDS:class-native = "hidapi-stm32mp-native"

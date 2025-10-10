@@ -5,9 +5,6 @@ LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda
 
 SRC_URI:append:class-nativesdk = " file://environment.d-optee-sdk.sh"
 
-S = "${WORKDIR}/sources"
-UNPACKDIR = "${S}"
-
 BBCLASSEXTEND = " nativesdk"
 
 do_configure[noexec] = "1"

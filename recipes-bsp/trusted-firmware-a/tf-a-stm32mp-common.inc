@@ -24,8 +24,6 @@ ARCHIVER_ST_REVISION = "${TF_A_VERSION}-${TF_A_TARGET}-${TF_A_RELEASE}"
 ARCHIVER_COMMUNITY_BRANCH = "lts-${TF_A_VERSION}"
 ARCHIVER_COMMUNITY_REVISION = "lts-${TF_A_VERSION}${TF_A_SUBVERSION}"
 
-S = "${WORKDIR}/git"
-
 # ---------------------------------
 # Configure devupstream class usage
 # ---------------------------------

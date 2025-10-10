@@ -19,8 +19,7 @@ SRC_URI = " \
     file://asound-stm32mp15yx-dk.state  \
     "
 
-S = "${WORKDIR}/sources"
-UNPACKDIR = "${S}"
+S = "${UNPACKDIR}"
 
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 RDEPENDS:${PN} = "alsa-state alsa-state-script"

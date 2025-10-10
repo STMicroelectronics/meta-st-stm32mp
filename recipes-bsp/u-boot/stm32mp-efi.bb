@@ -11,9 +11,6 @@ SRC_URI = " \
     file://ubootefi.var \
 "
 
-S = "${WORKDIR}/sources"
-UNPACKDIR = "${S}"
-
 inherit kernel-arch
 
 UBOOT_EXTLINUX_BOOTSCR = "${UNPACKDIR}/boot.scr.cmd"

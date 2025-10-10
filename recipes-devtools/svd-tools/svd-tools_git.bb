@@ -9,8 +9,6 @@ inherit pkgconfig autotools-brokensep gettext
 SRC_URI = "git://github.com/1udo6arre/svd-tools.git;protocol=https;branch=master"
 SRCREV = "5b7b813481877a3b6fb8f96b4f0d413b47fb987a"
 
-S = "${WORKDIR}/git"
-
 BBCLASSEXTEND = "native nativesdk"
 
 RDEPENDS:${PN} += "cmsis-svd"
@@ -22,7 +20,7 @@ RRECOMMENDS:${PN}:append:class-nativesdk = " nativesdk-python3-terminaltables "
 do_configure[noexec] = "1"
 do_compile[noexec] = "1"
 
-INSTALL_PATH= "${datadir}/svd-tools"
+INSTALL_PATH = "${datadir}/svd-tools"
 
 do_install () {
     install -d ${D}${INSTALL_PATH}

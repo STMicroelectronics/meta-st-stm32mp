@@ -8,8 +8,7 @@ PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 SRC_URI = "file://boot.scr.cmd"
 
-S = "${WORKDIR}/sources"
-UNPACKDIR = "${S}"
+S = "${UNPACKDIR}"
 B = "${WORKDIR}/build"
 
 PV = "3.1.1"
@@ -17,15 +16,15 @@ PV = "3.1.1"
 inherit kernel-arch extlinuxconf-stm32mp
 
 UBOOT_EXTLINUX_BOOTSCR = "${UNPACKDIR}/boot.scr.cmd"
-UBOOT_EXTLINUX_BOOTSCR_IMG = "${UNPACKDIR}/boot.scr.uimg"
+UBOOT_EXTLINUX_BOOTSCR_IMG = "${B}/boot.scr.uimg"
 
 UBOOT_EXTLINUX_INSTALL_DIR ?= "/boot"
 
 do_compile() {
     # If there is only one configuration, we try to figure out if we can cleanup
     # to have a single exlinux.conf file on extlinux folder (to avoid using boot.scr script).
-    if [ "$(find ${B}/* -maxdepth 0 -type d | wc -w)" -eq 1 ] ; then
-        subdir=$(find ${B}/* -maxdepth 0 -type d)
+    if [ "$(find ${S}/* -maxdepth 0 -type d | wc -w)" -eq 1 ] ; then
+        subdir=$(find ${S}/* -maxdepth 0 -type d)
         bbnote "Only one subdir found for extlinux.conf files: ${subdir}"
         # If there is the <DEVICETREE>_extlinux.conf file, then rename it to 'extlinux.conf'
         # and use also default subdir name for u-boot (i.e. 'extlinux')

@@ -7,8 +7,7 @@ LIC_FILES_CHKSUM = "file://${COREBASE}/meta/files/common-licenses/MIT;md5=0835ad
 
 SRC_URI = "file://create_sdcard_from_flashlayout.sh"
 
-S = "${WORKDIR}/sources"
-UNPACKDIR = "${S}"
+S = "${UNPACKDIR}"
 
 BBCLASSEXTEND = "native nativesdk"
 

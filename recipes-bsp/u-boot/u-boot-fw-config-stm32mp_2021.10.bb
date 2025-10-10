@@ -8,8 +8,7 @@ SRC_URI = " \
     file://fw_env.config.nor \
 "
 
-S = "${WORKDIR}/sources"
-UNPACKDIR = "${S}"
+S = "${UNPACKDIR}"
 
 DEPENDS += "u-boot-fw-utils"
 

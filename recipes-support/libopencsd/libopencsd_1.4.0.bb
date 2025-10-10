@@ -6,8 +6,6 @@ LIC_FILES_CHKSUM = "file://LICENSE;md5=ad8cb685eb324d2fa2530b985a43f3e5"
 SRC_URI = "git://github.com/Linaro/OpenCSD;protocol=https;branch=master"
 SRCREV = "78ce8ef47c55a489b0ca575b981cd4856d03f44b"
 
-S = "${WORKDIR}/git"
-
 COMPATIBLE_HOST = "(i.86|x86_64|arm|aarch64).*-linux"
 
 PROVIDES += "opencsd"

@@ -11,8 +11,6 @@ SRCREV  = "8e1c0b246c3f34aad075a2a8c0807ef46288e4d8"
 
 PV = "5.4+${SRCPV}"
 
-S = "${WORKDIR}/git"
-
 PACKAGES += "${PN}-userfs"
 
 # Package -dev and -dbg are empty so don't generate them
