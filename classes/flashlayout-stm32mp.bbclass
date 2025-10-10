@@ -255,6 +255,11 @@ def get_device(bootscheme, config, partition, partition_ori, d):
         FLASHLAYOUT_PARTITION_DEVICE = '<device0>:<dev0part_0> <dev0part_1>,<device1>:<dev1part0>'
         FLASHLAYOUT_PARTITION_DEVICE = '<device0>:default,<device1>:<dev1part0> <dev1part1>,<device2>:<dev2part0>'
         FLASHLAYOUT_PARTITION_DEVICE = '<device0>'
+    The default return for A35 boot device and M33 boot device is the default device configuration
+    A configure option is given through 'bootdev' to configure specific boot device for a35 and/or m33
+        FLASHLAYOUT_PARTITION_DEVICE = '<device0>:<dev1part0>,<device1>:<dev1part1>,<device1>:bootdev:a35 m33'
+        FLASHLAYOUT_PARTITION_DEVICE = '<device0>:default,<device1>:<dev1part0> <dev1part1>,<device0>:bootdev:a35'
+        FLASHLAYOUT_PARTITION_DEVICE = '<device0>:default,<device1>:<dev1part0> <dev1part1>,<device0>:bootdev:a35,<device1>:bootdev:m33'
     Then, to set the device for the current partition, the logic followed is:
         If the configuration provides a single device, then partition device is set
         to this value.
@@ -270,6 +275,9 @@ def get_device(bootscheme, config, partition, partition_ori, d):
     # Init default_device and device to empty string
     default_device = ''
     device = ''
+    # Init boot device for a35 and m33 to empty string
+    bootdev_a35 = ''
+    bootdev_m33 = ''
     if len(device_configs.split(',')) == 1:
         bb.debug(1, '>>> Only one device configuration set for %s partition for %s label for %s bootscheme' % (partition, config, bootscheme))
         device = device_configs.split(':')[0]
@@ -283,6 +291,17 @@ def get_device(bootscheme, config, partition, partition_ori, d):
             # Make sure configuration is correct
             if len(cfg_devc.split()) > 1:
                 bb.fatal('Only one device configuration can be specified: found %s for %s partition for %s label for %s bootscheme' % (cfg_devc, partition, config, bootscheme))
+            # Configure the boot device for a35 and m33
+            if cfg_part == 'bootdev' and len(device_config.split(':')) == 3:
+                cfg_boot = device_config.split(':')[2]
+                for b in cfg_boot.split():
+                    if b == 'a35':
+                        bootdev_a35 = cfg_devc
+                    elif b == 'm33':
+                        bootdev_m33 = cfg_devc
+                if bootdev_a35 == '' and bootdev_m33 == '':
+                    bb.warn('>>> Configuration not supported for boot device: only a35 and/or m33 (requested: %s)' % cfg_boot)
+                continue
             # Configure the default device configuration if any
             if cfg_part == 'default':
                 if default_device != '':
@@ -303,9 +322,20 @@ def get_device(bootscheme, config, partition, partition_ori, d):
             else:
                 bb.debug(1, '>>> Configure device to default device setting')
                 device = default_device
+    # If bootdev_a35 is still empty, apply default device configuration
+    if bootdev_a35 == '':
+        bb.debug(1, '>>> Configure bootdev_a35 to default device setting')
+        bootdev_a35 = default_device
+    # If bootdev_m33 is still empty, apply default device configuration
+    if bootdev_m33 == '':
+        bb.debug(1, '>>> Configure bootdev_m33 to default device setting')
+        bootdev_m33 = default_device
+
     bb.debug(1, '>>> New device configured: %s' % device)
+    bb.debug(1, '>>> New boot device a35 configured: %s' % bootdev_a35)
+    bb.debug(1, '>>> New boot device m33 configured: %s' % bootdev_m33)
     # Return the value computed
-    return (device, default_device)
+    return (device, default_device, bootdev_a35, bootdev_m33)
 
 def get_device_alias(device_type, labeltype, d):
     """
@@ -421,7 +451,7 @@ def get_offset(new_offset, copy, current_device, bootscheme, config, partition, 
     # Return offset, next offset and max offset
     return str(offset), str(next_offset), str(max_offset)
 
-def get_binaryname(labeltype, device, device_default, bootscheme, config, partition, partition_ori, d):
+def get_binaryname(labeltype, device, device_default, bootdev_a35, bootdev_m33, bootscheme, config, partition, partition_ori, d):
     """
     Return proper binary name to use in flashlayout file by applying any specific
     computation (replacement, etc)
@@ -431,6 +461,9 @@ def get_binaryname(labeltype, device, device_default, bootscheme, config, partit
     # Init binary_name for current configuration
     binary_name = expand_var('FLASHLAYOUT_PARTITION_BIN2LOAD', bootscheme, config, partition, d)
     bb.debug(1, '>>> Selected FLASHLAYOUT_PARTITION_BIN2LOAD: %s' % binary_name)
+    # Set 'bootdev_*' to alias name in lower case
+    bootdev_a35 = get_device_alias(bootdev_a35, labeltype, d).lower()
+    bootdev_m33 = get_device_alias(bootdev_m33, labeltype, d).lower()
     # Set 'device' to alias name in lower case
     if device != 'none':
         device = get_device_alias(device, labeltype, d).lower()
@@ -438,6 +471,8 @@ def get_binaryname(labeltype, device, device_default, bootscheme, config, partit
         device = get_device_alias(device_default, labeltype, d).lower()
     # Init pattern to look for with current config value
     update_patterns = '<BOOTSCHEME>;' + bootscheme
+    update_patterns += ' ' + '<BOOTDEV_A35>;' + bootdev_a35
+    update_patterns += ' ' + '<BOOTDEV_M33>;' + bootdev_m33
     update_patterns += ' ' + '<CONFIG>;' + config.replace("-","_")
     update_patterns += ' ' + '<DEVICE>;' + device
     update_patterns += ' ' + '<TYPE>;' + labeltype
@@ -617,7 +652,7 @@ python do_create_flashlayout_config() {
                                 # Update partition type if needed
                                 if int(partition_copy) > 1:
                                     partition_type += '(' + partition_copy + ')'
-                                partition_device, partition_device_default = get_device(bootscheme, config, partition, part, d)
+                                partition_device, partition_device_default, boot_device_a35, boot_device_m33 = get_device(bootscheme, config, partition, part, d)
                                 # Reset partition_nextoffset to 'none' in case partition device has changed
                                 if partition_device != partition_prevdevice:
                                     partition_nextoffset = "none"

@@ -222,17 +222,19 @@ FLASHLAYOUT_TYPE_LABELS:nand-4-256-512-sdcard = "${STM32MP_DT_FILES_SPINAND}"
 #   8) FLASHLAYOUT_PARTITION_LABELS
 # -----------------------------------------------------------------------------
 FLASHLAYOUT_PARTITION_LABELS:emmc = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'emmc').split()])}"
-FLASHLAYOUT_PARTITION_LABELS:nor = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nor').split()])}"
-FLASHLAYOUT_PARTITION_LABELS:nor-sdcard = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nor-sdcard').split()])}"
-FLASHLAYOUT_PARTITION_LABELS:nor-emmc = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nor-emmc').split()])}"
-FLASHLAYOUT_PARTITION_LABELS:sdcard  = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'sdcard').split()])}"
-FLASHLAYOUT_PARTITION_LABELS:sdcard-EFI = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'sdcard-EFI').split()])}"
 FLASHLAYOUT_PARTITION_LABELS:nand-2-128-256 = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nand-2-128-256').split()])}"
 FLASHLAYOUT_PARTITION_LABELS:nand-2-128-256-sdcard = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nand-2-128-256-sdcard').split()])}"
 FLASHLAYOUT_PARTITION_LABELS:nand-4-256-512 = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nand-4-256-512').split()])}"
 FLASHLAYOUT_PARTITION_LABELS:nand-4-256-512-sdcard = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nand-4-256-512-sdcard').split()])}"
 FLASHLAYOUT_PARTITION_LABELS:nand-4-256-1024 = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nand-4-256-1024').split()])}"
 FLASHLAYOUT_PARTITION_LABELS:nand-4-256-1024-sdcard = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nand-4-256-1024-sdcard').split()])}"
+FLASHLAYOUT_PARTITION_LABELS:nor = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nor').split()])}"
+FLASHLAYOUT_PARTITION_LABELS:nor-emmc = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nor-emmc').split()])}"
+FLASHLAYOUT_PARTITION_LABELS:nor-nor-emmc = "${@' '.join([l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nor-nor-emmc').split()])}"
+FLASHLAYOUT_PARTITION_LABELS:nor-nor-sdcard = "${@' '.join([l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nor-nor-sdcard').split()])}"
+FLASHLAYOUT_PARTITION_LABELS:nor-sdcard = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nor-sdcard').split()])}"
+FLASHLAYOUT_PARTITION_LABELS:sdcard  = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'sdcard').split()])}"
+FLASHLAYOUT_PARTITION_LABELS:sdcard-EFI = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'sdcard-EFI').split()])}"
 
 # -----------------------------------------------------------------------------
 # Partition properties configuration
@@ -329,6 +331,17 @@ FLASHLAYOUT_PARTITION_SIZE:nand-4-256-1024-sdcard:${STM32MP_VENDORFS_LABEL} = "1
 FLASHLAYOUT_PARTITION_SIZE:nand-2-128-256-sdcard:${STM32MP_VENDORFS_LABEL} = "199680"
 FLASHLAYOUT_PARTITION_SIZE:nand-4-256-512-sdcard:${STM32MP_VENDORFS_LABEL} = "199680"
 
+# Set binaries to use for each partition
+# -----------------------------------------------------------------------------
+# Use following pattern in binary name to expand to specific label config:
+#       '<CONFIG>'      (to insert label from FLASHLAYOUT_CONFIG_LABELS - NB: substitution for all '-' in label by '_')
+#       '<BOOTSCHEME>'  (to insert label from FLASHLAYOUT_BOOTSCHEME_LABELS)
+#       '<BOOTDEV_A35>' (to insert label for boot device A35 from FLASHLAYOUT_PARTITION_DEVICE settings)
+#       '<BOOTDEV_M33>' (to insert label for boot device M33 from FLASHLAYOUT_PARTITION_DEVICE settings)
+#       '<DEVICE>'      (to insert label from FLASHLAYOUT_PARTITION_DEVICE)
+#       '<TYPE>'        (to insert label from FLASHLAYOUT_TYPE_LABELS)
+# These patterns are processed to expand binary name for each config.
+# -----------------------------------------------------------------------------
 # Specific rename for 'fastboot' bootscheme as we want to use fastboot fip for programmer
 FLASHLAYOUT_PARTITION_BIN2LOAD:fastboot:${STM32MP_FSBL_PROGRAMMER_NAME} = "arm-trusted-firmware/tf-a-<TYPE>${STM32MP_DEVICETREE_PROGRAMMER_SUFFIX}-optee-${STM32MP_PROGRAMMER_SCHEME}-${STMP32MP_PROGRAMMER_SERIAL}${FIP_ENCRYPT_SUFFIX}${FIP_SIGN_SUFFIX}.stm32"
 
@@ -338,16 +351,6 @@ FLASHLAYOUT_PARTITION_BIN2LOAD:fastboot:${STM32MP_SSBL2_PROGRAMMER_NAME} = "fip/
 FLASHLAYOUT_PARTITION_BIN2LOAD:fastboot-opteemin:${STM32MP_FSBL_PROGRAMMER_NAME} = "arm-trusted-firmware/tf-a-<TYPE>${STM32MP_DEVICETREE_PROGRAMMER_SUFFIX}-opteemin-${STM32MP_PROGRAMMER_SCHEME}-${STMP32MP_PROGRAMMER_SERIAL}${FIP_ENCRYPT_SUFFIX}${FIP_SIGN_SUFFIX}.stm32"
 FLASHLAYOUT_PARTITION_BIN2LOAD:fastboot-opteemin:${STM32MP_SSBL1_PROGRAMMER_NAME} = "fip/fip-<TYPE>${STM32MP_DEVICETREE_PROGRAMMER_SUFFIX}-ddr-<BOOTSCHEME>-<DEVICE>${FIP_ENCRYPT_SUFFIX}${FIP_SIGN_SUFFIX}.bin"
 FLASHLAYOUT_PARTITION_BIN2LOAD:fastboot-opteemin:${STM32MP_SSBL2_PROGRAMMER_NAME} = "fip/fip-<TYPE>${STM32MP_DEVICETREE_PROGRAMMER_SUFFIX}-<BOOTSCHEME>-<DEVICE>${FIP_ENCRYPT_SUFFIX}${FIP_SIGN_SUFFIX}.bin"
-
-# Set binaries to use for each partition
-# -----------------------------------------------------------------------------
-# Use following pattern in binary name to expand to specific label config:
-#       '<CONFIG>'     (to insert label from FLASHLAYOUT_CONFIG_LABELS - NB: substitution for all '-' in label by '_')
-#       '<BOOTSCHEME>' (to insert label from FLASHLAYOUT_BOOTSCHEME_LABELS)
-#       '<DEVICE>'     (to insert label  from FLASHLAYOUT_PARTITION_DEVICE)
-#       '<TYPE>'       (to insert label  from FLASHLAYOUT_TYPE_LABELS)
-# These patterns are processed to expand binary name for each config.
-# -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
 # Use the 'FLASHLAYOUT_PARTITION_REPLACE_PATTERNS' var to allow dynamic binary
