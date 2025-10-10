@@ -20,7 +20,7 @@ autodetect_board() {
         fi
     done
     if [ -z "$board" ]; then
-        echo "Board is not a valid BOARD (stm32mp257f-dk, stm32mp257f-ev1)" > /dev/kmsg
+        echo "Board is not a valid BOARD ($LIST)" > /dev/kmsg
         exit 0
     fi
 }
