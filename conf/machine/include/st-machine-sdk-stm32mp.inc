@@ -58,7 +58,14 @@ ST_TOOLS_FOR_SDK:append = " \
 # For support of python module for tf-m
 ST_TOOLS_FOR_SDK:append = " \
     nativesdk-python3-pyyaml \
+    nativesdk-python3-cbor2 \
+    nativesdk-python3-click \
+    nativesdk-python3-pyasn1 \
+    nativesdk-python3-imgtool \
+    nativesdk-python3-jinja2 \
+    nativesdk-python3-pyelftools \
     nativesdk-ninja \
+    nativesdk-python3-pycryptodomex \
 "
 
 # For support of string convertion (iconv) in SDK
