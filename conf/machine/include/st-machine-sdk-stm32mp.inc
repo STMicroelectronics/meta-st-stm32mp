@@ -9,6 +9,7 @@ ST_TOOLS_FOR_SDK = " \
     nativesdk-sdcard-raw-tools \
     nativesdk-ncurses-libncursesw \
     nativesdk-perf \
+    nativesdk-gdb-stm32mp-addons \
     "
 
 # Add tools to build native application with SDK

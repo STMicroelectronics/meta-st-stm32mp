@@ -280,6 +280,9 @@ EXTRA_IMAGEDEPENDS:append = " \
     stm32wrapper4dbg-native \
     sdcard-raw-tools-native \
     "
+MACHINE_EXTRA_RRECOMMENDS:append = " \
+    gdb-stm32mp-addons \
+"
 
 # =========================================================================
 # Signing configuration
