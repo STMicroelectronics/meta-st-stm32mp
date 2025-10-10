@@ -8,6 +8,7 @@ PROVIDES += "u-boot"
 RPROVIDES:${PN} += "u-boot"
 
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
+PACKAGE_ARCH:stm32mpcommon = "${MACHINE_ARCH}"
 
 # ---------------------------------
 # Configure archiver use

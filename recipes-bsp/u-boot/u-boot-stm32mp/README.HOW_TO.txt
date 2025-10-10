@@ -3,9 +3,11 @@ Compilation of U-Boot:
 2. Initialize cross-compilation via SDK
 3. Prepare U-Boot source code
 4. Manage of U-Boot source code with GIT
-5. Compile U-Boot source code
-6. Update software on board
-7. Update starter package with U-Boot compilation outputs
+5. Enable support for fastboot support (optional)
+6. Compile U-Boot source code
+7. Update software on board
+8. Update starter package with U-Boot compilation outputs
+9. Example of compilation usage
 
 ----------------
 1. Pre-requisite
@@ -54,7 +56,7 @@ In the U-Boot source directory (sources/*/##BP##-##PR##),
 you have one U-Boot source tarball, the patches and one Makefile:
    - ##BP##-##PR##.tar.xz
    - 00*.patch
-   - Makefile.sdk
+   - Makefile.sdk.##MACHINE##
 
 If you would like to have a git management for the source code move to
 to section 4 [Management of U-Boot source code with GIT].
@@ -66,7 +68,7 @@ tarball now and apply the patch:
     $> cd ##BP##
     $> for p in `ls -1 ../*.patch`; do patch -p1 < $p; done
 
-You can now move to section 5 [Compile U-Boot source code].
+You can now move to section 5 [Enable support for fastboot support].
 
 -------------------------------------
 4. Manage U-Boot source code with GIT
@@ -105,99 +107,12 @@ or
     $ git checkout -b WORKING ##ARCHIVER_COMMUNITY_REVISION##
     $ for p in `ls -1 <path to patch>/*.patch`; do git am $p; done
 
------------------------------
-5. Compile U-Boot source code
------------------------------
-To compile U-Boot source code, first move to U-Boot source:
-    $ cd ##BP##
-    or
-    $ cd u-boot
-
-5.1 Compilation for one target
-------------------------------
-To use the external device tree feature, EXTDT_DIR variable must be set to the root location of external DT
-as specified in the README.HOW_TO.txt of external-dt
-    $> export EXTDT_DIR=<external DT location>
-and add the following parameter to make command:
-    "EXT_DTS=$EXTDT_DIR/u-boot"
-
-    STM32MP15 series is selected by defconfig: stm32mp15_defconfig
-    STM32MP13 series is selected by defconfig: stm32mp13_defconfig
-    STM32MP25 series is selected by defconfig: stm32mp25_defconfig
-    Board is selected by the device tree name to use
-
-    see <U-Boot source>/doc/board/st/stm32mp1.rst for details
-
-    $ make <target>_defconfig
-    $ make DEVICE_TREE=<device tree> all
-    or for external DT usage:
-    $ make DEVICE_TREE=<device tree> all EXT_DTS=$EXTDT_DIR/u-boot
-
-    example:
-
-    a) trusted boot on STM32MP157F-EV1
-      $ make stm32mp15_defconfig
-      $ make DEVICE_TREE=stm32mp157f-ev1 all
-
-    b) trusted boot on STM32MP135F-DK
-      $ make stm32mp13_defconfig
-      $ make DEVICE_TREE=stm32mp135f-dk all
-
-    c) trusted boot on STM32MP257F-EV1
-      $ make stm32mp25_defconfig
-      $ make DEVICE_TREE=stm32mp257f-ev1 all
-
-    d) trusted boot on STM32MP257F-EV1 with external DT
-      $ make stm32mp25_defconfig
-      $ make DEVICE_TREE=stm32mp257f-ev1-ca35tdcid-ostl all EXT_DTS=$EXTDT_DIR/u-boot
-
-
-    then u-boot.dtb and u-boot-nodtb.bin can be added in the an existing FIP file with:
-      $ fiptool --verbose update \
-      --nt-fw u-boot-nodtb.bin \
-      --hw-config u-boot.dtb \
-      <FIP.bin>
-
-    or used to create a FIP, see command in TF-A readme.
-
-    warning: 'fiptool update' is not possible for signed FIP
-
-* Configure on a dedicated build directory
-    Here for example, build directory is located at the same level of U-Boot
-    source code
-    $ cd <directory to U-Boot source code>
-    $ export OUTPUT_BUILD_DIR=$PWD/../build
-    $ mkdir -p ${OUTPUT_BUILD_DIR}
-
-    Then to compile, add O="${OUTPUT_BUILD_DIR}" to the command line
-    $ make O="${OUTPUT_BUILD_DIR}" stm32mp25_defconfig
-    $ make O="${OUTPUT_BUILD_DIR}" DEVICE_TREE=stm32mp257f-ev1 all
-
-5.2 Compilation for several targets: use Makefile.sdk (with FIP)
-----------------------------------------------------------------
-Since OpenSTLinux activates FIP by default, FIP_artifacts directory path must be specified before launching compilation
-  - In case of using SOURCES-xxxx.tar.gz of Developer package the FIP_DEPLOYDIR_ROOT must be set as below:
-    $> export FIP_DEPLOYDIR_ROOT=$PWD/../../FIP_artifacts
-
-The build results for this component are available in DEPLOYDIR (Default: $PWD/../deploy).
-If needed, this deploy directory can be specified by adding "DEPLOYDIR=<your_deploy_dir_path>" compilation option to the build command line below.
-The generated FIP images are available in $FIP_DEPLOYDIR_ROOT/fip
-
-To list U-Boot source code compilation configurations:
-    $ make -f $PWD/../Makefile.sdk help
-To compile U-Boot source code:
-    $ make -f $PWD/../Makefile.sdk all
-To compile U-Boot source code for a specific config:
-  - Compile default U-Boot configuration but applying specific devicetree(s):
-    $ make -f $PWD/../Makefile.sdk DEVICE_TREE="<devicetree1> <devicetree2>" all
-  - Compile for a specific U-Boot configuration:
-    $ make -f $PWD/../Makefile.sdk UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp15_defconfig UBOOT_BINARY=u-boot.dtb DEVICE_TREE=stm32mp157f-dk2 all
-To compile U-Boot source code and overwrite the default FIP artifacts with built artifacts:
-    $> rm -rf $FIP_DEPLOYDIR_ROOT/u-boot/*
-    $> make -f $PWD/../Makefile.sdk DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot all
-
-5.3 Compilation with support for fastboot support
 -------------------------------------------------
+5. Enable support for fastboot support (optional)
+-------------------------------------------------
+If you want to use default U-Boot support,
+then you can move to section 6 [Compile U-Boot source code].
+
 Fastboot is a feature in U-Boot which can improve a lot the speed of binary downloading.
 Fastboot is, for the moment, only supported on SD-Card and eMMC. And only one mode is
 supported at a given time. It means that if your U-Boot supports fastboot on SD-Card
@@ -214,15 +129,86 @@ into the right defconfig:
   - fastboot on eMMC for stm32mp13:
     $ cat $PWD/../fragment-05-fastboot_mmc1.fb_cfg >> configs/stm32mp13_defconfig
 
-Then build U-Boot as explained in chapter 5.
+Then build U-Boot as explained in chapter 6.
+
+-----------------------------
+6. Compile U-Boot source code
+-----------------------------
+According to your needs, there are 2 propositions to generate U-Boot artifacts:
+
+6.1 Updating Starter Package artifacts
+----------------------------------------
+If not already done, extract the artifacts from Starter Package tarball, for example:
+    $ tar xf en.FLASH-##MACHINE##-*.tar.xz
+Move to Starter Package root folder,
+    $ cd <your_starter_package_dir_path>
+Cleanup Starter Package from original U-Boot artifacts first
+    $ rm -rf images/##MACHINE##/u-boot/*
+    $ rm -rf images/##MACHINE##/fip/*
+Configure the DEPLOYDIR path to Starter Package U-Boot artifacts folder
+    $ export DEPLOYDIR=<your_starter_package_dir_path>/images/##MACHINE##/u-boot
+Since OpenSTLinux activates FIP by default, FIP_artifacts directory path must be specified before launching compilation
+    $ export FIP_DEPLOYDIR_ROOT=<your_starter_package_dir_path>/images/##MACHINE##
+
+You can now move to section 6.3 [Generating U-Boot artifacts].
+
+6.2 Creating your own bootloader artifacts (development use case)
+-------------------------------------------------------------------
+With this configuration you will need to generate one by one all bootloader artifacts first before being able to generate
+the FIP artifacts. And for that you need to share the same root folder for all bootloader compilation under Developer Package
+Since OpenSTLinux activates FIP by default, FIP_artifacts directory path must be specified before launching compilation
+    $> export FIP_DEPLOYDIR_ROOT=<bootloader artifacts location>
+Make sure to configure then the DEPLOYDIR path accordingly:
+    $> export DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot
+
+You can now move to section 6.3 [Generating U-Boot artifacts].
+
+6.3 Generating U-Boot artifacts
+-------------------------------
+To use the external device tree feature, EXTDT_DIR variable must be set to the root location of external DT
+as specified in the README.HOW_TO.txt of external-dt
+    $> export EXTDT_DIR=<external DT location>
+
+To list U-Boot source code compilation configurations:
+    $ cd <directory to U-Boot source code>
+    $ make -f $PWD/../Makefile.sdk.##MACHINE## help
+
+There are different targets for U-Boot compilation:
+
+- Generate U-Boot binaries
+  Using default configuration, you just need to launch the 'uboot' target:
+    $ make -f $PWD/../Makefile.sdk.##MACHINE## clean
+    $ make -f $PWD/../Makefile.sdk.##MACHINE## uboot
+  Example below to compile for a specific U-Boot configuration:
+    $ make -f $PWD/../Makefile.sdk.##MACHINE## UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp15_defconfig UBOOT_BINARY=u-boot.dtb DEVICE_TREE=stm32mp157f-dk2 clean
+    $ make -f $PWD/../Makefile.sdk.##MACHINE## UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp15_defconfig UBOOT_BINARY=u-boot.dtb DEVICE_TREE=stm32mp157f-dk2 uboot
+  The build results for this component are available in <DEPLOYDIR>.
+
+- Generate FIP binaires
+  Make sure to have all bootloader binaries (TF-A, U-Boot and optee-os) available in <FIP_DEPLOYDIR_ROOT> folder before launching the build
+  Using default configuration, you just need to launch the 'fip' target:
+    $ make -f $PWD/../Makefile.sdk.##MACHINE## fip
+  Example below to compile for a specific U-Boot configuration:
+    $ make -f $PWD/../Makefile.sdk.##MACHINE## UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp15_defconfig UBOOT_BINARY=u-boot.dtb DEVICE_TREE=stm32mp157f-dk2 fip
+  The build results for this component are available in <FIP_DEPLOYDIR_ROOT>/fip
+
+- Generate all U-Boot artifacts in a row
+  Make sure to have all other bootloader binaries (TF-A and optee-os) available in <FIP_DEPLOYDIR_ROOT> folder before launching the build
+  Using default configuration, you just need to launch the 'fip' target:
+    $> make -f $PWD/../Makefile.sdk.##MACHINE## clean
+    $> make -f $PWD/../Makefile.sdk.##MACHINE## all
+  Example below to compile for a specific U-Boot configuration:
+    $ make -f $PWD/../Makefile.sdk.##MACHINE## UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp15_defconfig UBOOT_BINARY=u-boot.dtb DEVICE_TREE=stm32mp157f-dk2 clean
+    $ make -f $PWD/../Makefile.sdk.##MACHINE## UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp15_defconfig UBOOT_BINARY=u-boot.dtb DEVICE_TREE=stm32mp157f-dk2 all
+  The build results for this component are available in <DEPLOYDIR> and <FIP_DEPLOYDIR_ROOT>/fip
 
 ---------------------------
-6. Update software on board
+7. Update software on board
 ---------------------------
 Please use STM32CubeProgrammer and only tick the ssbl-boot and fip partition (more informations on the wiki website http://wiki.st.com/stm32mpu)
 
 ---------------------------
-7. Generate new Starter Package with U-Boot compilation outputs
+8. Generate new Starter Package with U-Boot compilation outputs
 ---------------------------
 If not already done, extract the artifacts from Starter Package tarball, for example:
     # tar xf en.FLASH-stm32mp*-*.tar.xz
@@ -235,3 +221,86 @@ Update Starter Package with new fip artifacts from <FIP_DEPLOYDIR_ROOT>/fip fold
     #> cp -rvf $FIP_DEPLOYDIR_ROOT/fip/* images/stm32mp*/fip/
 
 Then the new Starter Package is ready to use for "Image flashing" on board (more information on wiki website https://wiki.st.com/stm32mpu).
+
+-------------------------------
+9. Example of compilation usage
+-------------------------------
+    $@E> cd ##BP##-##PR##
+    $@E> tar xf ##BP##-##PR##.tar.xz
+    $@E> cd ##BP##
+    $@E> for p in `ls -1 ../*.patch`; do patch -p1 < $p; done
+    $@S> export FIP_DEPLOYDIR_ROOT=<your_deploy_dir_path>
+    $ cd ..
+    $ cd ..
+    $@P> cd ##BP##-##PR##
+    $@P> cd ##BP##
+
+##CASE_stm32mp1##    "your_board_name" is like stm32mp157f-dk2 or stm32mp135f-mx-mycustomboard
+##CASE_stm32mp1##    "your_soc_name" is like stm32mp15 or stm32mp13
+##CASE_stm32mp1##    For runtime binaries
+##CASE_stm32mp1##    $@C> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=<uboot_defconfig> DEVICE_TREE=<your_board_name> EXTDT_DIR=<externaldt_path> EXTDT_DIR_UBOOT=<externaldt_uboot_path> uboot
+##CASE_stm32mp1##    For flashing binaries
+##CASE_stm32mp1##    $@PC> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=<uboot_defconfig> DEVICE_TREE=<your_board_name> EXTDT_DIR=<externaldt_path> EXTDT_DIR_UBOOT_SERIAL=<externaldt_uboot_path> uboot
+##CASE_stm32mp1##    Example with external dt:
+##CASE_stm32mp1##      Example for runtime binaries
+##CASE_stm32mp1##        $MP15> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp15_defconfig DEVICE_TREE=stm32mp157f-dk2 EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT=ca7-td/u-boot uboot
+##CASE_stm32mp1##        $MP13> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp13_defconfig DEVICE_TREE=stm32mp135f-dk  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT=ca7-td/u-boot uboot
+##CASE_stm32mp1##      Example for flashing binaries
+##CASE_stm32mp1##        $MP15> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp15_defconfig DEVICE_TREE=stm32mp157f-dk2 EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT_SERIAL=ca7-td/u-boot uboot
+##CASE_stm32mp1##        $MP13> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp13_defconfig DEVICE_TREE=stm32mp135f-dk  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT_SERIAL=ca7-td/u-boot uboot
+##CASE_stm32mp1##    Example with CubeMx devicetree:
+##CASE_stm32mp1##      Example for runtime binaries
+##CASE_stm32mp1##        $MP13> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp15_defconfig DEVICE_TREE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT=DeviceTree/<your_cubemx_project_name>/u-boot uboot
+##CASE_stm32mp1##        $MP15> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp13_defconfig DEVICE_TREE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT=CA7/DeviceTree/<your_cubemx_project_name>/u-boot uboot
+##CASE_stm32mp1##      Example for flashing binaries
+##CASE_stm32mp1##        $MP13> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp13_defconfig DEVICE_TREE=<your_CUBE_MX_board_name>  EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT_SERIAL=DeviceTree/<your_cubemx_project_name>/u-boot uboot
+##CASE_stm32mp1##        $MP15> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp13_defconfig DEVICE_TREE=<your_CUBE_MX_board_name>  EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT_SERIAL=CA7/DeviceTree/<your_cubemx_project_name>/u-boot uboot
+##CASE_stm32mp2##    "your_board_name" is like stm32mp257f-dk or stm32mp215f-mx-mycustomboard
+##CASE_stm32mp2##    "your_soc_name" is like stm32mp25 or stm32mp23 or stm32mp21
+##CASE_stm32mp2##    For runtime binaries
+##CASE_stm32mp2##    $@C> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=<uboot_defconfig> DEVICE_TREE=<your_board_name> EXTDT_DIR=<externaldt_path> EXTDT_DIR_UBOOT=<externaldt_uboot_path> uboot
+##CASE_stm32mp2##    For flashing binaries
+##CASE_stm32mp2##    $@PC> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=<uboot_defconfig> DEVICE_TREE=<your_board_name> EXTDT_DIR=<externaldt_path> EXTDT_DIR_UBOOT=<externaldt_uboot_path> uboot
+##CASE_stm32mp2##    Example with external dt:
+##CASE_stm32mp2##      Example for runtime binaries
+##CASE_stm32mp2##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp21_defconfig DEVICE_TREE=stm32mp215f-dk  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT=ca35-td/u-boot uboot
+##CASE_stm32mp2##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp23_defconfig DEVICE_TREE=stm32mp235f-dk  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT=ca35-td/u-boot uboot
+##CASE_stm32mp2##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp25_defconfig DEVICE_TREE=stm32mp257f-ev1 EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT=ca35-td/u-boot uboot
+##CASE_stm32mp2##      Example for flashing binaries
+##CASE_stm32mp2##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp21_defconfig DEVICE_TREE=stm32mp215f-dk  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT_SERIAL=ca35-td/u-boot uboot
+##CASE_stm32mp2##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp23_defconfig DEVICE_TREE=stm32mp235f-dk  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT_SERIAL=ca35-td/u-boot uboot
+##CASE_stm32mp2##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp25_defconfig DEVICE_TREE=stm32mp257f-ev1 EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT_SERIAL=ca35-td/u-boot uboot
+##CASE_stm32mp2##    Example with CubeMx devicetree:
+##CASE_stm32mp2##      Example for runtime binaries
+##CASE_stm32mp2##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp21_defconfig DEVICE_TREE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT=CA35/DeviceTree/<your_cubemx_project_name>/u-boot uboot
+##CASE_stm32mp2##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp23_defconfig DEVICE_TREE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT=CA35/DeviceTree/<your_cubemx_project_name>/u-boot uboot
+##CASE_stm32mp2##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp25_defconfig DEVICE_TREE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT=CA35/DeviceTree/<your_cubemx_project_name>/u-boot uboot
+##CASE_stm32mp2##      Example for flashing binaries
+##CASE_stm32mp2##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp21_defconfig DEVICE_TREE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT_SERIAL=CA35/DeviceTree/<your_cubemx_project_name>/u-boot uboot
+##CASE_stm32mp2##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp23_defconfig DEVICE_TREE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT_SERIAL=CA35/DeviceTree/<your_cubemx_project_name>/u-boot uboot
+##CASE_stm32mp2##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp25_defconfig DEVICE_TREE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT_SERIAL=CA35/DeviceTree/<your_cubemx_project_name>/u-boot uboot
+##CASE_stm32mp2-m33td##    "your_board_name" is like stm32mp257f-dk or stm32mp215f-mx-mycustomboard
+##CASE_stm32mp2-m33td##    "your_soc_name" is like stm32mp25 or stm32mp23 or stm32mp21
+##CASE_stm32mp2-m33td##    For runtime binaries
+##CASE_stm32mp2-m33td##    $@C> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=<uboot_defconfig> DEVICE_TREE=<uboot_dt_name> EXTDT_DIR=<externaldt_path> EXTDT_DIR_UBOOT=<externaldt_uboot_path> uboot
+##CASE_stm32mp2-m33td##    For flashing binaries
+##CASE_stm32mp2-m33td##    $@PC> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=<uboot_defconfig> DEVICE_TREE=<uboot_programmer_dt_name> EXTDT_DIR=<externaldt_path> EXTDT_DIR_UBOOT_SERIAL=<externaldt_uboot_programmer_path> uboot
+##CASE_stm32mp2-m33td##    Example with external dt:
+##CASE_stm32mp2-m33td##      Example for runtime binaries
+##CASE_stm32mp2-m33td##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp21_defconfig DEVICE_TREE=stm32mp215f-dk-cm33tdcid-ostl-sdcard  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT=cm33-td/u-boot uboot
+##CASE_stm32mp2-m33td##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp23_defconfig DEVICE_TREE=stm32mp235f-dk-cm33tdcid-ostl-sdcard  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT=cm33-td/u-boot uboot
+##CASE_stm32mp2-m33td##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp25_defconfig DEVICE_TREE=stm32mp257f-ev1-cm33tdcid-ostl-emmc EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT=cm33-td/u-boot uboot
+##CASE_stm32mp2-m33td##      Example for flashing binaries
+##CASE_stm32mp2-m33td##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp21_defconfig DEVICE_TREE=stm32mp235f-dk-cm33tdcid-ostl-serial-ca35tdcid  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT_SERIAL=cm33-td/u-boot uboot
+##CASE_stm32mp2-m33td##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp23_defconfig DEVICE_TREE=stm32mp215f-dk-cm33tdcid-ostl-serial-ca35tdcid  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT_SERIAL=cm33-td/u-boot uboot
+##CASE_stm32mp2-m33td##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp25_defconfig DEVICE_TREE=stm32mp257f-ev1-cm33tdcid-ostl-serial-ca35tdcid EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_UBOOT_SERIAL=cm33-td/u-boot uboot
+##CASE_stm32mp2-m33td##    Example with CubeMx devicetree:
+##CASE_stm32mp2-m33td##      Example for runtime binaries
+##CASE_stm32mp2-m33td##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp21_defconfig DEVICE_TREE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT=CA35/DeviceTree/<your_cubemx_project_name>/u-boot uboot
+##CASE_stm32mp2-m33td##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp23_defconfig DEVICE_TREE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT=CA35/DeviceTree/<your_cubemx_project_name>/u-boot uboot
+##CASE_stm32mp2-m33td##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=default UBOOT_DEFCONFIG=stm32mp25_defconfig DEVICE_TREE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT=CA35/DeviceTree/<your_cubemx_project_name>/u-boot uboot
+##CASE_stm32mp2-m33td##      Example for flashing binaries
+##CASE_stm32mp2-m33td##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp21_defconfig DEVICE_TREE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT_SERIAL=ExtMemLoader/DeviceTree/<your_cubemx_project_name>/u-boot uboot
+##CASE_stm32mp2-m33td##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp23_defconfig DEVICE_TREE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT_SERIAL=ExtMemLoader/DeviceTree/<your_cubemx_project_name>/u-boot uboot
+##CASE_stm32mp2-m33td##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/u-boot UBOOT_CONFIG=programmer UBOOT_DEFCONFIG=stm32mp25_defconfig DEVICE_TREE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_UBOOT_SERIAL=ExtMemLoader/DeviceTree/<your_cubemx_project_name>/u-boot uboot
+

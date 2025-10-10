@@ -6,7 +6,7 @@ PACKAGES += "${PN}-mkfwumdata"
 
 inherit python3native
 DEPENDS += "swig-native gnutls util-linux openssl"
-export STAGING_INCDIR="${STAGING_INCDIR_NATIVE}"
+export STAGING_INCDIR = "${STAGING_INCDIR_NATIVE}"
 
 EXTRA_OEMAKE:class-target = 'CROSS_COMPILE="${TARGET_PREFIX}" CC="${CC} ${CFLAGS} ${LDFLAGS}" HOSTCC="${BUILD_CC} ${BUILD_CFLAGS} ${BUILD_LDFLAGS}" STRIP=true V=1'
 EXTRA_OEMAKE:class-native = 'CC="${BUILD_CC} ${BUILD_CFLAGS} ${BUILD_LDFLAGS}" HOSTCC="${BUILD_CC} ${BUILD_CFLAGS} ${BUILD_LDFLAGS}" STRIP=true V=1'
