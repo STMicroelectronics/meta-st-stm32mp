@@ -51,3 +51,17 @@ FWDDR_DIR variable to your shell environement:
 Nothing to do, stm32mp-ddr-phy is directly used by other component.
 
     #> echo "*** Nothing to test ***"
+
+----------------------------
+5. Example of compilation usage
+----------------------------
+    $@E> cd ##BP##-##PR##
+    $@E> tar xf ##BP##-##PR##.tar.xz
+    $@E> cd ##BP##
+
+    $ cd ..
+    $ cd ..
+    $@P> cd ##BP##-##PR##
+    $@P> cd ##BP##
+    $@S> cd ..
+    $@S> export FWDDR_DIR=$PWD/##BP##
