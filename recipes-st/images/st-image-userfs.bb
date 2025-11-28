@@ -20,3 +20,5 @@ PACKAGE_INSTALL += " \
 PACKAGE_INSTALL += " \
     packagegroup-st-demo \
     "
+
+IMAGE_FSTYPES = "ext4"

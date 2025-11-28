@@ -24,3 +24,5 @@ INITRD_PACKAGE ?= ""
 PACKAGE_INSTALL += " \
     ${@bb.utils.contains('MACHINE_FEATURES', 'initrd', '${INITRD_PACKAGE}', '', d)} \
 "
+
+IMAGE_FSTYPES = "ext4"
