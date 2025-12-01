@@ -1,9 +1,15 @@
 SUMMARY = "Linux STM32MP Kernel"
 SECTION = "kernel"
-LICENSE = "GPL-2.0-only"
-LIC_FILES_CHKSUM = "file://COPYING;md5=6bc538ed5bd9a7fc9398086aedcd7e46"
+LICENSE = "GPL-2.0-with-Linux-syscall-note"
+LIC_FILES_CHKSUM = " \
+    file://COPYING;md5=6bc538ed5bd9a7fc9398086aedcd7e46 \
+    file://LICENSES/preferred/GPL-2.0;md5=e6a75371ba4d16749254a51215d13f97 \
+    file://LICENSES/exceptions/Linux-syscall-note;md5=6b0dff741019b948dfe290c05d6f361c \
+    "
 
 include linux-stm32mp.inc
+
+CVE_PRODUCT = "linux_kernel linux:linux"
 
 LINUX_VERSION = "6.6"
 LINUX_SUBVERSION = ".78"
