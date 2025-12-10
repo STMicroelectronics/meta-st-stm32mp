@@ -210,7 +210,8 @@ export_binaries() {
                                     # Prepare original binary for signature
                                     cp -f ${B}/${config}/u-boot-${devicetree}-${type_suffix}.${binarysuffix} ${dest}/u-boot-${devicetree}-${type_suffix}-without-signature.${binarysuffix}
                                     # Sign dummy image images in order to add the image signing keys to our dtb
-                                    ${UBOOT_MKIMAGE_SIGN} \
+                                    if [ "${FIT_SIGN_INDIVIDUAL}" = "1" ] ; then
+                                        ${UBOOT_MKIMAGE_SIGN} \
                                             ${@'-D "${UBOOT_MKIMAGE_DTCOPTS}"' if len('${UBOOT_MKIMAGE_DTCOPTS}') else ''} \
                                             -f auto \
                                             -k "${UBOOT_SIGN_KEYDIR}" \
@@ -220,13 +221,14 @@ export_binaries() {
                                             -d /dev/null \
                                             ${UBOOT_MKIMAGE_SIGN_ARGS} \
                                             -r ${B}/${config}/unused.itb
+                                    fi
                                     # Sign dummy image configurations in order to add the configuration signing keys to our dtb
                                     ${UBOOT_MKIMAGE_SIGN} \
                                             ${@'-D "${UBOOT_MKIMAGE_DTCOPTS}"' if len('${UBOOT_MKIMAGE_DTCOPTS}') else ''} \
                                             -f auto-conf \
                                             -k "${UBOOT_SIGN_KEYDIR}" \
                                             -o "${FIT_HASH_ALG},${FIT_SIGN_ALG}" \
-                                            -g "${UBOOT_SIGN_IMG_KEYNAME}" \
+                                            -g "${UBOOT_SIGN_KEYNAME}" \
                                             -K "${B}/${config}/u-boot-${devicetree}-${type_suffix}.${binarysuffix}" \
                                             -d /dev/null \
                                             ${UBOOT_MKIMAGE_SIGN_ARGS} \
@@ -246,6 +248,8 @@ export_binaries() {
         done
     fi
 }
+
+do_uboot_assemble_fitimage[noexec] = "1"
 
 do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}${FIP_DIR_UBOOT}"
 do_deploy() {
