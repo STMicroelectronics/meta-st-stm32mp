@@ -133,6 +133,11 @@ correct_buildpaths() {
     done
 }
 do_install:append() {
+    # Workaround fitImage build limitations in Yocto scarthgap
+    if [ "${KERNEL_IMAGETYPE}" = 'fitImage' ] && [ ! -e ${KERNEL_OUTPUT_DIR}/${KERNEL_IMAGETYPE} ]; then
+        ln -sf ${KERNEL_IMAGETYPE}-none ${KERNEL_OUTPUT_DIR}/${KERNEL_IMAGETYPE}
+    fi
+
     # Install KERNEL_IMAGETYPE for kernel-imagebootfs package
     install -m 0644 ${KERNEL_OUTPUT_DIR}/${KERNEL_IMAGETYPE} ${D}/${KERNEL_IMAGEDEST}
 
