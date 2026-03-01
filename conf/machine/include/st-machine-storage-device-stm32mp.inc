@@ -83,6 +83,10 @@ DEVICE_START_OFFSET_BOOT1:EMMC ?= "boot2"
 
 # Configure the rootfs partition uid used in gpt partition table for EMMC
 DEVICE_PARTUUID_ROOTFS:EMMC ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS:${DEVICE:EMMC}')) or ''}"
+DEVICE_PARTUUID_BOOTFS_A:EMMC ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_BOOTFS_A:${DEVICE:EMMC}')) or ''}"
+DEVICE_PARTUUID_BOOTFS_B:EMMC ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_BOOTFS_B:${DEVICE:EMMC}')) or ''}"
+DEVICE_PARTUUID_ROOTFS_A:EMMC ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS_A:${DEVICE:EMMC}')) or ''}"
+DEVICE_PARTUUID_ROOTFS_B:EMMC ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS_B:${DEVICE:EMMC}')) or ''}"
 
 # -----------------------------------------------------------------------------
 # NAND
@@ -113,6 +117,10 @@ DEVICE_ALIGNMENT_SIZE:SDCARD  ?= "0x00000200"
 
 # Configure the rootfs partition uid used in gpt partition table for SDCARD
 DEVICE_PARTUUID_ROOTFS:SDCARD ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS:${DEVICE:SDCARD}')) or ''}"
+DEVICE_PARTUUID_BOOTFS_A:SDCARD ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_BOOTFS_A:${DEVICE:SDCARD}')) or ''}"
+DEVICE_PARTUUID_BOOTFS_B:SDCARD ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_BOOTFS_B:${DEVICE:SDCARD}')) or ''}"
+DEVICE_PARTUUID_ROOTFS_A:SDCARD ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS_A:${DEVICE:SDCARD}')) or ''}"
+DEVICE_PARTUUID_ROOTFS_B:SDCARD ?= "${@d.getVar(d.expand('DEVICE_PARTUUID_ROOTFS_B:${DEVICE:SDCARD}')) or ''}"
 
 # -----------------------------------------------------------------------------
 # SPI NAND
@@ -137,3 +145,18 @@ DEVICE_TYPEUUID_FWU_MDATA = "8a7a84a0-8387-40f6-ab41-a8b9a5a60d23"
 DEVICE_PARTUUID_FWU_MDATA_A = "5f91c128-e120-48d7-bb64-9fa9aed4c7e3"
 DEVICE_PARTUUID_FWU_MDATA_B = "f469f981-5985-4206-8fb3-839956035a65"
 DEVICE_TYPEUUID_UBOOT_ENV = "3de21764-95bd-54bd-a5c3-4abe786f38a8"
+DEVICE_TYPEUUID_BOOTFS = "bc13c2ff-59e6-4262-a352-b275fd6f7172"
+DEVICE_TYPEUUID_ROOTFS = "0fc63daf-8483-4772-8e79-3d69d8477de4"
+
+# -----------------------------------------------------------------------------
+# Fixed configuration for dual bank update
+# -----------------------------------------------------------------------------
+DEVICE_PARTUUID_BOOTFS_A:mmc0 ?= "c9b01b31-b604-4c2a-95b4-e23ab45fd0c5"
+DEVICE_PARTUUID_BOOTFS_B:mmc0 ?= "67a73cea-322c-42c0-b477-6ef0039fefed"
+DEVICE_PARTUUID_ROOTFS_A:mmc0 ?= "${DEVICE_PARTUUID_ROOTFS:mmc0}"
+DEVICE_PARTUUID_ROOTFS_B:mmc0 ?= "360db83f-c038-4e10-ae79-1dce8846d2f0"
+
+DEVICE_PARTUUID_BOOTFS_A:mmc1 ?= "0ef36fac-9ba4-4e39-823a-bbb2336c32be"
+DEVICE_PARTUUID_BOOTFS_B:mmc1 ?= "f2c429f5-9000-4201-aa0f-96a95ea8d9f9"
+DEVICE_PARTUUID_ROOTFS_A:mmc1 ?= "${DEVICE_PARTUUID_ROOTFS:mmc1}"
+DEVICE_PARTUUID_ROOTFS_B:mmc1 ?= "6e01295a-8f81-47d5-945c-cb144ae7500c"
