@@ -80,6 +80,19 @@ MACHINE_FEATURES:append = " fip"
 # Enable firmware secure update feature
 MACHINE_FEATURES:append = " fw-update"
 
+# Optional A/B firmware update feature.
+# Uncomment to enable support for bootfs-a/b and rootfs-a/b partitions
+# required for atomic system updates.
+# Requires "fw-update".
+#MACHINE_FEATURES:append = " fw-update-ab"
+
+python () {
+    features = (d.getVar("MACHINE_FEATURES") or "").split()
+
+    if "fw-update-ab" in features and "fw-update" not in features:
+        bb.fatal("MACHINE_FEATURES 'fw-update-ab' requires 'fw-update'")
+}
+
 # Default serial consoles (TTYs) to enable using getty
 # Before kernel 4.18, serial console are ttyS3 but after is ttySTM0
 SERIAL_CONSOLE = "115200 ttySTM0"
