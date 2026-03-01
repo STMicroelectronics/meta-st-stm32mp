@@ -25,6 +25,13 @@ SRC_URI += "\
     file://0007-cmd-part-support-lookup-by-UUID.patch \
     file://0008-fwu-add-helper-to-get-image-GUID-by-type-and-bank-in.patch \
     file://0009-board-st-stm32mp25-support-dynamic-A-B-bank-bootup.patch \
+    file://0011-tools-gitignore-Add-mkfwumdata-to-the-git-ignore-fil.patch \
+    file://0012-tools-Reorganize-mkfwumdata-tool-into-fwumdata_src-d.patch \
+    file://0013-tools-mkfwumdata-Improve-error-message-specificity.patch \
+    file://0014-tools-mkfwumdata-Add-bank-count-validation-for-FWU-m.patch \
+    file://0015-tools-Add-support-for-fwumdata-tool.patch \
+    file://0016-tools-mkfwumdata-Remove-dependency-on-fwu_mdata.h-he.patch \
+    file://0017-tools-build-fwumdata-with-tools-only_defconfig.patch \
     "
 
 # debug and trace

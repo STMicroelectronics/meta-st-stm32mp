@@ -2,7 +2,7 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/u-boot-stm32mp:"
 
 require u-boot-stm32mp-common_2023.10.inc
 
-PACKAGES += "${PN}-mkfwumdata"
+PACKAGES += "${PN}-mkfwumdata ${PN}-fwumdata"
 
 inherit python3native
 DEPENDS += "swig-native gnutls util-linux openssl"
@@ -53,12 +53,15 @@ do_install() {
 
 	# mkimage
 	install -m 0755 tools/mkfwumdata ${D}${bindir}/
+	# fwumdata
+	install -m 0755 tools/fwumdata ${D}${bindir}/
 }
 
 ALLOW_EMPTY:${PN} = "1"
 FILES:${PN} = ""
 FILES:${PN}-mkfwumdata = "${bindir}/mkfwumdata"
+FILES:${PN}-fwumdata = "${bindir}/fwumdata"
 
-RDEPENDS:${PN} += "${PN}-mkfwumdata"
+RDEPENDS:${PN} += "${PN}-mkfwumdata ${PN}-fwumdata"
 
 BBCLASSEXTEND = "native nativesdk"
