@@ -1,0 +1,229 @@
+From 35760a325dc18af30f010c62b5c076f81c694998 Mon Sep 17 00:00:00 2001
+From: Simon Glass <sjg@chromium.org>
+Date: Thu, 24 Aug 2023 13:55:31 -0600
+Subject: [PATCH] part: Add accessors for struct disk_partition uuid
+
+This field is only present when a CONFIG is set. To avoid annoying #ifdefs
+in the source code, add accessors. Update all code to use it.
+
+Note that the accessor is optional. It can be omitted if it is known that
+the option is enabled.
+
+Signed-off-by: Simon Glass <sjg@chromium.org>
+Signed-off-by: Dario Binacchi <dario.binacchi@amarulasolutions.com>
+Upstream-Status: Backport [https://source.denx.de/u-boot/u-boot/-/commit/c5f1d005f51783a5b34d6164ab66289eb1f4a45b]
+---
+ cmd/gpt.c       | 10 ++++------
+ disk/part.c     |  8 ++------
+ disk/part_dos.c | 17 ++++++++---------
+ disk/part_efi.c | 31 ++++++++++++++++---------------
+ fs/fat/fat.c    |  4 +---
+ include/part.h  | 27 +++++++++++++++++++++++++++
+ 6 files changed, 58 insertions(+), 39 deletions(-)
+
+diff --git a/cmd/gpt.c b/cmd/gpt.c
+index fe9e06681ce2..3cc6436b28b0 100644
+--- a/cmd/gpt.c
++++ b/cmd/gpt.c
+@@ -211,12 +211,10 @@ static struct disk_part *allocate_disk_part(struct disk_partition *info,
+ 		PART_TYPE_LEN);
+ 	newpart->gpt_part_info.type[PART_TYPE_LEN - 1] = '\0';
+ 	newpart->gpt_part_info.bootable = info->bootable;
+-#ifdef CONFIG_PARTITION_UUIDS
+-	strncpy(newpart->gpt_part_info.uuid, (const char *)info->uuid,
+-		UUID_STR_LEN);
+-	/* UUID_STR_LEN is correct, as uuid[]'s length is UUID_STR_LEN+1 chars */
+-	newpart->gpt_part_info.uuid[UUID_STR_LEN] = '\0';
+-#endif
++	if (IS_ENABLED(CONFIG_PARTITION_UUIDS)) {
++		strlcpy(newpart->gpt_part_info.uuid, disk_partition_uuid(info),
++			UUID_STR_LEN + 1);
++	}
+ 	newpart->partnum = partnum;
+ 
+ 	return newpart;
+diff --git a/disk/part.c b/disk/part.c
+index eec02f58988d..43f1d83bc7f8 100644
+--- a/disk/part.c
++++ b/disk/part.c
+@@ -341,10 +341,8 @@ int part_get_info_by_type(struct blk_desc *dev_desc, int part, int part_type,
+ 	struct part_driver *drv;
+ 
+ 	if (blk_enabled()) {
+-#if CONFIG_IS_ENABLED(PARTITION_UUIDS)
+ 		/* The common case is no UUID support */
+-		info->uuid[0] = 0;
+-#endif
++		disk_partition_clr_uuid(info);
+ #ifdef CONFIG_PARTITION_TYPE_GUID
+ 		info->type_guid[0] = 0;
+ #endif
+@@ -389,9 +387,7 @@ int part_get_info_whole_disk(struct blk_desc *dev_desc,
+ 	info->bootable = 0;
+ 	strcpy((char *)info->type, BOOT_PART_TYPE);
+ 	strcpy((char *)info->name, "Whole Disk");
+-#if CONFIG_IS_ENABLED(PARTITION_UUIDS)
+-	info->uuid[0] = 0;
+-#endif
++	disk_partition_clr_uuid(info);
+ #ifdef CONFIG_PARTITION_TYPE_GUID
+ 	info->type_guid[0] = 0;
+ #endif
+diff --git a/disk/part_dos.c b/disk/part_dos.c
+index 56e61884deff..2fa0fbe0fd05 100644
+--- a/disk/part_dos.c
++++ b/disk/part_dos.c
+@@ -231,10 +231,8 @@ static int part_get_info_extended(struct blk_desc *dev_desc,
+ 		return -1;
+ 	}
+ 
+-#if CONFIG_IS_ENABLED(PARTITION_UUIDS)
+-	if (!ext_part_sector)
++	if (CONFIG_IS_ENABLED(PARTITION_UUIDS) && !ext_part_sector)
+ 		disksig = get_unaligned_le32(&buffer[DOS_PART_DISKSIG_OFFSET]);
+-#endif
+ 
+ 	/* Print all primary/logical partitions */
+ 	pt = (dos_partition_t *) (buffer + DOS_PART_TBL_OFFSET);
+@@ -256,9 +254,12 @@ static int part_get_info_extended(struct blk_desc *dev_desc,
+ 			/* sprintf(info->type, "%d, pt->sys_ind); */
+ 			strcpy((char *)info->type, "U-Boot");
+ 			info->bootable = get_bootable(pt);
+-#if CONFIG_IS_ENABLED(PARTITION_UUIDS)
+-			sprintf(info->uuid, "%08x-%02x", disksig, part_num);
+-#endif
++			if (CONFIG_IS_ENABLED(PARTITION_UUIDS)) {
++				char str[12];
++
++				sprintf(str, "%08x-%02x", disksig, part_num);
++				disk_partition_set_uuid(info, str);
++			}
+ 			info->sys_ind = pt->sys_ind;
+ 			return 0;
+ 		}
+@@ -292,9 +293,7 @@ static int part_get_info_extended(struct blk_desc *dev_desc,
+ 		info->blksz = DOS_PART_DEFAULT_SECTOR;
+ 		info->bootable = 0;
+ 		strcpy((char *)info->type, "U-Boot");
+-#if CONFIG_IS_ENABLED(PARTITION_UUIDS)
+-		info->uuid[0] = 0;
+-#endif
++		disk_partition_clr_uuid(info);
+ 		return 0;
+ 	}
+ 
+diff --git a/disk/part_efi.c b/disk/part_efi.c
+index 80a44dc9f072..cec8399d4f75 100644
+--- a/disk/part_efi.c
++++ b/disk/part_efi.c
+@@ -289,10 +289,11 @@ int part_get_info_efi(struct blk_desc *dev_desc, int part,
+ 		 print_efiname(&gpt_pte[part - 1]));
+ 	strcpy((char *)info->type, "U-Boot");
+ 	info->bootable = get_bootable(&gpt_pte[part - 1]);
+-#if CONFIG_IS_ENABLED(PARTITION_UUIDS)
+-	uuid_bin_to_str(gpt_pte[part - 1].unique_partition_guid.b, info->uuid,
+-			UUID_STR_FORMAT_GUID);
+-#endif
++	if (CONFIG_IS_ENABLED(PARTITION_UUIDS)) {
++		uuid_bin_to_str(gpt_pte[part - 1].unique_partition_guid.b,
++				(char *)disk_partition_uuid(info),
++				UUID_STR_FORMAT_GUID);
++	}
+ #ifdef CONFIG_PARTITION_TYPE_GUID
+ 	uuid_bin_to_str(gpt_pte[part - 1].partition_type_guid.b,
+ 			info->type_guid, UUID_STR_FORMAT_GUID);
+@@ -416,10 +417,7 @@ int gpt_fill_pte(struct blk_desc *dev_desc,
+ 			le64_to_cpu(gpt_h->last_usable_lba);
+ 	int i, k;
+ 	size_t efiname_len, dosname_len;
+-#if CONFIG_IS_ENABLED(PARTITION_UUIDS)
+-	char *str_uuid;
+ 	unsigned char *bin_uuid;
+-#endif
+ #ifdef CONFIG_PARTITION_TYPE_GUID
+ 	char *str_type_guid;
+ 	unsigned char *bin_type_guid;
+@@ -488,16 +486,19 @@ int gpt_fill_pte(struct blk_desc *dev_desc,
+ 			&partition_basic_data_guid, 16);
+ #endif
+ 
+-#if CONFIG_IS_ENABLED(PARTITION_UUIDS)
+-		str_uuid = partitions[i].uuid;
+-		bin_uuid = gpt_e[i].unique_partition_guid.b;
++		if (CONFIG_IS_ENABLED(PARTITION_UUIDS)) {
++			const char *str_uuid;
++
++			str_uuid = disk_partition_uuid(&partitions[i]);
++			bin_uuid = gpt_e[i].unique_partition_guid.b;
+ 
+-		if (uuid_str_to_bin(str_uuid, bin_uuid, UUID_STR_FORMAT_GUID)) {
+-			log_debug("Partition no. %d: invalid guid: %s\n",
+-				  i, str_uuid);
+-			return -EINVAL;
++			if (uuid_str_to_bin(str_uuid, bin_uuid,
++					    UUID_STR_FORMAT_GUID)) {
++				log_debug("Partition no. %d: invalid guid: %s\n",
++					  i, str_uuid);
++				return -EINVAL;
++			}
+ 		}
+-#endif
+ 
+ 		/* partition attributes */
+ 		memset(&gpt_e[i].attributes, 0,
+diff --git a/fs/fat/fat.c b/fs/fat/fat.c
+index d1476aa433d6..8ff1fd0ec835 100644
+--- a/fs/fat/fat.c
++++ b/fs/fat/fat.c
+@@ -110,9 +110,7 @@ int fat_register_device(struct blk_desc *dev_desc, int part_no)
+ 		info.name[0] = 0;
+ 		info.type[0] = 0;
+ 		info.bootable = 0;
+-#if CONFIG_IS_ENABLED(PARTITION_UUIDS)
+-		info.uuid[0] = 0;
+-#endif
++		disk_partition_clr_uuid(&info);
+ 	}
+ 
+ 	return fat_set_blk_dev(dev_desc, &info);
+diff --git a/include/part.h b/include/part.h
+index 8e451bbdff94..9c7ec4d90fa2 100644
+--- a/include/part.h
++++ b/include/part.h
+@@ -80,6 +80,33 @@ struct disk_partition {
+ #endif
+ };
+ 
++/* Accessors for struct disk_partition field ->uuid */
++extern char *__invalid_use_of_disk_partition_uuid;
++
++static inline const char *disk_partition_uuid(const struct disk_partition *info)
++{
++#if CONFIG_IS_ENABLED(PARTITION_UUIDS)
++	return info->uuid;
++#else
++	return __invalid_use_of_disk_partition_uuid;
++#endif
++}
++
++static inline void disk_partition_set_uuid(struct disk_partition *info,
++					   const char *val)
++{
++#if CONFIG_IS_ENABLED(PARTITION_UUIDS)
++	strlcpy(info->uuid, val, UUID_STR_LEN + 1);
++#endif
++}
++
++static inline void disk_partition_clr_uuid(struct disk_partition *info)
++{
++#if CONFIG_IS_ENABLED(PARTITION_UUIDS)
++	*info->uuid = '\0';
++#endif
++}
++
+ struct disk_part {
+ 	int partnum;
+ 	struct disk_partition gpt_part_info;
+-- 
+2.43.0
+

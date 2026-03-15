@@ -1,0 +1,109 @@
+From 76ae90009cf76b1bfe172a37a7574417c3de4507 Mon Sep 17 00:00:00 2001
+From: Varadarajan Narayanan <quic_varada@quicinc.com>
+Date: Tue, 13 May 2025 14:47:06 +0530
+Subject: [PATCH] disk: part: implement generic function
+ part_get_info_by_uuid()
+
+Add function to search for a partition by UUID as partition
+names may not be unique.
+
+Signed-off-by: Varadarajan Narayanan <quic_varada@quicinc.com>
+Acked-by: Casey Connolly <casey.connolly@linaro.org>
+Signed-off-by: Dario Binacchi <dario.binacchi@amarulasolutions.com>
+Upstream-Status: Backport [https://source.denx.de/u-boot/u-boot/-/commit/43fd4bcefd4ea5e586e201a0908018d1e8395c82]
+---
+ disk/part.c    | 39 +++++++++++++++++++++++++++++++++++++++
+ include/part.h | 20 ++++++++++++++++++++
+ 2 files changed, 59 insertions(+)
+
+diff --git a/disk/part.c b/disk/part.c
+index 43f1d83bc7f8..950a342602b3 100644
+--- a/disk/part.c
++++ b/disk/part.c
+@@ -700,6 +700,45 @@ int part_get_info_by_name(struct blk_desc *dev_desc, const char *name,
+ 	return -ENOENT;
+ }
+ 
++int part_get_info_by_uuid(struct blk_desc *desc, const char *uuid,
++			  struct disk_partition *info)
++{
++	struct part_driver *part_drv;
++	int ret;
++	int i;
++
++	if (!CONFIG_IS_ENABLED(PARTITION_UUIDS))
++		return -ENOENT;
++
++	part_drv = part_driver_lookup_type(desc);
++	if (!part_drv)
++		return -1;
++
++	if (!part_drv->get_info) {
++		log_debug("## Driver %s does not have the get_info() method\n",
++			  part_drv->name);
++		return -ENOSYS;
++	}
++
++	for (i = 1; i < part_drv->max_entries; i++) {
++		ret = part_drv->get_info(desc, i, info);
++		if (ret != 0) {
++			/*
++			 * Partition with this index can't be obtained, but
++			 * further partitions might be, so keep checking.
++			 */
++			continue;
++		}
++
++		if (!strncasecmp(uuid, disk_partition_uuid(info), UUID_STR_LEN)) {
++			/* matched */
++			return i;
++		}
++	}
++
++	return -ENOENT;
++}
++
+ /**
+  * Get partition info from device number and partition name.
+  *
+diff --git a/include/part.h b/include/part.h
+index 9c7ec4d90fa2..7ad5b3048c3a 100644
+--- a/include/part.h
++++ b/include/part.h
+@@ -249,6 +249,20 @@ int blk_get_device_part_str(const char *ifname, const char *dev_part_str,
+ int part_get_info_by_name(struct blk_desc *dev_desc,
+ 			      const char *name, struct disk_partition *info);
+ 
++/**
++ * part_get_info_by_uuid() - Search for a partition by uuid
++ *                           among all available registered partitions
++ *
++ * @desc:	block device descriptor
++ * @uuid:	the specified table entry uuid
++ * @info:	the disk partition info
++ *
++ * Return: the partition number on match (starting on 1), -ENOENT on no match,
++ * otherwise error
++ */
++int part_get_info_by_uuid(struct blk_desc *desc, const char *uuid,
++			  struct disk_partition *info);
++
+ /**
+  * part_get_info_by_dev_and_name_or_num() - Get partition info from dev number
+  *					    and part name, or dev number and
+@@ -321,6 +335,12 @@ static inline int part_get_info_by_name(struct blk_desc *dev_desc,
+ 	return -ENOENT;
+ }
+ 
++static inline int part_get_info_by_uuid(struct blk_desc *desc, const char *uuid,
++					struct disk_partition *info)
++{
++	return -ENOENT;
++}
++
+ static inline int
+ part_get_info_by_dev_and_name_or_num(const char *dev_iface,
+ 				     const char *dev_part_str,
+-- 
+2.43.0
+
