@@ -14,6 +14,10 @@ SRCREV = "a07367a19a09d3c6c426446dd408d7e522ac068b"
 
 SRC_URI += " \
     file://0001-v2.10-stm32mp-r3.1.patch \
+    file://0002-feat-st-add-extended-bootloader-GUID.patch \
+    file://0003-feat-st-add-Linux-data-partition-GUID.patch \
+    file://0004-feat-st-add-STM32MP_PSA_FWU_AB_SUPPORT-build-flag.patch \
+    file://0005-feat-st-enable-A-B-redundancy-support.patch \
      "
 
 TF_A_VERSION = "v2.10"

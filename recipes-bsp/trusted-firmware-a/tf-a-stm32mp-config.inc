@@ -108,6 +108,7 @@ python () {
 #                          "
 #
 TF_A_CONFIG_OPTS_fwupdate ?= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', 'PSA_FWU_SUPPORT=1', '', d)}"
+TF_A_CONFIG_OPTS_fwupdate += "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update-ab', 'STM32MP_PSA_FWU_AB_SUPPORT=1', '', d)}"
 TF_A_CONFIG_OPTS_features ?= "${@bb.utils.contains('MACHINE_FEATURES', 'm33td', 'STM32MP_M33_TDCID=1', '', d)}"
 TF_A_CONFIG_OPTS_optee    ?= "${@bb.utils.contains('TUNE_FEATURES', 'aarch64', 'SPD=opteed', 'AARCH32_SP=optee', d)}"
 
