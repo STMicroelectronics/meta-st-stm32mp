@@ -20,4 +20,3 @@ PACKAGECONFIG:stm32mp2common = " \
     etnaviv \
     kmsro \
     "
-
