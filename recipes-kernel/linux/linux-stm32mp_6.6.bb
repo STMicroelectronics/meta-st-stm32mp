@@ -20,6 +20,7 @@ SRC_URI[kernel.sha256sum] = "caa08f0122224fbbfab177e2a37cc2a94a0046bd2e7e87f03f8
 
 SRC_URI += " \
     file://${LINUX_VERSION}/${LINUX_VERSION}${LINUX_SUBVERSION}/0001-v6.6-stm32mp-r3.1.patch \
+    file://${LINUX_VERSION}/${LINUX_VERSION}${LINUX_SUBVERSION}/0002-arm64-dts-st-add-MMC-aliases-on-stm32mp257f-ev1.patch \
     "
 
 LINUX_TARGET = "stm32mp"
