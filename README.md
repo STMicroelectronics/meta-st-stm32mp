@@ -9,7 +9,7 @@ Bitbake and OpenEmbedded-Core layers or Poky layer all part of the Yocto Project
 The Yocto Project has extensive documentation about OE including a reference manual
 which can be found at:
 
- * **http://yoctoproject.org/documentation**
+ * **https://docs.yoctoproject.org/**
 
 For information about OpenEmbedded, see the OpenEmbedded website:
 
