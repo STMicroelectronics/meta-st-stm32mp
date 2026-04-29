@@ -15,6 +15,7 @@ SRC_URI = " \
     file://system-generator-alsa-conf   \
     \
     file://alsa-state-stm32mp.service \
+    file://alsa-state-stm32mp.init \
     "
 
 S = "${UNPACKDIR}"
@@ -23,22 +24,22 @@ COMPATIBLE_MACHINE = "(stm32mpcommon)"
 RDEPENDS:${PN} = "alsa-state"
 
 do_install() {
+    install -d ${D}${bindir}
+    if [ -f ${UNPACKDIR}/system-generator-alsa-states ]; then
+        install -m 0755 ${UNPACKDIR}/system-generator-alsa-states ${D}${bindir}
+    fi
+    if [ -f ${UNPACKDIR}/system-generator-alsa-conf ]; then
+        install -m 0755 ${UNPACKDIR}/system-generator-alsa-conf ${D}${bindir}
+    fi
+
     # Enable systemd automatic selection
     if ${@bb.utils.contains('DISTRO_FEATURES','systemd','true','false',d)}; then
-        install -d ${D}${bindir}
-        if [ -f ${UNPACKDIR}/system-generator-alsa-states ]; then
-            install -m 0755 ${UNPACKDIR}/system-generator-alsa-states ${D}${bindir}
-        fi
-        if [ -f ${UNPACKDIR}/system-generator-alsa-conf ]; then
-            install -m 0755 ${UNPACKDIR}/system-generator-alsa-conf ${D}${bindir}
-        fi
-
         install -d ${D}${systemd_unitdir}/system
         install -m 644 ${UNPACKDIR}/alsa-state-stm32mp.service ${D}/${systemd_unitdir}/system
     else
         # sysVinit
-        install -d ${D}${sysconfdir}
-        touch ${D}${sysconfdir}/no-alsa-state-service
+        install -d ${D}${sysconfdir}/init.d
+        install -m 0755 ${UNPACKDIR}/alsa-state-stm32mp.init ${D}${sysconfdir}/init.d/alsa-state-stm32mp
     fi
 }
 
@@ -50,3 +51,7 @@ inherit systemd
 SYSTEMD_PACKAGES += " ${PN} "
 SYSTEMD_SERVICE:${PN} = "alsa-state-stm32mp.service"
 SYSTEMD_AUTO_ENABLE:${PN} = "enable"
+
+inherit update-rc.d
+INITSCRIPT_NAME = "alsa-state-stm32mp"
+INITSCRIPT_PARAMS = "start 22 5 3 ."
