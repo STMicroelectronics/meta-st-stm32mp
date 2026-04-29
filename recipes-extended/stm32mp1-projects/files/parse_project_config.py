@@ -94,9 +94,9 @@ for i in root.iter('link'):
 
             # Format locationURI value
             if re.search(r'\$\%7BPARENT-.-PROJECT_LOC\%7D', temp):
-                temp = re.sub('\$\%7BPARENT-(.)-PROJECT_LOC\%7D', r'PARENT-\1-PROJECT_LOC', temp)
+                temp = re.sub(r'\$\%7BPARENT-(.)-PROJECT_LOC\%7D', r'PARENT-\1-PROJECT_LOC', temp)
             elif re.search(r'\$\%7BPROJECT_LOC\%7D', temp):
-                temp = re.sub('\$\%7BPROJECT_LOC\%7D', r'PROJECT_LOC', temp)
+                temp = re.sub(r'\$\%7BPROJECT_LOC\%7D', r'PROJECT_LOC', temp)
 
             temp=temp.replace("PARENT-0-PROJECT_LOC/", "./")
             temp=temp.replace("PARENT-1-PROJECT_LOC/", "../")
@@ -132,7 +132,7 @@ for j in root.iter('configuration'):
                     if temp != "":
                         temp=temp.replace("\\","/")
                         # New workaround to override value when configured with ${workspace_loc:/${ProjName}/xxx}
-                        temp = re.sub('\$\{[^:]*:/\$\{[^\}]*\}([^\}]*)\}', r'..\1', temp)
+                        temp = re.sub(r'\$\{[^:]*:/\$\{[^\}]*\}([^\}]*)\}', r'..\1', temp)
                         #workaround remove first occurence of "../"
                         temp=temp.replace("../", "",1)
                         temp=fullpath(temp)
@@ -149,7 +149,7 @@ for j in root.iter('configuration'):
             if a == 'com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.script':
                 temp=i.get('value')
                 # New workaround to override value when configured with ${workspace_loc:/${ProjName}/xxx}
-                temp = re.sub('\$\{[^:]*:/\$\{[^\}]*\}([^\}]*)\}', r'..\1', temp)
+                temp = re.sub(r'\$\{[^:]*:/\$\{[^\}]*\}([^\}]*)\}', r'..\1', temp)
                 temp=temp.replace("../", "",1)
                 temp=fullpath(temp)
                 #print(temp)

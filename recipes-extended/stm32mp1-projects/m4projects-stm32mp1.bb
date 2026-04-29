@@ -7,7 +7,7 @@ SRCREV  = "525d2499658d817a9e669eb17e66390906954895"
 
 PV = "1.7.0"
 
-require recipes-extended/m4projects/m4projects.inc
+require recipes-extended/stm32mp1-projects/m4projects.inc
 
 PROJECTS_LIST_EV1 = " \
 	STM32MP157C-EV1/Examples/ADC/ADC_SingleConversion_TriggerTimer_DMA \

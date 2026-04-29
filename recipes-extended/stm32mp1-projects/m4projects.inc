@@ -20,10 +20,6 @@ SRC_URI += "file://shutdown-stm32mp1-m4.sh"
 
 DEPENDS += " gcc-arm-none-eabi-native "
 
-# Create specific userfs package
-M4_PACKAGE_4USERFS ?= "1"
-PACKAGES += "${@bb.utils.contains('M4_PACKAGE_4USERFS', '1', '${PN}-userfs', '', d)}"
-
 # Define default board reference for M4
 M4_BOARDS ?= "STM32MP157C-EV1 STM32MP157C-DK2"
 
@@ -38,7 +34,7 @@ BUILD_CONFIG ?= "Debug"
 # Init default installation path
 M4_FOLDER ?= "Cube-M4-examples"
 M4_INSTALLDIR ?= "${prefix}/local"
-M4_OUTPUT_4USERFS = "${M4_INSTALLDIR}/${M4_FOLDER}"
+M4_OUTPUT = "${M4_INSTALLDIR}/${M4_FOLDER}"
 
 # Use gcc bare toolchain
 EXTRA_OEMAKE += "CROSS_COMPILE=${RECIPE_SYSROOT_NATIVE}${datadir}/gcc-arm-none-eabi/bin/arm-none-eabi-"
@@ -94,15 +90,15 @@ do_install() {
                 BIN_NAME=$(basename ${project})
 
                 # Install M4 firmwares
-                install -d ${D}${M4_OUTPUT_4USERFS}/${project}/lib/firmware/
-                install -m 0755 ${B}/${project}/out/${BUILD_CONFIG}/${BIN_NAME}.elf ${D}${M4_OUTPUT_4USERFS}/${project}/lib/firmware/
+                install -d ${D}${M4_OUTPUT}/${project}/lib/firmware/
+                install -m 0755 ${B}/${project}/out/${BUILD_CONFIG}/${BIN_NAME}.elf ${D}${M4_OUTPUT}/${project}/lib/firmware/
 
                 # Install sh and README files if any for each example
                 if [ -e ${S}/Projects/${project}/Remoteproc/fw_cortex_m4.sh ]; then
-                    install -m 0755 ${S}/Projects/${project}/Remoteproc/fw_cortex_m4.sh ${D}${M4_OUTPUT_4USERFS}/${project}
+                    install -m 0755 ${S}/Projects/${project}/Remoteproc/fw_cortex_m4.sh ${D}${M4_OUTPUT}/${project}
                 fi
                 if [ -e ${S}/Projects/${project}/Remoteproc/README ]; then
-                    install -m 0755 ${S}/Projects/${project}/Remoteproc/README ${D}${M4_OUTPUT_4USERFS}/${project}
+                    install -m 0755 ${S}/Projects/${project}/Remoteproc/README ${D}${M4_OUTPUT}/${project}
                 fi
             fi
         done
@@ -123,9 +119,9 @@ do_install() {
             sed -i -e "s:@default_fw@:${DEFAULT_COPRO_FIRMWARE}:" \
             ${D}${base_sbindir}/st-m4firmware-load-default.sh
 
-            sed -i -e "s:@userfs_mount_point@:${M4_OUTPUT_4USERFS}:" \
+            sed -i -e "s:@userfs_mount_point@:${M4_OUTPUT}:" \
             ${D}${sysconfdir}/init.d/st-m4firmware-load-default.sh
-            sed -i -e "s:@userfs_mount_point@:${M4_OUTPUT_4USERFS}:" \
+            sed -i -e "s:@userfs_mount_point@:${M4_OUTPUT}:" \
             ${D}${base_sbindir}/st-m4firmware-load-default.sh
         fi
 
@@ -154,11 +150,9 @@ INHIBIT_SYSROOT_STRIP = "1"
 
 FILES:${PN} += "${nonarch_base_libdir}/firmware ${sysconfdir}/init.d ${systemd_unitdir}/system ${systemd_unitdir}/system-shutdown"
 # Configure package split
-FILES:${PN} += "${@bb.utils.contains('M4_PACKAGE_4USERFS', '1', '', '${M4_OUTPUT_4USERFS}', d)}"
-FILES:${PN}-userfs = "${@bb.utils.contains('M4_PACKAGE_4USERFS', '1', '${M4_OUTPUT_4USERFS}', '', d)}"
-RDEPENDS:${PN}-userfs += "busybox"
+FILES:${PN} += "${M4_OUTPUT}"
+RDEPENDS:${PN} += "busybox"
 
 # ---------------------------------------------------------------------
 # Avoid QA Issue: contains reference to TMPDIR [buildpaths]
 INSANE_SKIP:${PN} += "buildpaths"
-INSANE_SKIP:${PN}-userfs += "buildpaths"
