@@ -83,7 +83,7 @@ UBOOT_EXTLINUX_KERNEL_IMAGE ?= "/${KERNEL_IMAGETYPE}"
 UBOOT_EXTLINUX_KERNEL_ARGS ?= "rootwait rw"
 UBOOT_EXTLINUX_TIMEOUT ?= "20"
 
-def create_extlinux_file(cfile, labels, data):
+def create_extlinux_file(cfile, labels, config, data):
     """
     Copy/Paste extract of 'do_create_extlinux_config()' function
     from openembedded-core 'uboot-extlinux-config.bbclass' class
@@ -99,11 +99,13 @@ def create_extlinux_file(cfile, labels, data):
             if len(labels.split()) > 1:
                 cfgfile.write('menu title Select the boot mode\n')
 
+            machine_features = localdata.getVar('MACHINE_FEATURES')
             splashscreen_name = localdata.getVar('UBOOT_EXTLINUX_SPLASH')
-            if not splashscreen_name:
-                bb.warn('UBOOT_EXTLINUX_SPLASH not defined')
-            else:
-                cfgfile.write('MENU BACKGROUND /%s.bmp\n' % (splashscreen_name))
+            if 'splashscreen' in machine_features:
+                if not splashscreen_name:
+                    bb.warn('UBOOT_EXTLINUX_SPLASH not defined')
+                else:
+                    cfgfile.write('MENU BACKGROUND /%s.bmp\n' % (splashscreen_name))
 
             timeout =  localdata.getVar('UBOOT_EXTLINUX_TIMEOUT')
             if timeout:
@@ -162,6 +164,10 @@ def create_extlinux_file(cfile, labels, data):
                     cfgfile.write('LABEL %s\n\tKERNEL %s\n' % (menu_description, kernel_image))
 
                 kernel_args = localdata.getVar('UBOOT_EXTLINUX_KERNEL_ARGS')
+                if config:
+                    kernel_args_config = localdata.getVar('UBOOT_EXTLINUX_KERNEL_ADDONS_ARGS:%s' % config)
+                    if kernel_args_config:
+                        kernel_args = "{} {}".format(kernel_args, kernel_args_config)
 
                 fdtoverlay = localdata.getVar('UBOOT_EXTLINUX_FDTOVERLAYS')
                 if fdtoverlay:
@@ -229,7 +235,7 @@ python do_create_multiextlinux_config() {
             bb.note("UBOOT_EXTLINUX_FIT set to '1'. Skip standard extlinux file creation")
         else:
             bb.note("Create %s/extlinux.conf file for %s labels" % (subdir, labels))
-            create_extlinux_file(cfile, labels, d)
+            create_extlinux_file(cfile, labels, None, d)
 
         # Manage UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG
         extra_extlinuxtargetconfigflag = d.getVarFlags('UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG')
@@ -284,7 +290,7 @@ python do_create_multiextlinux_config() {
                                     bb.note(">>> Set UBOOT_EXTLINUX_SPLASH to %s" % splash)
                                     d.setVar('UBOOT_EXTLINUX_SPLASH', splash)
                     bb.note(">>> Create %s/%s_extlinux.conf file for %s labels" % (subdir, config, extra_extlinuxlabels))
-                    create_extlinux_file(extra_cfile, extra_extlinuxlabels, d)
+                    create_extlinux_file(extra_cfile, extra_extlinuxlabels, config, d)
 }
 addtask create_multiextlinux_config before do_compile after do_unpack
 
