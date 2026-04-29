@@ -153,8 +153,8 @@ There are different targets for optee-os compilation:
 
 - Generate optee-os binaries
   Using default configuration, you just need to launch the 'optee' target:
-    $ make -f $PWD/../Makefile.sdk.##MACHINE## clean
-    $ make -f $PWD/../Makefile.sdk.##MACHINE## optee
+    $> make -f $PWD/../Makefile.sdk.##MACHINE## clean
+    $> make -f $PWD/../Makefile.sdk.##MACHINE## optee
   Example below for a specific config:
     $ make -f $PWD/../Makefile.sdk.##MACHINE## CFG_EMBED_DTB_SOURCE_FILE=stm32mp157c-ev1 clean
     $ make -f $PWD/../Makefile.sdk.##MACHINE## CFG_EMBED_DTB_SOURCE_FILE=stm32mp157c-ev1 optee
@@ -163,20 +163,10 @@ There are different targets for optee-os compilation:
 - Generate FIP binaires
   Make sure to have all bootloader binaries (TF-A, U-Boot and optee-os) available in <FIP_DEPLOYDIR_ROOT> folder before launching the build
   Using default configuration, you just need to launch the 'fip' target:
-    $ make -f $PWD/../Makefile.sdk.##MACHINE## fip
+    $> make -f $PWD/../Makefile.sdk.##MACHINE## fip
   Example below for a specific config:
     $ make -f $PWD/../Makefile.sdk.##MACHINE## CFG_EMBED_DTB_SOURCE_FILE=stm32mp157c-ev1 fip
   The build results for this component are available in <FIP_DEPLOYDIR_ROOT>/fip
-
-- Generate all optee-os artifacts in a row
-  Make sure to have all other bootloader binaries (TF-A and U-Boot) available in <FIP_DEPLOYDIR_ROOT> folder before launching the build
-  Using default configuration, you just need to launch the 'all' target:
-    $> make -f $PWD/../Makefile.sdk.##MACHINE## clean
-    $> make -f $PWD/../Makefile.sdk.##MACHINE## all
-  Example below for a specific config:
-    $ make -f $PWD/../Makefile.sdk.##MACHINE## CFG_EMBED_DTB_SOURCE_FILE=stm32mp157c-ev1 clean
-    $ make -f $PWD/../Makefile.sdk.##MACHINE## CFG_EMBED_DTB_SOURCE_FILE=stm32mp157c-ev1 all
-  The build results for this component are available in <DEPLOYDIR> and <FIP_DEPLOYDIR_ROOT>/fip
 
 ---------------------------
 6. Update software on board
@@ -220,11 +210,11 @@ Then the new Starter Package is ready to use for "Image flashing" on board (more
 ##CASE_stm32mp1##    $@PC> make -f $PWD/../Makefile.sdk.stm32mp1 OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=<your_board_name> DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee EXTDT_DIR=<externaldt_path> EXTDT_DIR_OPTEE_SERIAL=<externaldt_optee_path> optee
 ##CASE_stm32mp1##    Example with external dt:
 ##CASE_stm32mp1##      Example for runtime binaries
-##CASE_stm32mp1##        $MP13> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee    CFG_EMBED_DTB_SOURCE_FILE=stm32mp135f-dk  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=ca7-td/optee optee
-##CASE_stm32mp1##        $MP15> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=opteemin CFG_EMBED_DTB_SOURCE_FILE=stm32mp157f-ev1 EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=ca7-td/optee optee
+##CASE_stm32mp1##        $MP13> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee    CFG_EMBED_DTB_SOURCE_FILE=stm32mp135f-dk  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=stm32mp1/optee optee
+##CASE_stm32mp1##        $MP15> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=opteemin CFG_EMBED_DTB_SOURCE_FILE=stm32mp157f-ev1 EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=stm32mp1/optee optee
 ##CASE_stm32mp1##      Example for flashing binaries
-##CASE_stm32mp1##        $MP13> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer    CFG_EMBED_DTB_SOURCE_FILE=stm32mp135f-dk  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=ca7-td/optee optee
-##CASE_stm32mp1##        $MP15> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=opteemin-programmer CFG_EMBED_DTB_SOURCE_FILE=stm32mp157f-ev1 EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=ca7-td/optee optee
+##CASE_stm32mp1##        $MP13> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer    CFG_EMBED_DTB_SOURCE_FILE=stm32mp135f-dk  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=stm32mp1/optee optee
+##CASE_stm32mp1##        $MP15> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=opteemin-programmer CFG_EMBED_DTB_SOURCE_FILE=stm32mp157f-ev1 EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=stm32mp1/optee optee
 ##CASE_stm32mp1##    Example with CubeMx devicetree:
 ##CASE_stm32mp1##      Example for runtime binaries
 ##CASE_stm32mp1##        $MP1x> make -f $PWD/../Makefile.sdk.stm32mp1 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee    CFG_EMBED_DTB_SOURCE_FILE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_OPTEE=CA7/DeviceTree/<your_cubemx_project_name>/optee optee
@@ -242,13 +232,13 @@ Then the new Starter Package is ready to use for "Image flashing" on board (more
 ##CASE_stm32mp2##    $ make -f $PWD/../Makefile.sdk.stm32mp2 OPTEE_CONFIG=optee TA32_64=1 CFG_EMBED_DTB_SOURCE_FILE=<your_board_name> DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee optee
 ##CASE_stm32mp2##    Example with external dt:
 ##CASE_stm32mp2##      Example for runtime binaries
-##CASE_stm32mp2##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee CFG_EMBED_DTB_SOURCE_FILE=stm32mp215-dk   EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=ca35-td/optee optee
-##CASE_stm32mp2##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee CFG_EMBED_DTB_SOURCE_FILE=stm32mp235f-dk  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=ca35-td/optee optee
-##CASE_stm32mp2##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee CFG_EMBED_DTB_SOURCE_FILE=stm32mp257f-ev1 EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=ca35-td/optee optee
+##CASE_stm32mp2##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee CFG_EMBED_DTB_SOURCE_FILE=stm32mp215-dk   EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=stm32mp2/a35-td/optee optee
+##CASE_stm32mp2##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee CFG_EMBED_DTB_SOURCE_FILE=stm32mp235f-dk  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=stm32mp2/a35-td/optee optee
+##CASE_stm32mp2##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee CFG_EMBED_DTB_SOURCE_FILE=stm32mp257f-ev1 EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=stm32mp2/a35-td/optee optee
 ##CASE_stm32mp2##      Example for flashing binaries
-##CASE_stm32mp2##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=stm32mp215-dk   EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=ca35-td/optee optee
-##CASE_stm32mp2##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=stm32mp235f-dk  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=ca35-td/optee optee
-##CASE_stm32mp2##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=stm32mp257f-ev1 EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=ca35-td/optee optee
+##CASE_stm32mp2##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=stm32mp215-dk   EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=stm32mp2/a35-td/optee optee
+##CASE_stm32mp2##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=stm32mp235f-dk  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=stm32mp2/a35-td/optee optee
+##CASE_stm32mp2##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=stm32mp257f-ev1 EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=stm32mp2/a35-td/optee optee
 ##CASE_stm32mp2##    Example with CubeMx devicetree:
 ##CASE_stm32mp2##      Example for runtime binaries
 ##CASE_stm32mp2##        $MP2x> make -f $PWD/../Makefile.sdk.stm32mp2 DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee CFG_EMBED_DTB_SOURCE_FILE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_OPTEE=CA35/DeviceTree/<your_cubemx_project_name>/optee optee
@@ -261,16 +251,16 @@ Then the new Starter Package is ready to use for "Image flashing" on board (more
 ##CASE_stm32mp2-m33td##    $@PC> make -f $PWD/../Makefile.sdk.stm32mp2-m33td OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=<optee_dt_programmer_name> EXTDT_DIR=<externaldt_path> EXTDT_DIR_OPTEE_SERIAL=<externaldt_optee_programmer_path> DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee optee
 ##CASE_stm32mp2-m33td##    Example with external dt:
 ##CASE_stm32mp2-m33td##      Example for runtime binaries
-##CASE_stm32mp2-m33td##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee CFG_EMBED_DTB_SOURCE_FILE=stm32mp215-dk-cm33tdcid-ostl-sdcard   EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=cm33-td/optee optee
-##CASE_stm32mp2-m33td##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee CFG_EMBED_DTB_SOURCE_FILE=stm32mp235f-dk-cm33tdcid-ostl-sdcard  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=cm33-td/optee optee
-##CASE_stm32mp2-m33td##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee CFG_EMBED_DTB_SOURCE_FILE=stm32mp257f-ev1-cm33tdcid-ostl-emmc   EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=cm33-td/optee optee
+##CASE_stm32mp2-m33td##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee CFG_EMBED_DTB_SOURCE_FILE=stm32mp215-dk-cm33tdcid-ostl-sdcard   EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=stm32mp2/m33-td/optee optee
+##CASE_stm32mp2-m33td##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee CFG_EMBED_DTB_SOURCE_FILE=stm32mp235f-dk-cm33tdcid-ostl-sdcard  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=stm32mp2/m33-td/optee optee
+##CASE_stm32mp2-m33td##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee CFG_EMBED_DTB_SOURCE_FILE=stm32mp257f-ev1-cm33tdcid-ostl-emmc   EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE=stm32mp2/m33-td/optee optee
 ##CASE_stm32mp2-m33td##      Example for flashing binaries
-##CASE_stm32mp2-m33td##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=stm32mp215-dk-cm33tdcid-ostl-serial-ca35tdcid   EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=cm33-td/optee optee
-##CASE_stm32mp2-m33td##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=stm32mp235f-dk-cm33tdcid-ostl-serial-ca35tdcid  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=cm33-td/optee optee
-##CASE_stm32mp2-m33td##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=stm32mp257f-ev1-cm33tdcid-ostl-serial-ca35tdcid EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=cm33-td/optee optee
+##CASE_stm32mp2-m33td##        $MP21> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=stm32mp215-dk-cm33tdcid-ostl-serial-ca35tdcid   EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=stm32mp2/m33-td/optee optee
+##CASE_stm32mp2-m33td##        $MP23> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=stm32mp235f-dk-cm33tdcid-ostl-serial-ca35tdcid  EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=stm32mp2/m33-td/optee optee
+##CASE_stm32mp2-m33td##        $MP25> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=stm32mp257f-ev1-cm33tdcid-ostl-serial-ca35tdcid EXTDT_DIR=$EXTDT_DIR EXTDT_DIR_OPTEE_SERIAL=stm32mp2/m33-td/optee optee
 ##CASE_stm32mp2-m33td##    Example with CubeMx devicetree:
 ##CASE_stm32mp2-m33td##      Example for runtime binaries
 ##CASE_stm32mp2-m33td##        $MP2x> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee CFG_EMBED_DTB_SOURCE_FILE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_OPTEE=CA35/DeviceTree/<your_cubemx_project_name>/optee optee
 ##CASE_stm32mp2-m33td##      Example for flashing binaries
-##CASE_stm32mp2-m33td##        $MP2x> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_OPTEE_SERIAL=Extern/DeviceTree/<your_cubemx_project_name>/optee optee
+##CASE_stm32mp2-m33td##        $MP2x> make -f $PWD/../Makefile.sdk.stm32mp2-m33td DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=<your_CUBE_MX_board_name> EXTDT_DIR=<cubemx_output_dir> EXTDT_DIR_OPTEE_SERIAL=ExtMemLoader/DeviceTree/optee optee
 
