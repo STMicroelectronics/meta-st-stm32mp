@@ -8,18 +8,18 @@ LICENSE = "BSD-3-Clause & Apache-2.0"
 
 LIC_FILES_CHKSUM = "file://license.rst;md5=4481bae2221b0cfca76a69fb3411f390"
 
-SRC_URI = " git://git.trustedfirmware.org/TF-M/tf-m-tests.git;protocol=https;branch=main"
+SRC_URI = " git://git.trustedfirmware.org/TF-M/tf-m-tests.git;protocol=https;branch=release/2.1.x"
 
-SRCREV = "6590084040144d5a768a8134fc88def2321fcb08"
+# TF-M-TESTS version v2.1.3
+SRCREV = "852c6f74c5b7ae61e140d1a46e981f95177aa40e"
 
 SRC_URI += " \
-    file://0001-v2.1.0-stm32mp-r1.patch \
-    file://0002-TF-M-TEST-by-pass-git-version-check.patch\
+    file://0001-v2.1.3-stm32mp-r2.patch \
 "
 
-TF_M_TESTS_VERSION = "v2.1.0"
+TF_M_TESTS_VERSION = "v2.1.3"
 TF_M_TESTS_SUBVERSION = "stm32mp"
-TF_M_TESTS_RELEASE = "r1"
+TF_M_TESTS_RELEASE = "r2"
 PV = "${TF_M_TESTS_VERSION}-${TF_M_TESTS_SUBVERSION}-${TF_M_TESTS_RELEASE}"
 
 ARCHIVER_ST_BRANCH = "${TF_M_TESTS_VERSION}-${TF_M_TESTS_SUBVERSION}"
@@ -39,8 +39,8 @@ include ${@oe.utils.ifelse(d.getVar('ST_ARCHIVER_ENABLE') == '1', 'tf-m-tests-st
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
-SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/tf-m-tests.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV:class-devupstream = "9c116ec247d2bac77e7b77a85109c04f3f450056"
+SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/tf-m-tests.git;protocol=https;nobranch=1"
+SRCREV:class-devupstream = "e96069fd5c592d94f1db36cc5df602221fad3a86"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

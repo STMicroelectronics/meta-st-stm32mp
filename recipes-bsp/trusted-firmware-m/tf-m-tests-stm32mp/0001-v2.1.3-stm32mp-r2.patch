@@ -1,0 +1,2305 @@
+From 5b0777370c929e2e1e678201d26384cb810f04f8 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+Date: Tue, 24 Jun 2025 09:57:46 +0200
+Subject: [PATCH] v2.1.3-stm32mp-r2
+
+---
+Upstream-Status: Pending [specific to ST boards]
+
+ app_broker/CMakeLists.txt                     |   6 +
+ app_broker/copro_task.c                       | 149 ++++++++
+ app_broker/copro_task.h                       |  18 +
+ app_broker/main_ns.c                          |  37 +-
+ app_broker/scmi_task.c                        |  52 +++
+ app_broker/wdt_task.c                         |  86 +++++
+ app_broker/wdt_task.h                         |  13 +
+ lib/ext/CMSIS/RTOS2/RTX/Config/RTX_Config.h   |   2 +-
+ lib/nsid_manager/tfm_nsid_manager.h           |   5 +-
+ tests_reg/test/config/check_config.cmake      |   6 +
+ tests_reg/test/config/config.cmake            |  19 +
+ .../test/config/default_ns_test_config.cmake  |   6 +
+ tests_reg/test/framework/test_framework.c     |  35 +-
+ tests_reg/test/framework/test_framework.h     |  10 +
+ tests_reg/test/ns_regression/CMakeLists.txt   |   3 +
+ .../test/ns_regression/non_secure_suites.c    |  23 ++
+ .../test/secure_fw/non_secure/CMakeLists.txt  |   2 +
+ .../suites/cpu/non_secure/CMakeLists.txt      |  40 ++
+ .../non_secure/cpu_ns_interface_testsuite.c   | 346 ++++++++++++++++++
+ .../suites/cpu/non_secure/cpu_ns_tests.h      |  26 ++
+ .../suites/pm/non_secure/CMakeLists.txt       |  43 +++
+ .../pm/non_secure/pm_ns_interface_testsuite.c |  99 +++++
+ .../suites/pm/non_secure/pm_ns_tests.h        |  26 ++
+ .../secure/ps_rollback_protection_testsuite.c |   2 +
+ .../ps/secure/psa_ps_s_interface_testsuite.c  |   2 +
+ .../secure/psa_ps_s_reliability_testsuite.c   |   4 +
+ .../suites/spm/non_secure/CMakeLists.txt      |   1 +
+ .../spm/ns_evt/non_secure/CMakeLists.txt      |  39 ++
+ .../non_secure/ns_evt_interface_testsuite.c   | 254 +++++++++++++
+ .../spm/ns_evt/non_secure/ns_evt_ns_tests.h   |  27 ++
+ .../suites/spm/ns_evt/service/CMakeLists.txt  |  12 +
+ .../service/tfm_ns_evt_helper/CMakeLists.txt  |  61 +++
+ .../tfm_ns_evt_helper_test.c                  |  48 +++
+ .../tfm_ns_evt_helper_test.yaml               |  50 +++
+ .../service/tfm_ns_evt_service/CMakeLists.txt |  68 ++++
+ .../tfm_ns_evt_service_test.c                 |  56 +++
+ .../tfm_ns_evt_service_test.yaml              |  67 ++++
+ .../suites/spm/secure/CMakeLists.txt          |   1 +
+ .../secure_fw/tfm_test_manifest_list.yaml     |  29 ++
+ .../test/secure_regression/secure_fw.cmake    |   5 +
+ 40 files changed, 1768 insertions(+), 10 deletions(-)
+ create mode 100644 app_broker/copro_task.c
+ create mode 100644 app_broker/copro_task.h
+ create mode 100644 app_broker/scmi_task.c
+ create mode 100644 app_broker/wdt_task.c
+ create mode 100644 app_broker/wdt_task.h
+ create mode 100644 tests_reg/test/secure_fw/suites/cpu/non_secure/CMakeLists.txt
+ create mode 100644 tests_reg/test/secure_fw/suites/cpu/non_secure/cpu_ns_interface_testsuite.c
+ create mode 100644 tests_reg/test/secure_fw/suites/cpu/non_secure/cpu_ns_tests.h
+ create mode 100644 tests_reg/test/secure_fw/suites/pm/non_secure/CMakeLists.txt
+ create mode 100644 tests_reg/test/secure_fw/suites/pm/non_secure/pm_ns_interface_testsuite.c
+ create mode 100644 tests_reg/test/secure_fw/suites/pm/non_secure/pm_ns_tests.h
+ create mode 100644 tests_reg/test/secure_fw/suites/spm/ns_evt/non_secure/CMakeLists.txt
+ create mode 100644 tests_reg/test/secure_fw/suites/spm/ns_evt/non_secure/ns_evt_interface_testsuite.c
+ create mode 100644 tests_reg/test/secure_fw/suites/spm/ns_evt/non_secure/ns_evt_ns_tests.h
+ create mode 100644 tests_reg/test/secure_fw/suites/spm/ns_evt/service/CMakeLists.txt
+ create mode 100644 tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_helper/CMakeLists.txt
+ create mode 100644 tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_helper/tfm_ns_evt_helper_test.c
+ create mode 100644 tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_helper/tfm_ns_evt_helper_test.yaml
+ create mode 100644 tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_service/CMakeLists.txt
+ create mode 100644 tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_service/tfm_ns_evt_service_test.c
+ create mode 100644 tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_service/tfm_ns_evt_service_test.yaml
+
+diff --git a/app_broker/CMakeLists.txt b/app_broker/CMakeLists.txt
+index f24e6121..08675a51 100644
+--- a/app_broker/CMakeLists.txt
++++ b/app_broker/CMakeLists.txt
+@@ -181,6 +181,9 @@ add_library(tfm_test_broker STATIC)
+ target_sources(tfm_test_broker
+     PRIVATE
+         main_ns.c
++        $<$<BOOL:${TFM_PLATFORM_WDT_API}>:wdt_task.c>
++        $<$<BOOL:${TFM_PLATFORM_CPU_API}>:copro_task.c>
++        scmi_task.c
+ )
+ 
+ target_include_directories(tfm_test_broker
+@@ -203,4 +206,7 @@ target_compile_definitions(tfm_test_broker
+     PUBLIC
+         $<$<BOOL:${TFM_NS_REG_TEST}>:TFM_NS_REG_TEST>
+         $<$<BOOL:${TFM_NS_MAILBOX_API}>:TFM_NS_MAILBOX_API>
++        $<$<BOOL:${TFM_PLATFORM_WDT_API}>:TFM_PLATFORM_WDT_API>
++        $<$<BOOL:${TFM_PLATFORM_CPU_API}>:TFM_PLATFORM_CPU_API>
++        $<$<BOOL:${STM32_M33TDCID}>:STM32_M33TDCID>
+ )
+diff --git a/app_broker/copro_task.c b/app_broker/copro_task.c
+new file mode 100644
+index 00000000..5cc35f59
+--- /dev/null
++++ b/app_broker/copro_task.c
+@@ -0,0 +1,149 @@
++/*
++ * Copyright (C) 2025, STMicroelectronics
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ */
++#include <cmsis_os2.h>
++#include <cmsis_compiler.h>
++#include <test_app.h>
++#include <tfm_nsid_manager.h>
++#include <tfm_log.h>
++
++#include <tfm_platform_system.h>
++#include <uapi/tfm_ioctl_api.h>
++#include <errno.h>
++
++#include "copro_task.h"
++
++#define MSEC_PER_SEC		1000L
++
++#define COPRO_TIMEOUT_MS	1 * MSEC_PER_SEC
++
++#define COPRO_ID_A35		0
++
++__WEAK const char *cpu_status_str[] = {
++	"offline",
++	"suspended",
++	"started",
++	"running",
++	"crashed",
++	"unknow",
++};
++
++static int32_t copro_wait_status(uint32_t cpu_id, struct cpu_info_res *cpu_info,
++				 uint32_t timeout_ms, int32_t status)
++{
++	uint32_t tk_timeout, tk_start, tk_curr;
++	int err;
++
++	/* Polling status */
++	tk_timeout = (osKernelGetTickFreq() * timeout_ms) / MSEC_PER_SEC;
++	tk_start = osKernelGetTickCount();
++
++	do {
++		err = tfm_platform_cpu_info(cpu_id, cpu_info);
++		if (err != TFM_PLATFORM_ERR_SUCCESS) {
++			cpu_info->status = CPU_LAST;
++			break;
++		}
++
++		if (cpu_info->status == status)
++			break;
++
++		tk_curr = osKernelGetTickCount();
++
++	} while (((tk_curr - tk_start) < tk_timeout));
++
++	return (cpu_info->status == status) ? 0 : -ETIMEDOUT;
++}
++
++typedef enum tfm_platform_err_t (*cpu_cmd_fn_t)(uint32_t, int32_t *);
++
++static void _copro_cmd_wait(cpu_cmd_fn_t cpu_fn, uint32_t cpu_id, int32_t wait_status)
++{
++        struct cpu_info_res cpu_info;
++	int32_t status, err;
++
++	if (!cpu_fn)
++		return;
++
++	err = tfm_platform_cpu_info(cpu_id, &cpu_info);
++	if (err != TFM_PLATFORM_ERR_SUCCESS) {
++		LOG_MSG("[NS] [COPRO] [ERR] get cpu 0 info fail: %d\r\n", err);
++		return;
++	}
++
++	if (cpu_info.status < 0 || cpu_info.status >= CPU_LAST) {
++		LOG_MSG("[NS] [COPRO] [ERR] cpu %s error %d\r\n",
++                        cpu_info.name, cpu_info.status);
++		return;
++	}
++
++	if (cpu_info.status == wait_status) {
++		LOG_MSG("[NS] [COPRO] [INF] cpu %s is already %s\r\n",
++			cpu_info.name, cpu_status_str[cpu_info.status]);
++		return;
++	}
++
++	err = cpu_fn(cpu_id, &status);
++	if (err != TFM_PLATFORM_ERR_SUCCESS) {
++		LOG_MSG("[NS] [COPRO] [ERR] cpu %s cmd fail: %d\r\n", cpu_info.name, err);
++		return;
++	}
++
++	err = copro_wait_status(cpu_id, &cpu_info, COPRO_TIMEOUT_MS, wait_status);
++	if (err == -ETIMEDOUT) {
++		LOG_MSG("[NS] [COPRO] [ERR] cpu %s timeout\r\n", cpu_info.name);
++		return;
++	}
++
++	LOG_MSG("[NS] [COPRO] [INF] cpu %s now %s\r\n",
++		cpu_info.name, cpu_status_str[cpu_info.status]);
++}
++
++static void _copro_start(void)
++{
++	_copro_cmd_wait(tfm_platform_cpu_start, COPRO_ID_A35, CPU_RUNNING);
++}
++
++static void _copro_stop(void)
++{
++	_copro_cmd_wait(tfm_platform_cpu_stop, COPRO_ID_A35, CPU_OFFLINE);
++}
++
++void copro_ctrl_task(void *argument)
++{
++	uint32_t cmd;
++
++	UNUSED_VARIABLE(argument);
++
++	for (;;) {
++		cmd = osThreadFlagsWait(COPRO_START | COPRO_STOP, osFlagsWaitAny, osWaitForever);
++		if (cmd == COPRO_START)
++			_copro_start();
++		else if (cmd == COPRO_STOP)
++			_copro_stop();
++		else
++			LOG_MSG("[NS] [COPRO] [ERR] unknown cmd\r\n");
++	}
++}
++
++osThreadId_t tid_copro = NULL;
++
++static osThreadFunc_t copro_thread_func = copro_ctrl_task;
++static const osThreadAttr_t copro_thread_attr = {
++    .name = "copro_thread",
++    .stack_size = 1024U,
++    .tz_module = ((TZ_ModuleId_t)TFM_DEFAULT_NSID),
++    .priority = osPriorityHigh,
++};
++
++int copro_init(void)
++{
++	tid_copro = osThreadNew(copro_thread_func, NULL, &copro_thread_attr);
++
++	osThreadFlagsSet(tid_copro, COPRO_START);
++
++	return 0;
++}
+diff --git a/app_broker/copro_task.h b/app_broker/copro_task.h
+new file mode 100644
+index 00000000..1376f9dc
+--- /dev/null
++++ b/app_broker/copro_task.h
+@@ -0,0 +1,18 @@
++/*
++ * Copyright (C) 2025, STMicroelectronics
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ */
++
++#ifndef __TFM_COPRO_TASK_H__
++#define __TFM_COPRO_TASK_H__
++
++#define COPRO_START	(0x1U)
++#define COPRO_STOP	(0x2U)
++
++extern osThreadId_t tid_copro;
++
++int copro_init(void);
++
++#endif /* __TFM_COPRO_TASK_H__ */
+diff --git a/app_broker/main_ns.c b/app_broker/main_ns.c
+index a387803b..d9567c34 100644
+--- a/app_broker/main_ns.c
++++ b/app_broker/main_ns.c
+@@ -13,7 +13,7 @@
+ #include "tfm_nsid_manager.h"
+ #include "test_app.h"
+ #include "tfm_plat_ns.h"
+-#include "Driver_USART.h"
++#include "Driver_Common.h"
+ #include "device_cfg.h"
+ #ifdef TFM_NS_MAILBOX_API
+ #include "tfm_multi_core_api.h"
+@@ -24,6 +24,11 @@
+ #if (CONFIG_TFM_FLOAT_ABI >= 1)
+ #include "cmsis.h"
+ #endif
++#include "thread.h"
++#include "semaphore.h"
++#include <wdt_task.h>
++#include <copro_task.h>
++#include <util_macro.h>
+ 
+ /**
+  * \brief Modified table template for user defined SVC functions
+@@ -51,7 +56,8 @@ __asm("  .global __ARM_use_no_argv\n");
+ static const osThreadAttr_t thread_attr = {
+     .name = "test_thread",
+     .stack_size = 4096U,
+-    .tz_module = ((TZ_ModuleId_t)TFM_DEFAULT_NSID)
++    .tz_module = ((TZ_ModuleId_t)TFM_DEFAULT_NSID),
++    .priority = osPriorityNormal
+ };
+ /**
+  * \brief Static globals to hold RTOS related quantities,
+@@ -123,7 +129,6 @@ __WEAK int32_t tfm_ns_platform_uninit(void)
+     return ARM_DRIVER_OK;
+ }
+ 
+-
+ __WEAK int32_t tfm_ns_cp_init(void)
+ {
+ #if (CONFIG_TFM_FLOAT_ABI >= 1)
+@@ -136,6 +141,20 @@ __WEAK int32_t tfm_ns_cp_init(void)
+     return ARM_DRIVER_OK;
+ }
+ 
++extern void tfm_ns_sec_process(void *arg);
++/**
++ * \brief List of RTOS thread attributes
++ */
++#if PLATFORM_HAS_NS_NOTIF
++static osThreadFunc_t ns_sec_thread_func = tfm_ns_sec_process;
++static const osThreadAttr_t ns_secure_thread_attr = {
++    .name = "sec_thread",
++    .stack_size = 1024U,
++    .tz_module = ((TZ_ModuleId_t)TFM_DEFAULT_NSID),
++    .priority = osPriorityHigh,
++};
++#endif
++
+ /**
+  * \brief main() function
+  */
+@@ -161,6 +180,11 @@ int main(void)
+ #else
+     /* Initialize the TFM NS interface */
+     tfm_ns_interface_init();
++#if PLATFORM_HAS_NS_NOTIF
++    tfm_ns_init_secure_event();
++    (void) osThreadNew(ns_sec_thread_func, NULL, &ns_secure_thread_attr);
++#endif
++
+ #endif
+ 
+ #ifdef TFM_MULTI_CORE_NS_OS_MAILBOX_THREAD
+@@ -170,6 +194,13 @@ int main(void)
+     (void) osThreadNew(thread_func, NULL, &thread_attr);
+ 
+     LOG_MSG("Non-Secure system starting...\r\n");
++
++    if (IS_ENABLED(TFM_PLATFORM_WDT_API))
++	    wdt_init();
++
++    if (IS_ENABLED(TFM_PLATFORM_CPU_API))
++	    copro_init();
++
+     (void) osKernelStart();
+ 
+     /* Reached only in case of error */
+diff --git a/app_broker/scmi_task.c b/app_broker/scmi_task.c
+new file mode 100644
+index 00000000..9aba3ef3
+--- /dev/null
++++ b/app_broker/scmi_task.c
+@@ -0,0 +1,52 @@
++/*
++ * Copyright (C) 2025, STMicroelectronics
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ */
++#include <cmsis_os2.h>
++#include <cmsis_compiler.h>
++#include <copro_task.h>
++#include <stdio.h>
++#include <test_app.h>
++#include <tfm_nsid_manager.h>
++#include <tfm_log.h>
++#include <tfm_platform_system.h>
++#include <tfm_scmi_api.h>
++#include <uapi/tfm_ioctl_api.h>
++#include <util_macro.h>
++
++void tfm_sys_power_state_notifier(uint32_t agent_id, bool graceful, enum scmi_sys_power event)
++{
++	const char *graceful_str = graceful ? "GRACEFUL" : "";
++
++	switch (event) {
++	case  SYS_POWER_SHUTDOWN:
++		printf("agent %d %s SYS_POWER_SHUTDOWN\r\n", agent_id, graceful_str);
++		break;
++
++	case  SYS_POWER_COLD_RESET:
++		printf("agent %d %s SYS_POWER_COLD_RESET\r\n", agent_id, graceful_str);
++		tfm_platform_system_reset();
++		break;
++
++	case  SYS_POWER_WARM_RESET:
++		printf("agent %d %s SYS_POWER_WARM_RESET\r\n", agent_id, graceful_str);
++		if (IS_ENABLED(TFM_PLATFORM_CPU_API)) {
++			printf("stop command\r\n");
++			osThreadFlagsSet(tid_copro, COPRO_STOP);
++			printf("stop command done\r\n");
++			osThreadFlagsSet(tid_copro, COPRO_START);
++			printf("start command done\r\n");
++		}
++		break;
++
++	case  SYS_POWER_SUSPEND:
++		printf("agent %d %s SYS_POWER_SUSPEND\r\n", agent_id, graceful_str);
++		break;
++
++	default:
++		printf("Unsupported sys power notification %x\r\n", event);
++		break;
++	}
++}
+diff --git a/app_broker/wdt_task.c b/app_broker/wdt_task.c
+new file mode 100644
+index 00000000..1c02b6fb
+--- /dev/null
++++ b/app_broker/wdt_task.c
+@@ -0,0 +1,86 @@
++/*
++ * Copyright (C) 2025, STMicroelectronics
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ */
++#include <cmsis_os2.h>
++#include <test_app.h>
++#include <tfm_nsid_manager.h>
++#include <tfm_log.h>
++
++#include <tfm_platform_system.h>
++#include <uapi/tfm_ioctl_api.h>
++#include <errno.h>
++
++#define MSEC_PER_SEC		1000L
++
++#ifndef CONFIG_WDT_TIMEOUT_MS
++#define CONFIG_WDT_TIMEOUT_MS	120 * MSEC_PER_SEC
++#endif
++
++#ifndef CONFIG_WDT_PING_MS
++#define CONFIG_WDT_PING_MS	80 * MSEC_PER_SEC
++#endif
++
++void wdt_task(void *argument)
++{
++	struct wdt_timeout_cfg wdt_cfg;
++	struct wdt_info wdt_info;
++	uint32_t tk_ping, tk_freq;
++	int err;
++
++	UNUSED_VARIABLE(argument);
++
++	tk_freq = osKernelGetTickFreq();
++	tk_ping = (tk_freq * CONFIG_WDT_PING_MS) / MSEC_PER_SEC;
++
++	wdt_cfg.timeout = CONFIG_WDT_TIMEOUT_MS;
++	err = tfm_platform_wdt_set(&wdt_cfg);
++	if (err != TFM_PLATFORM_ERR_SUCCESS) {
++		LOG_MSG("[NS] [ERR] watchdog set timeout fail:%d\r\n", err);
++		goto out_err;
++	}
++
++	err = tfm_platform_wdt_info(&wdt_info);
++	if (err != TFM_PLATFORM_ERR_SUCCESS) {
++		LOG_MSG("[NS] [ERR] watchdog get info fail:%d\r\n", err);
++		goto out_err;
++	}
++
++	if (wdt_info.status == WDT_DISABLED) {
++		err = tfm_platform_wdt_start();
++		if (err != TFM_PLATFORM_ERR_SUCCESS) {
++			LOG_MSG("[NS] [ERR] watchdog start fail:%d\r\n", err);
++			goto out_err;
++		}
++	}
++
++	LOG_MSG("[NS] [INF] watchdog timeout: %dms\r\n", wdt_cfg.timeout);
++
++	while (true) {
++		err = tfm_platform_wdt_ping();
++		if (err != TFM_PLATFORM_ERR_SUCCESS)
++			LOG_MSG("[NS] [ERR] watchdog ping fail:%d\r\n", err);
++
++		osDelay(tk_ping);
++	}
++
++out_err:
++	osThreadExit();
++}
++
++static osThreadFunc_t wdt_thread_func = wdt_task;
++static const osThreadAttr_t wdt_thread_attr = {
++    .name = "watchdog_thread",
++    .stack_size = 1024U,
++    .tz_module = ((TZ_ModuleId_t)TFM_DEFAULT_NSID),
++    .priority = osPriorityHigh,
++};
++
++int wdt_init(void)
++{
++	osThreadNew(wdt_thread_func, NULL, &wdt_thread_attr);
++
++	return 0;
++}
+diff --git a/app_broker/wdt_task.h b/app_broker/wdt_task.h
+new file mode 100644
+index 00000000..a1780037
+--- /dev/null
++++ b/app_broker/wdt_task.h
+@@ -0,0 +1,13 @@
++/*
++ * Copyright (C) 2025, STMicroelectronics
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ */
++
++#ifndef __TFM_WDT_TASK_H__
++#define __TFM_WDT_TASK_H__
++
++int wdt_init(void);
++
++#endif /* __TFM_WDT_TASK_H__ */
+diff --git a/lib/ext/CMSIS/RTOS2/RTX/Config/RTX_Config.h b/lib/ext/CMSIS/RTOS2/RTX/Config/RTX_Config.h
+index 1671aab8..c7c63810 100644
+--- a/lib/ext/CMSIS/RTOS2/RTX/Config/RTX_Config.h
++++ b/lib/ext/CMSIS/RTOS2/RTX/Config/RTX_Config.h
+@@ -100,7 +100,7 @@
+ //     <i> Defines maximum number of user threads that can be active at the same time.
+ //     <i> Applies to user threads with system provided memory for control blocks.
+ #ifndef OS_THREAD_NUM
+-#define OS_THREAD_NUM               1
++#define OS_THREAD_NUM               2
+ #endif
+  
+ //     <o>Number of user Threads with default Stack size <0-1000>
+diff --git a/lib/nsid_manager/tfm_nsid_manager.h b/lib/nsid_manager/tfm_nsid_manager.h
+index b42311aa..b52091ff 100755
+--- a/lib/nsid_manager/tfm_nsid_manager.h
++++ b/lib/nsid_manager/tfm_nsid_manager.h
+@@ -14,15 +14,12 @@
+ #define __TFM_NSID_MANAGER_H__
+ 
+ #include <stdint.h>
++#include <lib/utils_def.h>
+ 
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+ 
+-#ifndef ARRAY_SIZE
+-#define ARRAY_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
+-#endif
+-
+ #define TFM_DEFAULT_GID         0x00
+ #define TFM_DEFAULT_NSID        ((int32_t)-1)
+ /* Non-secure client ID needs to be negative */
+diff --git a/tests_reg/test/config/check_config.cmake b/tests_reg/test/config/check_config.cmake
+index e4e4c20f..adc110e3 100644
+--- a/tests_reg/test/config/check_config.cmake
++++ b/tests_reg/test/config/check_config.cmake
+@@ -35,3 +35,9 @@ tfm_invalid_config(TEST_NS_PS AND NOT TEST_NS_ITS)
+ tfm_invalid_config(TEST_NS_SLIH_IRQ AND TEST_NS_FLIH_IRQ)
+ tfm_invalid_config(NOT PLATFORM_SLIH_IRQ_TEST_SUPPORT AND TEST_NS_SLIH_IRQ)
+ tfm_invalid_config(NOT PLATFORM_FLIH_IRQ_TEST_SUPPORT AND TEST_NS_FLIH_IRQ)
++
++############################ Power Management dependence ########################
++tfm_invalid_config(NOT TFM_PARTITION_PM AND (TEST_NS_PM))
++
++############################ CPU dependence #####################################
++tfm_invalid_config(NOT TFM_PARTITION_PLATFORM AND (TEST_NS_CPU))
+diff --git a/tests_reg/test/config/config.cmake b/tests_reg/test/config/config.cmake
+index 51ac8dc6..0c84ae02 100644
+--- a/tests_reg/test/config/config.cmake
++++ b/tests_reg/test/config/config.cmake
+@@ -66,6 +66,14 @@ if (CONFIG_TFM_FLOAT_ABI STREQUAL "soft")
+     set(TEST_NS_FPU             OFF        CACHE BOOL      "Whether to build NS regression FPU tests")
+ endif()
+ 
++if (NOT TFM_PARTITION_PM)
++    set(TEST_NS_PM              OFF        CACHE BOOL      "Whether to build NS regression Power Management tests")
++endif()
++
++if (NOT TFM_PLATFORM_CPU_API)
++	set(TEST_NS_CPU         OFF        CACHE BOOL      "Whether to build NS regression CPU Management tests")
++endif()
++
+ ########################## Test profile ########################################
+ 
+ if (TFM_PROFILE)
+@@ -104,6 +112,11 @@ if (CONFIG_TFM_SPM_BACKEND_SFN AND TEST_S)
+     set(TEST_S_SFN_BACKEND      ON        CACHE BOOL      "Whether to build S regression SFN backend tests")
+ endif()
+ 
++########################## NS EVT  test #################################
++
++if (PLATFORM_HAS_NS_NOTIF)
++  set(TEST_NS_NS_EVT          ON          CACHE BOOL      "Whether to build NS regression NS EVT tests")
++endif()
+ ########################## Load default config #################################
+ 
+ if (TEST_S)
+@@ -119,6 +132,11 @@ if (TEST_NS_IPC OR TEST_S_IPC)
+ else()
+     set(TFM_PARTITION_IPC_TEST  OFF)
+ endif()
++if (TEST_NS_NS_EVT)
++  set(TFM_PARTITION_NS_EVT_TEST ON)
++else()
++  set(TFM_PARTITION_NS_EVT_TEST OFF)
++endif()
+ 
+ if (TEST_NS_PS OR TEST_S_PS)
+     set(TFM_PARTITION_PS_TEST  ON)
+@@ -166,6 +184,7 @@ list(APPEND TFM_EXTRA_PARTITION_PATHS
+      ${SECURE_FW_REG_DIR}/suites/spm/irq/service
+      ${SECURE_FW_REG_DIR}/suites/ps/service
+      ${SECURE_FW_REG_DIR}/suites/fpu/service
++     ${SECURE_FW_REG_DIR}/suites/spm/ns_evt/service
+ )
+ 
+ if(TFM_S_REG_TEST)
+diff --git a/tests_reg/test/config/default_ns_test_config.cmake b/tests_reg/test/config/default_ns_test_config.cmake
+index fbdbe1e0..e2050f46 100644
+--- a/tests_reg/test/config/default_ns_test_config.cmake
++++ b/tests_reg/test/config/default_ns_test_config.cmake
+@@ -23,3 +23,9 @@ set(TEST_NS_FLIH_IRQ        OFF       CACHE BOOL      "Whether to build NS regre
+ set(TEST_NS_FPU             OFF       CACHE BOOL      "Whether to build NS regression FPU tests")
+ set(TEST_NS_IPC             OFF       CACHE BOOL      "Whether to build NS regression IPC tests")
+ set(TEST_NS_SFN_BACKEND     OFF       CACHE BOOL      "Whether to build NS regression SFN backend tests")
++
++set(TEST_NS_PM              ON        CACHE BOOL      "Whether to build NS regression Power Management tests")
++set(TEST_NS_PM_SUSPEND      OFF       CACHE BOOL      "Whether to build NS regression power suspend/resume tests")
++set(TEST_NS_PM_OFF          OFF       CACHE BOOL      "Whether to build NS regression power off test")
++
++set(TEST_NS_CPU             OFF       CACHE BOOL      "Whether to build NS regression CPU Management tests")
+diff --git a/tests_reg/test/framework/test_framework.c b/tests_reg/test/framework/test_framework.c
+index 9aae2488..a5736af3 100644
+--- a/tests_reg/test/framework/test_framework.c
++++ b/tests_reg/test/framework/test_framework.c
+@@ -11,6 +11,11 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
++#if defined(TEST_S) && defined(TFM_PLATFORM_WDT_API)
++#include <tfm_platform_system.h>
++#include <uapi/tfm_ioctl_api.h>
++#endif
++
+ static void test_failed(const struct test_result_t *ret, const char *name)
+ {
+     printf_set_color(RED);
+@@ -52,6 +57,17 @@ const char *test_err_to_str(enum test_suite_err_t err)
+     }
+ }
+ 
++void pre_test(void)
++{
++#if defined(TEST_S) && defined(TFM_PLATFORM_WDT_API)
++    tfm_platform_wdt_ping();
++#endif
++}
++
++void post_test(void)
++{
++}
++
+ enum test_suite_err_t run_test(const char *suite_type, struct test_suite_t test_suites[])
+ {
+     uint32_t i;
+@@ -79,7 +95,10 @@ enum test_suite_err_t run_test(const char *suite_type, struct test_suite_t test_
+         if (test_suites[i].val == TEST_PASSED) {
+             printf_set_color(GREEN);
+             TEST_LOG(" PASSED\r\n");
+-        } else {
++        } else if (test_suites[i].val == TEST_SKIPPED) {
++            printf_set_color(YELLOW);
++            TEST_LOG(" SKIPPED\r\n");
++	} else {
+             printf_set_color(RED);
+             TEST_LOG(" FAILED\r\n");
+             retval = TEST_SUITE_ERR_TEST_FAILED;
+@@ -138,12 +157,18 @@ enum test_suite_err_t run_testsuite(struct test_suite_t *test_suite)
+ 
+     /* Sets test suite parameters */
+     test_suite->freg(test_suite);
+-    if (test_suite->name == 0 || test_suite->list_size == 0) {
++
++    if (test_suite->name == 0) {
+         print_error("TEST_SUITE_ERR_INVALID_DATA!");
+         return TEST_SUITE_ERR_INVALID_DATA;
+     }
+ 
+     printf_set_color(YELLOW);
++    if (test_suite->list_size == 0) {
++        TEST_LOG("Skip Test Suite %s (empty)\r\n", test_suite->name);
++	test_suite->val = TEST_SKIPPED;
++	return TEST_SUITE_ERR_NO_ERROR;
++    }
+     TEST_LOG("Running Test Suite %s...\r\n", test_suite->name);
+ 
+     /* Sets pointer to the first test */
+@@ -163,6 +188,9 @@ enum test_suite_err_t run_testsuite(struct test_suite_t *test_suite)
+         /* Sets the default value before the test */
+         ret.val = TEST_PASSED;
+ 
++	/* action before run the test */
++	pre_test();
++
+         /* Executes the test */
+         p_test->test(&ret);
+         if (ret.val == TEST_FAILED) {
+@@ -177,6 +205,9 @@ enum test_suite_err_t run_testsuite(struct test_suite_t *test_suite)
+             TEST_LOG("  TEST: %s - PASSED!\r\n", p_test->name);
+         }
+ 
++	/* action after the test*/
++	post_test();
++
+         /* Sets pointer to the next test */
+         p_test++;
+     }
+diff --git a/tests_reg/test/framework/test_framework.h b/tests_reg/test/framework/test_framework.h
+index f9237d31..ec5d8a39 100644
+--- a/tests_reg/test/framework/test_framework.h
++++ b/tests_reg/test/framework/test_framework.h
+@@ -134,6 +134,16 @@ void show_tests(const struct test_suite_t *ts);
+ void set_test_failed(const char *info_msg, const char *filename, uint32_t line,
+                      struct test_result_t *ret);
+ 
++/**
++ * \brief perform pre-test actions, like watchdog refresh.
++ */
++void pre_test(void);
++
++/**
++ * \brief perform pos-test actions.
++ */
++void post_test(void);
++
+ #define TEST_FAIL(info_msg)  set_test_failed(info_msg, __FILE__, __LINE__, ret)
+ 
+ #ifdef __cplusplus
+diff --git a/tests_reg/test/ns_regression/CMakeLists.txt b/tests_reg/test/ns_regression/CMakeLists.txt
+index 0c9e1205..1446df78 100644
+--- a/tests_reg/test/ns_regression/CMakeLists.txt
++++ b/tests_reg/test/ns_regression/CMakeLists.txt
+@@ -28,6 +28,9 @@ include(utils)
+         TEST_NS_MANAGE_NSID;
+         TEST_NS_SFN_BACKEND;
+         TEST_NS_FPU;
++        TEST_NS_NS_EVT;
++        TEST_NS_PM;
++        TEST_NS_CPU;
+     "
+     )
+ 
+diff --git a/tests_reg/test/ns_regression/non_secure_suites.c b/tests_reg/test/ns_regression/non_secure_suites.c
+index 47838ab0..955a5c41 100644
+--- a/tests_reg/test/ns_regression/non_secure_suites.c
++++ b/tests_reg/test/ns_regression/non_secure_suites.c
+@@ -60,6 +60,15 @@
+ #ifdef EXTRA_NS_TEST_SUITE
+ #include "extra_ns_tests.h"
+ #endif
++#ifdef TEST_NS_NS_EVT
++#include "ns_evt_ns_tests.h"
++#endif
++#ifdef TEST_NS_CPU
++#include "cpu_ns_tests.h"
++#endif
++#ifdef TEST_NS_PM
++#include "pm_ns_tests.h"
++#endif
+ 
+ static struct test_suite_t test_suites[] = {
+     /* List test cases which are compliant with level 1 isolation */
+@@ -137,6 +146,20 @@ static struct test_suite_t test_suites[] = {
+     {&register_testsuite_ns_fpu_interface, 0, 0, 0},
+ #endif
+ 
++#ifdef TEST_NS_NS_EVT
++    /* Non-secure IPC test cases */
++    {&register_testsuite_ns_ns_evt_interface, 0, 0, 0},
++#endif
++
++#ifdef TEST_NS_CPU
++    /* Non-secure Cpu Management test cases */
++    {&register_testsuite_ns_cpu_interface, 0, 0, 0},
++#endif
++
++#ifdef TEST_NS_PM
++    /* Non-secure Power Management test cases */
++    {&register_testsuite_ns_pm_interface, 0, 0, 0},
++#endif
+     /* End of test suites */
+     {0, 0, 0, 0}
+ };
+diff --git a/tests_reg/test/secure_fw/non_secure/CMakeLists.txt b/tests_reg/test/secure_fw/non_secure/CMakeLists.txt
+index 0436a185..c225e8fe 100644
+--- a/tests_reg/test/secure_fw/non_secure/CMakeLists.txt
++++ b/tests_reg/test/secure_fw/non_secure/CMakeLists.txt
+@@ -23,3 +23,5 @@ add_subdirectory(../suites/multi_core/non_secure    ${CMAKE_CURRENT_BINARY_DIR}/
+ add_subdirectory(../suites/nsid/non_secure          ${CMAKE_CURRENT_BINARY_DIR}/suites/nsid)
+ add_subdirectory(../suites/fpu/non_secure           ${CMAKE_CURRENT_BINARY_DIR}/suites/fpu)
+ add_subdirectory(../suites/spm/non_secure           ${CMAKE_CURRENT_BINARY_DIR}/suites/spm)
++add_subdirectory(../suites/pm/non_secure            ${CMAKE_CURRENT_BINARY_DIR}/suites/pm)
++add_subdirectory(../suites/cpu/non_secure           ${CMAKE_CURRENT_BINARY_DIR}/suites/cpu)
+diff --git a/tests_reg/test/secure_fw/suites/cpu/non_secure/CMakeLists.txt b/tests_reg/test/secure_fw/suites/cpu/non_secure/CMakeLists.txt
+new file mode 100644
+index 00000000..173d553d
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/cpu/non_secure/CMakeLists.txt
+@@ -0,0 +1,40 @@
++#-------------------------------------------------------------------------------
++# Copyright (c) 2020-2021, Arm Limited. All rights reserved.
++#
++# SPDX-License-Identifier: BSD-3-Clause
++#
++#-------------------------------------------------------------------------------
++
++if (NOT TEST_NS_CPU)
++    return()
++endif()
++
++add_library(tfm_test_suite_cpu_ns STATIC EXCLUDE_FROM_ALL)
++
++target_sources(tfm_test_suite_cpu_ns
++    PRIVATE
++        ./cpu_ns_interface_testsuite.c
++)
++
++target_include_directories(tfm_test_suite_cpu_ns
++    PUBLIC
++        ./
++)
++
++target_compile_definitions(tfm_test_suite_cpu_ns
++    PRIVATE
++        DOMAIN_NS=1
++    INTERFACE
++        TEST_NS_CPU
++)
++
++target_link_libraries(tfm_test_suite_cpu_ns
++    PRIVATE
++        tfm_test_framework_ns
++        RTX_OS
++)
++
++target_link_libraries(tfm_ns_tests
++    INTERFACE
++        tfm_test_suite_cpu_ns
++)
+diff --git a/tests_reg/test/secure_fw/suites/cpu/non_secure/cpu_ns_interface_testsuite.c b/tests_reg/test/secure_fw/suites/cpu/non_secure/cpu_ns_interface_testsuite.c
+new file mode 100644
+index 00000000..5443350c
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/cpu/non_secure/cpu_ns_interface_testsuite.c
+@@ -0,0 +1,346 @@
++/*
++ * Copyright (C) 2024, STMicroelectronics - All Rights Reserved
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++#include <cmsis_os2.h>
++#include <stdio.h>
++#include <errno.h>
++#include <string.h>
++
++#include <test_framework.h>
++#include <uapi/tfm_ioctl_api.h>
++#include <psa/error.h>
++
++#include <region_defs.h>
++
++#define MSEC_PER_SEC		1000L
++
++#define TEST_ITERATIONS 3U
++#define DELAY_ITERATION_S	(10)
++#define TIMEOUT_STATUS_MS	(1000)
++
++const char *cpu_status_str[] = {
++	"offline",
++	"suspended",
++	"started",
++	"running",
++	"crashed",
++	"unknow",
++};
++
++const char *cpu_method_str[] = {
++	"none",
++	"remoteproc",
++	"invalid",
++};
++
++/* resource table structures and definition aligned with OpenAMP and Linux*/
++enum fw_resource_type {
++	RSC_CARVEOUT = 0,
++	RSC_DEVMEM = 1,
++	RSC_TRACE = 2,
++	RSC_VDEV = 3,
++	RSC_LAST = 4,
++	RSC_VENDOR_START = 128,
++	RSC_VENDOR_END = 512,
++};
++
++struct resource_table {
++	/** Version number */
++	uint32_t ver;
++
++	/** Number of resource entries */
++	uint32_t num;
++
++	/** Reserved (must be zero) */
++	uint32_t reserved[2];
++
++	/** Array of offsets pointing at the various resource entries */
++	uint32_t offset[0];
++};
++
++struct fw_rsc_trace {
++	/** Trace buffer entry has type 2 */
++	uint32_t type;
++
++	/** Device address of the buffer */
++	uint32_t da;
++
++	/** Length of the buffer in bytes */
++	uint32_t len;
++
++	/** Reserved (must be zero) */
++	uint32_t reserved;
++
++	/** Optional human-readable name of the requested memory region used for debugging */
++	uint8_t name[32];
++};
++
++struct fw_resource_table {
++	struct resource_table hdr;
++	uint32_t offset[1];
++
++	/* rpmsg trace entry */
++	struct fw_rsc_trace cm_trace;
++};
++
++const char trace_buffer[] = "Hello from TF-M test\n";
++
++static struct fw_resource_table cpu_rsc_tab = {
++	.hdr = {
++		.ver = 1,
++		.num = 1,
++	},
++	.offset = {
++		offsetof(struct fw_resource_table, cm_trace),
++	},
++	.cm_trace = {
++		RSC_TRACE,
++		(uint32_t)trace_buffer,
++		sizeof(trace_buffer),
++		0,
++		"tf-m-test-trace"
++	},
++};
++
++
++void cpu_list(struct test_result_t *ret)
++{
++	static struct cpu_serv_info serv_info;
++	struct cpu_info_res cpu_info;
++	int32_t i, err;
++	char tmp[70];
++
++	err = tfm_platform_cpu_service_info(&serv_info);
++	if (err != TFM_PLATFORM_ERR_SUCCESS || serv_info.nb_cpu < 0)
++		goto err;
++
++	TEST_LOG("List of %d cpu(s) supported:\r\n", serv_info.nb_cpu);
++	snprintf(tmp, sizeof(tmp), "%2.2s %-20.20s %-20.20s %-20.20s\r\n",
++		 "id", "name", "status", "ctrl method");
++	TEST_LOG(tmp);
++
++	for (i = 0; i < serv_info.nb_cpu; i++) {
++
++		err = tfm_platform_cpu_info(i, &cpu_info);
++		if (err != TFM_PLATFORM_ERR_SUCCESS) {
++			snprintf(tmp, sizeof(tmp), "%2.2d %-20.20s %-20.20s %-20.20s\r\n",
++				 i, "error" "error" "error");
++			goto err;
++		} else if (cpu_info.status < 0 || cpu_info.status >= CPU_LAST) {
++			snprintf(tmp, sizeof(tmp), "%2.2d %-20.20s %-20.20s %-20.20s\r\n",
++				 i, cpu_info.name,
++				 cpu_status_str[CPU_LAST],
++				 cpu_method_str[cpu_info.method]);
++			goto err;
++		}
++
++		err = snprintf(tmp, sizeof(tmp), "%2.2d %-20.20s %-20.20s %-20.20s\r\n",
++			 i, cpu_info.name,
++			 cpu_status_str[cpu_info.status],
++			 cpu_method_str[cpu_info.method]);
++		TEST_LOG(tmp);
++	}
++
++	ret->val = TEST_PASSED;
++	return;
++
++err:
++	TEST_LOG(tmp);
++	ret->val = TEST_FAILED;
++}
++
++static int32_t cpu_wait_status(uint32_t cpu_id, struct cpu_info_res *cpu_info,
++			       uint32_t timeout_ms, int32_t status)
++{
++	uint32_t tk_timeout, tk_start, tk_curr;
++	int err;
++
++	/* Polling status */
++	tk_timeout = (osKernelGetTickFreq() * timeout_ms) / MSEC_PER_SEC;
++	tk_start = osKernelGetTickCount();
++
++	do {
++		err = tfm_platform_cpu_info(cpu_id, cpu_info);
++		if (err != TFM_PLATFORM_ERR_SUCCESS) {
++			cpu_info->status = CPU_LAST;
++			break;
++		}
++
++		if (cpu_info->status == status)
++			break;
++
++		tk_curr = osKernelGetTickCount();
++
++	} while (((tk_curr - tk_start) < tk_timeout));
++
++	return (cpu_info->status == status) ? 0 : -ETIMEDOUT;
++}
++
++typedef enum tfm_platform_err_t (*cpu_cmd_fn_t)(uint32_t, int32_t *);
++
++static int _cpu_cmd_wait(cpu_cmd_fn_t cpu_fn, uint32_t cpu_id,
++			 struct cpu_info_res *cpu_info, int32_t wait_status)
++{
++	int32_t status = cpu_info->status;
++	int32_t err;
++
++	if (!cpu_fn)
++		return -EINVAL;
++
++	err = cpu_fn(cpu_id, &status);
++	if (err != TFM_PLATFORM_ERR_SUCCESS)
++		return -EAGAIN;
++
++	err = cpu_wait_status(cpu_id, cpu_info, TIMEOUT_STATUS_MS, wait_status);
++	if (err)
++		return err;
++
++	return 0;
++}
++
++static int _cpu_start_stop(uint32_t cpu_id, struct cpu_info_res *cpu_info)
++{
++	uint32_t tk_freq = osKernelGetTickFreq();
++	int32_t i, err = 0;
++
++	for (i = 1; i <= TEST_ITERATIONS; i++) {
++		TEST_LOG("\r    | Iteration %d of %d", i, TEST_ITERATIONS);
++
++		if (cpu_info->status != CPU_OFFLINE) {
++
++			err = _cpu_cmd_wait(tfm_platform_cpu_stop, cpu_id, cpu_info, CPU_OFFLINE);
++			if (err) {
++				TEST_LOG(" cmd stop fail (err:%d)\n",
++					 cpu_info->name, err);
++				goto out;
++			}
++		}
++
++		err = _cpu_cmd_wait(tfm_platform_cpu_start, cpu_id, cpu_info, CPU_RUNNING);
++		if (err) {
++			TEST_LOG(" cmd start fail (err:%d)\n",
++				 cpu_info->name, err);
++			goto out;
++		}
++
++		osDelay(DELAY_ITERATION_S * tk_freq);
++	}
++
++	TEST_LOG("\r\n");
++
++out:
++	return err;
++}
++
++static bool _cpu_has_enable_method(struct cpu_info_res *cpu_info)
++{
++	if (cpu_info->method <= ENABLE_METHOD_NONE ||
++	    cpu_info->method >= ENABLE_METHOD_INVAL)
++		return false;
++
++	return true;
++}
++
++void cpu_set_rsc_tab(struct test_result_t *result)
++{
++	static struct cpu_serv_info serv_info;
++	struct cpu_info_res cpu_info;
++	int32_t i, err;
++
++	result->val = TEST_PASSED;
++
++	/* Copy the resource table and trace buffer in shared memory*/
++	memcpy ((void *)NS_IPC_SHMEM_START, trace_buffer, sizeof(trace_buffer));
++	cpu_rsc_tab.cm_trace.da = NS_IPC_SHMEM_START;
++	cpu_rsc_tab.cm_trace.len = sizeof(trace_buffer);
++
++	memcpy ((void *)NS_IPC_SHMEM_START + sizeof(trace_buffer), &cpu_rsc_tab,
++		sizeof(cpu_rsc_tab));
++
++	err = tfm_platform_cpu_service_info(&serv_info);
++	if (err != TFM_PLATFORM_ERR_SUCCESS || serv_info.nb_cpu < 0) {
++		result->val = TEST_FAILED;
++		return;
++	}
++
++	for (i = 0; i < serv_info.nb_cpu; i++) {
++		err = tfm_platform_cpu_info(i, &cpu_info);
++		if (err != TFM_PLATFORM_ERR_SUCCESS) {
++			TEST_LOG("  > test cpu %d, info failed\r\n", i);
++			result->val = TEST_FAILED;
++			continue;
++		}
++
++		if (!_cpu_has_enable_method(&cpu_info)) {
++			TEST_LOG("  > test cpu %s, has no enable method (skipped)\r\n",
++				 cpu_info.name);
++			continue;
++		}
++
++		TEST_LOG("  > test cpu %s\r\n", cpu_info.name);
++
++		err = tfm_platform_cpu_set_rsc_tab(i, (uint32_t)NS_IPC_SHMEM_START +
++						      sizeof(trace_buffer),
++						   sizeof(cpu_rsc_tab));
++		if (err) {
++			TEST_LOG("  > test cpu failed %d\r\n", err);
++			result->val = TEST_FAILED;
++			continue;
++		}
++	}
++}
++
++void cpu_start_stop(struct test_result_t *result)
++{
++	static struct cpu_serv_info serv_info;
++	struct cpu_info_res cpu_info;
++	int32_t i, err;
++
++	result->val = TEST_PASSED;
++
++	err = tfm_platform_cpu_service_info(&serv_info);
++	if (err != TFM_PLATFORM_ERR_SUCCESS || serv_info.nb_cpu < 0) {
++		result->val = TEST_FAILED;
++		return;
++	}
++
++	for (i = 0; i < serv_info.nb_cpu; i++) {
++
++		err = tfm_platform_cpu_info(i, &cpu_info);
++		if (err != TFM_PLATFORM_ERR_SUCCESS) {
++			TEST_LOG("  > test cpu %d, info failed\r\n", i);
++			result->val = TEST_FAILED;
++			continue;
++		}
++
++		if (!_cpu_has_enable_method(&cpu_info)) {
++			TEST_LOG("  > test cpu %s, has no enable method (skipped)\r\n",
++				 cpu_info.name);
++			continue;
++		}
++
++		TEST_LOG("  > test cpu %s\r\n", cpu_info.name);
++
++		err = _cpu_start_stop(i, &cpu_info);
++		if (err)
++			result->val = TEST_FAILED;
++	}
++}
++
++static struct test_t cpu_tests[] = {
++	{&cpu_list, "TFM_NS_STM32_CPU_TEST_0201", "show platform cpus information"},
++	{&cpu_set_rsc_tab, "TFM_NS_STM32_CPU_TEST_0202", "set the resource tablein backup reg"},
++	{&cpu_start_stop, "TFM_NS_STM32_CPU_TEST_0203", "multiple start stop on remoteproc cpu"},
++};
++
++void register_testsuite_ns_cpu_interface(struct test_suite_t *p_test_suite)
++{
++    uint32_t list_size;
++
++    list_size = (sizeof(cpu_tests) / sizeof(cpu_tests[0]));
++
++    set_testsuite("CPU management NS interface tests (TFM_NS_CPU_XXXX)",
++                  cpu_tests, list_size, p_test_suite);
++}
+diff --git a/tests_reg/test/secure_fw/suites/cpu/non_secure/cpu_ns_tests.h b/tests_reg/test/secure_fw/suites/cpu/non_secure/cpu_ns_tests.h
+new file mode 100644
+index 00000000..d4ce08d9
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/cpu/non_secure/cpu_ns_tests.h
+@@ -0,0 +1,26 @@
++/*
++ * Copyright (C) 2025, STMicroelectronics - All Rights Reserved
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++#ifndef  __CPU_NS_TESTS_H
++#define  __CPU_NS_TESTS_H
++
++#include "test_framework.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/**
++ * \brief Register test suite for CPU management interface
++ *
++ * \param[in] p_test_suite The test suite to be executed.
++ */
++void register_testsuite_ns_cpu_interface(struct test_suite_t *p_test_suite);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* __CPU_NS_TESTS_H */
+diff --git a/tests_reg/test/secure_fw/suites/pm/non_secure/CMakeLists.txt b/tests_reg/test/secure_fw/suites/pm/non_secure/CMakeLists.txt
+new file mode 100644
+index 00000000..12d856a9
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/pm/non_secure/CMakeLists.txt
+@@ -0,0 +1,43 @@
++#-------------------------------------------------------------------------------
++# Copyright (c) 2020-2021, Arm Limited. All rights reserved.
++#
++# SPDX-License-Identifier: BSD-3-Clause
++#
++#-------------------------------------------------------------------------------
++
++if (NOT TEST_NS_PM)
++    return()
++endif()
++
++add_library(tfm_test_suite_pm_ns STATIC EXCLUDE_FROM_ALL)
++
++target_sources(tfm_test_suite_pm_ns
++    PRIVATE
++        ./pm_ns_interface_testsuite.c
++)
++
++target_include_directories(tfm_test_suite_pm_ns
++    PUBLIC
++        ./
++)
++
++target_compile_definitions(tfm_test_suite_pm_ns
++    PRIVATE
++        DOMAIN_NS=1
++        $<$<BOOL:${TEST_NS_PM_SUSPEND}>:TEST_NS_PM_SUSPEND>
++        $<$<BOOL:${TEST_NS_PM_OFF}>:TEST_NS_PM_OFF>
++    INTERFACE
++        TEST_NS_PM
++)
++
++target_link_libraries(tfm_test_suite_pm_ns
++    PRIVATE
++        tfm_test_framework_ns
++        RTX_OS
++        tfm_test_broker
++)
++
++target_link_libraries(tfm_ns_tests
++    INTERFACE
++        tfm_test_suite_pm_ns
++)
+diff --git a/tests_reg/test/secure_fw/suites/pm/non_secure/pm_ns_interface_testsuite.c b/tests_reg/test/secure_fw/suites/pm/non_secure/pm_ns_interface_testsuite.c
+new file mode 100644
+index 00000000..697c70e1
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/pm/non_secure/pm_ns_interface_testsuite.c
+@@ -0,0 +1,99 @@
++/*
++ * Copyright (C) 2024, STMicroelectronics - All Rights Reserved
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++#include <cmsis_os2.h>
++#include <stdio.h>
++#include <errno.h>
++
++#include <test_framework.h>
++#include <uapi/tfm_pm_api.h>
++#include <psa/error.h>
++#include <copro_task.h>
++#include <util_macro.h>
++
++int32_t _set_wakeup_source(void)
++{
++	/* TODO
++	 * set a wake up source to test power resume device
++	 */
++	return 0;
++}
++
++static void _suspend_resume(enum pm_suspend_mode_t mode, struct test_result_t *ret)
++{
++	int32_t err;
++
++	if (IS_ENABLED(TFM_PLATFORM_CPU_API))
++		osThreadFlagsSet(tid_copro, COPRO_STOP);
++
++	err = _set_wakeup_source();
++	if (err) {
++		TEST_LOG("set a wakeup source failed:%d\r\n", err);
++		goto err;
++	}
++
++	err = psa_pm_suspend(mode);
++	if (err != PSA_SUCCESS) {
++		TEST_LOG("suspend request (%d) failed:%d\r\n", mode, err);
++		goto err;
++	}
++
++	if (IS_ENABLED(TFM_PLATFORM_CPU_API))
++		osThreadFlagsSet(tid_copro, COPRO_START);
++
++	ret->val = TEST_PASSED;
++	return;
++err:
++	ret->val = TEST_FAILED;
++}
++
++void pm_suspend_stop2(struct test_result_t *ret)
++{
++	_suspend_resume(PM_STOP2, ret);
++}
++
++void pm_suspend_lp_stop2(struct test_result_t *ret)
++{
++	_suspend_resume(PM_LP_STOP2, ret);
++}
++
++void pm_suspend_lp_lv_stop2(struct test_result_t *ret)
++{
++	_suspend_resume(PM_LPLV_STOP2, ret);
++}
++
++void pm_suspend_standby(struct test_result_t *ret)
++{
++	_suspend_resume(PM_STANDBY1, ret);
++}
++
++void pm_power_off(struct test_result_t *ret)
++{
++	/* this function not return and must power off the platform */
++	psa_pm_power_off();
++	ret->val = TEST_PASSED;
++}
++
++static struct test_t pm_tests[] = {
++#ifdef TEST_NS_PM_SUSPEND
++	{&pm_suspend_stop2, "TFM_NS_PM_TEST_0101", "try stop2 suspend mode"},
++	{&pm_suspend_lp_stop2, "TFM_NS_STM32_PM_TEST_0102", "try lp_stop2 suspend mode"},
++	{&pm_suspend_lp_lv_stop2, "TFM_NS_STM32_PM_TEST_0103", "try lp lv stop2 suspend mode"},
++	{&pm_suspend_standby, "TFM_NS_STM32_PM_TEST_0104", "try standby suspend mode"},
++#endif
++#ifdef TEST_NS_PM_OFF
++	{&pm_power_off, "TFM_NS_STM32_PM_TEST_0201", "call platform power off"},
++#endif
++};
++
++void register_testsuite_ns_pm_interface(struct test_suite_t *p_test_suite)
++{
++    uint32_t list_size;
++
++    list_size = (sizeof(pm_tests) / sizeof(pm_tests[0]));
++
++    set_testsuite("PM power management NS interface tests (TFM_NS_PM_XXXX)",
++                  pm_tests, list_size, p_test_suite);
++}
+diff --git a/tests_reg/test/secure_fw/suites/pm/non_secure/pm_ns_tests.h b/tests_reg/test/secure_fw/suites/pm/non_secure/pm_ns_tests.h
+new file mode 100644
+index 00000000..bbd9796c
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/pm/non_secure/pm_ns_tests.h
+@@ -0,0 +1,26 @@
++/*
++ * Copyright (C) 2025, STMicroelectronics - All Rights Reserved
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++#ifndef  __PM_NS_TESTS_H
++#define  __PM_NS_TESTS_H
++
++#include "test_framework.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/**
++ * \brief Register test suite for power management (PM) interface
++ *
++ * \param[in] p_test_suite The test suite to be executed.
++ */
++void register_testsuite_ns_pm_interface(struct test_suite_t *p_test_suite);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* __PM_NS_TESTS_H */
+diff --git a/tests_reg/test/secure_fw/suites/ps/secure/ps_rollback_protection_testsuite.c b/tests_reg/test/secure_fw/suites/ps/secure/ps_rollback_protection_testsuite.c
+index 25e97383..acb0ee6f 100644
+--- a/tests_reg/test/secure_fw/suites/ps/secure/ps_rollback_protection_testsuite.c
++++ b/tests_reg/test/secure_fw/suites/ps/secure/ps_rollback_protection_testsuite.c
+@@ -184,6 +184,8 @@ static void tfm_ps_test_3001(struct test_result_t *ret)
+      * Prepare should not fail as the NV counters has the same values and
+      * the PS area authentication is aligned with those values.
+      */
++    pre_test();
++
+     status = tfm_ps_test_system_prepare();
+     if (status != PSA_SUCCESS) {
+         TEST_FAIL("AM prepare should not fail");
+diff --git a/tests_reg/test/secure_fw/suites/ps/secure/psa_ps_s_interface_testsuite.c b/tests_reg/test/secure_fw/suites/ps/secure/psa_ps_s_interface_testsuite.c
+index 9bad008e..bc716566 100644
+--- a/tests_reg/test/secure_fw/suites/ps/secure/psa_ps_s_interface_testsuite.c
++++ b/tests_reg/test/secure_fw/suites/ps/secure/psa_ps_s_interface_testsuite.c
+@@ -1053,6 +1053,8 @@ static void tfm_ps_test_1022(struct test_result_t *ret)
+         psa_storage_uid_t uid = test_uid[cycle];
+         struct psa_storage_info_t info = {0};
+ 
++        pre_test();
++
+         memset(read_asset_data, 0x00, sizeof(read_asset_data));
+ 
+         /* Set with data and no flags and a valid UID */
+diff --git a/tests_reg/test/secure_fw/suites/ps/secure/psa_ps_s_reliability_testsuite.c b/tests_reg/test/secure_fw/suites/ps/secure/psa_ps_s_reliability_testsuite.c
+index a8070177..0af3e092 100644
+--- a/tests_reg/test/secure_fw/suites/ps/secure/psa_ps_s_reliability_testsuite.c
++++ b/tests_reg/test/secure_fw/suites/ps/secure/psa_ps_s_reliability_testsuite.c
+@@ -65,6 +65,8 @@ static void tfm_ps_test_2001(struct test_result_t *ret)
+     size_t read_data_len = 0;
+ 
+     for (itr = 0; itr < LOOP_ITERATIONS_001; itr++) {
++        pre_test();
++
+         TEST_LOG("  > Iteration %d of %d\r", itr + 1, LOOP_ITERATIONS_001);
+ 
+         /* Set a data in the asset */
+@@ -121,6 +123,8 @@ static void tfm_ps_test_2002(struct test_result_t *ret)
+     size_t read_data_len = 0;
+ 
+     for (itr = 0; itr < LOOP_ITERATIONS_002; itr++) {
++        pre_test();
++
+         TEST_LOG("  > Iteration %d of %d\r", itr + 1, LOOP_ITERATIONS_002);
+ 
+         /* Set a data in the asset */
+diff --git a/tests_reg/test/secure_fw/suites/spm/non_secure/CMakeLists.txt b/tests_reg/test/secure_fw/suites/spm/non_secure/CMakeLists.txt
+index 53347adf..a324a111 100755
+--- a/tests_reg/test/secure_fw/suites/spm/non_secure/CMakeLists.txt
++++ b/tests_reg/test/secure_fw/suites/spm/non_secure/CMakeLists.txt
+@@ -12,3 +12,4 @@ add_subdirectory(../common/suites   ${CMAKE_CURRENT_BINARY_DIR}/common/suites)
+ add_subdirectory(../ipc/non_secure  ${CMAKE_CURRENT_BINARY_DIR}/ipc)
+ add_subdirectory(../sfn/non_secure  ${CMAKE_CURRENT_BINARY_DIR}/sfn)
+ add_subdirectory(../irq/non_secure  ${CMAKE_CURRENT_BINARY_DIR}/irq)
++add_subdirectory(../ns_evt/non_secure  ${CMAKE_CURRENT_BINARY_DIR}/ns_evt)
+diff --git a/tests_reg/test/secure_fw/suites/spm/ns_evt/non_secure/CMakeLists.txt b/tests_reg/test/secure_fw/suites/spm/ns_evt/non_secure/CMakeLists.txt
+new file mode 100644
+index 00000000..a12242b2
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/spm/ns_evt/non_secure/CMakeLists.txt
+@@ -0,0 +1,39 @@
++#-------------------------------------------------------------------------------
++# Copyright (c) 2025 STMicroelectronics. All rights reserved.
++#
++# SPDX-License-Identifier: BSD-3-Clause
++#
++#-------------------------------------------------------------------------------
++
++if(NOT TEST_NS_NS_EVT)
++    return()
++endif()
++
++add_library(tfm_test_suite_ns_evt_ns STATIC EXCLUDE_FROM_ALL)
++
++target_sources(tfm_test_suite_ns_evt_ns
++    PRIVATE
++        ns_evt_interface_testsuite.c
++)
++
++target_include_directories(tfm_test_suite_ns_evt_ns
++    PUBLIC
++        .
++)
++
++target_compile_definitions(tfm_test_suite_ns_evt_ns
++    PRIVATE
++        DOMAIN_NS=1
++    INTERFACE
++        TEST_NS_NS_EVT
++)
++
++target_link_libraries(tfm_test_suite_ns_evt_ns
++    PRIVATE
++        tfm_test_framework_ns
++)
++
++target_link_libraries(tfm_ns_tests
++    INTERFACE
++        tfm_test_suite_ns_evt_ns
++)
+diff --git a/tests_reg/test/secure_fw/suites/spm/ns_evt/non_secure/ns_evt_interface_testsuite.c b/tests_reg/test/secure_fw/suites/spm/ns_evt/non_secure/ns_evt_interface_testsuite.c
+new file mode 100644
+index 00000000..3a404308
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/spm/ns_evt/non_secure/ns_evt_interface_testsuite.c
+@@ -0,0 +1,254 @@
++/*
++ * Copyright (c) 2025 STMicroelectronics. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ */
++
++#include "ns_evt_ns_tests.h"
++#include "psa/client.h"
++#include "psa/framework_feature.h"
++#include "ns_evt.h"
++#include "tfm_ns_notif_api.h"
++#include "test_framework_helpers.h"
++#include "psa_manifest/sid.h"
++
++/* List of tests */
++static void tfm_ns_evt_test_1001(struct test_result_t *ret);
++static void tfm_ns_evt_test_1002(struct test_result_t *ret);
++static void tfm_ns_evt_test_1003(struct test_result_t *ret);
++static void tfm_ns_evt_test_1004(struct test_result_t *ret);
++static void tfm_ns_evt_test_1005(struct test_result_t *ret);
++static void tfm_ns_evt_test_1006(struct test_result_t *ret);
++static void tfm_ns_evt_test_1007(struct test_result_t *ret);
++
++
++static struct test_t ns_evt_tests[] = {
++    {&tfm_ns_evt_test_1001, "TFM_NS_EVT_TEST_1001",
++     "Send an event to non secure from an unpriv partition"},
++    {&tfm_ns_evt_test_1002, "TFM_NS_EVT_TEST_1002",
++     "Send an event to non secure from an FILH unpriv handler"},
++    {&tfm_ns_evt_test_1003, "TFM_NS_EVT_TEST_1003",
++     "Fail to send an event not handled by an unpriv partition"},
++    {&tfm_ns_evt_test_1004, "TFM_NS_EVT_TEST_1004",
++      "Send an event to non secure from a priv partition"},
++    {&tfm_ns_evt_test_1005, "TFM_NS_EVT_TEST_1005",
++      "Send an event to non secure from an FLIH priv partition"},
++    {&tfm_ns_evt_test_1006, "TFM_NS_EVT_TEST_1006",
++     "Fail to send an event not handled by an priv partition"},
++    {&tfm_ns_evt_test_1007, "TFM_NS_EVT_TEST_1007",
++     "test set ns evt mask interface"},
++
++};
++
++void register_testsuite_ns_ns_evt_interface(struct test_suite_t *p_test_suite)
++{
++    uint32_t list_size;
++
++    list_size = (sizeof(ns_evt_tests) / sizeof(ns_evt_tests[0]));
++
++    set_testsuite("NS_EVT non-secure test (TFM_NS_NS_EVT_TEST_1XXX)",
++                  ns_evt_tests, list_size, p_test_suite);
++}
++
++/**
++ * \brief
++ *
++ */
++static void tfm_ns_evt_test_1001(struct test_result_t *ret)
++
++{
++  psa_status_t status;
++
++  ret->val = TEST_FAILED;
++  if (tfm_ns_notif_get_pending(TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT)
++      == TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT) {
++    TEST_FAIL("NOTIF from unpriv secure FAILED: notif already there!\r\n");
++    return;
++  }
++  status = psa_call(NS_HELPER_NOTIFY_NS_HANDLE, PSA_IPC_CALL, NULL, 0, NULL, 0);
++  if (status != PSA_SUCCESS) {
++    TEST_FAIL("NOTIF from unpriv secure FAILED: psa_call return failed!\r\n");
++    return;
++  }
++  if (tfm_ns_notif_get_pending(TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT)
++      != TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT)
++    TEST_FAIL("NOTIF from unpriv secure FAILED!\r\n");
++  else
++    ret->val = TEST_PASSED;
++}
++
++/**
++ * \brief
++ *
++ */
++static void tfm_ns_evt_test_1002(struct test_result_t *ret)
++{
++  psa_status_t status;
++
++  ret->val = TEST_FAILED;
++  if (tfm_ns_notif_get_pending(TFM_SP_NS_EVT_HELPER_TEST_NPRIV_FLIH_NS_EVT)
++       == TFM_SP_NS_EVT_HELPER_TEST_NPRIV_FLIH_NS_EVT) {
++    TEST_FAIL("NOTIF from flih unpriv secure FAILED: notif already there!\r\n");
++    return;
++  }
++  status = psa_call(NS_EVT_SERVICE_FLIH_NPRIV_NOTIF_NS_HANDLE, PSA_IPC_CALL, NULL, 0, NULL, 0);
++  if (status != PSA_SUCCESS) {
++    TEST_FAIL("NOTIF from flih unpriv secure FAILED: psa_call return failed!\r\n");
++    return;
++  }
++  if (tfm_ns_notif_get_pending(TFM_SP_NS_EVT_HELPER_TEST_NPRIV_FLIH_NS_EVT)
++       != TFM_SP_NS_EVT_HELPER_TEST_NPRIV_FLIH_NS_EVT) {
++    TEST_FAIL("NOTIF from flih unpriv secure FAILED: event not received\r\n");
++  } else
++    ret->val = TEST_PASSED;
++}
++
++/**
++ * \brief
++ *
++ */
++static void tfm_ns_evt_test_1003(struct test_result_t *ret)
++{
++  psa_status_t status;
++
++  ret->val = TEST_FAILED;
++  if (tfm_ns_notif_get_pending(TFM_SP_NS_EVT_SERVICE_TEST_PRIV_CALL_NS_EVT)
++      == TFM_SP_NS_EVT_SERVICE_TEST_PRIV_CALL_NS_EVT) {
++    TEST_FAIL("NOTIF from priv secure : notif already there!\r\n");
++    return;
++  }
++  status = psa_call(NS_HELPER_TRY_NOTIFY_NS_HANDLE, PSA_IPC_CALL, NULL, 0, NULL, 0);
++  if (status != PSA_ERROR_NOT_PERMITTED) {
++    TEST_FAIL("TRY NOTIF from priv form unpriv secure: psa_call does not return failed!\r\n");
++    return;
++  }
++  if (tfm_ns_notif_get_pending(TFM_SP_NS_EVT_SERVICE_TEST_PRIV_CALL_NS_EVT)
++      == TFM_SP_NS_EVT_SERVICE_TEST_PRIV_CALL_NS_EVT)
++    TEST_FAIL("NOTIF from priv secure: event received\r\n");
++  else
++    ret->val = TEST_PASSED;
++}
++
++/**
++ * \brief
++ *
++ */
++static void tfm_ns_evt_test_1004(struct test_result_t *ret)
++{
++  psa_status_t status;
++
++  ret->val = TEST_FAILED;
++  if (tfm_ns_notif_get_pending(TFM_SP_NS_EVT_SERVICE_TEST_PRIV_CALL_NS_EVT)
++      == TFM_SP_NS_EVT_SERVICE_TEST_PRIV_CALL_NS_EVT) {
++    TEST_FAIL("NOTIF from priv secure: notif already there!\r\n");
++    return;
++  }
++  status = psa_call(NS_EVT_SERVICE_PRIV_NOTIF_NS_HANDLE, PSA_IPC_CALL, NULL, 0, NULL, 0);
++  if (status != PSA_SUCCESS) {
++    TEST_FAIL("NOTIF from priv secure sent: psa__call does not return failed\r\n");
++    return;
++  }
++  if ( tfm_ns_notif_get_pending(TFM_SP_NS_EVT_SERVICE_TEST_PRIV_CALL_NS_EVT)
++       != TFM_SP_NS_EVT_SERVICE_TEST_PRIV_CALL_NS_EVT)
++    TEST_FAIL("NOTIF from priv secure FAILED : event not received\r\n");
++  else
++    ret->val = TEST_PASSED;
++}
++
++/**
++ * \brief
++ *
++ */
++static void tfm_ns_evt_test_1005(struct test_result_t *ret)
++{
++  psa_status_t status;
++
++  ret->val = TEST_FAILED;
++  if (tfm_ns_notif_get_pending(TFM_SP_NS_EVT_SERVICE_TEST_PRIV_FLIH_NS_EVT)
++      ==TFM_SP_NS_EVT_SERVICE_TEST_PRIV_FLIH_NS_EVT) {
++    TEST_FAIL("NOTIF from flih priv secure: notif already there!\r\n");
++    return;
++  }
++  status = psa_call(NS_EVT_SERVICE_FLIH_PRIV_NOTIF_NS_HANDLE, PSA_IPC_CALL, NULL, 0, NULL, 0);
++  if ((status != PSA_SUCCESS) ||
++      (tfm_ns_notif_get_pending(TFM_SP_NS_EVT_SERVICE_TEST_PRIV_FLIH_NS_EVT)
++       != TFM_SP_NS_EVT_SERVICE_TEST_PRIV_FLIH_NS_EVT))
++    TEST_FAIL("NOTIF from flih priv secure FAILED!\r\n");
++  else
++    ret->val = TEST_PASSED;
++}
++
++/**
++ * \brief
++ *
++ */
++static void tfm_ns_evt_test_1006(struct test_result_t *ret)
++{
++  psa_status_t status;
++
++  ret->val = TEST_FAILED;
++  if (tfm_ns_notif_get_pending(TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT)
++      == TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT) {
++    TEST_FAIL("NOTIF from npriv secure: notif already there!\r\n");
++    return;
++  }
++  status = psa_call(NS_EVT_SERVICE_TRY_NOTIF_NS_HANDLE, PSA_IPC_CALL, NULL, 0, NULL, 0);
++  if (status != PSA_ERROR_NOT_PERMITTED) {
++    TEST_FAIL("NOTIF from npriv secure sent: psa_call does not return failed!\r\n");
++    return;
++  }
++  if (tfm_ns_notif_get_pending(TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT)
++      == TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT)
++    TEST_FAIL("NOTIF from unpriv secure  : event received\r\n");
++  else
++    ret->val = TEST_PASSED;
++}
++
++/**
++ * \brief
++ *
++ */
++static void tfm_ns_evt_test_1007(struct test_result_t *ret)
++
++{
++  psa_status_t status;
++
++  ret->val = TEST_FAILED;
++  if (tfm_ns_notif_get_pending(TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT)
++      == TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT) {
++    TEST_FAIL("NOTIF from unpriv secure FAILED: notif already there!\r\n");
++    return;
++  }
++  if (tfm_ns_notif_set_mask(TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT)) {
++    TEST_FAIL("ns notif set mask return wrong value\r\n");
++    return;
++  }
++
++  status = psa_call(NS_HELPER_NOTIFY_NS_HANDLE, PSA_IPC_CALL, NULL, 0, NULL, 0);
++  if (status != PSA_ERROR_BAD_STATE) {
++    TEST_FAIL("NOTIF from unpriv secure FAILED: psa_call return wrong value!\r\n");
++    return;
++  }
++  if (tfm_ns_notif_get_pending(TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT)
++      == TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT) {
++    TEST_FAIL("NOTIF from unpriv secure received\r\n");
++    return;
++  }
++  if (tfm_ns_notif_set_mask(0)) {
++    TEST_FAIL("ns notif set mask return wrong value\r\n");
++    return;
++  }
++  status = psa_call(NS_HELPER_NOTIFY_NS_HANDLE, PSA_IPC_CALL, NULL, 0, NULL, 0);
++  if (status != PSA_SUCCESS) {
++    TEST_FAIL("NOTIF from unpriv secure FAILED: psa_call does not return success!\r\n");
++    return;
++  }
++  if (tfm_ns_notif_get_pending(TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT)
++      != TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT) {
++    TEST_FAIL("NOTIF from unpriv secure received\r\n");
++    return;
++  }
++  ret->val = TEST_PASSED;
++}
++
+diff --git a/tests_reg/test/secure_fw/suites/spm/ns_evt/non_secure/ns_evt_ns_tests.h b/tests_reg/test/secure_fw/suites/spm/ns_evt/non_secure/ns_evt_ns_tests.h
+new file mode 100644
+index 00000000..8adb2526
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/spm/ns_evt/non_secure/ns_evt_ns_tests.h
+@@ -0,0 +1,27 @@
++/*
++ * Copyright (c) 2025 STMicroelectronics. All rights reserved.
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ */
++
++#ifndef __NS_EVT_NS_TESTS_H__
++#define __NS_EVT_NS_TESTS_H__
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#include "test_framework.h"
++
++/**
++ * \brief Register testsuite for ns_evt non-secure interface.
++ *
++ * \param[in] p_test_suite The test suite to be executed.
++ */
++void register_testsuite_ns_ns_evt_interface(struct test_suite_t *p_test_suite);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* __NS_EVT_NS_TESTS_H__ */
+diff --git a/tests_reg/test/secure_fw/suites/spm/ns_evt/service/CMakeLists.txt b/tests_reg/test/secure_fw/suites/spm/ns_evt/service/CMakeLists.txt
+new file mode 100644
+index 00000000..ae66fc7b
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/spm/ns_evt/service/CMakeLists.txt
+@@ -0,0 +1,12 @@
++#-------------------------------------------------------------------------------
++# Copyright (c) 2025 STMicroelectronics. All rights reserved.
++#
++# SPDX-License-Identifier: BSD-3-Clause
++#
++#-------------------------------------------------------------------------------
++
++# Add ipc test service.
++if (TFM_PARTITION_NS_EVT_TEST)
++    add_subdirectory(tfm_ns_evt_helper)
++    add_subdirectory(tfm_ns_evt_service)
++endif()
+diff --git a/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_helper/CMakeLists.txt b/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_helper/CMakeLists.txt
+new file mode 100644
+index 00000000..4f6d9228
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_helper/CMakeLists.txt
+@@ -0,0 +1,61 @@
++#-------------------------------------------------------------------------------
++# Copyright (c) 2025 STMicroelectronics. All rights reserved.
++#
++# SPDX-License-Identifier: BSD-3-Clause
++#
++#-------------------------------------------------------------------------------
++
++add_library(tfm_app_rot_partition_ns_evt_helper STATIC)
++
++add_dependencies(tfm_app_rot_partition_ns_evt_helper manifest_tool)
++
++target_sources(tfm_app_rot_partition_ns_evt_helper
++    PRIVATE
++        ./tfm_ns_evt_helper_test.c
++)
++
++# The generated sources
++target_sources(tfm_app_rot_partition_ns_evt_helper
++  PRIVATE
++        ${CMAKE_BINARY_DIR}/generated/secure_fw/test_services/tfm_ns_evt_helper/auto_generated/intermedia_tfm_ns_evt_helper_test.c
++)
++
++target_sources(tfm_partitions
++    INTERFACE
++        ${CMAKE_BINARY_DIR}/generated/secure_fw/test_services/tfm_ns_evt_helper/auto_generated/load_info_tfm_ns_evt_helper_test.c
++)
++
++# Set include directory
++target_include_directories(tfm_app_rot_partition_ns_evt_helper
++  PUBLIC
++        .
++    PRIVATE
++        ${CMAKE_BINARY_DIR}/generated/secure_fw/test_services/tfm_ns_evt_helper
++)
++
++target_include_directories(tfm_partitions
++    INTERFACE
++        ${CMAKE_BINARY_DIR}/generated/secure_fw/test_services/tfm_ns_evt_helper
++)
++
++target_link_libraries(tfm_app_rot_partition_ns_evt_helper
++  PRIVATE
++        tfm_sprt
++        platform_s
++)
++
++target_link_libraries(tfm_spm
++    PRIVATE
++        tfm_app_rot_partition_ns_evt_helper)
++
++############################ Partition Defs ####################################
++
++target_link_libraries(tfm_partitions
++    INTERFACE
++        tfm_app_rot_partition_ns_evt_helper
++)
++
++target_compile_definitions(tfm_config
++    INTERFACE
++    TFM_PARTITION_TEST_CORE_NS_EVT
++)
+diff --git a/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_helper/tfm_ns_evt_helper_test.c b/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_helper/tfm_ns_evt_helper_test.c
+new file mode 100644
+index 00000000..8dd69d70
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_helper/tfm_ns_evt_helper_test.c
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (c) 2025 STMicroelectronics. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ */
++
++#include <assert.h>
++#include "psa/client.h"
++#include "psa/service.h"
++#include "psa_manifest/sid.h"
++#include "psa_manifest/tfm_ns_evt_helper_test.h"
++#include "tfm_hal_isolation.h"
++#include "utilities.h"
++#include "tfm_ns_notif.h"
++#include "ns_evt.h"
++/*
++ * Create a global const data, so that it is stored in code
++ * section which is read only.
++ */
++
++void ns_evt_helper_test_main(void)
++{
++    psa_msg_t msg;
++    psa_status_t ret;
++    uint32_t signals = 0;
++    psa_irq_enable(TEST_SEC_NPRIV_IRQ_SIGNAL);
++    while (1) {
++      ret = PSA_ERROR_GENERIC_ERROR;
++      signals = psa_wait(PSA_WAIT_ANY, PSA_BLOCK);
++      psa_get(signals, &msg);
++      if (signals & NS_HELPER_NOTIFY_NS_SIGNAL) {
++        ret = tfm_ns_notif(TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT);
++      }
++      if (signals & NS_HELPER_TRY_NOTIFY_NS_SIGNAL)
++      {
++        ret = tfm_ns_notif(TFM_SP_NS_EVT_SERVICE_TEST_PRIV_CALL_NS_EVT);
++      }
++      psa_reply(msg.handle, ret);
++    }
++}
++
++
++psa_flih_result_t test_sec_npriv_irq_flih(void)
++{
++	tfm_ns_notif_flih(TFM_SP_NS_EVT_HELPER_TEST_NPRIV_FLIH_NS_EVT);
++  return PSA_FLIH_NO_SIGNAL;
++}
+diff --git a/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_helper/tfm_ns_evt_helper_test.yaml b/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_helper/tfm_ns_evt_helper_test.yaml
+new file mode 100644
+index 00000000..169a0353
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_helper/tfm_ns_evt_helper_test.yaml
+@@ -0,0 +1,50 @@
++#-------------------------------------------------------------------------------
++# Copyright (c) 2025 STMicroelectronics. All rights reserved.
++#
++# SPDX-License-Identifier: BSD-3-Clause
++#
++#-------------------------------------------------------------------------------
++
++{
++  "psa_framework_version": 1.1,
++  "name": "TFM_SP_NS_EVT_HELPER_TEST",
++  "type": "APPLICATION-ROT",
++  "priority": "NORMAL",
++  "model": "IPC",
++  "entry_point": "ns_evt_helper_test_main",
++  "stack_size": "0x0300",
++  "services" : [
++    {
++      "name": "NS_HELPER_NOTIFY_NS",
++      "sid": "0x0000F210",
++      "non_secure_clients": true,
++      "connection_based": false,
++      "version": 1,
++      "version_policy": "STRICT",
++      "mm_iovec": "disable"
++    },
++    {
++      "name": "NS_HELPER_TRY_NOTIFY_NS",
++      "sid": "0x0000F211",
++      "non_secure_clients": true,
++      "connection_based": false,
++      "version": 1,
++      "version_policy": "STRICT",
++      "mm_iovec": "disable"
++    }  ],
++  "irqs": [
++     {
++      "source": "TEST_SEC_NPRIV_IRQ",
++      "name": "TEST_SEC_NPRIV_IRQ",
++      "handling": "FLIH"
++     } ],
++  "ns_evts": [
++  {
++   "name": "NPRIV_CALL"
++   },
++  {
++    "name": "NPRIV_FLIH"
++  }
++]
++
++}
+diff --git a/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_service/CMakeLists.txt b/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_service/CMakeLists.txt
+new file mode 100644
+index 00000000..20d313da
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_service/CMakeLists.txt
+@@ -0,0 +1,68 @@
++#-------------------------------------------------------------------------------
++# Copyright (c) 2025 STMicroelectronics. All rights reserved.
++#
++# SPDX-License-Identifier: BSD-3-Clause
++#
++#-------------------------------------------------------------------------------
++
++add_library(tfm_psa_rot_partition_ns_evt_service STATIC)
++
++add_dependencies(tfm_psa_rot_partition_ipc_service manifest_tool)
++
++target_sources(tfm_psa_rot_partition_ns_evt_service
++    PRIVATE
++       ./tfm_ns_evt_service_test.c
++)
++
++# The generated sources
++target_sources(tfm_psa_rot_partition_ns_evt_service
++    PRIVATE
++        ${CMAKE_BINARY_DIR}/generated/secure_fw/test_services/tfm_ns_evt_service/auto_generated/intermedia_tfm_ns_evt_service_test.c
++  )
++
++target_sources(tfm_partitions
++    INTERFACE
++        ${CMAKE_BINARY_DIR}/generated/secure_fw/test_services/tfm_ns_evt_service/auto_generated/load_info_tfm_ns_evt_service_test.c
++)
++
++# Set include directory
++target_include_directories(tfm_psa_rot_partition_ns_evt_service
++    PUBLIC
++        .
++    PRIVATE
++        ../../../common
++        ../../../common/service
++        ${CMAKE_BINARY_DIR}/generated/secure_fw/test_services/tfm_ns_evt_service
++)
++
++target_include_directories(tfm_partitions
++    INTERFACE
++        ${CMAKE_BINARY_DIR}/generated/secure_fw/test_services/tfm_ns_evt_service
++)
++
++target_link_libraries(tfm_psa_rot_partition_ns_evt_service
++    PRIVATE
++        platform_s
++        tfm_sprt
++)
++
++target_link_libraries(tfm_spm
++    PRIVATE
++        tfm_psa_rot_partition_ipc_service
++)
++
++target_compile_definitions(tfm_psa_rot_partition_ipc_service
++    PRIVATE
++)
++
++############################ Partition Defs ####################################
++
++target_link_libraries(tfm_partitions
++    INTERFACE
++        tfm_psa_rot_partition_ns_evt_service
++)
++
++target_compile_definitions(tfm_config
++    INTERFACE
++    TFM_PARTITION_TEST_CORE_NS_EVT
++)
+diff --git a/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_service/tfm_ns_evt_service_test.c b/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_service/tfm_ns_evt_service_test.c
+new file mode 100644
+index 00000000..380ca209
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_service/tfm_ns_evt_service_test.c
+@@ -0,0 +1,56 @@
++/*
++ * Copyright (c) 2025 STMicroelectronics. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ */
++#include <cmsis.h>
++#include <assert.h>
++#include <stdbool.h>
++#include "psa/client.h"
++#include "psa/service.h"
++#include "psa_manifest/tfm_ns_evt_service_test.h"
++#include "spm_test_defs.h"
++#include "tfm_hal_isolation.h"
++#include "tfm_sp_log.h"
++
++#include "tfm_hal_multi_core.h"
++#include "tfm_plat_defs.h"
++#include "internal_status_code.h"
++#include "tfm_ns_notif.h"
++#include "ns_evt.h"
++#include "tfm_peripherals_def.h"
++
++void ns_evt_service_test_main(void *param)
++{
++  uint32_t signals = 0;
++  psa_msg_t msg;
++  psa_status_t ret;
++  psa_irq_enable(TEST_SEC_PRIV_IRQ_SIGNAL);
++  while (1) {
++    ret = PSA_ERROR_GENERIC_ERROR;
++    signals = psa_wait(PSA_WAIT_ANY, PSA_BLOCK);
++    psa_get(signals, &msg);
++    if (signals & NS_EVT_SERVICE_PRIV_NOTIF_NS_SIGNAL) {
++      ret = tfm_ns_notif(TFM_SP_NS_EVT_SERVICE_TEST_PRIV_CALL_NS_EVT);
++    }
++    if (signals & NS_EVT_SERVICE_FLIH_PRIV_NOTIF_NS_SIGNAL) {
++      NVIC_SetPendingIRQ(TEST_SEC_PRIV_IRQ);
++      ret = PSA_SUCCESS;
++    }
++    if (signals & NS_EVT_SERVICE_FLIH_NPRIV_NOTIF_NS_SIGNAL) {
++      NVIC_SetPendingIRQ(TEST_SEC_NPRIV_IRQ);
++      ret = PSA_SUCCESS;
++    }
++    if (signals & NS_EVT_SERVICE_TRY_NOTIF_NS_SIGNAL) {
++      ret = tfm_ns_notif(TFM_SP_NS_EVT_HELPER_TEST_NPRIV_CALL_NS_EVT);
++    }
++    psa_reply(msg.handle, ret);
++  }
++}
++
++psa_flih_result_t test_sec_priv_irq_flih(void)
++{
++	tfm_ns_notif_flih(TFM_SP_NS_EVT_SERVICE_TEST_PRIV_FLIH_NS_EVT);
++  return PSA_FLIH_NO_SIGNAL;
++}
+diff --git a/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_service/tfm_ns_evt_service_test.yaml b/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_service/tfm_ns_evt_service_test.yaml
+new file mode 100644
+index 00000000..6adae28c
+--- /dev/null
++++ b/tests_reg/test/secure_fw/suites/spm/ns_evt/service/tfm_ns_evt_service/tfm_ns_evt_service_test.yaml
+@@ -0,0 +1,67 @@
++#-------------------------------------------------------------------------------
++# Copyright (c) 2025 STMicroelectronics. All rights reserved.
++#
++# SPDX-License-Identifier: BSD-3-Clause
++#
++#-------------------------------------------------------------------------------
++
++{
++  "psa_framework_version": 1.1,
++  "name": "TFM_SP_NS_EVT_SERVICE_TEST",
++  "type": "PSA-ROT",
++  "priority": "HIGH",
++  "model": "IPC",
++  "entry_point": "ns_evt_service_test_main",
++  "stack_size": "0x0220",
++  "services" : [
++    {
++      "name": "NS_EVT_SERVICE_PRIV_NOTIF_NS",
++      "sid": "0x0000F200",
++      "non_secure_clients": true,
++      "connection_based": false,
++      "version": 1,
++      "version_policy": "STRICT"
++    },
++    {
++      "name": "NS_EVT_SERVICE_FLIH_NPRIV_NOTIF_NS",
++      "sid": "0x0000F201",
++      "non_secure_clients": true,
++      "connection_based": false,
++      "version": 1,
++      "version_policy": "STRICT",
++      "mm_iovec": "disable"
++    },
++    {
++      "name": "NS_EVT_SERVICE_FLIH_PRIV_NOTIF_NS",
++      "sid": "0x0000F202",
++      "non_secure_clients": true,
++      "connection_based": false,
++      "version_policy": "STRICT",
++      "mm_iovec": "disable"
++    },
++    {
++      "name": "NS_EVT_SERVICE_TRY_NOTIF_NS",
++      "sid": "0x0000F203",
++      "non_secure_clients": true,
++      "connection_based": false,
++      "version": 1,
++      "version_policy": "STRICT",
++      "mm_iovec": "disable"
++    }  ],
++  "irqs": [
++     {
++      "source": "TEST_SEC_PRIV_IRQ",
++      "name": "TEST_SEC_PRIV_IRQ",
++      "handling": "FLIH"
++     }
++  ],
++  "ns_evts": [
++  {
++   "name": "PRIV_CALL"
++   },
++  {
++    "name": "PRIV_FLIH"
++  }
++]
++
++}
+diff --git a/tests_reg/test/secure_fw/suites/spm/secure/CMakeLists.txt b/tests_reg/test/secure_fw/suites/spm/secure/CMakeLists.txt
+index f54feddb..d2ad1e69 100755
+--- a/tests_reg/test/secure_fw/suites/spm/secure/CMakeLists.txt
++++ b/tests_reg/test/secure_fw/suites/spm/secure/CMakeLists.txt
+@@ -11,3 +11,4 @@ add_subdirectory(../common/suites   ${CMAKE_CURRENT_BINARY_DIR}/common/suites)
+ # Add test suites.
+ add_subdirectory(../ipc/secure      ${CMAKE_CURRENT_BINARY_DIR}/ipc)
+ add_subdirectory(../sfn/secure      ${CMAKE_CURRENT_BINARY_DIR}/sfn)
++
+diff --git a/tests_reg/test/secure_fw/tfm_test_manifest_list.yaml b/tests_reg/test/secure_fw/tfm_test_manifest_list.yaml
+index b275c394..68d8c102 100644
+--- a/tests_reg/test/secure_fw/tfm_test_manifest_list.yaml
++++ b/tests_reg/test/secure_fw/tfm_test_manifest_list.yaml
+@@ -140,5 +140,34 @@
+         ]
+       }
+     },
++     {
++      "description": "TFM NS_EVT Test Partition",
++      "manifest": "suites/spm/ns_evt/service/tfm_ns_evt_service/tfm_ns_evt_service_test.yaml",
++      "output_path": "secure_fw/test_services/tfm_ns_evt_service",
++      "conditional": "TFM_PARTITION_NS_EVT_TEST",
++      "version_major": 0,
++      "version_minor": 1,
++      "pid": 3012,
++      "linker_pattern": {
++        "library_list": [
++           "*tfm_*partition_ns_evt_service.*"
++         ]
++      }
++    },
++    {
++      "description": "TFM NS_EVT Helper Test Partition",
++      "manifest": "suites/spm/ns_evt/service/tfm_ns_evt_helper/tfm_ns_evt_helper_test.yaml",
++      "output_path": "secure_fw/test_services/tfm_ns_evt_helper",
++      "conditional": "TFM_PARTITION_NS_EVT_TEST",
++      "version_major": 0,
++      "version_minor": 1,
++      "pid": 3013,
++      "linker_pattern": {
++        "library_list": [
++           "*tfm_*partition_ns_evt_helper.*"
++         ]
++      },
++      "non_ffm_attributes": ['weak_dependencies']
++    },
+   ]
+ }
+diff --git a/tests_reg/test/secure_regression/secure_fw.cmake b/tests_reg/test/secure_regression/secure_fw.cmake
+index aa1503dc..f34fded0 100644
+--- a/tests_reg/test/secure_regression/secure_fw.cmake
++++ b/tests_reg/test/secure_regression/secure_fw.cmake
+@@ -27,6 +27,9 @@ include(utils)
+         TEST_NS_MANAGE_NSID;
+         TEST_NS_SFN_BACKEND;
+         TEST_NS_FPU;
++        TEST_NS_NS_EVT;
++        TEST_NS_PM;
++        TEST_NS_CPU;
+         TEST_S_ATTESTATION;
+         TEST_S_CRYPTO;
+         TEST_S_ITS;
+@@ -75,6 +78,8 @@ target_link_libraries(tfm_s_tests
+ target_compile_definitions(tfm_s_tests
+     PRIVATE
+         $<$<BOOL:${PS_TEST_NV_COUNTERS}>:PS_TEST_NV_COUNTERS>
++	$<$<BOOL:${TFM_PLATFORM_WDT_API}>:TFM_PLATFORM_WDT_API>
++	TEST_S
+ )
+ 
+ add_subdirectory(${SECURE_FW_REG_DIR}/secure
+-- 
+2.43.0
+
