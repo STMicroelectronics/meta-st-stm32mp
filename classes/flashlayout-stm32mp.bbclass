@@ -114,9 +114,13 @@ FLASHLAYOUT_DESTDIR = "${FLASHLAYOUT_TOPDIR}/${FLASHLAYOUT_SUBDIR}"
 # Init bootscheme and config labels
 FLASHLAYOUT_BOOTSCHEME_LABELS ??= ""
 FLASHLAYOUT_CONFIG_LABELS ??= ""
+
+# Default init the FLASHLAYOUT_COUNT_LABELS to consider the flashlayout files created
+FLASHLAYOUT_COUNT_LABELS = "${FLASHLAYOUT_BOOTSCHEME_LABELS}"
+
 # Init partition and type labels
 #   Note: possible override with bootscheme and/or config
-FLASHLAYOUT_PARTITION_LABELS   ??= ""
+FLASHLAYOUT_PARTITION_LABELS ??= ""
 FLASHLAYOUT_TYPE_LABELS ??= ""
 # Init flashlayout partition vars
 #   Note: possible override with bootscheme and/or config and/or partition
@@ -169,6 +173,7 @@ python __anonymous () {
             if task == 'do_image_complete':
                 # Init current image name
                 current_image_name = d.getVar('PN') or ""
+                current_image_distro_name = "{}-{}".format(current_image_name, d.getVar('DISTRO') or "")
                 # Init RAMFS image if any
                 initramfs = d.getVar('INITRAMFS_IMAGE') or ""
                 # Init INITRD image if any
@@ -187,16 +192,16 @@ python __anonymous () {
                             if config == f:
                                 items = v.split(',')
                                 # Make sure about PARTITIONS_IMAGES contents
-                                if len(items) > 0 and len(items) > 6 :
-                                        bb.fatal('[PARTITIONS_IMAGES] Only image,label,mountpoint,size,type,[copy] can be specified!')
+                                if len(items) > 0 and len(items) > 7 :
+                                        bb.fatal('[FLASH PARTITIONS_IMAGES] Only image,label,mountpoint,size,type,[copy] can be specified!')
                                 # Make sure that we're dealing with partition image and not rootfs image
-                                if items[2] != '':
+                                if items[2] == '':
                                     # Mount point is available, so we're dealing with partition image
                                     # Append image to image_partitions list
                                     image_partitions.append(d.expand(items[0]))
-                                break
+                                    break
                 # We need to clearly identify ROOTFS build, not InitRAMFS/initRD one (if any), not partition one either
-                if current_image_name not in image_partitions and current_image_name != initramfs and current_image_name not in initrd:
+                if (current_image_name in image_partitions or current_image_distro_name in image_partitions) and current_image_name != initramfs and current_image_name not in initrd:
                     # We add the flashlayout file creation task just after the do_image_complete for ROOTFS build
                     bb.build.addtask('do_create_flashlayout_config', 'do_build', 'do_image_complete', d)
                     # We add also the function that feeds the FLASHLAYOUT_PARTITION_* vars
@@ -541,6 +546,9 @@ python do_create_flashlayout_config() {
                 bb.fatal("Configure static file: %s not found" % fl_src)
         return
 
+    # Init flashlayout file creation
+    flashlayout_file_count = 0
+
     # Set bootschemes for partition var override configuration
     bootschemes = d.getVar('FLASHLAYOUT_BOOTSCHEME_LABELS')
     if not bootschemes:
@@ -614,6 +622,12 @@ python do_create_flashlayout_config() {
                         partition_nextoffset = "none"
                         # Init partition previous device to 'none'
                         partition_prevdevice = "none"
+                        # Manage flashlayout file count
+                        if bootscheme in d.getVar('FLASHLAYOUT_COUNT_LABELS'):
+                            flashlayout_file_count += 1
+                            bb.debug(1, '>>> Increase flashlayout file count for %s: %s' % (bootscheme, flashlayout_file_count))
+                        else:
+                            bb.debug(1, '>>> Do not increase flashlayout file count for %s' % bootscheme)
                         for part in partitions.split():
                             bb.debug(1, '*** Loop for partition: %s' % part)
                             # Init break and clean file switch
@@ -719,7 +733,12 @@ python do_create_flashlayout_config() {
                                 fl_file.close()
                                 if os.path.exists(flashlayout_file):
                                     os.remove(flashlayout_file)
+                                # Make sure to update flashlayout file count
+                                if bootscheme in d.getVar('FLASHLAYOUT_COUNT_LABELS'):
+                                    flashlayout_file_count -= 1
+                                    bb.debug(1, '>>> Decrease flashlayout file count for %s: %s' % (bootscheme, flashlayout_file_count))
                                 break
+
                 except OSError:
                     bb.fatal('Unable to open %s' % (fl_file))
 
@@ -759,6 +778,12 @@ python do_create_flashlayout_config() {
                         os.rename(tmp_flashlayout_file, debug_flashlayout_file)
                     else:
                         os.remove(tmp_flashlayout_file)
+
+    # Provide overall flashlayout file creation status
+    if flashlayout_file_count == 0:
+        bb.fatal('No flashlayout file created: please check overall configuration and binaries availability')
+    else:
+        bb.note('>>> %s flashlayout file(s) created.' % flashlayout_file_count)
 }
 do_create_flashlayout_config[dirs] = "${FLASHLAYOUT_DESTDIR}"
 
