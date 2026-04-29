@@ -1,6 +1,12 @@
 SUMMARY = "STM32MP vendorfs Image"
 LICENSE = "MIT"
 
+# force image type:
+IMAGE_FSTYPES = "ext4"
+
+# Image mount point used on image
+IMAGE_PARTITION_MOUNTPOINT = "/vendor"
+
 include recipes-st/images/st-image-partitions.inc
 
 IMAGE_NAME_SUFFIX = ".vendorfs"
@@ -12,7 +18,7 @@ IMAGE_OVERHEAD_FACTOR    = "1"
 IMAGE_ROOTFS_EXTRA_SPACE = "0"
 
 # Add specific package for our image:
-PACKAGE_INSTALL += " \
+PACKAGE_INSTALL = " \
     ${@bb.utils.contains('MACHINE_FEATURES', 'gpu', d.getVar('GPU_USERLAND_LIBRARIES_INSTALL') or '', '', d)} \
 "
 

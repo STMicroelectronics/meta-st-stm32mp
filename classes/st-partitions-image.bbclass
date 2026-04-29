@@ -17,7 +17,6 @@ python __anonymous () {
     if d.getVar('ENABLE_PARTITIONS_IMAGE') != "1":
         bb.note('ENABLE_PARTITIONS_IMAGE not enabled')
         return
-
     import re
 
     # -----------------------------------------------------------------------------
@@ -116,6 +115,22 @@ python __anonymous () {
                         bb.debug(1, "Appending %s image build to 'do_image' depends tasks." % img_dep)
                         d.appendVarFlag('do_image', 'depends', ' %s:do_populate_lic_deploy' % img_dep.replace("-%s" % distro, ''))
     images_depends = d.getVar('STM32MP_IMAGE_DEPENDS') or ""
+    if len(images_depends) > 0:
+        # Gather all current tasks
+        tasks = filter(lambda k: d.getVarFlag(k, "task", True), d.keys())
+        for task in tasks:
+            # Check that we are dealing with image recipe
+            if task == 'do_image_complete':
+                # Init current image name
+                current_image_name = d.getVar('PN') or ""
+                # Init RAMFS image if any
+                initramfs = d.getVar('INITRAMFS_IMAGE') or ""
+                # Init INITRD image if any
+                initrd = d.getVar('INITRD_IMAGE_ALL') or d.getVar('INITRD_IMAGE') or ""
+                if current_image_name not in images_depends:
+                    for img_dep in images_depends.split():
+                        bb.debug(1, "Appending %s image build to 'do_image' depends tasks." % img_dep)
+                        d.appendVarFlag('do_image', 'depends', ' %s:do_populate_lic_deploy' % img_dep.replace("-%s" % distro, ''))
 
     # -----------------------------------------------------------------------------
     # Make sure to append the partition build to current image target

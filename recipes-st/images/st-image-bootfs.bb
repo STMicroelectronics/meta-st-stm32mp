@@ -1,6 +1,12 @@
 SUMMARY = "STM32MP bootfs Image"
 LICENSE = "MIT"
 
+# force image type:
+IMAGE_FSTYPES = "ext4 stvfat"
+
+# Image mount point used on image
+IMAGE_PARTITION_MOUNTPOINT = "/boot"
+
 include recipes-st/images/st-image-partitions.inc
 
 IMAGE_NAME_SUFFIX = ".bootfs"
@@ -11,11 +17,11 @@ IMAGE_OVERHEAD_FACTOR    = "1"
 IMAGE_ROOTFS_EXTRA_SPACE = "0"
 
 # Add specific package for our image:
-PACKAGE_INSTALL += " \
-    kernel-imagebootfs \
+PACKAGE_INSTALL = " \
+    ${ST_KERNEL_IMAGE_PACKAGE} \
     kernel-devicetree \
-    stm32mp-extlinux \
-    ${@bb.utils.contains('MACHINE_FEATURES', 'splashscreen', 'u-boot-stm32mp-splash', '', d)} \
+    ${ST_EXTLINUX_PACKAGE} \
+    ${ST_EXTLINUX_SPLASH_PACKAGE} \
     ${ST_DEVICE_OVERLAY_ADDONS} \
 "
 

@@ -1,6 +1,12 @@
 SUMMARY = "STM32MP userfs Image"
 LICENSE = "MIT"
 
+# force image type:
+IMAGE_FSTYPES = "ext4"
+
+# Image mount point used on image
+IMAGE_PARTITION_MOUNTPOINT = "/user/local"
+
 include recipes-st/images/st-image-partitions.inc
 
 IMAGE_NAME_SUFFIX = ".userfs"
@@ -9,14 +15,7 @@ IMAGE_NAME_SUFFIX = ".userfs"
 IMAGE_ROOTFS_MAXSIZE = ""
 
 # Add specific package for our image:
-PACKAGE_INSTALL += " \
-    ${@bb.utils.contains('MACHINE_FEATURES', 'm4copro', 'm4projects-stm32mp1-userfs', '', d)} \
-    ${@bb.utils.contains('MACHINE_FEATURES', 'm33copro', 'm33projects-stm32mp2-userfs', '', d)} \
-    ${@bb.utils.contains('MACHINE_FEATURES', 'm0copro', 'm0projects-stm32mp2-userfs', '', d)} \
-    linux-examples-stm32mp1-userfs \
-    "
-
-# Add demo application described on specific packagegroup
-PACKAGE_INSTALL += " \
+PACKAGE_INSTALL = " \
     packagegroup-st-demo \
     "
+
