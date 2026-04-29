@@ -69,7 +69,7 @@ WARNING_TEXT=""
 # to specify the device on which the raw images would be flashed
 # example: DEVICE=sdb ./create_sdcard_from_flashlayout.sh <tsv file>
 DEFAULT_DEVICE=${DEVICE:-mmcblk0}
-if echo "${DEFAULT_DEVICE}" | grep -q "mmcblk"
+if $(echo "${DEFAULT_DEVICE}" | grep -q "mmcblk")
 then
 	DEFAULT_DEVICE_PART="${DEFAULT_DEVICE}p"
 else
@@ -1011,6 +1011,13 @@ else
 	FLASHLAYOUT_filename_name=$(basename "$FLASHLAYOUT_filename")
 	FLASHLAYOUT_dirname=$(basename "$FLASHLAYOUT_filename_path")
 
+	if [ ! -e ${FLASHLAYOUT_filename} ]; then
+		echo ""
+		echo "[ERROR]: The Flashlayout file: ${FLASHLAYOUT_filename} doesn't exist"
+		echo "[ERROR]: Please use a valid flashlayout file."
+		usage
+	fi
+
 	_extension="${FLASHLAYOUT_filename##*.}"
 	if [ ! "$_extension" == "tsv" ];
 	then
@@ -1021,7 +1028,7 @@ else
 	fi
 	# File have a correct extension
 	#
-	if echo "$FLASHLAYOUT_dirname" | grep -q flashlayout
+	if $(echo "$FLASHLAYOUT_dirname" | grep -q flashlayout)
 	then
 		# add directory name as prefix for raw image
 		new_filename=$(echo "$FLASHLAYOUT_dirname/$FLASHLAYOUT_filename_name" | sed -e "s|/|_|g")
