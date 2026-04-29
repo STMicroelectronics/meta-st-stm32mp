@@ -27,6 +27,8 @@ SRC_URI:stm32mp2m33tdcommon = " \
     file://README.HOW_TO.txt.stm32mp2-m33td;subdir=sources \
     \
     file://examples/sdk_compilation_stm32mp2-m33td_stm32mp215f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2-m33td_stm32mp235f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2-m33td_stm32mp257f-dk.example;subdir=sources \
     file://examples/sdk_compilation_stm32mp2-m33td_stm32mp257f-ev1.example;subdir=sources \
     "
 
@@ -34,8 +36,12 @@ SRC_URI:append = " \
     file://generated_build_script-stm32mpx.sh;subdir=sources/ \
     "
 
+S = "${UNPACKDIR}"
+
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
+
+PV = "1.1"
 
 inherit archiver
 ARCHIVER_MODE[src] = "original"
