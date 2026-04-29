@@ -1,6 +1,4 @@
-DEPENDS = "hidapi-stm32mp"
-
-RDEPENDS:${PN} += "libusb1 hidapi-stm32mp"
+DEPENDS = "hidapi-stm32mp capstone"
 
 CVE_PRODUCT = "openocd:open_on-chip_debugger"
 
@@ -16,17 +14,16 @@ SRCREV_libjaylink = "9aa7a5957c07bb6e862fc1a6d3153d109c7407e4"
 
 BBCLASSEXTEND += "native nativesdk"
 
-DEPENDS:class-native = "hidapi-stm32mp-native"
-DEPENDS:class-nativesdk = "nativesdk-hidapi-stm32mp"
+DEPENDS:class-native = "hidapi-stm32mp-native capstone-native"
+DEPENDS:class-nativesdk = "nativesdk-hidapi-stm32mp nativesdk-capstone"
 
-RDEPENDS:${PN} += "libusb1 hidapi-stm32mp"
+RDEPENDS:${PN} += "libusb1 hidapi-stm32mp capstone"
 
 EXTRA_OECONF = " \
     --disable-doxygen-html \
     --disable-werror \
     --enable-stlink \
     --enable-cmsis-dap \
-    --without-capstone \
     MAKEINFO=true \
     HIDAPI_CFLAGS=-I${STAGING_INCDIR}/hidapi \
     HIDAPI_LIBS=-L${STAGING_LIBDIR}\ -lhidapi-libusb \

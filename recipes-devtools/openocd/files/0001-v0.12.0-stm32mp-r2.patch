@@ -1,0 +1,2502 @@
+From 01e95df12641353e3207fe666698b2f124d98621 Mon Sep 17 00:00:00 2001
+From: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
+Date: Mon, 21 Oct 2024 10:45:52 +0200
+Subject: [PATCH] v0.12.0-stm32mp-r2
+
+---
+Upstream-Status: Pending [specific to ST boards]
+
+ doc/openocd.texi                        |  69 +++++
+ src/helper/Makefile.am                  |   2 +
+ src/helper/bitfield.h                   |  60 ++++
+ src/helper/string_choices.h             |  22 ++
+ src/jtag/drivers/stlink_usb.c           |  34 ++-
+ src/target/Makefile.am                  |   2 +
+ src/target/armv7m.h                     |   3 +
+ src/target/armv7m_cache.c               | 367 ++++++++++++++++++++++++
+ src/target/armv7m_cache.h               |  57 ++++
+ src/target/cortex_a.c                   |  72 ++++-
+ src/target/cortex_m.c                   |  82 ++++++
+ src/target/cortex_m.h                   |  40 +++
+ src/target/target.c                     | 244 ++++++++++++++++
+ src/target/target.h                     |   4 +
+ tcl/board/stm32mp21x_dk_with_stlink.cfg |  11 +
+ tcl/board/stm32mp23x_dk.cfg             |  11 +
+ tcl/board/stm32mp25x_dk.cfg             |  11 +
+ tcl/target/stm32mp13x.cfg               |  61 +++-
+ tcl/target/stm32mp15x.cfg               |  98 +++++--
+ tcl/target/stm32mp21x.cfg               | 249 ++++++++++++++++
+ tcl/target/stm32mp23x.cfg               | 234 +++++++++++++++
+ tcl/target/stm32mp25x.cfg               | 256 +++++++++++++++++
+ 22 files changed, 1936 insertions(+), 53 deletions(-)
+ create mode 100644 src/helper/bitfield.h
+ create mode 100644 src/helper/string_choices.h
+ create mode 100644 src/target/armv7m_cache.c
+ create mode 100644 src/target/armv7m_cache.h
+ create mode 100644 tcl/board/stm32mp21x_dk_with_stlink.cfg
+ create mode 100644 tcl/board/stm32mp23x_dk.cfg
+ create mode 100644 tcl/board/stm32mp25x_dk.cfg
+ create mode 100644 tcl/target/stm32mp21x.cfg
+ create mode 100644 tcl/target/stm32mp23x.cfg
+ create mode 100644 tcl/target/stm32mp25x.cfg
+
+diff --git a/doc/openocd.texi b/doc/openocd.texi
+index 7169ef08b..843be1ce7 100644
+--- a/doc/openocd.texi
++++ b/doc/openocd.texi
+@@ -5326,6 +5326,19 @@ read_memory 0x20000000 32 2
+ @end example
+ @end deffn
+ 
++@deffn {Command} {$target_name write_buffer} address count data
++Helper command for write-buffer event.
++Writes @var{count} bytes at target @var{address}.
++The values in @var{data} are stored as a single hexadecimal string without separations nor 0x prefix.
++The length of @var{data} should match @var{count}.
++@end deffn
++
++@deffn {Command} {$target_name read_buffer} address count
++Helper command for read-buffer event.
++Reads @var{count} bytes at target @var{address}.
++Returns the bytes as a single hexadecimal string without separations nor 0x prefix.
++@end deffn
++
+ @deffn {Command} {$target_name cget} queryparm
+ Each configuration parameter accepted by
+ @command{$target_name configure}
+@@ -5577,6 +5590,58 @@ when reset disables PLLs needed to use a fast clock.
+ @* The target made a semihosting call with user-defined operation number 0x106
+ @item @b{semihosting-user-cmd-0x107}
+ @* The target made a semihosting call with user-defined operation number 0x107
++
++@item @b{write-buffer}
++Issued by any memory write from GDB.
++It is suitable to redirect GDB memory writes to other interfaces, e.g.:
++@itemize @minus
++@item emulated targets where it's too slow accessing memory through the CPU and
++specific workaround could be provided by the emulator;
++@item for targets that should be halted to access its memory (e.g. ARM Cortex-A
++and Cortex-R), allow writing HW registers while the target is running.
++@end itemize
++
++The event handler should be the name of a Tcl proc that accepts three
++parameters for @var{address}, @var{count} and @var{data}, where:
++@itemize @minus
++@item @var{address} is the target's address where to write to;
++@item @var{count} is the number of bytes to write;
++@item @var{data} is a single string of hexadecimal bytes without separators
++nor 0x prefix.
++@end itemize
++The Tcl proc should return:
++@itemize @minus
++@item nothing when it succeeds performing the write;
++@item an error when it fails during the write;
++@item the string "-1" when the it cannot process the request and requires the
++fallback to the standard write buffer method of the target to proceed.
++@end itemize
++
++@item @b{read-buffer}
++Issued by any memory read from GDB.
++It is suitable to redirect GDB memory reads to other interfaces, e.g.:
++@itemize @minus
++@item emulated targets where it's too slow accessing memory through the CPU and
++specific workaround could be provided by the emulator;
++@item for targets that should be halted to access its memory (e.g. ARM Cortex-A
++and Cortex-R), allowing reading or sampling HW registers while the target is running.
++@end itemize
++
++The event handler should be the name of a Tcl proc that accepts two
++parameters for @var{address} and @var{count}, where:
++@itemize @minus
++@item @var{address} is the target's address where to read from;
++@item @var{count} is the number of bytes to read.
++@end itemize
++The Tcl proc should return:
++@itemize @minus
++@item a single string of hexadecimal bytes without separators nor 0x prefix, when
++the read succeeds;
++@item an error when it fails during the read;
++@item the string "-1" when the it cannot process the request and requires the
++fallback to the standard read buffer method of the target to proceed.
++@end itemize
++
+ @end itemize
+ 
+ @quotation Note
+@@ -10686,6 +10751,10 @@ Enable or disable trace output for all ITM stimulus ports.
+ @subsection Cortex-M specific commands
+ @cindex Cortex-M
+ 
++@deffn {Command} {cortex_m cache_info}
++Report information about the type and size of the cache, if present.
++@end deffn
++
+ @deffn {Command} {cortex_m maskisr} (@option{auto}|@option{on}|@option{off}|@option{steponly})
+ Control masking (disabling) interrupts during target step/resume.
+ 
+diff --git a/src/helper/Makefile.am b/src/helper/Makefile.am
+index e0fa331ea..b1e93c14b 100644
+--- a/src/helper/Makefile.am
++++ b/src/helper/Makefile.am
+@@ -19,6 +19,7 @@ noinst_LTLIBRARIES += %D%/libhelper.la
+ 	%D%/nvp.c \
+ 	%D%/align.h \
+ 	%D%/binarybuffer.h \
++	%D%/bitfield.h \
+ 	%D%/bits.h \
+ 	%D%/configuration.h \
+ 	%D%/list.h \
+@@ -29,6 +30,7 @@ noinst_LTLIBRARIES += %D%/libhelper.la
+ 	%D%/crc32.h \
+ 	%D%/time_support.h \
+ 	%D%/replacements.h \
++	%D%/string_choices.h \
+ 	%D%/fileio.h \
+ 	%D%/system.h \
+ 	%D%/jep106.h \
+diff --git a/src/helper/bitfield.h b/src/helper/bitfield.h
+new file mode 100644
+index 000000000..9f397282c
+--- /dev/null
++++ b/src/helper/bitfield.h
+@@ -0,0 +1,60 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++
++/*
++* Copyright (c) 2020-2024 The FreeBSD Foundation
++*
++* This software was developed by Björn Zeeb under sponsorship from
++* the FreeBSD Foundation.
++*/
++
++#ifndef OPENOCD_HELPER_BITFIELD_H
++#define OPENOCD_HELPER_BITFIELD_H
++
++/**
++ * These macros come from FreeBSD, check source on
++ * https://cgit.freebsd.org/src/tree/sys/compat/linuxkpi/common/include/linux/bitfield.h
++ * Which does not include example usages of them.
++ */
++
++#define __bf_shf(x) (__builtin_ffsll(x) - 1)
++
++/**
++ * FIELD_FIT(_mask, _value) - Check if a value fits in the specified bitfield mask
++ * @_mask: Bitfield mask
++ * @_value: Value to check
++ *
++ * This macro checks whether a given value fits within the range defined by the
++ * specified bitfield mask. It ensures that no bits outside the mask are set.
++ *
++ * Return: true if the value fits, false otherwise.
++ */
++#define FIELD_FIT(_mask, _value) \
++	(!(((typeof(_mask))(_value) << __bf_shf(_mask)) & ~(_mask)))
++
++/**
++ * FIELD_PREP(_mask, _value) - Prepare a value for insertion into a bitfield
++ * @_mask: Bitfield mask
++ * @_value: Value to insert
++ *
++ * This macro prepares a value for insertion into a bitfield by shifting the
++ * value into the position defined by the mask and applying the mask.
++ *
++ * Return: The prepared bitfield value.
++ */
++#define FIELD_PREP(_mask, _value) \
++	(((typeof(_mask))(_value) << __bf_shf(_mask)) & (_mask))
++
++/**
++ * FIELD_GET(_mask, _value) - Extract a value from a bitfield
++ * @_mask: Bitfield mask
++ * @_value: Bitfield value to extract from
++ *
++ * This macro extracts a value from a bitfield by masking and shifting the
++ * relevant bits down to the least significant position.
++ *
++ * Return: The extracted value.
++ */
++#define FIELD_GET(_mask, _value) \
++	((typeof(_mask))(((_value) & (_mask)) >> __bf_shf(_mask)))
++
++#endif /* OPENOCD_HELPER_BITFIELD_H */
+diff --git a/src/helper/string_choices.h b/src/helper/string_choices.h
+new file mode 100644
+index 000000000..7e535845d
+--- /dev/null
++++ b/src/helper/string_choices.h
+@@ -0,0 +1,22 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++#ifndef OPENOCD_HELPER_STRING_CHOICES_H
++#define OPENOCD_HELPER_STRING_CHOICES_H
++
++#include <helper/types.h>
++
++/*
++ * This file contains helper functions that return one of two strings depending
++ * on a boolean value. The format of these functions is 'str_$true_$false' where
++ * $true and $false are the two corresponding strings.
++ *
++ * These helper functions are beneficial because they improve code consistency
++ * and reduce the number of hardcoded strings.
++ */
++
++static inline const char *str_enabled_disabled(bool value)
++{
++	return value ? "enabled" : "disabled";
++}
++
++#endif /* OPENOCD_HELPER_STRING_CHOICES_H */
+diff --git a/src/jtag/drivers/stlink_usb.c b/src/jtag/drivers/stlink_usb.c
+index 8cf3b0c73..e86e8f9f7 100644
+--- a/src/jtag/drivers/stlink_usb.c
++++ b/src/jtag/drivers/stlink_usb.c
+@@ -1603,7 +1603,10 @@ static int stlink_usb_mode_enter(void *handle, enum stlink_mode type)
+ 				h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_APIV1_ENTER;
+ 			else
+ 				h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_APIV2_ENTER;
+-			h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_ENTER_JTAG_NO_RESET;
++			if (jtag_get_srst())
++				h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_ENTER_JTAG_RESET;
++			else
++				h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_ENTER_JTAG_NO_RESET;
+ 			break;
+ 		case STLINK_MODE_DEBUG_SWD:
+ 			h->cmdbuf[h->cmdidx++] = STLINK_DEBUG_COMMAND;
+@@ -4180,11 +4183,8 @@ static int stlink_dap_reinit_interface(void)
+ 	stlink_dap_handle->reconnect_pending = false;
+ 	/* on new FW, calling mode-leave closes all the opened AP; reopen them! */
+ 	if (stlink_dap_handle->version.flags & STLINK_F_HAS_AP_INIT)
+-		for (unsigned int apsel = 0; apsel <= DP_APSEL_MAX; apsel++)
+-			if (test_bit(apsel, opened_ap)) {
+-				clear_bit(apsel, opened_ap);
+-				stlink_dap_open_ap(apsel);
+-			}
++		bitmap_zero(opened_ap, DP_APSEL_MAX + 1);
++
+ 	return ERROR_OK;
+ }
+ 
+@@ -4235,7 +4235,7 @@ static int stlink_dap_check_reconnect(struct adiv5_dap *dap)
+ {
+ 	int retval;
+ 
+-	if (!dap->do_reconnect)
++	if (!dap->do_reconnect && !stlink_dap_handle->reconnect_pending)
+ 		return ERROR_OK;
+ 
+ 	retval = stlink_dap_reinit_interface();
+@@ -5161,9 +5161,23 @@ static int stlink_dap_quit(void)
+ static int stlink_dap_reset(int req_trst, int req_srst)
+ {
+ 	LOG_DEBUG("stlink_dap_reset(%d)", req_srst);
+-	return stlink_usb_assert_srst(stlink_dap_handle,
+-		req_srst ? STLINK_DEBUG_APIV2_DRIVE_NRST_LOW
+-				 : STLINK_DEBUG_APIV2_DRIVE_NRST_HIGH);
++
++	if (req_srst) {
++		enum reset_types cfg = jtag_get_reset_config();
++
++		if ((cfg & RESET_SRST_PULLS_TRST) || !(cfg & RESET_SRST_NO_GATING)) {
++			/*
++			 * srst will probably reset the TAP/DAP (e.g. SWD back in JTAG mode).
++			 * Leave current mode and force a reconnect at next queue flush.
++			 */
++			stlink_usb_mode_leave(stlink_dap_handle, stlink_dap_handle->st_mode);
++			stlink_dap_handle->reconnect_pending = true;
++		}
++
++		return stlink_usb_assert_srst(stlink_dap_handle, STLINK_DEBUG_APIV2_DRIVE_NRST_LOW);
++	}
++
++	return stlink_usb_assert_srst(stlink_dap_handle, STLINK_DEBUG_APIV2_DRIVE_NRST_HIGH);
+ }
+ 
+ /** */
+diff --git a/src/target/Makefile.am b/src/target/Makefile.am
+index 1fc7d2afa..a3e13efb2 100644
+--- a/src/target/Makefile.am
++++ b/src/target/Makefile.am
+@@ -75,6 +75,7 @@ ARMV6_SRC = \
+ 
+ ARMV7_SRC = \
+ 	%D%/armv7m.c \
++	%D%/armv7m_cache.c \
+ 	%D%/armv7m_trace.c \
+ 	%D%/cortex_m.c \
+ 	%D%/armv7a.c \
+@@ -183,6 +184,7 @@ ARC_SRC = \
+ 	%D%/armv4_5_cache.h \
+ 	%D%/armv7a.h \
+ 	%D%/armv7m.h \
++	%D%/armv7m_cache.h \
+ 	%D%/armv7m_trace.h \
+ 	%D%/armv8.h \
+ 	%D%/armv8_dpm.h \
+diff --git a/src/target/armv7m.h b/src/target/armv7m.h
+index 2878dd1c7..f2af5e9d2 100644
+--- a/src/target/armv7m.h
++++ b/src/target/armv7m.h
+@@ -15,6 +15,7 @@
+ #define OPENOCD_TARGET_ARMV7M_H
+ 
+ #include "arm.h"
++#include "armv7m_cache.h"
+ #include "armv7m_trace.h"
+ 
+ struct adiv5_ap;
+@@ -235,6 +236,8 @@ struct armv7m_common {
+ 	/* hla_target uses a high level adapter that does not support all functions */
+ 	bool is_hla_target;
+ 
++	struct armv7m_cache_common armv7m_cache;
++
+ 	struct armv7m_trace_config trace_config;
+ 
+ 	/* Direct processor core register read and writes */
+diff --git a/src/target/armv7m_cache.c b/src/target/armv7m_cache.c
+new file mode 100644
+index 000000000..03315e44f
+--- /dev/null
++++ b/src/target/armv7m_cache.c
+@@ -0,0 +1,367 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++/*
++ * Copyright (C) 2025 by STMicroelectronics
++ * Copyright (C) 2025 by Antonio Borneo <borneo.antonio@gmail.com>
++ */
++
++#ifdef HAVE_CONFIG_H
++#include "config.h"
++#endif
++
++#include <stdint.h>
++
++#include <helper/align.h>
++#include <helper/bitfield.h>
++#include <helper/bits.h>
++#include <helper/command.h>
++#include <helper/log.h>
++#include <helper/types.h>
++#include <target/arm_adi_v5.h>
++#include <target/armv7m_cache.h>
++#include <target/cortex_m.h>
++
++static int get_cache_info(struct adiv5_ap *ap, unsigned int cl,
++	unsigned int ind, uint32_t *ccsidr)
++{
++	uint32_t csselr = FIELD_PREP(CSSELR_LEVEL_MASK, cl)
++					| FIELD_PREP(CSSELR_IND_MASK, ind);
++
++	int retval = mem_ap_write_u32(ap, CSSELR, csselr);
++	if (retval != ERROR_OK)
++		return retval;
++
++	return mem_ap_read_u32(ap, CCSIDR, ccsidr);
++}
++
++static int get_d_u_cache_info(struct adiv5_ap *ap, unsigned int cl,
++	uint32_t *ccsidr)
++{
++	return get_cache_info(ap, cl, CSSELR_IND_DATA_OR_UNIFIED_CACHE, ccsidr);
++}
++
++static int get_i_cache_info(struct adiv5_ap *ap, unsigned int cl,
++	uint32_t *ccsidr)
++{
++	return get_cache_info(ap, cl, CSSELR_IND_INSTRUCTION_CACHE, ccsidr);
++}
++
++static struct armv7m_cache_size decode_ccsidr(uint32_t ccsidr)
++{
++	struct armv7m_cache_size size;
++
++	size.line_len = 16 << FIELD_GET(CCSIDR_LINESIZE_MASK, ccsidr);
++	size.associativity = FIELD_GET(CCSIDR_ASSOCIATIVITY_MASK, ccsidr) + 1;
++	size.num_sets = FIELD_GET(CCSIDR_NUMSETS_MASK, ccsidr) + 1;
++	size.cache_size = size.line_len * size.associativity * size.num_sets / 1024;
++
++	// compute info for set way operation on cache
++	size.index_shift = FIELD_GET(CCSIDR_LINESIZE_MASK, ccsidr) + 2;
++	size.index = FIELD_GET(CCSIDR_NUMSETS_MASK, ccsidr);
++	size.way = FIELD_GET(CCSIDR_ASSOCIATIVITY_MASK, ccsidr);
++
++	unsigned int i = 0;
++	while (((size.way << i) & 0x80000000) == 0)
++		i++;
++	size.way_shift = i;
++
++	return size;
++}
++
++int armv7m_identify_cache(struct target *target)
++{
++	struct armv7m_common *armv7m = target_to_armv7m(target);
++	struct armv7m_cache_common *cache = &armv7m->armv7m_cache;
++
++	uint32_t clidr;
++	int retval = mem_ap_read_u32(armv7m->debug_ap, CLIDR, &clidr);
++	if (retval != ERROR_OK)
++		return retval;
++
++	uint32_t ctr;
++	retval = mem_ap_read_u32(armv7m->debug_ap, CTR, &ctr);
++	if (retval != ERROR_OK)
++		return retval;
++
++	//  retrieve selected cache for later restore
++	uint32_t csselr;
++	retval = mem_ap_read_atomic_u32(armv7m->debug_ap, CSSELR, &csselr);
++	if (retval != ERROR_OK)
++		return retval;
++
++	if (clidr == 0) {
++		LOG_TARGET_DEBUG(target, "No cache detected");
++		return ERROR_OK;
++	}
++
++	if (FIELD_GET(CTR_FORMAT_MASK, ctr) != CTR_FORMAT_PROVIDED) {
++		LOG_ERROR("Wrong value in CTR register");
++		return ERROR_FAIL;
++	}
++
++	cache->i_min_line_len = 4UL << FIELD_GET(CTR_IMINLINE_MASK, ctr);
++	cache->d_min_line_len = 4UL << FIELD_GET(CTR_DMINLINE_MASK, ctr);
++	LOG_TARGET_DEBUG(target,
++		"ctr=0x%" PRIx32 " ctr.i_min_line_len=%" PRIu32 " ctr.d_min_line_len=%" PRIu32,
++		ctr, cache->i_min_line_len, cache->d_min_line_len);
++
++	cache->loc = FIELD_GET(CLIDR_LOC_MASK, clidr);
++	LOG_TARGET_DEBUG(target,
++		"clidr=0x%" PRIx32 " Number of cache levels to PoC=%" PRIu32,
++		clidr, cache->loc);
++
++	// retrieve all available inner caches
++	uint32_t d_u_ccsidr[8], i_ccsidr[8];
++	for (unsigned int cl = 0; cl < cache->loc; cl++) {
++		unsigned int ctype = FIELD_GET(CLIDR_CTYPE_MASK(cl + 1), clidr);
++
++		// skip reserved values
++		if (ctype > CLIDR_CTYPE_UNIFIED_CACHE)
++			continue;
++
++		cache->arch[cl].ctype = ctype;
++
++		// separate d or unified d/i cache at this level ?
++		if (ctype & (CLIDR_CTYPE_UNIFIED_CACHE | CLIDR_CTYPE_D_CACHE)) {
++			// retrieve d-cache info
++			retval = get_d_u_cache_info(armv7m->debug_ap, cl, &d_u_ccsidr[cl]);
++			if (retval != ERROR_OK)
++				break;
++		}
++
++		if (ctype & CLIDR_CTYPE_I_CACHE) {
++			// retrieve i-cache info
++			retval = get_i_cache_info(armv7m->debug_ap, cl, &i_ccsidr[cl]);
++			if (retval != ERROR_OK)
++				break;
++		}
++	}
++
++	// restore selected cache
++	int retval1 = mem_ap_write_atomic_u32(armv7m->debug_ap, CSSELR, csselr);
++
++	if (retval != ERROR_OK)
++		return retval;
++	if (retval1 != ERROR_OK)
++		return retval1;
++
++	for (unsigned int cl = 0; cl < cache->loc; cl++) {
++		unsigned int ctype = cache->arch[cl].ctype;
++
++		// separate d or unified d/i cache at this level ?
++		if (ctype & (CLIDR_CTYPE_UNIFIED_CACHE | CLIDR_CTYPE_D_CACHE)) {
++			cache->arch[cl].d_u_size = decode_ccsidr(d_u_ccsidr[cl]);
++
++			LOG_TARGET_DEBUG(target,
++				"data/unified cache index %" PRIu32 " << %" PRIu32 ", way %" PRIu32 " << %" PRIu32,
++				cache->arch[cl].d_u_size.index,
++				cache->arch[cl].d_u_size.index_shift,
++				cache->arch[cl].d_u_size.way,
++				cache->arch[cl].d_u_size.way_shift);
++
++			LOG_TARGET_DEBUG(target,
++				"cache line %" PRIu32 " bytes %" PRIu32 " KBytes asso %" PRIu32 " ways",
++				cache->arch[cl].d_u_size.line_len,
++				cache->arch[cl].d_u_size.cache_size,
++				cache->arch[cl].d_u_size.associativity);
++		}
++
++		if (ctype & CLIDR_CTYPE_I_CACHE) {
++			cache->arch[cl].i_size = decode_ccsidr(i_ccsidr[cl]);
++
++			LOG_TARGET_DEBUG(target,
++				"instruction cache index %" PRIu32 " << %" PRIu32 ", way %" PRIu32 " << %" PRIu32,
++				cache->arch[cl].i_size.index,
++				cache->arch[cl].i_size.index_shift,
++				cache->arch[cl].i_size.way,
++				cache->arch[cl].i_size.way_shift);
++
++			LOG_TARGET_DEBUG(target,
++				"cache line %" PRIu32 " bytes %" PRIu32 " KBytes asso %" PRIu32 " ways",
++				cache->arch[cl].i_size.line_len,
++				cache->arch[cl].i_size.cache_size,
++				cache->arch[cl].i_size.associativity);
++		}
++	}
++
++	cache->info_valid = true;
++
++	return ERROR_OK;
++}
++
++extern struct command_context *global_cmd_ctx;
++
++static int armv7m_cache_helper(struct target *target, const char *helper,
++	uint32_t address, unsigned int length)
++{
++	struct command_context *cmd_ctx = global_cmd_ctx;
++
++	char *proc = alloc_printf("%s::%s", target_name(target), helper);
++	if (!proc) {
++		LOG_ERROR("Out of memory");
++		return ERROR_FAIL;
++	}
++
++	Jim_Obj *jim_name = Jim_NewStringObj(cmd_ctx->interp, proc, -1);
++	Jim_IncrRefCount(jim_name);
++	Jim_Cmd *jimcmd = Jim_GetCommand(cmd_ctx->interp, jim_name, JIM_NONE);
++	Jim_DecrRefCount(cmd_ctx->interp, jim_name);
++	if (!jimcmd) {
++		free(proc);
++		return ERROR_NOT_IMPLEMENTED;
++	}
++
++	char *query_cmd = alloc_printf("%s 0x%" PRIx32 " 0x%x",
++		proc, address, length);
++	free(proc);
++	if (!query_cmd) {
++		LOG_ERROR("Out of memory");
++		return ERROR_FAIL;
++	}
++
++	/* Override current target */
++	struct target *saved_target_override = cmd_ctx->current_target_override;
++	cmd_ctx->current_target_override = target;
++
++	int retval = Jim_Eval(cmd_ctx->interp, query_cmd);
++
++	cmd_ctx->current_target_override = saved_target_override;
++
++	free(query_cmd);
++
++	if (retval == JIM_RETURN)
++		retval = cmd_ctx->interp->returnCode;
++
++	if (retval != JIM_OK) {
++		Jim_MakeErrorMessage(cmd_ctx->interp);
++		LOG_TARGET_ERROR(target, "Execution of helper %s failed:\n%s",
++			helper,
++			Jim_GetString(Jim_GetResult(cmd_ctx->interp), NULL));
++		/* clean both error code and stacktrace before return */
++		Jim_Eval(cmd_ctx->interp, "error \"\" \"\"");
++
++		return ERROR_FAIL;
++	}
++
++	int len;
++	const char *result = Jim_GetString(Jim_GetResult(cmd_ctx->interp), &len);
++	if (len == 0)
++		return ERROR_OK;
++	if (strcmp(result, "-1") == 0)
++		return ERROR_NOT_IMPLEMENTED;
++
++	LOG_TARGET_ERROR(target, "Execution of helper %s returned \"%s\"", helper, result);
++	return ERROR_FAIL;
++}
++
++int armv7m_d_cache_flush(struct target *target, uint32_t address,
++	unsigned int length)
++{
++	struct armv7m_common *armv7m = target_to_armv7m(target);
++	struct armv7m_cache_common *cache = &armv7m->armv7m_cache;
++
++	int retval = armv7m_cache_helper(target, "event-d-cache-flush", address, length);
++	if (retval != ERROR_NOT_IMPLEMENTED)
++		return retval;
++
++	if (!cache->info_valid)
++		return ERROR_OK;
++
++	if (target->state != TARGET_HALTED) {
++		LOG_TARGET_ERROR(target, "not halted");
++		return ERROR_TARGET_NOT_HALTED;
++	}
++
++	if (!armv7m->armv7m_cache.d_u_cache_enabled)
++		return ERROR_OK;
++
++	uint32_t line_len = cache->d_min_line_len;
++	uint32_t addr_line = ALIGN_DOWN(address, line_len);
++	uint32_t addr_end = address + length;
++
++	while (addr_line < addr_end) {
++		mem_ap_write_u32(armv7m->debug_ap, DCCIMVAC, addr_line);
++		addr_line += line_len;
++		keep_alive();
++	}
++
++	return dap_run(armv7m->debug_ap->dap);
++}
++
++int armv7m_i_cache_inval(struct target *target, uint32_t address,
++	unsigned int length)
++{
++	struct armv7m_common *armv7m = target_to_armv7m(target);
++	struct armv7m_cache_common *cache = &armv7m->armv7m_cache;
++
++	int retval = armv7m_cache_helper(target, "event-i-cache-flush", address, length);
++	if (retval != ERROR_NOT_IMPLEMENTED)
++		return retval;
++
++	if (!cache->info_valid)
++		return ERROR_OK;
++
++	if (target->state != TARGET_HALTED) {
++		LOG_TARGET_ERROR(target, "not halted");
++		return ERROR_TARGET_NOT_HALTED;
++	}
++
++	if (!armv7m->armv7m_cache.i_cache_enabled)
++		return ERROR_OK;
++
++	uint32_t line_len = cache->i_min_line_len;
++	uint32_t addr_line = ALIGN_DOWN(address, line_len);
++	uint32_t addr_end = address + length;
++
++	while (addr_line < addr_end) {
++		mem_ap_write_u32(armv7m->debug_ap, ICIMVAU, addr_line);
++		addr_line += line_len;
++		keep_alive();
++	}
++
++	return dap_run(armv7m->debug_ap->dap);
++}
++
++int armv7m_handle_cache_info_command(struct command_invocation *cmd,
++	struct target *target)
++{
++	struct armv7m_common *armv7m = target_to_armv7m(target);
++	struct armv7m_cache_common *cache = &armv7m->armv7m_cache;
++
++	if (!target_was_examined(target)) {
++		command_print(cmd, "Target not examined yet");
++		return ERROR_FAIL;
++	}
++
++	if (!cache->info_valid) {
++		command_print(cmd, "No cache detected");
++		return ERROR_OK;
++	}
++
++	for (unsigned int cl = 0; cl < cache->loc; cl++) {
++		struct armv7m_arch_cache *arch = &cache->arch[cl];
++
++		if (arch->ctype & CLIDR_CTYPE_I_CACHE)
++			command_print(cmd,
++				"L%d I-Cache: line length %" PRIu32 ", associativity %" PRIu32
++				", num sets %" PRIu32 ", cache size %" PRIu32 " KBytes",
++				cl + 1,
++				arch->i_size.line_len,
++				arch->i_size.associativity,
++				arch->i_size.num_sets,
++				arch->i_size.cache_size);
++
++		if (arch->ctype & (CLIDR_CTYPE_UNIFIED_CACHE | CLIDR_CTYPE_D_CACHE))
++			command_print(cmd,
++				"L%d %c-Cache: line length %" PRIu32 ", associativity %" PRIu32
++				", num sets %" PRIu32 ", cache size %" PRIu32 " KBytes",
++				cl + 1,
++				(arch->ctype & CLIDR_CTYPE_D_CACHE) ? 'D' : 'U',
++				arch->d_u_size.line_len,
++				arch->d_u_size.associativity,
++				arch->d_u_size.num_sets,
++				arch->d_u_size.cache_size);
++	}
++
++	return ERROR_OK;
++}
+diff --git a/src/target/armv7m_cache.h b/src/target/armv7m_cache.h
+new file mode 100644
+index 000000000..12c3a2ad3
+--- /dev/null
++++ b/src/target/armv7m_cache.h
+@@ -0,0 +1,57 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++/*
++ * Copyright (C) 2025 by STMicroelectronics
++ * Copyright (C) 2025 by Antonio Borneo <borneo.antonio@gmail.com>
++ */
++
++#ifndef OPENOCD_TARGET_ARMV7M_CACHE_H
++#define OPENOCD_TARGET_ARMV7M_CACHE_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#include <helper/types.h>
++
++struct target;
++
++struct armv7m_cache_size {
++	// cache dimensioning
++	uint32_t line_len;
++	uint32_t associativity;
++	uint32_t num_sets;
++	uint32_t cache_size;
++	// info for set way operation on cache
++	uint32_t index;
++	uint32_t index_shift;
++	uint32_t way;
++	uint32_t way_shift;
++};
++
++// information about one architecture cache at any level
++struct armv7m_arch_cache {
++	unsigned int ctype;					// cache type, CLIDR encoding
++	struct armv7m_cache_size d_u_size;	// data cache
++	struct armv7m_cache_size i_size;	// instruction cache
++};
++
++// common cache information
++struct armv7m_cache_common {
++	bool info_valid;
++	unsigned int loc;					// level of coherency
++	uint32_t d_min_line_len;			// minimum d-cache line_len
++	uint32_t i_min_line_len;			// minimum i-cache line_len
++	struct armv7m_arch_cache arch[6];	// cache info, L1 - L7
++	bool i_cache_enabled;
++	bool d_u_cache_enabled;
++};
++
++int armv7m_identify_cache(struct target *target);
++int armv7m_d_cache_flush(struct target *target, uint32_t address,
++	unsigned int length);
++int armv7m_i_cache_inval(struct target *target, uint32_t address,
++	unsigned int length);
++int armv7m_handle_cache_info_command(struct command_invocation *cmd,
++	struct target *target);
++
++#endif /* OPENOCD_TARGET_ARMV7M_CACHE_H */
+diff --git a/src/target/cortex_a.c b/src/target/cortex_a.c
+index 2de77c960..2628f032a 100644
+--- a/src/target/cortex_a.c
++++ b/src/target/cortex_a.c
+@@ -1169,6 +1169,29 @@ static int cortex_a_set_dscr_bits(struct target *target,
+ 	return retval;
+ }
+ 
++/*
++ * Single-step on ARMv7a/r is implemented through a HW breakpoint that hits
++ * every instruction at any address except the address of the current
++ * instruction.
++ * Such HW breakpoint is never hit in case of a single instruction that jumps
++ * on itself (infinite loop), or a WFI or a WFE. In this case, halt the CPU
++ * after a timeout.
++ * The jump on itself would be executed several times before the timeout forces
++ * the halt, but this is not an issue. In ARMv7a/r there are few "pathological"
++ * instructions, listed below, that jumps on itself and that can have side
++ * effects if executed more than once; but they are not considered as real use
++ * cases generated by a compiler.
++ * Some example:
++ * - 'pop {pc}' or multi register 'pop' including PC, when the new PC value is
++ *   the same value of current PC. The single step will not stop at the first
++ *   'pop' and will continue taking values from the stack, modifying SP at each
++ *   iteration.
++ * - 'rfeda', 'rfedb', 'rfeia', 'rfeib', when the new PC value is the same
++ *   value of current PC. The register provided to the instruction (usually SP)
++ *   will be incremented or decremented at each iteration.
++ *
++ * TODO: fix exit in case of error, cleaning HW breakpoints.
++ */
+ static int cortex_a_step(struct target *target, int current, target_addr_t address,
+ 	int handle_breakpoints)
+ {
+@@ -1227,15 +1250,34 @@ static int cortex_a_step(struct target *target, int current, target_addr_t addre
+ 	if (retval != ERROR_OK)
+ 		return retval;
+ 
+-	int64_t then = timeval_ms();
++	// poll at least once before starting the timeout
++	retval = cortex_a_poll(target);
++	if (retval != ERROR_OK)
++		return retval;
++
++	int64_t then = timeval_ms() + 100;
+ 	while (target->state != TARGET_HALTED) {
++		if (timeval_ms() > then)
++			break;
++
+ 		retval = cortex_a_poll(target);
+ 		if (retval != ERROR_OK)
+ 			return retval;
+-		if (target->state == TARGET_HALTED)
+-			break;
+-		if (timeval_ms() > then + 1000) {
+-			LOG_ERROR("timeout waiting for target halt");
++	}
++
++	if (target->state != TARGET_HALTED) {
++		LOG_TARGET_DEBUG(target, "timeout waiting for target halt, try halt");
++
++		retval = cortex_a_halt(target);
++		if (retval != ERROR_OK)
++			return retval;
++
++		retval = cortex_a_poll(target);
++		if (retval != ERROR_OK)
++			return retval;
++
++		if (target->state != TARGET_HALTED) {
++			LOG_TARGET_ERROR(target, "timeout waiting for target halt");
+ 			return ERROR_FAIL;
+ 		}
+ 	}
+@@ -1255,9 +1297,6 @@ static int cortex_a_step(struct target *target, int current, target_addr_t addre
+ 	if (breakpoint)
+ 		cortex_a_set_breakpoint(target, breakpoint, 0);
+ 
+-	if (target->state != TARGET_HALTED)
+-		LOG_DEBUG("target stepped");
+-
+ 	return ERROR_OK;
+ }
+ 
+@@ -1703,7 +1742,6 @@ static int cortex_a_set_watchpoint(struct target *target, struct watchpoint *wat
+ 	uint32_t address;
+ 	uint8_t address_mask;
+ 	uint8_t byte_address_select;
+-	uint8_t load_store_access_control = 0x3;
+ 	struct cortex_a_common *cortex_a = target_to_cortex_a(target);
+ 	struct armv7a_common *armv7a = &cortex_a->armv7a_common;
+ 	struct cortex_a_wrp *wrp_list = cortex_a->wrp_list;
+@@ -1761,6 +1799,22 @@ static int cortex_a_set_watchpoint(struct target *target, struct watchpoint *wat
+ 		break;
+ 	}
+ 
++	uint8_t load_store_access_control;
++	switch (watchpoint->rw) {
++	case WPT_READ:
++		load_store_access_control = 1;
++		break;
++	case WPT_WRITE:
++		load_store_access_control = 2;
++		break;
++	case WPT_ACCESS:
++		load_store_access_control = 3;
++		break;
++	default:
++		LOG_ERROR("BUG: watchpoint->rw neither read, write nor access");
++		return ERROR_FAIL;
++	};
++
+ 	watchpoint_set(watchpoint, wrp_i);
+ 	control = (address_mask << 24) |
+ 		(byte_address_select << 5) |
+diff --git a/src/target/cortex_m.c b/src/target/cortex_m.c
+index 791a43242..34cd73915 100644
+--- a/src/target/cortex_m.c
++++ b/src/target/cortex_m.c
+@@ -21,6 +21,7 @@
+ #include "jtag/interface.h"
+ #include "breakpoints.h"
+ #include "cortex_m.h"
++#include "armv7m_cache.h"
+ #include "target_request.h"
+ #include "target_type.h"
+ #include "arm_adi_v5.h"
+@@ -30,6 +31,7 @@
+ #include "arm_semihosting.h"
+ #include "smp.h"
+ #include <helper/nvp.h>
++#include <helper/string_choices.h>
+ #include <helper/time_support.h>
+ #include <rtt/rtt.h>
+ 
+@@ -872,6 +874,14 @@ static int cortex_m_debug_entry(struct target *target)
+ 			return retval;
+ 	}
+ 
++	// read caches state
++	uint32_t ccr = 0;
++	if (armv7m->armv7m_cache.info_valid) {
++		retval = mem_ap_read_u32(armv7m->debug_ap, CCR, &ccr);
++		if (retval != ERROR_OK)
++			return retval;
++	}
++
+ 	/* Load all registers to arm.core_cache */
+ 	if (!cortex_m->slow_register_read) {
+ 		retval = cortex_m_fast_read_all_regs(target);
+@@ -925,6 +935,15 @@ static int cortex_m_debug_entry(struct target *target)
+ 		secure_state ? "Secure" : "Non-Secure",
+ 		target_state_name(target));
+ 
++	if (armv7m->armv7m_cache.info_valid) {
++		armv7m->armv7m_cache.d_u_cache_enabled = ccr & CCR_DC_MASK;
++		armv7m->armv7m_cache.i_cache_enabled = ccr & CCR_IC_MASK;
++
++		LOG_TARGET_DEBUG(target, "D-Cache %s, I-Cache %s",
++			str_enabled_disabled(armv7m->armv7m_cache.d_u_cache_enabled),
++			str_enabled_disabled(armv7m->armv7m_cache.i_cache_enabled));
++	}
++
+ 	/* Errata 3092511 workaround
+ 	 * Cortex-M7 can halt in an incorrect address when breakpoint
+ 	 * and exception occurs simultaneously */
+@@ -988,6 +1007,18 @@ static int cortex_m_poll_one(struct target *target)
+ 			 * and keep it until the next poll to allow its detection */
+ 			return ERROR_OK;
+ 		}
++
++		/* refresh status bits */
++		retval = cortex_m_read_dhcsr_atomic_sticky(target);
++		if (retval != ERROR_OK)
++			return retval;
++
++		/* If still under reset, quit and re-check at next poll */
++		if (cortex_m->dcb_dhcsr_cumulated_sticky & S_RESET_ST) {
++			cortex_m->dcb_dhcsr_cumulated_sticky &= ~S_RESET_ST;
++			return ERROR_OK;
++		}
++
+ 		/* S_RESET_ST was expected (in a reset command). Continue processing
+ 		 * to quickly get out of TARGET_RESET state */
+ 	}
+@@ -1921,12 +1952,25 @@ int cortex_m_set_breakpoint(struct target *target, struct breakpoint *breakpoint
+ 				breakpoint->orig_instr);
+ 		if (retval != ERROR_OK)
+ 			return retval;
++		// make sure data cache is cleaned & invalidated down to PoC
++		retval = armv7m_d_cache_flush(target, breakpoint->address, breakpoint->length);
++		if (retval != ERROR_OK)
++			return retval;
++
+ 		retval = target_write_memory(target,
+ 				breakpoint->address & 0xFFFFFFFE,
+ 				breakpoint->length, 1,
+ 				code);
+ 		if (retval != ERROR_OK)
+ 			return retval;
++		// update i-cache at breakpoint location
++		retval = armv7m_d_cache_flush(target, breakpoint->address, breakpoint->length);
++		if (retval != ERROR_OK)
++			return retval;
++		retval = armv7m_i_cache_inval(target, breakpoint->address, breakpoint->length);
++		if (retval != ERROR_OK)
++			return retval;
++
+ 		breakpoint->is_set = true;
+ 	}
+ 
+@@ -1969,12 +2013,25 @@ int cortex_m_unset_breakpoint(struct target *target, struct breakpoint *breakpoi
+ 		target_write_u32(target, comparator_list[fp_num].fpcr_address,
+ 			comparator_list[fp_num].fpcr_value);
+ 	} else {
++		// make sure data cache is cleaned & invalidated down to PoC
++		retval = armv7m_d_cache_flush(target, breakpoint->address, breakpoint->length);
++		if (retval != ERROR_OK)
++			return retval;
++
+ 		/* restore original instruction (kept in target endianness) */
+ 		retval = target_write_memory(target, breakpoint->address & 0xFFFFFFFE,
+ 					breakpoint->length, 1,
+ 					breakpoint->orig_instr);
+ 		if (retval != ERROR_OK)
+ 			return retval;
++
++		// update i-cache at breakpoint location
++		retval = armv7m_d_cache_flush(target, breakpoint->address, breakpoint->length);
++		if (retval != ERROR_OK)
++			return retval;
++		retval = armv7m_i_cache_inval(target, breakpoint->address, breakpoint->length);
++		if (retval != ERROR_OK)
++			return retval;
+ 	}
+ 	breakpoint->is_set = false;
+ 
+@@ -2781,6 +2838,14 @@ int cortex_m_examine(struct target *target)
+ 		LOG_TARGET_INFO(target, "target has %d breakpoints, %d watchpoints",
+ 			cortex_m->fp_num_code,
+ 			cortex_m->dwt_num_comp);
++
++		if (!armv7m->is_hla_target) {
++			retval = armv7m_identify_cache(target);
++			if (retval != ERROR_OK) {
++				LOG_ERROR("Cannot detect cache");
++				return retval;
++			}
++		}
+ 	}
+ 
+ 	return ERROR_OK;
+@@ -3110,6 +3175,16 @@ COMMAND_HANDLER(handle_cortex_m_reset_config_command)
+ 	return ERROR_OK;
+ }
+ 
++COMMAND_HANDLER(handle_cortex_m_cache_info_command)
++{
++	if (CMD_ARGC)
++		return ERROR_COMMAND_SYNTAX_ERROR;
++
++	struct target *target = get_current_target(CMD_CTX);
++
++	return armv7m_handle_cache_info_command(CMD, target);
++}
++
+ static const struct command_registration cortex_m_exec_command_handlers[] = {
+ 	{
+ 		.name = "maskisr",
+@@ -3132,6 +3207,13 @@ static const struct command_registration cortex_m_exec_command_handlers[] = {
+ 		.help = "configure software reset handling",
+ 		.usage = "['sysresetreq'|'vectreset']",
+ 	},
++	{
++		.name = "cache_info",
++		.handler = handle_cortex_m_cache_info_command,
++		.mode = COMMAND_EXEC,
++		.help = "display information about target caches",
++		.usage = "",
++	},
+ 	{
+ 		.chain = smp_command_handlers,
+ 	},
+diff --git a/src/target/cortex_m.h b/src/target/cortex_m.h
+index 726fca290..6e20d7561 100644
+--- a/src/target/cortex_m.h
++++ b/src/target/cortex_m.h
+@@ -15,6 +15,7 @@
+ #define OPENOCD_TARGET_CORTEX_M_H
+ 
+ #include "armv7m.h"
++#include "helper/bitfield.h"
+ #include "helper/bits.h"
+ 
+ #define CORTEX_M_COMMON_MAGIC 0x1A451A45U
+@@ -114,6 +115,45 @@ struct cortex_m_part_info {
+ #define FPU_FPCAR	0xE000EF38
+ #define FPU_FPDSCR	0xE000EF3C
+ 
++// Cache
++#define CCR			0xE000ED14
++#define CLIDR		0xE000ED78
++#define CTR			0xE000ED7C
++#define CCSIDR		0xE000ED80
++#define CSSELR		0xE000ED84
++#define ICIMVAU		0xE000EF58
++#define DCCIMVAC	0xE000EF70
++
++#define CCR_IC_MASK							BIT(17)
++#define CCR_DC_MASK							BIT(16)
++
++#define CLIDR_ICB_MASK						GENMASK(31, 30)
++#define CLIDR_LOUU_MASK						GENMASK(29, 27)
++#define CLIDR_LOC_MASK						GENMASK(26, 24)
++#define CLIDR_LOUIS_MASK					GENMASK(23, 21)
++#define CLIDR_CTYPE_MASK(i)					(GENMASK(2, 0) << (3 * (i) - 3))
++
++#define CLIDR_CTYPE_I_CACHE					BIT(0)
++#define CLIDR_CTYPE_D_CACHE					BIT(1)
++#define CLIDR_CTYPE_UNIFIED_CACHE			BIT(2)
++
++#define CTR_FORMAT_MASK						GENMASK(31, 29)
++#define CTR_CWG_MASK						GENMASK(27, 24)
++#define CTR_ERG_MASK						GENMASK(23, 20)
++#define CTR_DMINLINE_MASK					GENMASK(19, 16)
++#define CTR_IMINLINE_MASK					GENMASK(3, 0)
++
++#define CTR_FORMAT_PROVIDED					0x04
++
++#define CCSIDR_NUMSETS_MASK					GENMASK(27, 13)
++#define CCSIDR_ASSOCIATIVITY_MASK			GENMASK(12, 3)
++#define CCSIDR_LINESIZE_MASK				GENMASK(2, 0)
++
++#define CSSELR_LEVEL_MASK					GENMASK(3, 1)
++#define CSSELR_IND_MASK						BIT(0)
++#define CSSELR_IND_DATA_OR_UNIFIED_CACHE    0
++#define CSSELR_IND_INSTRUCTION_CACHE        1
++
+ #define TPIU_SSPSR	0xE0040000
+ #define TPIU_CSPSR	0xE0040004
+ #define TPIU_ACPR	0xE0040010
+diff --git a/src/target/target.c b/src/target/target.c
+index 8ff665f47..53e3dd636 100644
+--- a/src/target/target.c
++++ b/src/target/target.c
+@@ -31,6 +31,7 @@
+ #endif
+ 
+ #include <helper/align.h>
++#include <helper/binarybuffer.h>
+ #include <helper/nvp.h>
+ #include <helper/time_support.h>
+ #include <jtag/jtag.h>
+@@ -192,6 +193,9 @@ static const struct jim_nvp nvp_target_event[] = {
+ 	{ .value = TARGET_EVENT_GDB_FLASH_ERASE_START, .name = "gdb-flash-erase-start" },
+ 	{ .value = TARGET_EVENT_GDB_FLASH_ERASE_END,   .name = "gdb-flash-erase-end" },
+ 
++	{ .value = TARGET_EVENT_READ_BUFFER,  .name = "read-buffer" },
++	{ .value = TARGET_EVENT_WRITE_BUFFER, .name = "write-buffer" },
++
+ 	{ .value = TARGET_EVENT_TRACE_CONFIG, .name = "trace-config" },
+ 
+ 	{ .value = TARGET_EVENT_SEMIHOSTING_USER_CMD_0X100, .name = "semihosting-user-cmd-0x100" },
+@@ -2335,6 +2339,74 @@ int target_profiling_default(struct target *target, uint32_t *samples,
+ 	return retval;
+ }
+ 
++/*
++ * Try to write through event write-buffer. It returns:
++ * ERROR_NOT_IMPLEMENTED => no override, use standard method
++ * ERROR_OK              => overriding successful, return it
++ * ERROR_xxx             => error during overriding, propagate it
++ */
++static int target_write_buffer_override(struct target *target,
++	target_addr_t address, uint32_t size, const uint8_t *buffer)
++{
++	struct target_event_action *teap = target->event_action;
++
++	while (teap) {
++		if (teap->event == TARGET_EVENT_WRITE_BUFFER)
++			break;
++		teap = teap->next;
++	}
++
++	if (!teap)
++		return ERROR_NOT_IMPLEMENTED;
++
++	char *hex = malloc(2 * size + 1);
++	if (!hex) {
++		LOG_ERROR("Out of memory");
++		return ERROR_FAIL;
++	}
++
++	hexify(hex, buffer, size, 2 * size + 1);
++
++	struct command_context *cmd_ctx = current_command_context(teap->interp);
++	char *query_cmd = alloc_printf("%s " TARGET_ADDR_FMT " 0x%" PRIx32 " %s",
++		Jim_GetString(teap->body, NULL), address, size, hex);
++	free(hex);
++	if (!query_cmd) {
++		LOG_ERROR("Out of memory");
++		return ERROR_FAIL;
++	}
++
++	/* Override current target */
++	struct target *saved_target_override = cmd_ctx->current_target_override;
++	cmd_ctx->current_target_override = target;
++
++	int retval = Jim_Eval(teap->interp, query_cmd);
++
++	cmd_ctx->current_target_override = saved_target_override;
++
++	free(query_cmd);
++
++	if (retval == JIM_RETURN)
++		retval = teap->interp->returnCode;
++
++	if (retval != JIM_OK) {
++		Jim_MakeErrorMessage(teap->interp);
++		LOG_TARGET_ERROR(target, "Execution of event %s failed:\n%s",
++			target_event_name(TARGET_EVENT_WRITE_BUFFER),
++			Jim_GetString(Jim_GetResult(teap->interp), NULL));
++		/* clean both error code and stacktrace before return */
++		Jim_Eval(teap->interp, "error \"\" \"\"");
++
++		return ERROR_FAIL;
++	}
++
++	const char *result = Jim_GetString(Jim_GetResult(teap->interp), NULL);
++	if (strcmp(result, "-1") == 0)
++		return ERROR_NOT_IMPLEMENTED;
++
++	return ERROR_OK;
++}
++
+ /* Single aligned words are guaranteed to use 16 or 32 bit access
+  * mode respectively, otherwise data is handled as quickly as
+  * possible
+@@ -2360,6 +2432,10 @@ int target_write_buffer(struct target *target, target_addr_t address, uint32_t s
+ 		return ERROR_FAIL;
+ 	}
+ 
++	int retval = target_write_buffer_override(target, address, size, buffer);
++	if (retval != ERROR_NOT_IMPLEMENTED)
++		return retval;
++
+ 	return target->type->write_buffer(target, address, size, buffer);
+ }
+ 
+@@ -2400,6 +2476,72 @@ static int target_write_buffer_default(struct target *target,
+ 	return ERROR_OK;
+ }
+ 
++/*
++ * Try to read through event read-buffer. It returns:
++ * ERROR_NOT_IMPLEMENTED => no override, use standard method
++ * ERROR_OK              => overriding successful, return it
++ * ERROR_xxx             => error during overriding, propagate it
++ */
++static int target_read_buffer_override(struct target *target,
++	target_addr_t address, uint32_t size, uint8_t *buffer)
++{
++	struct target_event_action *teap = target->event_action;
++
++	while (teap) {
++		if (teap->event == TARGET_EVENT_READ_BUFFER)
++			break;
++		teap = teap->next;
++	}
++
++	if (!teap)
++		return ERROR_NOT_IMPLEMENTED;
++
++	struct command_context *cmd_ctx = current_command_context(teap->interp);
++	char *query_cmd = alloc_printf("%s " TARGET_ADDR_FMT " 0x%" PRIx32,
++		Jim_GetString(teap->body, NULL), address, size);
++	if (!query_cmd) {
++		LOG_ERROR("Out of memory");
++		return ERROR_FAIL;
++	}
++
++	/* Override current target */
++	struct target *saved_target_override = cmd_ctx->current_target_override;
++	cmd_ctx->current_target_override = target;
++
++	int retval = Jim_Eval(teap->interp, query_cmd);
++
++	cmd_ctx->current_target_override = saved_target_override;
++
++	free(query_cmd);
++
++	if (retval == JIM_RETURN)
++		retval = teap->interp->returnCode;
++
++	if (retval != JIM_OK) {
++		Jim_MakeErrorMessage(teap->interp);
++		LOG_TARGET_ERROR(target, "Execution of event %s failed:\n%s",
++			target_event_name(TARGET_EVENT_READ_BUFFER),
++			Jim_GetString(Jim_GetResult(teap->interp), NULL));
++		/* clean both error code and stacktrace before return */
++		Jim_Eval(teap->interp, "error \"\" \"\"");
++
++		return ERROR_FAIL;
++	}
++
++	int len;
++	const char *result = Jim_GetString(Jim_GetResult(teap->interp), &len);
++	if (strcmp(result, "-1") == 0)
++		return ERROR_NOT_IMPLEMENTED;
++
++	if ((unsigned int)len != 2 * size)
++		return ERROR_FAIL;
++
++	/* TODO: there is no check for incorrect hex content */
++	unhexify(buffer, result, size);
++
++	return ERROR_OK;
++}
++
+ /* Single aligned words are guaranteed to use 16 or 32 bit access
+  * mode respectively, otherwise data is handled as quickly as
+  * possible
+@@ -2425,6 +2567,10 @@ int target_read_buffer(struct target *target, target_addr_t address, uint32_t si
+ 		return ERROR_FAIL;
+ 	}
+ 
++	int retval = target_read_buffer_override(target, address, size, buffer);
++	if (retval != ERROR_NOT_IMPLEMENTED)
++		return retval;
++
+ 	return target->type->read_buffer(target, address, size, buffer);
+ }
+ 
+@@ -4400,6 +4546,76 @@ COMMAND_HANDLER(handle_profile_command)
+ 	return retval;
+ }
+ 
++COMMAND_HANDLER(handle_target_read_buffer)
++{
++	if (CMD_ARGC != 2)
++		return ERROR_COMMAND_SYNTAX_ERROR;
++
++	target_addr_t addr;
++	COMMAND_PARSE_ADDRESS(CMD_ARGV[0], addr);
++
++	unsigned int count;
++	COMMAND_PARSE_NUMBER(uint, CMD_ARGV[1], count);
++
++	struct target *target = get_current_target(CMD_CTX);
++
++	uint8_t *buf = malloc(count);
++	char *hex = malloc(2 * count + 1);
++	if (!buf || !hex) {
++		LOG_ERROR("Out of memory");
++		free(hex);
++		free(buf);
++		return ERROR_FAIL;
++	}
++
++	int retval = target_read_buffer(target, addr, count, buf);
++	if (retval != ERROR_OK) {
++		free(hex);
++		free(buf);
++		return retval;
++	}
++
++	hexify(hex, buf, count, 2 * count + 1);
++	command_print(CMD, "%s", hex);
++
++	free(hex);
++	free(buf);
++
++	return ERROR_OK;
++}
++
++COMMAND_HANDLER(handle_target_write_buffer)
++{
++	if (CMD_ARGC != 3)
++		return ERROR_COMMAND_SYNTAX_ERROR;
++
++	target_addr_t addr;
++	COMMAND_PARSE_ADDRESS(CMD_ARGV[0], addr);
++
++	unsigned int count;
++	COMMAND_PARSE_NUMBER(uint, CMD_ARGV[1], count);
++
++	if (strlen(CMD_ARGV[2]) != 2 * count)
++		return ERROR_COMMAND_ARGUMENT_INVALID;
++
++	struct target *target = get_current_target(CMD_CTX);
++
++	uint8_t *buf = malloc(count);
++	if (!buf) {
++		LOG_ERROR("Out of memory");
++		return ERROR_FAIL;
++	}
++
++	/* TODO: there is no check for incorrect hex content */
++	unhexify(buf, CMD_ARGV[2], count);
++
++	int retval = target_write_buffer(target, addr, count, buf);
++
++	free(buf);
++
++	return retval;
++}
++
+ COMMAND_HANDLER(handle_target_read_memory)
+ {
+ 	/*
+@@ -5610,6 +5826,20 @@ static const struct command_registration target_instance_command_handlers[] = {
+ 		.help = "Write Tcl list of 8/16/32/64 bit numbers to target memory",
+ 		.usage = "address width data ['phys']",
+ 	},
++	{
++		.name = "read_buffer",
++		.mode = COMMAND_EXEC,
++		.handler = handle_target_read_buffer,
++		.help = "Read 8 bit values from target memory",
++		.usage = "address count",
++	},
++	{
++		.name = "write_buffer",
++		.mode = COMMAND_EXEC,
++		.handler = handle_target_write_buffer,
++		.help = "Write 8 bit values to target memory",
++		.usage = "address count data",
++	},
+ 	{
+ 		.name = "eventlist",
+ 		.handler = handle_target_event_list,
+@@ -6745,6 +6975,20 @@ static const struct command_registration target_exec_command_handlers[] = {
+ 		.help = "Write Tcl list of 8/16/32/64 bit numbers to target memory",
+ 		.usage = "address width data ['phys']",
+ 	},
++	{
++		.name = "read_buffer",
++		.mode = COMMAND_EXEC,
++		.handler = handle_target_read_buffer,
++		.help = "Read 8 bit values from target memory",
++		.usage = "address count",
++	},
++	{
++		.name = "write_buffer",
++		.mode = COMMAND_EXEC,
++		.handler = handle_target_write_buffer,
++		.help = "Write 8 bit values to target memory",
++		.usage = "address count data",
++	},
+ 	{
+ 		.name = "debug_reason",
+ 		.mode = COMMAND_EXEC,
+diff --git a/src/target/target.h b/src/target/target.h
+index 03db3950c..bd6fd1955 100644
+--- a/src/target/target.h
++++ b/src/target/target.h
+@@ -285,6 +285,10 @@ enum target_event {
+ 
+ 	TARGET_EVENT_TRACE_CONFIG,
+ 
++	/* abuse events to override GDB read/write buffer */
++	TARGET_EVENT_READ_BUFFER,
++	TARGET_EVENT_WRITE_BUFFER,
++
+ 	TARGET_EVENT_SEMIHOSTING_USER_CMD_0X100 = 0x100, /* semihosting allows user cmds from 0x100 to 0x1ff */
+ 	TARGET_EVENT_SEMIHOSTING_USER_CMD_0X101 = 0x101,
+ 	TARGET_EVENT_SEMIHOSTING_USER_CMD_0X102 = 0x102,
+diff --git a/tcl/board/stm32mp21x_dk_with_stlink.cfg b/tcl/board/stm32mp21x_dk_with_stlink.cfg
+new file mode 100644
+index 000000000..1010ee556
+--- /dev/null
++++ b/tcl/board/stm32mp21x_dk_with_stlink.cfg
+@@ -0,0 +1,11 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++
++# Script for stm32mp21x DISCO board with external ST-Link adapter
++
++source [find interface/stlink-dap.cfg]
++
++transport select dapdirect_swd
++
++source [find target/stm32mp21x.cfg]
++
++reset_config srst_only
+diff --git a/tcl/board/stm32mp23x_dk.cfg b/tcl/board/stm32mp23x_dk.cfg
+new file mode 100644
+index 000000000..fc0d536af
+--- /dev/null
++++ b/tcl/board/stm32mp23x_dk.cfg
+@@ -0,0 +1,11 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++
++# Script for stm32mp23x DISCO board
++
++source [find interface/stlink-dap.cfg]
++
++transport select dapdirect_swd
++
++source [find target/stm32mp23x.cfg]
++
++reset_config srst_only
+diff --git a/tcl/board/stm32mp25x_dk.cfg b/tcl/board/stm32mp25x_dk.cfg
+new file mode 100644
+index 000000000..e99a88508
+--- /dev/null
++++ b/tcl/board/stm32mp25x_dk.cfg
+@@ -0,0 +1,11 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++
++# Script for stm32mp25x DISCO board
++
++source [find interface/stlink-dap.cfg]
++
++transport select dapdirect_swd
++
++source [find target/stm32mp25x.cfg]
++
++reset_config srst_only
+diff --git a/tcl/target/stm32mp13x.cfg b/tcl/target/stm32mp13x.cfg
+index bcf25c904..844852cd4 100644
+--- a/tcl/target/stm32mp13x.cfg
++++ b/tcl/target/stm32mp13x.cfg
+@@ -46,7 +46,7 @@ dap create $_CHIPNAME.dap -chain-position $_CHIPNAME.tap -ignore-syspwrupack
+ # NOTE: do not change the order of target create
+ target create $_CHIPNAME.ap1 mem_ap -dap $_CHIPNAME.dap -ap-num 1
+ target create $_CHIPNAME.axi mem_ap -dap $_CHIPNAME.dap -ap-num 0
+-target create $_CHIPNAME.cpu cortex_a -dap $_CHIPNAME.dap -ap-num 1 -coreid 0 -dbgbase 0xE00D0000
++target create $_CHIPNAME.cpu cortex_a -dap $_CHIPNAME.dap -ap-num 1 -coreid 0 -dbgbase 0xE00D0000 -defer-examine
+ 
+ $_CHIPNAME.cpu cortex_a maskisr on
+ $_CHIPNAME.cpu cortex_a dacrfixup on
+@@ -76,27 +76,64 @@ proc axi_nsecure {} {
+ 
+ axi_secure
+ 
+-proc dbgmcu_enable_debug {} {
++# mmw with target selection
++proc target_mmw {target reg setbits clearbits} {
++	set val [eval $target read_memory $reg 32 1]
++	set val [expr {($val & ~$clearbits) | $setbits}]
++	eval $target mww $reg $val
++}
++
++lappend _telnet_autocomplete_skip _enable_debug
++# Uses AP1
++proc _enable_debug {} {
+ 	# keep clock enabled in low-power
+-	## catch {$::_CHIPNAME.ap1 mww 0xe0081004 0x00000004}
++	catch {$::_CHIPNAME.ap1 mww 0xe0081004 0x00000004}
+ 	# freeze watchdog 1 and 2 on core halted
+ 	catch {$::_CHIPNAME.ap1 mww 0xe008102c 0x00000004}
+ 	catch {$::_CHIPNAME.ap1 mww 0xe008104c 0x00000008}
+ }
+ 
+-proc toggle_cpu_dbg_claim0 {} {
+-	# toggle CPU0 DBG_CLAIM[0]
+-	$::_CHIPNAME.ap1 mww 0xe00d0fa0 1
+-	$::_CHIPNAME.ap1 mww 0xe00d0fa4 1
++lappend _telnet_autocomplete_skip _handshake_with_wrapper
++# Uses AP1
++proc _handshake_with_wrapper { halt } {
++	set dbgmcu_cr 0
++	catch {set dbgmcu_cr [eval $::_CHIPNAME.ap1 read_memory 0xe0081004 32 1]}
++	if {[expr {($dbgmcu_cr & 0x07) == 0x00}]} {
++		echo "\nWARNING: FSBL wrapper not detected. Board in dev boot mode?\n"
++		return
++	}
++
++	if { $halt } {
++		$::_CHIPNAME.ap1 arp_halt
++		$::_CHIPNAME.ap1 mww 0xe00d0300 0
++		target_mmw $::_CHIPNAME.ap1 0xe00d0088 0x00004000 0
++	}
++
++	$::_CHIPNAME.ap1 mww 0xe0081004 0x7
+ }
+ 
+ # FIXME: most of handlers below will be removed once reset framework get merged
+-$_CHIPNAME.ap1 configure -event reset-deassert-pre {
++$_CHIPNAME.ap1 configure -event reset-assert-post   { adapter assert srst }
++
++$_CHIPNAME.ap1 configure -event reset-deassert-pre  {
+ 	adapter deassert srst deassert trst
+ 	catch {dap init}
+ 	catch {$::_CHIPNAME.dap apid 1}
++	$::_CHIPNAME.ap1 arp_examine
++	_handshake_with_wrapper $halt
++	_enable_debug
++	$::_CHIPNAME.cpu arp_examine
++	if { $halt } { $::_CHIPNAME.cpu arp_halt}
++}
++
++$_CHIPNAME.ap1 configure -event examine-end         {
++	_enable_debug
++	$::_CHIPNAME.cpu arp_examine
++}
++
++$_CHIPNAME.cpu configure -event read-buffer helper_read_buffer
++
++proc helper_read_buffer {address count} {
++	if {[[target current] curstate] == "halted"} {return -1}
++	$::_CHIPNAME.axi read_buffer $address $count
+ }
+-$_CHIPNAME.cpu configure -event reset-deassert-pre  {$::_CHIPNAME.cpu arp_examine}
+-$_CHIPNAME.cpu configure -event reset-deassert-post {toggle_cpu_dbg_claim0; dbgmcu_enable_debug}
+-$_CHIPNAME.ap1 configure -event examine-start       {dap init}
+-$_CHIPNAME.ap1 configure -event examine-end         {dbgmcu_enable_debug}
+diff --git a/tcl/target/stm32mp15x.cfg b/tcl/target/stm32mp15x.cfg
+index bcdda73e9..080db8c84 100644
+--- a/tcl/target/stm32mp15x.cfg
++++ b/tcl/target/stm32mp15x.cfg
+@@ -18,6 +18,11 @@ if { [info exists CHIPNAME] } {
+ 	set _CHIPNAME stm32mp15x
+ }
+ 
++# Set to 0 to prevent CPU examine. Default examine them
++if { ! [info exists EN_CA7_0] } { set EN_CA7_0 1 }
++if { ! [info exists EN_CA7_1] } { set EN_CA7_1 1 }
++if { ! [info exists EN_CM4] }   { set EN_CM4   1 }
++
+ if { [info exists CPUTAPID] } {
+ 	set _CPUTAPID $CPUTAPID
+ } else {
+@@ -42,15 +47,13 @@ if { [using_jtag] } {
+ 
+ dap create $_CHIPNAME.dap -chain-position $_CHIPNAME.tap -ignore-syspwrupack
+ 
+-# FIXME: Cortex-M code requires target accessible during reset, but this is not possible in STM32MP1
+-# so defer-examine it until the reset framework get merged
+ # NOTE: keep ap-num and dbgbase to speed-up examine after reset
+ # NOTE: do not change the order of target create
+ target create $_CHIPNAME.ap1 mem_ap -dap $_CHIPNAME.dap -ap-num 1
+ target create $_CHIPNAME.ap2 mem_ap -dap $_CHIPNAME.dap -ap-num 2
+ target create $_CHIPNAME.axi mem_ap -dap $_CHIPNAME.dap -ap-num 0
+-target create $_CHIPNAME.cpu0 cortex_a -dap $_CHIPNAME.dap -ap-num 1 -coreid 0 -dbgbase 0xE00D0000
+-target create $_CHIPNAME.cpu1 cortex_a -dap $_CHIPNAME.dap -ap-num 1 -coreid 1 -dbgbase 0xE00D2000
++target create $_CHIPNAME.cpu0 cortex_a -dap $_CHIPNAME.dap -ap-num 1 -coreid 0 -dbgbase 0xE00D0000 -defer-examine
++target create $_CHIPNAME.cpu1 cortex_a -dap $_CHIPNAME.dap -ap-num 1 -coreid 1 -dbgbase 0xE00D2000 -defer-examine
+ target create $_CHIPNAME.cm4 cortex_m -dap $_CHIPNAME.dap -ap-num 2 -defer-examine
+ 
+ targets $_CHIPNAME.cpu0
+@@ -96,7 +99,16 @@ proc axi_nsecure {} {
+ 
+ axi_secure
+ 
+-proc dbgmcu_enable_debug {} {
++# mmw with target selection
++proc target_mmw {target reg setbits clearbits} {
++	set val [eval $target read_memory $reg 32 1]
++	set val [expr {($val & ~$clearbits) | $setbits}]
++	eval $target mww $reg $val
++}
++
++lappend _telnet_autocomplete_skip _enable_debug
++# Uses AP1
++proc _enable_debug {} {
+ 	# set debug enable bits in DBGMCU_CR to get ap2 and cm4 visible
+ 	catch {$::_CHIPNAME.ap1 mww 0xe0081004 0x00000007}
+ 	# freeze watchdog 1 and 2 on cores halted
+@@ -104,30 +116,72 @@ proc dbgmcu_enable_debug {} {
+ 	catch {$::_CHIPNAME.ap1 mww 0xe008104c 0x00000008}
+ }
+ 
+-proc toggle_cpu0_dbg_claim0 {} {
+-	# toggle CPU0 DBG_CLAIM[0]
+-	$::_CHIPNAME.ap1 mww 0xe00d0fa0 1
+-	$::_CHIPNAME.ap1 mww 0xe00d0fa4 1
++lappend _telnet_autocomplete_skip _handshake_with_wrapper
++# Uses AP1
++proc _handshake_with_wrapper { halt } {
++	set dbgmcu_cr 0
++	catch {set dbgmcu_cr [eval $::_CHIPNAME.ap1 read_memory 0xe0081004 32 1]}
++	if {[expr {($dbgmcu_cr & 0x07) == 0x00}]} {
++		echo "\nWARNING: FSBL wrapper not detected. Board in dev boot mode?\n"
++		return
++	}
++
++	if { $halt }  {
++		$::_CHIPNAME.ap1 arp_halt
++		if { $::EN_CA7_0 } {
++			$::_CHIPNAME.ap1 arp_halt
++			$::_CHIPNAME.ap1 mww 0xe00d0300 0
++			target_mmw $::_CHIPNAME.ap1 0xe00d0088 0x00004000 0
++		}
++	}
++
++	$::_CHIPNAME.ap1 mww 0xe0081004 0x7
+ }
+ 
+-proc detect_cpu1 {} {
++lappend _telnet_autocomplete_skip _detect_cpu1
++# Uses AP1
++proc _detect_cpu1 {} {
++	if { !$::EN_CA7_1 } { return }
++
+ 	set cpu1_prsr [$::_CHIPNAME.ap1 read_memory 0xE00D2314 32 1]
+ 	set dual_core [expr {$cpu1_prsr & 1}]
+-	if {! $dual_core} {$::_CHIPNAME.cpu1 configure -defer-examine}
++	if {!$dual_core} {set ::EN_CA7_1 0}
+ }
+ 
+-proc rcc_enable_traceclk {} {
++lappend _telnet_autocomplete_skip _rcc_enable_traceclk
++proc _rcc_enable_traceclk {} {
+ 	$::_CHIPNAME.ap2 mww 0x5000080c 0x301
+ }
+ 
+ # FIXME: most of handler below will be removed once reset framework get merged
+-$_CHIPNAME.ap1  configure -event reset-deassert-pre  {adapter deassert srst deassert trst;catch {dap init};catch {$::_CHIPNAME.dap apid 1}}
+-$_CHIPNAME.ap2  configure -event reset-deassert-pre  {dbgmcu_enable_debug;rcc_enable_traceclk}
+-$_CHIPNAME.cpu0 configure -event reset-deassert-pre  {$::_CHIPNAME.cpu0 arp_examine}
+-$_CHIPNAME.cpu1 configure -event reset-deassert-pre  {$::_CHIPNAME.cpu1 arp_examine allow-defer}
+-$_CHIPNAME.cpu0 configure -event reset-deassert-post {toggle_cpu0_dbg_claim0}
+-$_CHIPNAME.cm4  configure -event reset-deassert-post {$::_CHIPNAME.cm4 arp_examine;if {[$::_CHIPNAME.ap2 curstate] == "halted"} {$::_CHIPNAME.cm4 arp_poll;$::_CHIPNAME.cm4 arp_poll;$::_CHIPNAME.cm4 arp_halt}}
+-$_CHIPNAME.ap1  configure -event examine-start       {dap init}
+-$_CHIPNAME.ap2  configure -event examine-start       {dbgmcu_enable_debug}
+-$_CHIPNAME.cpu0 configure -event examine-end         {detect_cpu1}
+-$_CHIPNAME.ap2  configure -event examine-end         {rcc_enable_traceclk;$::_CHIPNAME.cm4 arp_examine}
++$_CHIPNAME.cm4  configure -event reset-assert        { }
++
++$_CHIPNAME.ap1  configure -event reset-assert-post   { adapter assert srst }
++
++$_CHIPNAME.ap1  configure -event reset-deassert-pre  {
++	adapter deassert srst deassert trst
++	catch {dap init}
++	catch {$::_CHIPNAME.dap apid 1}
++	$::_CHIPNAME.ap1 arp_examine
++	_handshake_with_wrapper $halt
++	if { $::EN_CA7_0 } { $::_CHIPNAME.cpu0 arp_examine; if { $halt } { $::_CHIPNAME.cpu0 arp_halt }}
++	if { $::EN_CA7_1 } { $::_CHIPNAME.cpu1 arp_examine; if { $halt } { $::_CHIPNAME.cpu1 arp_halt }}
++	_enable_debug
++}
++
++$_CHIPNAME.ap2  configure -event reset-deassert-pre  {
++	_rcc_enable_traceclk
++	if { $::EN_CM4 } {$::_CHIPNAME.cm4 arp_examine; if { $halt } { $::_CHIPNAME.cm4 arp_halt }}
++}
++
++$_CHIPNAME.ap1 configure -event examine-end          {
++	_enable_debug
++	_detect_cpu1
++	if { $::EN_CA7_0 } { $::_CHIPNAME.cpu0 arp_examine }
++	if { $::EN_CA7_1 } { $::_CHIPNAME.cpu1 arp_examine }
++}
++
++$_CHIPNAME.ap2  configure -event examine-end         {
++	_rcc_enable_traceclk
++	if { $::EN_CM4 } {$::_CHIPNAME.cm4 arp_examine}
++}
+diff --git a/tcl/target/stm32mp21x.cfg b/tcl/target/stm32mp21x.cfg
+new file mode 100644
+index 000000000..1251bac59
+--- /dev/null
++++ b/tcl/target/stm32mp21x.cfg
+@@ -0,0 +1,249 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++
++# STMicroelectronics STM32MP21x
++# STM32MP21x devices support both JTAG and SWD transports.
++
++# HLA does not support multi-cores nor custom CSW nor AP other than 0
++if { [using_hla] } {
++	echo "ERROR: HLA transport cannot work with this target."
++	shutdown
++}
++
++source [find target/swj-dp.tcl]
++source [find mem_helper.tcl]
++
++if { [info exists CHIPNAME] } {
++	set _CHIPNAME $CHIPNAME
++} else {
++	set _CHIPNAME stm32mp21x
++}
++
++# Set to 0 to prevent CPU examine. Default examine them
++if { ! [info exists EN_CA35] } { set EN_CA35 1 }
++if { ! [info exists EN_CM33] } { set EN_CM33 1 }
++
++set _ENDIAN little
++
++# jtag scan chain
++if { [info exists CPUTAPID] } {
++	set _CPUTAPID $CPUTAPID
++} else {
++	if { [using_jtag] } {
++		set _CPUTAPID 0x6ba00477
++	} {
++		set _CPUTAPID 0x6ba02477
++	}
++}
++
++# Chip Level TAP Controller, only in jtag mode
++if { [info exists CLCTAPID] } {
++	set _CLCTAPID $CLCTAPID
++} else {
++	set _CLCTAPID 0x16503041
++}
++
++swj_newdap $_CHIPNAME tap -expected-id $_CPUTAPID -irlen 4 -ircapture 0x01 -irmask 0x0f
++if { [using_jtag] } {
++	swj_newdap $_CHIPNAME.clc tap -expected-id $_CLCTAPID -irlen 5
++}
++
++dap create $_CHIPNAME.dap -chain-position $_CHIPNAME.tap
++
++# define AXI & APB Memory Access Ports
++# NOTE: do not change the order of target create
++target create $_CHIPNAME.ap0 mem_ap -dap $_CHIPNAME.dap -ap-num 0
++target create $_CHIPNAME.ap1 mem_ap -dap $_CHIPNAME.dap -ap-num 1
++target create $_CHIPNAME.axi mem_ap -dap $_CHIPNAME.dap -ap-num 2
++target create $_CHIPNAME.ap3 mem_ap -dap $_CHIPNAME.dap -ap-num 3 -defer-examine
++
++# define the Cortex-A35
++cti create $_CHIPNAME.cti.a35 -dap $_CHIPNAME.dap -ap-num 1 -baseaddr 0x80220000
++target create $_CHIPNAME.a35 aarch64 -dap $_CHIPNAME.dap -dbgbase 0x80210000 -ap-num 1 -cti $_CHIPNAME.cti.a35 -defer-examine
++
++# define the Cortex-M33
++target create $_CHIPNAME.m33 cortex_m -dap $_CHIPNAME.dap -ap-num 3 -defer-examine
++cti create $_CHIPNAME.cti.m33 -dap $_CHIPNAME.dap -ap-num 3 -baseaddr 0xe0042000
++
++# define the system CTIs
++cti create $_CHIPNAME.cti.sys0 -dap $_CHIPNAME.dap -ap-num 1 -baseaddr 0x80080000
++cti create $_CHIPNAME.cti.sys1 -dap $_CHIPNAME.dap -ap-num 1 -baseaddr 0x80090000
++
++swo  create $_CHIPNAME.swo  -dap $_CHIPNAME.dap -ap-num 1 -baseaddr 0x800A0000
++tpiu create $_CHIPNAME.tpiu -dap $_CHIPNAME.dap -ap-num 1 -baseaddr 0x80040000
++
++targets $_CHIPNAME.a35
++
++reset_config srst_pulls_trst
++
++adapter speed 5000
++adapter srst pulse_width 200
++# wait 1 seconds for bootrom
++adapter srst delay 1000
++
++# set CSW for AXI
++$_CHIPNAME.dap apsel 2
++$_CHIPNAME.dap apcsw 0x12800000
++
++# set CSW for Cortex-M33 D-Cache
++$_CHIPNAME.dap apsel 3
++$_CHIPNAME.dap apcsw 0x1a000000
++
++# mmw with target selection
++proc target_mmw {target reg setbits clearbits} {
++	set val [eval $target read_memory $reg 32 1]
++	set val [expr {($val & ~$clearbits) | $setbits}]
++	eval $target mww $reg $val
++}
++
++lappend _telnet_autocomplete_skip _enable_debug
++# Uses AP0 and AXI
++proc _enable_debug {} {
++	# Enable DBGMCU clock in RC
++	$::_CHIPNAME.axi mww 0x44200520 0x500
++
++	# set debug enable bits in DBGMCU_CR to get ap3/cm33 visible
++	$::_CHIPNAME.ap0 mww 0x80001004 0x7
++
++	# Freeze watchdogs on CPU halt
++	$::_CHIPNAME.axi mww 0x440a003c 0x00000026
++	$::_CHIPNAME.axi mww 0x440a0040 0x00000038
++}
++
++lappend _telnet_autocomplete_skip _rcc_enable_traceclk
++# Uses AXI
++proc _rcc_enable_traceclk {} {
++	# set bit TRACEEN in RCC_DBGCFGR to clock TPIU
++	target_mmw $::_CHIPNAME.axi 0x44200520 0x200 0
++}
++
++lappend _telnet_autocomplete_skip _handshake_with_wrapper
++# Uses AP0, AP1 and AP3
++proc _handshake_with_wrapper { halt } {
++	set dbgmcu_cr 0
++	catch {set dbgmcu_cr [eval $::_CHIPNAME.ap0 read_memory 0x80001004 32 1]}
++	if {[expr {($dbgmcu_cr & 0x07) == 0x00}]} {
++		echo "\nWARNING: FSBL wrapper not detected. Board in dev boot mode?\n"
++		return
++	}
++
++	if { $halt } {
++		if { $::EN_CA35 } {
++			$::_CHIPNAME.ap1 arp_examine
++			$::_CHIPNAME.ap1 arp_halt
++			$::_CHIPNAME.ap1 mww 0x80210300 0
++			target_mmw $::_CHIPNAME.ap1 0x80210088 0x00004000 0
++		}
++		if { $::EN_CM33 } {
++			$::_CHIPNAME.ap3 arp_examine
++			$::_CHIPNAME.ap3 arp_halt
++			$::_CHIPNAME.ap3 mww 0xe000edf0 0xa05f0001
++		}
++	}
++
++	# alert wrapper that debugger is ready
++	$::_CHIPNAME.ap0 mww 0x80001004 0x07
++}
++
++lappend _telnet_autocomplete_skip _enable_dbgmcu_on_devboot
++# In DEV BOOT the BootROM does not completes the sequence to enable the
++# visibility of DBGMCU on AP0.
++# Write a value in DBGMCU_DBG_AUTH_DEV from CID1.
++# Returns 1 if DEV BOOT is detected
++# Uses AP2 (AXI bus)
++proc _enable_dbgmcu_on_devboot {} {
++	$::_CHIPNAME.axi mww 0x44230004 0
++	set boot_pins [expr {[$::_CHIPNAME.axi read_memory 0x44230000 32 1] & 0xf}]
++	if {$boot_pins != 0x3 && $boot_pins != 0xc} {
++		return 0
++	}
++
++	set rifsc_rimc_cr [$::_CHIPNAME.axi read_memory 0x42080c00 32 1]
++	if {$rifsc_rimc_cr != 0x00008710} {
++		echo "RIFSC_RIMC_CR modified, skip activation of DBGMCU"
++		return 1
++	}
++
++	# Enable DBGMCU clock in RC
++	$::_CHIPNAME.axi mww 0x44200520 0x500
++
++	# Change DAP (AXI) CID, write in DBGMCU, set back DAP CID
++	$::_CHIPNAME.axi mww 0x42080c00 0x00008110
++	$::_CHIPNAME.axi mww 0x440A0104 1
++	$::_CHIPNAME.axi mww 0x42080c00 0x00008710
++	return 1
++}
++
++$_CHIPNAME.m33 configure -event reset-assert        { }
++
++$_CHIPNAME.axi configure -event reset-assert-post   { adapter assert srst }
++
++$_CHIPNAME.axi configure -event reset-deassert-pre  {
++	adapter deassert srst deassert trst
++	catch {dap init}
++	catch {$::_CHIPNAME.dap apid 0}
++	$::_CHIPNAME.axi arp_examine
++	set is_dev_boot [_enable_dbgmcu_on_devboot]
++	if { !$is_dev_boot } { _handshake_with_wrapper $halt}
++	_enable_debug
++	_rcc_enable_traceclk
++	if { $::EN_CA35 } { $::_CHIPNAME.a35 arp_examine; if {$halt} {$::_CHIPNAME.a35 arp_halt} }
++	if { $::EN_CM33 } { $::_CHIPNAME.ap3 arp_examine; $::_CHIPNAME.m33 arp_examine; if {$halt} {$::_CHIPNAME.ap3 arp_halt; $::_CHIPNAME.m33 arp_halt} }
++}
++
++$_CHIPNAME.axi configure -event examine-end         {
++	set is_dev_boot [_enable_dbgmcu_on_devboot]
++	if {$is_dev_boot} {echo "Dev boot detected"}
++	_enable_debug
++	_rcc_enable_traceclk
++	if { $::EN_CA35 } { $::_CHIPNAME.a35 arp_examine }
++	if { $::EN_CM33 } { $::_CHIPNAME.ap3 arp_examine; $::_CHIPNAME.m33 arp_examine }
++}
++
++namespace eval $_CHIPNAME.m33 {
++	proc event-d-cache-flush {a l} {
++		echo "in m33 event-d-cache-flush $a $l"
++
++		if {[[target current] curstate] ne "halted"} {
++			return "Target not halted"
++		}
++
++		if {$a >= 0x60000000 && $a < 0xE0000000} {
++			# DCACHE on S-AHB. If enabled, clean and invalidate range
++			set dcache_cr [read_memory 0x40480000 32 1]
++			if {[expr {$dcache_cr & 0x01}]} {
++				write_memory 0x40480028 32 "$a [expr {$a + $l}]"
++				write_memory 0x40480000 32 [expr {($dcache_cr & 0xfffff0ff) | 0x00000b00}]
++				# wait for DCACHE_SR:BUSYCMDF == 0
++				while {[expr {[read_memory 0x40480004 32 1] & 0x08}]} {
++					sleep 1
++				}
++			}
++			return
++		}
++
++		return
++	}
++
++	proc event-i-cache-flush {a l} {
++		echo "in m33 event-i-cache-flush $a $l"
++
++		if {[[target current] curstate] ne "halted"} {
++			return "Target not halted"
++		}
++
++		if {$a < 0x20000000} {
++			# ICACHE on C-AHB. If enabled, invalidate it
++			set icache_cr [read_memory 0x40470000 32 1]
++			if {[expr {$icache_cr & 0x01}]} {
++				write_memory 0x40470000 32 [expr {$icache_cr | 2}]
++				# wait for ICACHE_SR:BUSYF == 0
++				while {[expr {[read_memory 0x40470004 32 1] & 0x01}]} {
++					sleep 1
++				}
++			}
++			return
++		}
++
++		return
++	}
++}
+diff --git a/tcl/target/stm32mp23x.cfg b/tcl/target/stm32mp23x.cfg
+new file mode 100644
+index 000000000..e50911ced
+--- /dev/null
++++ b/tcl/target/stm32mp23x.cfg
+@@ -0,0 +1,234 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++
++# STMicroelectronics STM32MP23x
++# STM32MP23x devices support both JTAG and SWD transports.
++
++# HLA does not support multi-cores nor custom CSW nor AP other than 0
++if { [using_hla] } {
++	echo "ERROR: HLA transport cannot work with this target."
++	shutdown
++}
++
++source [find target/swj-dp.tcl]
++source [find mem_helper.tcl]
++
++if { [info exists CHIPNAME] } {
++	set _CHIPNAME $CHIPNAME
++} else {
++	set _CHIPNAME stm32mp23x
++}
++
++# Set to 0 to prevent CPU examine. Default examine them
++if { ! [info exists EN_CA35_0] } { set EN_CA35_0 1 }
++if { ! [info exists EN_CA35_1] } { set EN_CA35_1 1 }
++if { ! [info exists EN_CM33] }   { set EN_CM33   1 }
++
++set _ENDIAN little
++
++# jtag scan chain
++if { [info exists CPUTAPID] } {
++	set _CPUTAPID $CPUTAPID
++} else {
++	if { [using_jtag] } {
++		set _CPUTAPID 0x6ba00477
++	} {
++		set _CPUTAPID 0x6ba02477
++	}
++}
++
++# Chip Level TAP Controller, only in jtag mode
++if { [info exists CLCTAPID] } {
++	set _CLCTAPID $CLCTAPID
++} else {
++	set _CLCTAPID 0x16505041
++}
++
++swj_newdap $_CHIPNAME tap -expected-id $_CPUTAPID -irlen 4 -ircapture 0x01 -irmask 0x0f
++if { [using_jtag] } {
++	swj_newdap $_CHIPNAME.clc tap -expected-id $_CLCTAPID -irlen 5
++}
++
++dap create $_CHIPNAME.dap -chain-position $_CHIPNAME.tap
++
++# define AXI & APB Memory Access Ports
++# NOTE: do not change the order of target create
++target create $_CHIPNAME.ap0 mem_ap -dap $_CHIPNAME.dap -ap-num 0
++target create $_CHIPNAME.axi mem_ap -dap $_CHIPNAME.dap -ap-num 4
++target create $_CHIPNAME.ap8 mem_ap -dap $_CHIPNAME.dap -ap-num 8 -defer-examine
++
++# define the first Cortex-A35
++cti create $_CHIPNAME.cti.a35_0 -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x80220000
++target create $_CHIPNAME.a35_0 aarch64 -dap $_CHIPNAME.dap -dbgbase 0x80210000 -ap-num 0 -cti $_CHIPNAME.cti.a35_0 -defer-examine
++
++# define the second Cortex-A35
++cti create $_CHIPNAME.cti.a35_1 -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x80320000
++target create $_CHIPNAME.a35_1 aarch64 -dap $_CHIPNAME.dap -dbgbase 0x80310000 -ap-num 0 -cti $_CHIPNAME.cti.a35_1 -defer-examine
++
++# define the Cortex-M33
++target create $_CHIPNAME.m33 cortex_m -dap $_CHIPNAME.dap -ap-num 8 -defer-examine
++cti create $_CHIPNAME.cti.m33 -dap $_CHIPNAME.dap -ap-num 8 -baseaddr 0xe0042000
++
++# define the system CTIs
++cti create $_CHIPNAME.cti.sys0 -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x80090000
++cti create $_CHIPNAME.cti.sys1 -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x800a0000
++
++swo  create $_CHIPNAME.swo  -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x800b0000
++tpiu create $_CHIPNAME.tpiu -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x80050000
++
++targets $_CHIPNAME.a35_0
++
++target smp $_CHIPNAME.a35_0 $_CHIPNAME.a35_1
++
++reset_config srst_gates_jtag srst_pulls_trst
++
++adapter speed 5000
++adapter srst pulse_width 200
++# wait 1 seconds for bootrom
++adapter srst delay 1000
++
++# set CSW for AXI
++$_CHIPNAME.dap apsel 4
++$_CHIPNAME.dap apcsw 0x12800000
++
++# set CSW for Cortex-M33 D-Cache
++$_CHIPNAME.dap apsel 8
++$_CHIPNAME.dap apcsw 0x1a000000
++
++# mmw with target selection
++proc target_mmw {target reg setbits clearbits} {
++	set val [eval $target read_memory $reg 32 1]
++	set val [expr {($val & ~$clearbits) | $setbits}]
++	eval $target mww $reg $val
++}
++
++lappend _telnet_autocomplete_skip _enable_debug
++# Uses AP0 and AXI
++proc _enable_debug {} {
++	# set debug enable bits in DBGMCU_CR to get ap8/cm33 visible
++	$::_CHIPNAME.ap0 mww 0x80010004 0x17
++
++	# Freeze watchdogs on CPU halt
++	$::_CHIPNAME.axi mww 0x4a010008 0x00000000
++	$::_CHIPNAME.axi mww 0x4a01003c 0x00000026
++	$::_CHIPNAME.axi mww 0x4a010040 0x00000038
++	$::_CHIPNAME.axi mww 0x4a010044 0x00000400
++	$::_CHIPNAME.axi mww 0x4a010048 0x00000400
++	$::_CHIPNAME.axi mww 0x4a01004c 0x00000600
++}
++
++lappend _telnet_autocomplete_skip _rcc_enable_traceclk
++# Uses AXI
++proc _rcc_enable_traceclk {} {
++	# set bit TRACEEN in RCC_DBGCFGR to clock TPIU
++	target_mmw $::_CHIPNAME.axi 0x44200520 0x200 0
++}
++
++lappend _telnet_autocomplete_skip _handshake_with_wrapper
++# Uses AP0
++proc _handshake_with_wrapper { halt } {
++	set dbgmcu_cr 0
++	catch {set dbgmcu_cr [eval $::_CHIPNAME.ap0 read_memory 0x80010004 32 1]}
++	if {[expr {($dbgmcu_cr & 0x07) == 0x00}]} {
++		echo "\nWARNING: FSBL wrapper not detected. Board in dev boot mode?\n"
++		return;
++	}
++
++	if { $halt } {
++		if { $::EN_CA35_0 || $::EN_CA35_1 } {
++			$::_CHIPNAME.ap0 arp_examine
++			$::_CHIPNAME.ap0 arp_halt
++		}
++		if { $::EN_CA35_0 } {
++			$::_CHIPNAME.ap0 mww 0x80210300 0
++			target_mmw $::_CHIPNAME.ap0 0x80210088 0x00004000 0
++		}
++		if { $::EN_CA35_1 } {
++			$::_CHIPNAME.ap0 mww 0x80310300 0
++			target_mmw $::_CHIPNAME.ap0 0x80310088 0x00004000 0
++		}
++		if { $::EN_CM33 } {
++			$::_CHIPNAME.ap8 arp_examine
++			$::_CHIPNAME.ap8 arp_halt
++			$::_CHIPNAME.ap8 mww 0xe000edf0 0xa05f0001
++		}
++	}
++
++	# alert wrapper that debugger is ready
++	$::_CHIPNAME.ap0 mww 0x80010004 0x17
++}
++
++$_CHIPNAME.m33 configure -event reset-assert        { }
++
++$_CHIPNAME.axi configure -event reset-assert-post   { adapter assert srst }
++
++$_CHIPNAME.axi configure -event reset-deassert-pre  {
++	adapter deassert srst deassert trst
++	catch {dap init}
++	catch {$::_CHIPNAME.dap apid 0}
++	$::_CHIPNAME.ap0 arp_examine
++	_handshake_with_wrapper $halt
++
++	$::_CHIPNAME.axi arp_examine
++	_enable_debug
++	_rcc_enable_traceclk
++	if { $::EN_CA35_0 } { $::_CHIPNAME.a35_0 arp_examine;  if {$halt} {$::_CHIPNAME.a35_0 arp_halt} }
++	if { $::EN_CA35_1 } { $::_CHIPNAME.a35_1 arp_examine;  if {$halt} {$::_CHIPNAME.a35_1 arp_halt} }
++	if { $::EN_CM33 }   { $::_CHIPNAME.ap8 arp_examine; $::_CHIPNAME.m33 arp_examine; if {$halt} {$::_CHIPNAME.m33 arp_halt} }
++}
++
++$_CHIPNAME.axi configure -event examine-end         {
++	_enable_debug
++	_rcc_enable_traceclk
++	if { $::EN_CA35_0 } { $::_CHIPNAME.a35_0 arp_examine }
++	if { $::EN_CA35_1 } { $::_CHIPNAME.a35_1 arp_examine }
++	if { $::EN_CM33 }   { $::_CHIPNAME.ap8 arp_examine; $::_CHIPNAME.m33 arp_examine }
++}
++
++namespace eval $_CHIPNAME.m33 {
++	proc event-d-cache-flush {a l} {
++		echo "in m33 event-d-cache-flush $a $l"
++
++		if {[[target current] curstate] ne "halted"} {
++			return "Target not halted"
++		}
++
++		if {$a >= 0x60000000 && $a < 0xE0000000} {
++			# DCACHE on S-AHB. If enabled, clean and invalidate range
++			set dcache_cr [read_memory 0x40480000 32 1]
++			if {[expr {$dcache_cr & 0x01}]} {
++				write_memory 0x40480028 32 "$a [expr {$a + $l}]"
++				write_memory 0x40480000 32 [expr {($dcache_cr & 0xfffff0ff) | 0x00000b00}]
++				# wait for DCACHE_SR:BUSYCMDF == 0
++				while {[expr {[read_memory 0x40480004 32 1] & 0x08}]} {
++					sleep 1
++				}
++			}
++			return
++		}
++
++		return
++	}
++
++	proc event-i-cache-flush {a l} {
++		echo "in m33 event-i-cache-flush $a $l"
++
++		if {[[target current] curstate] ne "halted"} {
++			return "Target not halted"
++		}
++
++		if {$a < 0x20000000} {
++			# ICACHE on C-AHB. If enabled, invalidate it
++			set icache_cr [read_memory 0x40470000 32 1]
++			if {[expr {$icache_cr & 0x01}]} {
++				write_memory 0x40470000 32 [expr {$icache_cr | 2}]
++				# wait for ICACHE_SR:BUSYF == 0
++				while {[expr {[read_memory 0x40470004 32 1] & 0x01}]} {
++					sleep 1
++				}
++			}
++			return
++		}
++
++		return
++	}
++}
+diff --git a/tcl/target/stm32mp25x.cfg b/tcl/target/stm32mp25x.cfg
+new file mode 100644
+index 000000000..01518c6b6
+--- /dev/null
++++ b/tcl/target/stm32mp25x.cfg
+@@ -0,0 +1,256 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++
++# STMicroelectronics STM32MP25x
++# STM32MP25x devices support both JTAG and SWD transports.
++
++# HLA does not support multi-cores nor custom CSW nor AP other than 0
++if { [using_hla] } {
++	echo "ERROR: HLA transport cannot work with this target."
++	shutdown
++}
++
++source [find target/swj-dp.tcl]
++source [find mem_helper.tcl]
++
++if { [info exists CHIPNAME] } {
++	set _CHIPNAME $CHIPNAME
++} else {
++	set _CHIPNAME stm32mp25x
++}
++
++# Set to 0 to prevent CPU examine. Default examine them
++if { ! [info exists EN_CA35_0] } { set EN_CA35_0 1 }
++if { ! [info exists EN_CA35_1] } { set EN_CA35_1 1 }
++if { ! [info exists EN_CM33] }   { set EN_CM33   1 }
++if { ! [info exists EN_CM0P] }   { set EN_CM0P   1 }
++
++set _ENDIAN little
++
++# jtag scan chain
++if { [info exists CPUTAPID] } {
++	set _CPUTAPID $CPUTAPID
++} else {
++	if { [using_jtag] } {
++		set _CPUTAPID 0x6ba00477
++	} {
++		set _CPUTAPID 0x6ba02477
++	}
++}
++
++# Chip Level TAP Controller, only in jtag mode
++if { [info exists CLCTAPID] } {
++	set _CLCTAPID $CLCTAPID
++} else {
++	set _CLCTAPID 0x16505041
++}
++
++swj_newdap $_CHIPNAME tap -expected-id $_CPUTAPID -irlen 4 -ircapture 0x01 -irmask 0x0f
++if { [using_jtag] } {
++	swj_newdap $_CHIPNAME.clc tap -expected-id $_CLCTAPID -irlen 5
++}
++
++dap create $_CHIPNAME.dap -chain-position $_CHIPNAME.tap
++
++# define AXI & APB Memory Access Ports
++# NOTE: do not change the order of target create
++target create $_CHIPNAME.ap0 mem_ap -dap $_CHIPNAME.dap -ap-num 0
++target create $_CHIPNAME.axi mem_ap -dap $_CHIPNAME.dap -ap-num 4
++target create $_CHIPNAME.ap2 mem_ap -dap $_CHIPNAME.dap -ap-num 2 -defer-examine
++target create $_CHIPNAME.ap8 mem_ap -dap $_CHIPNAME.dap -ap-num 8 -defer-examine
++
++# define the first Cortex-A35
++cti create $_CHIPNAME.cti.a35_0 -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x80220000
++target create $_CHIPNAME.a35_0 aarch64 -dap $_CHIPNAME.dap -dbgbase 0x80210000 -ap-num 0 -cti $_CHIPNAME.cti.a35_0 -defer-examine
++
++# define the second Cortex-A35
++cti create $_CHIPNAME.cti.a35_1 -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x80320000
++target create $_CHIPNAME.a35_1 aarch64 -dap $_CHIPNAME.dap -dbgbase 0x80310000 -ap-num 0 -cti $_CHIPNAME.cti.a35_1 -defer-examine
++
++# define the Cortex-M33
++target create $_CHIPNAME.m33 cortex_m -dap $_CHIPNAME.dap -ap-num 8 -defer-examine
++cti create $_CHIPNAME.cti.m33 -dap $_CHIPNAME.dap -ap-num 8 -baseaddr 0xe0042000
++
++# define the Cortex-M0+
++target create $_CHIPNAME.m0p cortex_m -dap $_CHIPNAME.dap -ap-num 2 -defer-examine
++cti create $_CHIPNAME.cti.m0p -dap $_CHIPNAME.dap -ap-num 2 -baseaddr 0xf0000000
++
++# define the system CTIs
++cti create $_CHIPNAME.cti.sys0 -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x80090000
++cti create $_CHIPNAME.cti.sys1 -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x800a0000
++
++swo  create $_CHIPNAME.swo  -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x800b0000
++tpiu create $_CHIPNAME.tpiu -dap $_CHIPNAME.dap -ap-num 0 -baseaddr 0x80050000
++
++targets $_CHIPNAME.a35_0
++
++target smp $_CHIPNAME.a35_0 $_CHIPNAME.a35_1
++
++reset_config srst_gates_jtag srst_pulls_trst
++
++adapter speed 5000
++adapter srst pulse_width 200
++# wait 1 seconds for bootrom
++adapter srst delay 1000
++
++# set CSW for AXI
++$_CHIPNAME.dap apsel 4
++$_CHIPNAME.dap apcsw 0x12800000
++
++# set CSW for Cortex-M33 D-Cache
++$_CHIPNAME.dap apsel 8
++$_CHIPNAME.dap apcsw 0x1a000000
++
++# mmw with target selection
++proc target_mmw {target reg setbits clearbits} {
++	set val [eval $target read_memory $reg 32 1]
++	set val [expr {($val & ~$clearbits) | $setbits}]
++	eval $target mww $reg $val
++}
++
++lappend _telnet_autocomplete_skip _enable_ap2_cm0p
++proc _enable_ap2_cm0p {} {
++	# set bits C3LPEN and C3EN in RCC_C3CFGR to enable AP2 and CM0+ clock
++	target_mmw $::_CHIPNAME.axi 0x54200490 6 0
++}
++
++lappend _telnet_autocomplete_skip _enable_debug
++# Uses AP0 and AXI
++proc _enable_debug {} {
++	# set debug enable bits in DBGMCU_CR to get ap2/cm0+ and ap8/cm33 visible
++	# set DBG_SWD_SEL_N bit in DBGMCU_CR to get ap2/cm0+ on main debug interface
++	$::_CHIPNAME.ap0 mww 0x80010004 0x17
++
++	if { $::EN_CM0P } {
++		_enable_ap2_cm0p
++	}
++
++	# Freeze watchdogs on CPU halt
++	$::_CHIPNAME.axi mww 0x4a010008 0x00000000
++	$::_CHIPNAME.axi mww 0x4a01003c 0x00000026
++	$::_CHIPNAME.axi mww 0x4a010040 0x00000038
++	$::_CHIPNAME.axi mww 0x4a010044 0x00000400
++	$::_CHIPNAME.axi mww 0x4a010048 0x00000400
++	$::_CHIPNAME.axi mww 0x4a01004c 0x00000600
++}
++
++lappend _telnet_autocomplete_skip _rcc_enable_traceclk
++# Uses AXI
++proc _rcc_enable_traceclk {} {
++	# set bit TRACEEN in RCC_DBGCFGR to clock TPIU
++	target_mmw $::_CHIPNAME.axi 0x44200520 0x200 0
++}
++
++lappend _telnet_autocomplete_skip _handshake_with_wrapper
++# Uses AP0
++proc _handshake_with_wrapper { halt } {
++	set dbgmcu_cr 0
++	catch {set dbgmcu_cr [eval $::_CHIPNAME.ap0 read_memory 0x80010004 32 1]}
++	if {[expr {($dbgmcu_cr & 0x07) == 0x00}]} {
++		echo "\nWARNING: FSBL wrapper not detected. Board in dev boot mode?\n"
++		return;
++	}
++
++	if { $halt } {
++		if { $::EN_CA35_0 || $::EN_CA35_1 } {
++			$::_CHIPNAME.ap0 arp_examine
++			$::_CHIPNAME.ap0 arp_halt
++		}
++		if { $::EN_CA35_0 } {
++			$::_CHIPNAME.ap0 mww 0x80210300 0
++			target_mmw $::_CHIPNAME.ap0 0x80210088 0x00004000 0
++		}
++		if { $::EN_CA35_1 } {
++			$::_CHIPNAME.ap0 mww 0x80310300 0
++			target_mmw $::_CHIPNAME.ap0 0x80310088 0x00004000 0
++		}
++		if { $::EN_CM33 } {
++			$::_CHIPNAME.ap8 arp_examine
++			$::_CHIPNAME.ap8 arp_halt
++			$::_CHIPNAME.ap8 mww 0xe000edf0 0xa05f0001
++		}
++	}
++
++	# alert wrapper that debugger is ready
++	$::_CHIPNAME.ap0 mww 0x80010004 0x17
++}
++
++$_CHIPNAME.m33 configure -event reset-assert        { }
++$_CHIPNAME.m0p configure -event reset-assert        { }
++
++$_CHIPNAME.axi configure -event reset-assert-post   { adapter assert srst }
++
++$_CHIPNAME.axi configure -event reset-deassert-pre  {
++	adapter deassert srst deassert trst
++	catch {dap init}
++	catch {$::_CHIPNAME.dap apid 0}
++	$::_CHIPNAME.ap0 arp_examine
++	_handshake_with_wrapper $halt
++
++	$::_CHIPNAME.axi arp_examine
++	_enable_debug
++	_rcc_enable_traceclk
++	if { $::EN_CA35_0 } { $::_CHIPNAME.a35_0 arp_examine;  if {$halt} {$::_CHIPNAME.a35_0 arp_halt} }
++	if { $::EN_CA35_1 } { $::_CHIPNAME.a35_1 arp_examine;  if {$halt} {$::_CHIPNAME.a35_1 arp_halt} }
++	if { $::EN_CM0P }   { $::_CHIPNAME.ap2 arp_examine; $::_CHIPNAME.m0p arp_examine }
++	if { $::EN_CM33 }   { $::_CHIPNAME.ap8 arp_examine; $::_CHIPNAME.m33 arp_examine; if {$halt} {$::_CHIPNAME.m33 arp_halt} }
++}
++
++$_CHIPNAME.m0p configure -event examine-start       { _enable_ap2_cm0p }
++
++$_CHIPNAME.axi configure -event examine-end         {
++	_enable_debug
++	_rcc_enable_traceclk
++	if { $::EN_CA35_0 } { $::_CHIPNAME.a35_0 arp_examine }
++	if { $::EN_CA35_1 } { $::_CHIPNAME.a35_1 arp_examine }
++	if { $::EN_CM33 }   { $::_CHIPNAME.ap8 arp_examine; $::_CHIPNAME.m33 arp_examine }
++	if { $::EN_CM0P }   { $::_CHIPNAME.ap2 arp_examine; $::_CHIPNAME.m0p arp_examine }
++}
++
++namespace eval $_CHIPNAME.m33 {
++	proc event-d-cache-flush {a l} {
++		echo "in m33 event-d-cache-flush $a $l"
++
++		if {[[target current] curstate] ne "halted"} {
++			return "Target not halted"
++		}
++
++		if {$a >= 0x60000000 && $a < 0xE0000000} {
++			# DCACHE on S-AHB. If enabled, clean and invalidate range
++			set dcache_cr [read_memory 0x40480000 32 1]
++			if {[expr {$dcache_cr & 0x01}]} {
++				write_memory 0x40480028 32 "$a [expr {$a + $l}]"
++				write_memory 0x40480000 32 [expr {($dcache_cr & 0xfffff0ff) | 0x00000b00}]
++				# wait for DCACHE_SR:BUSYCMDF == 0
++				while {[expr {[read_memory 0x40480004 32 1] & 0x08}]} {
++					sleep 1
++				}
++			}
++			return
++		}
++
++		return
++	}
++
++	proc event-i-cache-flush {a l} {
++		echo "in m33 event-i-cache-flush $a $l"
++
++		if {[[target current] curstate] ne "halted"} {
++			return "Target not halted"
++		}
++
++		if {$a < 0x20000000} {
++			# ICACHE on C-AHB. If enabled, invalidate it
++			set icache_cr [read_memory 0x40470000 32 1]
++			if {[expr {$icache_cr & 0x01}]} {
++				write_memory 0x40470000 32 [expr {$icache_cr | 2}]
++				# wait for ICACHE_SR:BUSYF == 0
++				while {[expr {[read_memory 0x40470004 32 1] & 0x01}]} {
++					sleep 1
++				}
++			}
++			return
++		}
++
++		return
++	}
++}
+-- 
+2.43.0
+
