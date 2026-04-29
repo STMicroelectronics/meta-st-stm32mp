@@ -25,6 +25,9 @@ stm32mp157f-dk2*)
 stm32mp257f-dk*)
 	# supported
 	;;
+stm32mp235f-dk*)
+	# supported
+	;;
 
 	*)
 	exit 1;
