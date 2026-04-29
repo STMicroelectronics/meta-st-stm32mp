@@ -7,4 +7,5 @@ SRC_URI:append:stm32mpcommon = " \
         file://0002-conf-add-card-config-for-stm32mp13x_evd-board.patch \
         file://0003-conf-add-card-config-for-stm32mp25-ev1-eval-board.patch \
         file://0004-conf-add-card-config-for-stm32mp25-dk-board.patch \
+        file://0005-conf-add-card-config-for-stm32mp23-dk-board.patch \
         "
