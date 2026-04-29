@@ -1,5 +1,3 @@
-FILESEXTRAPATHS:prepend := "${THISDIR}/optee-os:"
-
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 PROVIDES += "virtual-optee-os virtual-optee-os-ta-pkcs11"
@@ -96,6 +94,11 @@ OPTEE_EXPORT_TA_NVMEM ?= "1a8342cc-81a5-4512-99fe-9e2b3e37d626.ta"
 OPTEE_EXPORT_TA_TRUSTED_KEYS_DIR:stm32mp1common ?= "${ST_OPTEE_EXPORT_TA_OUTDIR}/ta/trusted_keys/"
 OPTEE_EXPORT_TA_TRUSTED_KEYS_DIR:stm32mp2common ?= "${ST_OPTEE_EXPORT_TA_OUTDIR}/export-ta_arm64/ta/"
 OPTEE_EXPORT_TA_TRUSTED_KEYS ?= "f04a0fe7-1f5d-4b9b-abf7-619b85b4ce8c.ta"
+
+# remoteproc firmware public key authentication
+# Force to check at runtime hash of OTP public key and public key of the Cortex-M firmware
+EXTRA_OEMAKE += "${@bb.utils.contains('ST_REMOTEPROC_PUB_KEY', '1', 'CFG_REMOTEPROC_PUB_KEY_VERIFY=y', '', d)}"
+EXTRA_OEMAKE += "${@bb.utils.contains('SIGN_ENABLE', '1', 'CFG_REMOTEPROC_PUB_KEY_VERIFY=y', '', d)}"
 
 do_configure:prepend(){
     chmod 755 ${S}/scripts/bin_to_c.py
@@ -199,6 +202,12 @@ export_binaries() {
             if [ -n "${ELF_DEBUG_ENABLE}" ]; then
                 install -d ${dest}/debug
                 install -m 644 ${B}/${config}-${dt}/core/${OPTEE_ELF}.${OPTEE_ELF_SUFFIX} ${dest}/debug/${OPTEE_ELF}-${dt}-${config}.${OPTEE_ELF_SUFFIX}
+                # dtb
+                install -d ${dest}/debug/dtb
+                for dtb in $(ls -1 ${B}/${config}-${dt}/core/arch/arm/dts/*.dtb); do
+                    dtb_name=$(basename $dtb | sed "s|\.dtb||")
+                    install -m 644 ${B}/${config}-${dt}/core/arch/arm/dts/${dtb_name}.dtb ${dest}/debug/dtb/${dtb_name}-${config}.dtb
+                done
             fi
         done
     done
@@ -240,7 +249,8 @@ RPROVIDES:${PN}-ta-trusted-keys += "virtual-optee-os-ta-trusted-keys"
 ALLOW_EMPTY:${PN}-ta-trusted-keys = "1"
 
 FILES:${PN} = "${nonarch_base_libdir}/firmware/"
-FILES:${PN}-dev = "/usr/include/optee"
+FILES:${PN}-dev = "${includedir}/optee"
+RRECOMMENDS:${PN}-dev = ""
 INSANE_SKIP:${PN}-dev = "staticdev"
 
 FILES:${PN}-dev-sdk = "${SDKPATH}"
@@ -249,7 +259,11 @@ ALLOW_EMPTY:${PN}-dev-sdk = "1"
 
 INHIBIT_PACKAGE_STRIP = "1"
 # ---------------------------------------------------------------------
-# Avoid QA Issue: contains reference to TMPDIR [buildpaths]
+# Avoid QA Issue: TA contains reference to TMPDIR [buildpaths]
 INSANE_SKIP:${PN} += "buildpaths"
 INSANE_SKIP:${PN}-src += "buildpaths"
 INSANE_SKIP:${PN}-dev += "buildpaths"
+
+INSANE_SKIP:${PN} += "textrel"
+INSANE_SKIP:${PN}-dev += "staticdev"
+INHIBIT_PACKAGE_STRIP = "1"

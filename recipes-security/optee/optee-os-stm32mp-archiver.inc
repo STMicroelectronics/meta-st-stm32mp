@@ -104,7 +104,7 @@ tee-\$(1)-\$(2)-\$(3): chk-conf-\$(1)
 		\$(OPTEE_EXTRA_OPTFLAGS_\$(1)) \\
 		-C \$(SRC_PATH) PREFIX=\$(SDKTARGETSYSROOT) \\
 		O=\$(BLD_PATH)/\$(1)-\$(3) \\
-		CFG_EMBED_DTB_SOURCE_FILE=\$(3).dts || exit 1;
+		CFG_EMBED_DTB_SOURCE_FILE=\$(3).dts || { echo "[OPTEE-OS BUILD ERROR] OPTEE_CONFIG: \$(1) devicetree: \$(3)"; exit 1; } ;
 endef
 
 # Configure Optee-os deploy rules (deploy-rules-by-dt <CONFIG> <SOC> <DT>)
@@ -114,10 +114,10 @@ deploy-\$(1)-\$(2)-\$(3): tee-\$(1)-\$(2)-\$(3)
 	@mkdir -p \$(DEPLOYDIR)
 	@mkdir -p \$(DEPLOYDIR)/debug
 	\$(if \$(findstring \$(2),\$(3)), \\
-		cp -f \$(BLD_PATH)/\$(1)-\$(3)/core/tee-header_v2.bin \$(DEPLOYDIR)/tee-header_v2-\$(3)-\$(1).bin ; \\
-		cp -f \$(BLD_PATH)/\$(1)-\$(3)/core/tee-pager_v2.bin \$(DEPLOYDIR)/tee-pager_v2-\$(3)-\$(1).bin ; \\
-		cp -f \$(BLD_PATH)/\$(1)-\$(3)/core/tee-pageable_v2.bin \$(DEPLOYDIR)/tee-pageable_v2-\$(3)-\$(1).bin ; \\
-		cp -f \$(BLD_PATH)/\$(1)-\$(3)/core/tee.elf \$(DEPLOYDIR)/debug/tee-\$(3)-\$(1).elf ; \\
+		cp -f \$(BLD_PATH)/\$(1)-\$(3)/core/tee-header_v2.bin \$(DEPLOYDIR)/tee-header_v2-\$(3)-\$(1).bin || { echo "[OPTEE-OS DEPLOY ERROR] Cannot copy tee-header_v2.bin for OPTEE_CONFIG=\$(1) devicetree=\$(3)"; exit 1; } ; \\
+		cp -f \$(BLD_PATH)/\$(1)-\$(3)/core/tee-pager_v2.bin \$(DEPLOYDIR)/tee-pager_v2-\$(3)-\$(1).bin || { echo "[OPTEE-OS DEPLOY ERROR] Cannot copy tee-pager_v2.bin for OPTEE_CONFIG=\$(1) devicetree=\$(3)"; exit 1; } ; \\
+		cp -f \$(BLD_PATH)/\$(1)-\$(3)/core/tee-pageable_v2.bin \$(DEPLOYDIR)/tee-pageable_v2-\$(3)-\$(1).bin || { echo "[OPTEE-OS DEPLOY ERROR] Cannot copy tee-pageable_v2.bin for OPTEE_CONFIG=\$(1) devicetree=\$(3)"; exit 1; } ; \\
+		cp -f \$(BLD_PATH)/\$(1)-\$(3)/core/tee.elf \$(DEPLOYDIR)/debug/tee-\$(3)-\$(1).elf || { echo "[OPTEE-OS DEPLOY ERROR] Cannot copy tee.elf for OPTEE_CONFIG=\$(1) devicetree=\$(3)"; exit 1; } ; \\
 	,)
 endef
 
@@ -135,7 +135,6 @@ optee-deploy := \$(foreach config, \$(OPTEE_CONFIG), \\
 
 # Set dependencies list for building all
 DEPS = \$(optee-deploy)
-DEPS += fip
 
 help: \$(optee-check-config)
 	@echo ""
@@ -154,19 +153,38 @@ help: \$(optee-check-config)
 	@echo "  DEPLOYDIR = \$(DEPLOYDIR)"
 	@echo "  EXTDT_DIR = \$(EXTDT_DIR)"
 	@echo "Support of TA_arm64 and TA_arm32"
-	@echo "  TA32_64   = \$(TA32_64)
+	@echo "  TA32_64   = \$(TA32_64)"
 	@echo ""
 	@echo "FIP configuration:"
 	@echo "  Do not forget to set FIP deploydir folders (such as FIP_DEPLOYDIR_ROOT) to provide path to needed binaries"
 	@echo ""
 	@echo "Available targets:"
-	@echo "  all   : default target to build all binaries for defined config(s)"
+	@echo "  all   : default target to build OPTEE-OS  binaries for defined config(s)"
 	@echo "  fip   : build FIP binaries for defined config(s)"
 	@echo "  optee : build OPTEE-OS binaries for defined config(s)"
 	@echo "  clean : clean build directories from generated files"
 	@echo ""
 
 all: \$(DEPS)
+
+clean:
+	@echo "Removing \$(BLD_PATH) ..."
+	@rm -rf \$(BLD_PATH)
+	@echo "Removing \$(DEPLOYDIR) ..."
+	@rm -rf \$(DEPLOYDIR)
+	@echo ""
+
+fip: \$(optee-deploy)
+	for fipconfig in \$(FIP_CONFIG) ; do \\
+		FIP_DEPLOYDIR_OPTEE=\$(DEPLOYDIR) \\
+		FIP_CONFIG="\$\$fipconfig" \\
+		\$(if \$(CFG_EMBED_DTB_SOURCE_FILE),FIP_DEVICETREE="\$(CFG_EMBED_DTB_SOURCE_FILE)") \\
+		\$(FIPTOOLDIR)/fiptool-stm32mp.${MACHINE} || { echo "[FIP BUILD ERROR] FIP_CONFIG=\$\$fipconfig \$(if \$(CFG_EMBED_DTB_SOURCE_FILE),FIP_DEVICETREE=\$(CFG_EMBED_DTB_SOURCE_FILE))"; exit 1; } ;\\
+	done
+	@echo "***** FIP binary available under: \$(if \$(FIP_DEPLOYDIR_FIP),\$(FIP_DEPLOYDIR_FIP),\$(FIP_DEPLOYDIR_ROOT)/) *****"
+
+optee: \$(optee-deploy)
+	@echo "***** OPTEE-OS binary available under: \$(DEPLOYDIR)/ *****"
 
 # generate check config rules
 \$(foreach config, \$(OPTEE_CONFIG), \$(eval \$(call check-config,\$(config))))
@@ -192,20 +210,6 @@ all: \$(DEPS)
 		)\\
 	)\\
 )
-
-fip: \$(optee-deploy)
-	for fipconfig in \$(FIP_CONFIG) ; do \\
-		FIP_DEPLOYDIR_OPTEE=\$(DEPLOYDIR) FIP_CONFIG="\$\$fipconfig" \$(if \$(CFG_EMBED_DTB_SOURCE_FILE),FIP_DEVICETREE="\$(CFG_EMBED_DTB_SOURCE_FILE)") \$(FIPTOOLDIR)/fiptool-stm32mp.${MACHINE} || exit 1;\\
-	done
-
-optee: \$(optee-deploy)
-
-clean:
-	@echo "Removing \$(BLD_PATH) ..."
-	@rm -rf \$(BLD_PATH)
-	@echo "Removing \$(DEPLOYDIR) ..."
-	@rm -rf \$(DEPLOYDIR)
-	@echo ""
 EOF
 }
 do_ar_original[prefuncs] += "archiver_create_makefile_for_sdk"
