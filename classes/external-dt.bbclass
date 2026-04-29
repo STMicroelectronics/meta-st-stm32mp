@@ -23,13 +23,16 @@ EXTDT_DIR_UBOOT ??= "${EXTDT_ROOTDIR}u-boot"
 EXTDT_DIR_UBOOT_SERIAL ??= "${EXTDT_ROOTDIR}u-boot"
 EXTDT_DIR_MCU   ??= "${EXTDT_ROOTDIR}mcuboot"
 EXTDT_DIR_TF_M  ??= "${EXTDT_ROOTDIR}tfm"
+EXTDT_DIR_TF_M_PLTF ??= "${EXTDT_ROOTDIR}tfm"
 EXTDT_DIR_OPTEE ??= "${EXTDT_ROOTDIR}optee"
 EXTDT_DIR_OPTEE_SERIAL ??= "${EXTDT_ROOTDIR}optee"
 EXTDT_DIR_LINUX ??= "${EXTDT_ROOTDIR}linux"
 
 EXTDT_DIR_CONFIG += "virtual/trusted-firmware-a:${EXTDT_DIR_TF_A}"
 EXTDT_DIR_CONFIG += "virtual/bootloader:${EXTDT_DIR_UBOOT}"
+EXTDT_DIR_CONFIG += "virtual/trusted-firmware-m:${EXTDT_DIR_MCU}"
 EXTDT_DIR_CONFIG += "virtual/trusted-firmware-m:${EXTDT_DIR_TF_M}"
+EXTDT_DIR_CONFIG += "virtual/trusted-firmware-m:${EXTDT_DIR_TF_M_PLTF}"
 EXTDT_DIR_CONFIG += "virtual-optee-os:${EXTDT_DIR_OPTEE}"
 EXTDT_DIR_CONFIG += "virtual/kernel:${EXTDT_DIR_LINUX}"
 
@@ -42,6 +45,11 @@ EXTDT_FILE_PATTERNS += ".*\.dts$"
 EXTDT_FILE_PATTERNS += ".*\.dtsi$"
 EXTDT_FILE_PATTERNS += "conf\.mk"
 EXTDT_FILE_PATTERNS += "Makefile"
+EXTDT_FILE_PATTERNS += ".*\.h"
+EXTDT_FILE_PATTERNS += ".*\.c"
+EXTDT_FILE_PATTERNS += ".*\.s"
+EXTDT_FILE_PATTERNS += ".*\.cmake"
+EXTDT_FILE_PATTERNS += ".*CMakeLists.txt"
 
 python __anonymous() {
     import re
@@ -61,15 +69,11 @@ python __anonymous() {
             found = True
             extdt_dir = os.path.join(d.getVar('STAGING_EXTDT_DIR'), sub_path)
             break
-    if not found:
-        bb.warn('[external-dt] No specific external-dt subfolder defined for %s recipe: the whole STAGING_EXTDT_DIR folder (%s) is used to feed CONFIGURE_FILES' % (package, d.getVar('STAGING_EXTDT_DIR')))
-        bb.warn('[external-dt] Update EXTDT_DIR_CONFIG and set specific subfolder if needed:\n\tEXTDT_DIR_CONFIG: %s)' % d.getVar('EXTDT_DIR_CONFIG'))
-        extdt_dir = d.getVar('STAGING_EXTDT_DIR')
+    if found:
+        extdt_src_configure(d, extdt_dir)
 
-    extdt_src_configure(d, extdt_dir)
-
-    bb.debug(1,'[external-dt] Append file-checksums with configure files for do_configure on %s recipe' % package)
-    d.appendVarFlag('do_configure', 'file-checksums', ' ${@extdt_srctree_configure_hash_files(d)}')
+        bb.debug(1,'[external-dt] Append file-checksums with configure files for do_configure on %s recipe' % package)
+        d.appendVarFlag('do_configure', 'file-checksums', ' ${@extdt_srctree_configure_hash_files(d)}')
 }
 
 def extdt_srctree_configure_hash_files(d):
