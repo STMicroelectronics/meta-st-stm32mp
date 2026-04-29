@@ -52,13 +52,9 @@ FIP_WRAPPER ??= "${RECIPE_SYSROOT_NATIVE}/${bindir}/create_st_fip_binary.sh"
 #   FIP_DEVICETREE_SUFFIX
 #   FIP_SEARCH_CONF
 #   FIP_DEVICE_CONF
+#   FIP_DEVICETREE_INTERNAL
+#   FIP_DEVICETREE_EXTERNAL
 python () {
-    import re
-
-    # Make sure that deploy class is configured
-    if not bb.data.inherits_class('deploy', d):
-         bb.fatal("The st-fip-utils class needs the deploy class to be configured on recipe side.")
-
     # Manage FIP config settings
     fipconfigflags = d.getVarFlags('FIP_CONFIG')
     if fipconfigflags is not None:
@@ -77,6 +73,16 @@ python () {
         raise bb.parse.SkipRecipe("You cannot use FIP_SEARCH_CONF as it is internal to FIP_CONFIG var expansion.")
     if (d.getVar('FIP_DEVICE_CONF') or "").split():
         raise bb.parse.SkipRecipe("You cannot use FIP_DEVICE_CONF as it is internal to FIP_CONFIG var expansion.")
+
+    if (d.getVar('FIP_DEVICETREE_INTERNAL') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use FIP_DEVICETREE_INTERNAL as it is internal for var expansion.")
+    if (d.getVar('FIP_DEVICETREE_EXTERNAL') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use FIP_DEVICETREE_EXTERNAL as it is internal for var expansion.")
+
+    if (d.getVar('EXTERNAL_DT_ENABLED') or "0") == "1":
+        localdata = bb.data.createCopy(d)
+        localdata.setVar('EXTERNAL_DT_ENABLED', '0')
+
     if len(fipconfig) > 0:
         # Init internal fip firmware config
         fip_config_fw_tfa = d.getVar('FIP_CONFIG_FW_TFA') or ""
@@ -114,6 +120,18 @@ python () {
                         d.appendVar('FIP_DEVICE_CONF', ',')
                     bb.debug(1, "Appending '%s' to FIP_DEVICETREE" % items[1])
                     d.appendVar('FIP_DEVICETREE', items[1] + ',')
+
+                    if (d.getVar('EXTERNAL_DT_ENABLED') or "0") == "1":
+                        internal_devicetree = localdata.getVarFlag('FIP_CONFIG', config).split(',')[1]
+                        external_devicetree = ' '.join([dt for dt in items[1].split() if dt not in internal_devicetree.split()])
+                    else:
+                        internal_devicetree = items[1]
+                        external_devicetree = ''
+                    bb.debug(1, "Appending '%s' to FIP_DEVICETREE_INTERNAL" % internal_devicetree)
+                    d.appendVar('FIP_DEVICETREE_INTERNAL', internal_devicetree + ',')
+                    bb.debug(1, "Appending '%s' to FIP_DEVICETREE_EXTERNAL" % external_devicetree)
+                    d.appendVar('FIP_DEVICETREE_EXTERNAL', external_devicetree + ',')
+
                     break
 }
 
@@ -136,6 +154,8 @@ FIP_DEVICE_CONF=""
 # Set default supported configuration for devicetree and bl32 configuration
 declare -A FIP_BL32_CONF_ARRAY
 declare -A FIP_DEVICETREE_ARRAY
+declare -A FIP_DEVICETREE_INTERNAL_ARRAY
+declare -A FIP_DEVICETREE_EXTERNAL_ARRAY
 declare -A FIP_DEVICETREE_SUFFIX_ARRAY
 declare -A FIP_SEARCH_CONF_ARRAY
 declare -A FIP_DEVICE_CONF_ARRAY
@@ -144,7 +164,10 @@ EOF
         i=$(expr $i + 1)
         cat << EOF >> ${ARCHIVER_OUTDIR}/${FIPTOOL_WRAPPER}
 FIP_BL32_CONF_ARRAY[${config}]="$(echo ${FIP_BL32_CONF} | cut -d',' -f${i})"
-FIP_DEVICETREE_ARRAY[${config}]="$(echo ${FIP_DEVICETREE} | cut -d',' -f${i})"
+FIP_DEVICETREE_INTERNAL_ARRAY[${config}]="$(echo ${FIP_DEVICETREE_INTERNAL} | cut -d',' -f${i})"
+FIP_DEVICETREE_EXTERNAL_ARRAY[${config}]="$(echo ${FIP_DEVICETREE_EXTERNAL} | cut -d',' -f${i})"
+FIP_DEVICETREE_ARRAY[${config}]="\${FIP_DEVICETREE_INTERNAL_ARRAY[${config}]}"
+[ -z "\${EXTDT_DIR:-}" ] || FIP_DEVICETREE_ARRAY[${config}]+=" \${FIP_DEVICETREE_EXTERNAL_ARRAY[${config}]}"
 FIP_DEVICETREE_SUFFIX_ARRAY[${config}]="$(echo ${FIP_DEVICETREE_SUFFIX} | cut -d',' -f${i})"
 FIP_SEARCH_CONF_ARRAY[${config}]="$(echo ${FIP_SEARCH_CONF} | cut -d',' -f${i})"
 FIP_DEVICE_CONF_ARRAY[${config}]="$(echo ${FIP_DEVICE_CONF} | cut -d',' -f${i})"
@@ -290,16 +313,33 @@ for config in \$FIP_CONFIG; do
 
         FIP_PARAM_ddr=""
         if [ -d "\$FIP_DEPLOYDIR_FWDDR" ]; then
-            FIP_PARAM_ddr="--use-ddr"
-            \$FIP_WRAPPER \\
-                \$FIP_PARAM_BLxx \\
-                \$STORAGE_SEARCH \\
-                --use-ddr --generate-only-ddr \\
-                --search-configuration \${config} \\
-                --search-devicetree \${dt} \\
-                \$DT_SUFFIX_SEARCH \\
-                --search-soc-name \${soc_suffix} \\
-                --output \$FIP_DEPLOYDIR_FIP
+            if \$(echo ${MACHINE_FEATURES} | grep -q 'm33td') ; then
+                if [ -n "\${device_conf}" ] && \$(echo \${device_conf} | grep -qE '(usb|uart)') ; then
+                        FIP_PARAM_ddr="--use-ddr"
+                    fi
+            else
+                FIP_PARAM_ddr="--use-ddr"
+            fi
+            if [ -n "\$FIP_PARAM_ddr" ]; then
+                echo "\$FIP_WRAPPER \\
+                    \$FIP_PARAM_BLxx \\
+                    \$STORAGE_SEARCH \\
+                    --use-ddr --generate-only-ddr \\
+                    --search-configuration \${config} \\
+                    --search-devicetree \${dt} \\
+                    \$DT_SUFFIX_SEARCH \\
+                    --search-soc-name \${soc_suffix} \\
+                    --output \$FIP_DEPLOYDIR_FIP"
+                \$FIP_WRAPPER \\
+                    \$FIP_PARAM_BLxx \\
+                    \$STORAGE_SEARCH \\
+                    --use-ddr --generate-only-ddr \\
+                    --search-configuration \${config} \\
+                    --search-devicetree \${dt} \\
+                    \$DT_SUFFIX_SEARCH \\
+                    --search-soc-name \${soc_suffix} \\
+                    --output \$FIP_DEPLOYDIR_FIP
+            fi
         fi
 
         SECOND_CONFSEARCH=""
