@@ -122,7 +122,7 @@ define configure-rules
 configure-\$(1):: version
 	@mkdir -p \$(BLD_PATH)/\$(1)
 	@echo \$(UBOOT_LOCALVERSION) > \$(BLD_PATH)/\$(1)/.scmversion
-	\$(MAKE) -C \$(SRC_PATH) O=\$(BLD_PATH)/\$(1) \$(1) || exit 1
+	\$(MAKE) -C \$(SRC_PATH) O=\$(BLD_PATH)/\$(1) \$(1) || { echo "[CONFIGURE ERROR] For defconfig: \$(1)"; exit 1; } ;
 endef
 
 # Configure U-Boot make rules (uboot-rules <defconfig> <config> <binary>)
@@ -135,8 +135,8 @@ uboot-\$(1):: configure-\$(1) chk-conf-\$(1)
 			\$(UBOOT_MAKE_OPTS_\$(2)_\$(1)) \\
 			O=\$(BLD_PATH)/\$(1) \\
 			DEVICE_TREE=\$(dt) \\
-			DEVICE_TREE_EXT=\$(dt).dtb || exit 1 ; \\
-		cp -f \$(BLD_PATH)/\$(1)/\$(3) \$(BLD_PATH)/\$(1)/u-boot-\$(dt)-\$(2).\$(shell echo \$(3) | cut -d'.' -f2) || exit 1 ; \\
+			DEVICE_TREE_EXT=\$(dt).dtb || { echo "[U-BOOT BUILD ERROR] defconfig: \$(1) DEVICE_TREE=\$(dt)"; exit 1; } ; \\
+		cp -f \$(BLD_PATH)/\$(1)/\$(3) \$(BLD_PATH)/\$(1)/u-boot-\$(dt)-\$(2).\$(shell echo \$(3) | cut -d'.' -f2) || { echo "[U-BOOT BUILD ERROR] Cannot copy \$(3) for defconfig: \$(1) and DEVICE_TREE=\$(dt)"; exit 1; } ; \\
 	)
 endef
 
@@ -148,8 +148,8 @@ deploy-\$(1):: uboot-\$(1)
 	@mkdir -p \$(DEPLOYDIR)/debug
 	@\$(foreach dt, \$(if \$(DEVICE_TREE),\$(DEVICE_TREE),\$(UBOOT_DEVICETREE_\$(2)_\$(1))), \\
 		if [ "\$(shell echo \$(3) | cut -d'.' -f2)" = "dtb" ]; then \\
-			cp -f \$(BLD_PATH)/\$(1)/u-boot-\$(dt)-\$(2).\$(shell echo \$(3) | cut -d'.' -f2) \$(DEPLOYDIR) || exit 1 ; \\
-			cp -f \$(BLD_PATH)/\$(1)/u-boot-nodtb.bin \$(DEPLOYDIR)/u-boot-nodtb\$(strip \$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),-\$(soc),)))-\$(2).bin || exit 1 ; \\
+			cp -f \$(BLD_PATH)/\$(1)/u-boot-\$(dt)-\$(2).\$(shell echo \$(3) | cut -d'.' -f2) \$(DEPLOYDIR) || { echo "[U-BOOT DEPLOY ERROR] Cannot copy u-boot-\$(dt)-\$(2).\$(shell echo \$(3) | cut -d'.' -f2) for defconfig: \$(1)"; exit 1; } ; \\
+			cp -f \$(BLD_PATH)/\$(1)/u-boot-nodtb.bin \$(DEPLOYDIR)/u-boot-nodtb\$(strip \$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),-\$(soc),)))-\$(2).bin || { echo "[U-BOOT DEPLOY ERROR] Cannot copy u-boot-nodtb.bin for defconfig: \$(1) UBOOT_CONFIG=\$(2) and DEVICE_TREE=\$(dt)"; exit 1; } ; \\
 		fi ; \\
 		if [ -f \$(BLD_PATH)/\$(1)/${UBOOT_ELF} ]; then \\
 			cp -f \$(BLD_PATH)/\$(1)/${UBOOT_ELF} \$(DEPLOYDIR)/debug/u-boot\$(strip \$(foreach soc,${STM32MP_SOC_NAME},\$(if \$(findstring \$(soc),\$(dt)),-\$(soc),)))-\$(2).${UBOOT_ELF_SUFFIX} ; \\
@@ -169,7 +169,6 @@ deploy-targets := \$(foreach config, \$(if \$(UBOOT_CONFIG),\$(UBOOT_CONFIG),\$(
 
 # Set dependencies list for building all
 DEPS = \$(deploy-targets)
-DEPS += fip
 
 help: \$(uboot-check-config)
 	@echo ""
@@ -192,14 +191,12 @@ help: \$(uboot-check-config)
 	@echo "  Do not forget to set FIP deploydir folders (such as FIP_DEPLOYDIR_ROOT) to provide path to needed binaries"
 	@echo ""
 	@echo "Available targets:"
-	@echo "  all   : build U-Boot binaries for defined config(s) + fip"
-	@echo "  uboot : build U-Boot binaries for defined config(s)"
+	@echo "  all   : default target to build U-Boot binaries for defined config(s)"
 	@echo "  fip   : build FIP binaries"
+	@echo "  uboot : build U-Boot binaries for defined config(s)"
 	@echo "  clean : clean build directories from generated files"
 
 all: \$(DEPS)
-
-uboot: \$(deploy-targets)
 
 clean:
 	@echo "Removing \$(BLD_PATH)/* ..."
@@ -210,8 +207,15 @@ clean:
 
 fip: \$(deploy-targets)
 	for fipconfig in \$(FIP_CONFIG) ; do \\
-		FIP_DEPLOYDIR_UBOOT=\$(DEPLOYDIR) FIP_CONFIG="\$\$fipconfig" \$(if \$(DEVICE_TREE),FIP_DEVICETREE="\$(DEVICE_TREE)") \$(FIPTOOLDIR)/fiptool-stm32mp.${MACHINE} || exit 1; \\
+		FIP_DEPLOYDIR_UBOOT=\$(DEPLOYDIR) \\
+		FIP_CONFIG="\$\$fipconfig" \\
+		\$(if \$(DEVICE_TREE),FIP_DEVICETREE="\$(DEVICE_TREE)") \\
+		\$(FIPTOOLDIR)/fiptool-stm32mp.${MACHINE} || { echo "[FIP BUILD ERROR] FIP_CONFIG=\$\$fipconfig \$(if \$(DEVICE_TREE),FIP_DEVICETREE=\$(DEVICE_TREE))"; exit 1; } ; \\
 	done
+	@echo "***** FIP binary available under: \$(if \$(FIP_DEPLOYDIR_FIP),\$(FIP_DEPLOYDIR_FIP),\$(FIP_DEPLOYDIR_ROOT)/) *****"
+
+uboot: \$(deploy-targets)
+	@echo "***** U-BOOT binary available under: \$(DEPLOYDIR)/ *****"
 
 version:
 	@if test ! -e \$(SRC_PATH)/.scmversion ; then echo \$(UBOOT_LOCALVERSION) > \$(SRC_PATH)/.scmversion; fi
