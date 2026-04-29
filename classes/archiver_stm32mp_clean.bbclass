@@ -11,6 +11,7 @@ def clean_tarball(d, ar_workdir='', ar_outdir=''):
         ar_outdir = d.getVar('ARCHIVER_OUTDIR')
     if not os.path.exists(ar_outdir):
         return
+    ar_mode = d.getVarFlag('ARCHIVER_MODE', 'src')
 
     #get tarball name
     compression_method = d.getVarFlag('ARCHIVER_MODE', 'compression')
@@ -36,8 +37,15 @@ def clean_tarball(d, ar_workdir='', ar_outdir=''):
             else:
                 suffix = ''
 
-            targeted_dir_source = os.path.join(temp_extract_subdir,d.getVar('BPN')+'-'+d.getVar('PV'),suffix)
-            uncompressed_source = os.path.join(temp_extract_subdir,'git')
+            if ar_mode == "configured":
+                targeted_dir_source = os.path.join(tmpdir,d.getVar('BPN')+'-'+d.getVar('PV'),suffix)
+                uncompressed_source = temp_extract_subdir
+            else:
+                targeted_dir_source = os.path.join(temp_extract_subdir,d.getVar('BPN')+'-'+d.getVar('PV'),suffix)
+                uncompressed_source = os.path.join(temp_extract_subdir,d.getVar('BPN')+'-'+d.getVar('PV'))
+
+            if os.path.exists(os.path.join(uncompressed_source,'build.'+d.getVar('BPN')+'-'+d.getVar('PV')+'.ar_configured')):
+                shutil.rmtree(os.path.join(uncompressed_source,'build.'+d.getVar('BPN')+'-'+d.getVar('PV')+'.ar_configured'))
 
             if os.path.exists(os.path.join(uncompressed_source,'.git')):
                 shutil.rmtree(os.path.join(uncompressed_source,'.git'))
@@ -47,12 +55,15 @@ def clean_tarball(d, ar_workdir='', ar_outdir=''):
                         shutil.rmtree(os.path.join(root,'.git'))
                 # Feed target dir with clean folder
                 shutil.move(uncompressed_source,targeted_dir_source)
-                # Init source path for tarball
-                subdirs_list = [d for d in listdir(temp_extract_subdir) if os.path.isdir(os.path.join(temp_extract_subdir,d))]
-                if len(subdirs_list) == 1:
-                    src_origin = os.path.join(temp_extract_subdir,subdirs_list[0])
+                if ar_mode != "configured":
+                    # Init source path for tarball
+                    subdirs_list = [d for d in listdir(temp_extract_subdir) if os.path.isdir(os.path.join(temp_extract_subdir,d))]
+                    if len(subdirs_list) == 1:
+                        src_origin = os.path.join(temp_extract_subdir,subdirs_list[0])
+                    else:
+                        src_origin = os.path.join(temp_extract_subdir,'.')
                 else:
-                    src_origin = os.path.join(temp_extract_subdir,'.')
+                    src_origin = targeted_dir_source
                 # Cleanup tarball file before creation
                 os.remove(os.path.join(ar_outdir,tarball_name))
                 create_tarball(d, src_origin, suffix, ar_outdir)
@@ -98,6 +109,10 @@ do_archiver_git_uri() {
         bbnote "Use ${ARCHIVER_README} file for update from ${ARCHIVER_WORKDIR} (update to ${ARCHIVER_README}.${MACHINE})"
         install -d "${ARCHIVER_OUTDIR}"
         install -m 644 "${ARCHIVER_WORKDIR}/${ARCHIVER_README}" "${ARCHIVER_OUTDIR}/${ARCHIVER_README}.${MACHINE}"
+    elif [ -e "${UNPACKDIR}/${ARCHIVER_README}" ]; then
+        bbnote "Use ${ARCHIVER_README} file for update from ${WORKDIR} (update to ${ARCHIVER_README}.${MACHINE})"
+        install -d "${ARCHIVER_OUTDIR}"
+        install -m 644 "${UNPACKDIR}/${ARCHIVER_README}" "${ARCHIVER_OUTDIR}/${ARCHIVER_README}.${MACHINE}"
     else
         bbnote "No ${ARCHIVER_README} file found for update."
         return
