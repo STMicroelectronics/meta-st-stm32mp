@@ -68,7 +68,11 @@ TF_A_BINARY_$config ?= $(echo ${TF_A_BINARIES} | cut -d',' -f${i})
 TF_A_MAKE_TARGET_$config ?= $(echo ${TF_A_MAKE_TARGET} | cut -d',' -f${i})
 EOF
     done
+    extra_oemake_for_cross_compile=$(echo ${EXTRA_OEMAKE} | sed 's|CROSS_COMPILE='"${STAGING_DATADIR_NATIVE}/${ST_CROSS_COMPILE_BIN}/"'|CROSS_COMPILE=|' )
     cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk.${MACHINE}
+
+# Append toolchain path for SDK
+PATH := \$(OECORE_NATIVE_SYSROOT)/usr/share/${ST_CROSS_COMPILE_BIN}:\$(PATH)
 
 # Reset default variables
 LDFLAGS =
@@ -81,7 +85,7 @@ AR =
 LD =
 NM =
 # Define default make options
-EXTRA_OEMAKE ?= ${EXTRA_OEMAKE}
+EXTRA_OEMAKE ?= $extra_oemake_for_cross_compile
 
 # Display TF-A config details
 define tf-configs
@@ -130,7 +134,7 @@ tf-\$(1)-\$(2): \$(4)
 				\$(if \$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS_\$(1))) \\
 				\`cat "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-sysram.txt"\` \\
 				dtbs \\
-				\$(shell echo \$(2) | tr a-z A-Z)=1 || exit 1; \\
+				\$(shell echo \$(2) | tr a-z A-Z)=1 || { echo "[DTB BUILD ERROR] config: \$(1) devicetree: \$(dt)\$(3)"; exit 1; }; \\
 			touch "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-pmic1l_property.txt" ; \\
 			(fdtdump "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/fdts/\$(dt)\$(3)-bl2.dtb" 2>/dev/null | grep -c "st,stpmic1l" || /bin/true) > "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-pmic1l_node.txt"; \\
 			if [ "\`cat "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-pmic1l_node.txt"\`" = "1" ]; then \\
@@ -147,6 +151,25 @@ tf-\$(1)-\$(2): \$(4)
 						cp -f "\$(FWDDR_DIR)/${FWDDR_SRC_SUBDIR}/\`cat "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-ddr_target.txt"\`_pmu_train.bin" "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/${FWDDR_NAME}-\$(dt)\$(3).${FWDDR_SUFFIX}" ; \\
 					fi ; \\
 				fi ; \\
+EOF
+	if ${@bb.utils.contains('MACHINE_FEATURES','m33td','true','false',d)}; then
+		cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk.${MACHINE}
+			else \\
+				(echo \$(1) |  grep -c programmer > "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(1)-programmer.txt"); \\
+				if test \`cat "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(1)-programmer.txt"\` -eq 1 ; then \\
+					if [ -f "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/fdts/\$(dt)\$(3)-bl2.dtb" ]; then \\
+						fdtget -l "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/fdts/\$(dt)\$(3)-bl2.dtb" /soc | grep ddr | head -n 1 > "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-ddr_dtb_node.txt" ; \\
+						(fdtget "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/fdts/\$(dt)\$(3)-bl2.dtb" /soc/\`cat \$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-ddr_dtb_node.txt\` st,mem-name) > "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-ddr_property.txt" ; \\
+						sed -i -e 's|^\(.*DDR[0-9]\).*| STM32MP_\1_TYPE=1 |' "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-ddr_property.txt" ; \\
+						sed -e 's|.*_\(.*DDR[0-9]\)_.*|\1|' "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-ddr_property.txt" | tr A-Z a-z > "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-ddr_target.txt" ; \\
+						if [ -f "\$(FWDDR_DIR)/${FWDDR_SRC_SUBDIR}/\`cat "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-ddr_target.txt"\`_pmu_train.bin" ]; then \\
+							cp -f "\$(FWDDR_DIR)/${FWDDR_SRC_SUBDIR}/\`cat "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-ddr_target.txt"\`_pmu_train.bin" "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/${FWDDR_NAME}-\$(dt)\$(3).${FWDDR_SUFFIX}" ; \\
+						fi ; \\
+					fi ; \\
+				fi; \\
+EOF
+    fi
+    cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk.${MACHINE}
 			fi ; \\
 			\$(MAKE) \$(EXTRA_OEMAKE) -C \$(SRC_PATH) \\
 				BUILD_PLAT="\$(BLD_PATH)/\$(1)-\$(dt)\$(3)" \\
@@ -156,7 +179,7 @@ tf-\$(1)-\$(2): \$(4)
 				\`cat "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-pmic1l_property.txt"\` \\
 				\$(if \$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS_\$(1))) \\
 				\$(if \$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET),\$(TF_A_MAKE_TARGET_\$(1))) \\
-				\$(shell echo \$(2) | tr a-z A-Z)=1 || exit 1; \\
+				\$(shell echo \$(2) | tr a-z A-Z)=1 || { echo "[TF-A BUILD ERROR] config: \$(1) devicetree: \$(dt)\$(3)"; exit 1; }; \\
 		,) \\
 	)
 endef
@@ -228,7 +251,6 @@ deploy-targets := \$(foreach config, \$(TF_A_CONFIG), \$(foreach soc, ${STM32MP_
 
 # Set dependencies list for building all
 DEPS = \$(deploy-targets)
-DEPS += fip
 DEPS += metadata
 
 help: \$(tf-check-config)
@@ -275,8 +297,45 @@ help: \$(tf-check-config)
 
 all: \$(DEPS)
 
+clean:
+	@for config in \$(TF_A_CONFIG) ; do \\
+		for soc in ${STM32MP_SOC_NAME}; do \\
+			echo "Removing \$(BLD_PATH)/\$\$config-\$\$soc ..." ; \\
+			rm -rf \$(BLD_PATH)/\$\$config-\$\$soc* ; \\
+		done ; \\
+	done
+	@echo "Removing \$(DEPLOYDIR) ..."
+	@rm -rf \$(DEPLOYDIR)
+	@echo ""
+
+fip: \$(deploy-targets)
+	for config in \$(TF_A_CONFIG) ; do \\
+		for fipconfig in \$(FIP_CONFIG) ; do \\
+			if [ "\$\$config" = "\$\$fipconfig" ]; then \\
+				FIP_DEPLOYDIR_TFA=\$(BL32_DEPLOYDIR) \\
+				FIP_DEPLOYDIR_BL31=\$(BL31_DEPLOYDIR) \\
+				FIP_DEPLOYDIR_FWCONF=\$(FWCONFIG_DEPLOYDIR) \\
+				FIP_DEPLOYDIR_FWDDR=\$(FWDDR_DEPLOYDIR) \\
+				FIP_CONFIG="\$\$fipconfig" \\
+				FIP_BL31_ENABLE="\$(TF_A_ENABLE_BL31)" \\
+				\$(if \$(TF_A_DEVICETREE),FIP_DEVICETREE="\$(TF_A_DEVICETREE)") \\
+				\$(if \$(TF_A_DEVICETREE_SUFFIX),FIP_DEVICETREE_SUFFIX="\$(TF_A_DEVICETREE_SUFFIX)") \\
+				\$(FIPTOOLDIR)/fiptool-stm32mp.${MACHINE} || { echo "[FIP BUILD ERROR] FIP_CONFIG=\$\$fipconfig \$(if \$(TF_A_DEVICETREE),FIP_DEVICETREE=\$(TF_A_DEVICETREE)) \$(if \$(TF_A_DEVICETREE_SUFFIX),FIP_DEVICETREE_SUFFIX=\$(TF_A_DEVICETREE_SUFFIX))"; exit 1; }; \\
+			fi ; \\
+		done ; \\
+	done
+	@echo "***** FIP binary available under: \$(if \$(FIP_DEPLOYDIR_FIP),\$(FIP_DEPLOYDIR_FIP),\$(FIP_DEPLOYDIR_ROOT)/) *****"
+
 host_tools:
 	@\$(MAKE) --no-print-directory -C \$(SRC_PATH)/tools/stm32image
+
+metadata:
+	@mkdir -p \$(DEPLOYDIR)
+	${TF_A_METADATA_TOOL_NAME} ${TF_A_METADATA_TOOL_ARGS} \$(DEPLOYDIR)/${TF_A_METADATA_BINARY}
+	@echo "***** metadata generation done under: \$(DEPLOYDIR)/${TF_A_METADATA_BINARY} *****"
+
+stm32: \$(deploy-targets)
+	@echo "***** TF-A binary available under: \$(DEPLOYDIR)/ *****"
 
 # Set TF-A check config rules
 \$(foreach config, \$(TF_A_CONFIG), \\
@@ -296,40 +355,6 @@ host_tools:
 		\$(eval \$(call deploy-rules,\$(config),\$(soc),\$(if \$(TF_A_BINARY),\$(TF_A_BINARY),\$(TF_A_BINARY_\$(config))),\$(if \$(TF_A_DEVICETREE_SUFFIX),\$(TF_A_DEVICETREE_SUFFIX),\$(TF_A_DEVICETREE_SUFFIX_\$(config))))) \\
 	) \\
 )
-
-fip: \$(deploy-targets)
-	for config in \$(TF_A_CONFIG) ; do \\
-		for fipconfig in \$(FIP_CONFIG) ; do \\
-			if [ "\$\$config" = "\$\$fipconfig" ]; then \\
-				FIP_DEPLOYDIR_TFA=\$(BL32_DEPLOYDIR) \\
-				FIP_DEPLOYDIR_BL31=\$(BL31_DEPLOYDIR) \\
-				FIP_DEPLOYDIR_FWCONF=\$(FWCONFIG_DEPLOYDIR) \\
-				FIP_DEPLOYDIR_FWDDR=\$(FWDDR_DEPLOYDIR) \\
-				FIP_CONFIG="\$\$fipconfig" \\
-				FIP_BL31_ENABLE="\$(TF_A_ENABLE_BL31)" \\
-				\$(if \$(TF_A_DEVICETREE),FIP_DEVICETREE="\$(TF_A_DEVICETREE)") \\
-				\$(if \$(TF_A_DEVICETREE_SUFFIX),FIP_DEVICETREE_SUFFIX="\$(TF_A_DEVICETREE_SUFFIX)") \\
-				\$(FIPTOOLDIR)/fiptool-stm32mp.${MACHINE} || exit 1; \\
-			fi ; \\
-		done ; \\
-	done
-
-stm32: \$(deploy-targets)
-
-metadata:
-	@mkdir -p \$(DEPLOYDIR)
-	${TF_A_METADATA_TOOL_NAME} ${TF_A_METADATA_TOOL_ARGS} \$(DEPLOYDIR)/${TF_A_METADATA_BINARY}
-
-clean:
-	@for config in \$(TF_A_CONFIG) ; do \\
-		for soc in ${STM32MP_SOC_NAME}; do \\
-			echo "Removing \$(BLD_PATH)/\$\$config-\$\$soc ..." ; \\
-			rm -rf \$(BLD_PATH)/\$\$config-\$\$soc* ; \\
-		done ; \\
-	done
-	@echo "Removing \$(DEPLOYDIR) ..."
-	@rm -rf \$(DEPLOYDIR)
-	@echo ""
 EOF
 }
 do_ar_original[prefuncs] += "archiver_create_makefile_for_sdk"

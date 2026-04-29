@@ -15,9 +15,9 @@ require tf-a-stm32mp-config.inc
 # ------------------------------------
 # Set MBEDTLS support
 TFA_MBEDTLS_DIR ?= "mbedtls"
-# MBEDTLS v3.6.2
-SRC_URI_MBEDTLS = "git://github.com/ARMmbed/mbedtls.git;protocol=https;destsuffix=git/${TFA_MBEDTLS_DIR};nobranch=1;name=mbedtls"
-SRCREV_mbedtls = "107ea89daaefb9867ea9121002fbbdf926780e98"
+# MBEDTLS v3.6.4
+SRC_URI_MBEDTLS = "git://github.com/ARMmbed/mbedtls.git;protocol=https;destsuffix=${BP}/${TFA_MBEDTLS_DIR};nobranch=1;name=mbedtls"
+SRCREV_mbedtls = "c765c831e5c2a0971410692f92f7a81d6ec65ec2"
 LIC_FILES_CHKSUM_MBEDTLS = "file://mbedtls/LICENSE;md5=379d5819937a6c2f1ef1630d341e026d"
 LICENSE_MBEDTLS = "Apache-2.0"
 # Add MBEDTLS to our sources
@@ -37,7 +37,12 @@ DEPENDS += "dtc-native openssl-native"
 DEPENDS += "u-boot-tools-stm32mp-native"
 
 DEPENDS:append = " ${@bb.utils.contains('TF_A_ENABLE_DEBUG_WRAPPER', '1', 'stm32wrapper4dbg-native', '', d)}"
-DEPENDS:append = " ${@bb.utils.contains('TF_A_FWDDR', '1', 'stm32mp-ddr-phy', '', d)}"
+DEPENDS:append = " stm32mp-ddr-phy"
+
+# use arm toolchain
+DEPENDS:append:armv7a = " gcc-arm-none-eabi-native "
+DEPENDS:append:armv7ve = " gcc-arm-none-eabi-native "
+DEPENDS:append:aarch64 = " gcc-aarch64-none-elf-native "
 
 # Default log level
 ST_TF_A_DEBUG ??= "1"
@@ -45,11 +50,30 @@ ST_TF_A_DEBUG_TRACE ??= "0"
 ST_TF_A_LOG_LEVEL_RELEASE ??= "20"
 ST_TF_A_LOG_LEVEL_DEBUG ??= "40"
 
+# Extra make settings
+EXTRA_OEMAKE = ''
+
 # Configure make settings
 EXTRA_OEMAKE += 'PLAT=${TFA_PLATFORM}'
 EXTRA_OEMAKE += 'ARCH=${TFA_ARM_ARCH}'
 EXTRA_OEMAKE += 'ARM_ARCH_MAJOR=${TFA_ARM_MAJOR}'
-EXTRA_OEMAKE += 'CROSS_COMPILE=${TARGET_PREFIX}'
+
+ST_CROSS_COMPILE_BIN:armv7a  = "gcc-arm-none-eabi/bin"
+ST_CROSS_COMPILE:armv7a  = "arm-none-eabi-"
+ST_CROSS_COMPILE_BIN:armv7a  = "gcc-arm-none-eabi/bin"
+ST_CROSS_COMPILE:armv7ve = "arm-none-eabi-"
+
+ST_CROSS_COMPILE_BIN:stm32mp1common  = "gcc-arm-none-eabi/bin"
+ST_CROSS_COMPILE:stm32mp1common = "arm-none-eabi-"
+
+ST_CROSS_COMPILE_BIN:aarch64 = "gcc-aarch64-none-elf/bin"
+ST_CROSS_COMPILE:aarch64 = "aarch64-none-elf-"
+ST_CROSS_COMPILE_BIN:stm32mp2common = "gcc-aarch64-none-elf/bin"
+ST_CROSS_COMPILE:stm32mp2common = "aarch64-none-elf-"
+
+
+EXTRA_OEMAKE += ' CROSS_COMPILE=${STAGING_DATADIR_NATIVE}/${ST_CROSS_COMPILE_BIN}/${ST_CROSS_COMPILE} '
+
 # Debug support
 EXTRA_OEMAKE += "${@bb.utils.contains('ST_TF_A_DEBUG_TRACE', '1', 'DEBUG=${ST_TF_A_DEBUG}', '', d)}"
 EXTRA_OEMAKE += "${@bb.utils.contains('ST_TF_A_DEBUG_TRACE', '1', 'LOG_LEVEL=${ST_TF_A_LOG_LEVEL_DEBUG}', 'LOG_LEVEL=${ST_TF_A_LOG_LEVEL_RELEASE}', d)}"
@@ -89,7 +113,7 @@ FWCONFIG_NAME ?= "fw-config"
 
 # Output the firwmare ddr
 TF_A_FWDDR ?= "0"
-TF_A_FWDDR:stm32mp2common = "1"
+TF_A_FWDDR:stm32mp2common = "${@bb.utils.contains('MACHINE_FEATURES', 'm33td', '0', '1', d)}"
 
 FWDDR_NAME ?= "ddr_pmu"
 FWDDR_SUFFIX ?= "bin"
@@ -153,6 +177,25 @@ STAGING_TFA_DIR = "${TMPDIR}/work-shared/${MACHINE}/tfa-source"
 DEBUG_PREFIX_MAP += " ${@bb.utils.contains('TFA_SHARED_SOURCES', '1', '-fmacro-prefix-map=${STAGING_TFA_DIR}=${TARGET_DBGSRC_DIR}', '', d)} "
 DEBUG_PREFIX_MAP += " ${@bb.utils.contains('TFA_SHARED_SOURCES', '1', '-fdebug-prefix-map=${STAGING_TFA_DIR}=${TARGET_DBGSRC_DIR}', '', d)} "
 
+# Compilation option
+# Let the Makefile handle setting up the CFLAGS and LDFLAGS as it is a standalone application
+AR[unexport] = "1"
+AS[unexport] = "1"
+CC[unexport] = "1"
+CCLD[unexport] = "1"
+CFLAGS[unexport] = "1"
+CPP[unexport] = "1"
+CPPFLAGS[unexport] = "1"
+CXX[unexport] = "1"
+CXXFLAGS[unexport] = "1"
+LD[unexport] = "1"
+LDFLAGS[unexport] = "1"
+OBJCOPY[unexport] = "1"
+OBJDUMP[unexport] = "1"
+
+# verbose compilation
+#EXTRA_OEMAKE += "V=1"
+
 # Make sure to move ${S} to STAGING_TFA_DIR. We can't just
 # create the symlink in advance as the git fetcher can't cope with
 # the symlink.
@@ -202,6 +245,7 @@ do_compile() {
         extra_opt=$(echo ${TF_A_EXTRA_OPTFLAGS} | cut -d',' -f${i})
         tfa_basename=$(echo ${TF_A_BINARIES} | cut -d',' -f${i})
         tf_a_make_target=$(echo ${TF_A_MAKE_TARGET} | cut -d',' -f${i})
+        programmer_mode=$(echo $extra_opt | grep -c 'PROGRAMMER=1' | head -n 1 | sed "s/\n//" || echo 0)
         for dt in ${dt_config}; do
             # Init specific soc settings
             soc_extra_opt=""
@@ -258,7 +302,18 @@ do_compile() {
 
             # Init specific ddr settings
             ddr_extra_opt=""
+            need_fwddr=0
             if [ "${TF_A_FWDDR}" = "1" ]; then
+                need_fwddr=1
+            else
+                if [ ! "$programmer_mode" = "0" ]; then
+                    # need to test we are on m33td
+                    if $(echo ${MACHINE_FEATURES} | grep -q 'm33td') ; then
+                        need_fwddr=1
+                    fi
+                fi
+            fi
+            if [ $need_fwddr -eq 1 ]; then
                 # Detect ddr type if it's present
                 if [ -f "${build_dir}/fdts/${dt}${dt_suffix}-bl2.dtb" ]; then
                     ddr_dtb_node=$(${STAGING_BINDIR_NATIVE}/fdtget -l ${build_dir}/fdts/${dt}${dt_suffix}-bl2.dtb /soc | grep ddr | head -n 1)
@@ -318,6 +373,9 @@ do_compile() {
             oe_runmake -C "${S}" BUILD_PLAT="${build_dir}" DTB_FILE_NAME="${dt}${dt_suffix}.dtb" ${extra_opt} ${soc_extra_opt} ${ddr_extra_opt} ${encrypt_extra_opt} ${tf_a_make_target}
             if [ -f "${build_dir}/bl2.bin" ]; then
                     cp "${build_dir}/bl2.bin" "${build_dir}/${tfa_basename}-${dt}-${config}.bin"
+            fi
+            if [ -f "${build_dir}/${BL2_ELF}" ]; then
+                    cp "${build_dir}/${BL2_ELF}" "${build_dir}/${tfa_basename}-${dt}-${config}.${TF_A_ELF_SUFFIX}"
             fi
             # Copy TF-A binary with explicit devicetree filename
             if [ -f "${build_dir}/${tfa_basename}-${dt}${dt_suffix}.${TF_A_SUFFIX}" ]; then
@@ -420,7 +478,6 @@ export_binaries() {
     local fip_deploydir_fwddr="${dest}${FIP_DIR_FWDDR}"
 
     install -d ${fip_deploydir_tfa_base}
-
     unset i
     for config in ${TF_A_CONFIG}; do
         i=$(expr $i + 1)
@@ -430,6 +487,8 @@ export_binaries() {
         [ "${EXTDT_USE_SUFFIX}" = "1" ] || dt_suffix=""
         tfa_basename=$(echo ${TF_A_BINARIES} | cut -d',' -f${i})
         tfa_file_type=$(echo ${TF_A_FILES} | cut -d',' -f${i})
+        extra_opt=$(echo ${TF_A_EXTRA_OPTFLAGS} | cut -d',' -f${i})
+        programmer_mode=$(echo $extra_opt | grep -c 'PROGRAMMER=1' || echo 0)
         for dt in ${dt_config}; do
             # Init soc suffix
             soc_suffix=""
@@ -450,21 +509,21 @@ export_binaries() {
                                 install -m 644 "${build_dir}/debug-${tfa_basename}-${dt}-${config}${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" "${fip_deploydir_tfa_base}/debug/"
                             fi
                         fi
-                        if [ -f "${build_dir}/${tfa_basename}-${dt}-${config}.bin" ]; then
-                            install -d "${fip_deploydir_tfa_base}/bl2"
-                            install -m 644 "${build_dir}/${tfa_basename}-${dt}-${config}.bin" "${fip_deploydir_tfa_base}/bl2/"
-                        fi
-                        if [ -n "${ELF_DEBUG_ENABLE}" ]; then
-                            install -d "${fip_deploydir_tfa_base}/debug"
-                            if [ -f "${build_dir}/${BL2_ELF}" ]; then
-                                install -m 644 "${build_dir}/${BL2_ELF}" "${fip_deploydir_tfa_base}/debug/${tfa_basename}-${BL2_BASENAME_DEPLOY}${soc_suffix}-${config}.${TF_A_ELF_SUFFIX}"
-                            fi
-                        fi
-                        if [ "${TF_A_FWDDR}" = "1" ]; then
+                        # Install DDR firmware binary
+                        if [ -f "${build_dir}/${FWDDR_NAME}-${dt}-${config}.${FWDDR_SUFFIX}" ]; then
                             install -d "${fip_deploydir_fwddr}"
-                            # Install DDR firmware binary
-                            if [ -f "${build_dir}/${FWDDR_NAME}-${dt}-${config}.${FWDDR_SUFFIX}" ]; then
-                                install -m 644 "${build_dir}/${FWDDR_NAME}-${dt}-${config}.${FWDDR_SUFFIX}" "${fip_deploydir_fwddr}/"
+                            install -m 644 "${build_dir}/${FWDDR_NAME}-${dt}-${config}.${FWDDR_SUFFIX}" "${fip_deploydir_fwddr}/"
+                        fi
+                        # Install BL2 devicetree
+                        if [ -f "${build_dir}/fdts/${dt}${dt_suffix}-${BL2_BASENAME}.${DT_SUFFIX}" ]; then
+                            install -d "${fip_deploydir_tfa_base}/bl2"
+                            install -m 644 "${build_dir}/fdts/${dt}${dt_suffix}-${BL2_BASENAME}.${DT_SUFFIX}" "${fip_deploydir_tfa_base}/bl2/${dt}${dt_suffix}-${BL2_BASENAME}-${config}.${DT_SUFFIX}"
+                        fi
+
+                        if [ -n "${ELF_DEBUG_ENABLE}" ]; then
+                            if [ -f "${build_dir}/${tfa_basename}-${dt}-${config}.${TF_A_ELF_SUFFIX}" ]; then
+                                install -d "${fip_deploydir_tfa_base}/debug"
+                                install -m 644 "${build_dir}/${tfa_basename}-${dt}-${config}.${TF_A_ELF_SUFFIX}" "${fip_deploydir_tfa_base}/debug/${tfa_basename}-${BL2_BASENAME_DEPLOY}${soc_suffix}-${dt}-${config}.${TF_A_ELF_SUFFIX}"
                             fi
                         fi
                         ;;

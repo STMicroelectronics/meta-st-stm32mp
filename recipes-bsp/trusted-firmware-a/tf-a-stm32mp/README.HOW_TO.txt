@@ -167,15 +167,6 @@ There are different targets for TF-A compilation:
     $ make -f $PWD/../Makefile.sdk.##MACHINE## TF_A_CONFIG=optee-sdcard metadata
   The build results for this component are available in <DEPLOYDIR>.
 
-- Generate FIP binaires
-  Make sure to have all bootloader binaries (TF-A, U-Boot and optee-os) available in <FIP_DEPLOYDIR_ROOT> folder before launching the build
-  Using default configuration, you just need to launch the 'fip' target:
-    $ make -f $PWD/../Makefile.sdk.##MACHINE## fip
-  Example below for a specific config:
-    $ make -f $PWD/../Makefile.sdk.##MACHINE## TF_A_DEVICETREE=stm32mp157f-ev1 TF_A_CONFIG=optee-sdcard ELF_DEBUG_ENABLE='1' fip
-        NB: TF_A_DEVICETREE flag must be set to switch to correct board configuration.
-  The build results for this component are available in <FIP_DEPLOYDIR_ROOT>/fip
-
 - Generate all TF-A artifacts in a row
   Make sure to have all other bootloader binaries (U-Boot and optee-os) available in <FIP_DEPLOYDIR_ROOT> folder before launching the build
   Using default configuration, you just need to launch the 'all' target:
@@ -185,7 +176,16 @@ There are different targets for TF-A compilation:
     $ make -f $PWD/../Makefile.sdk.##MACHINE## TF_A_DEVICETREE=stm32mp157f-ev1 TF_A_CONFIG=optee-sdcard ELF_DEBUG_ENABLE='1' clean
     $ make -f $PWD/../Makefile.sdk.##MACHINE## TF_A_DEVICETREE=stm32mp157f-ev1 TF_A_CONFIG=optee-sdcard ELF_DEBUG_ENABLE='1' all
         NB: TF_A_DEVICETREE flag must be set to switch to correct board configuration.
-  The build results for this component are available in <DEPLOYDIR> and <FIP_DEPLOYDIR_ROOT>/fip
+  The build results for this component are available in <DEPLOYDIR>
+
+- Generate FIP binaires
+  Make sure to have all bootloader binaries (TF-A, U-Boot and optee-os) available in <FIP_DEPLOYDIR_ROOT> folder before launching the build
+  Using default configuration, you just need to launch the 'fip' target:
+    $> make -f $PWD/../Makefile.sdk.##MACHINE## fip
+  Example below for a specific config:
+    $ make -f $PWD/../Makefile.sdk.##MACHINE## TF_A_DEVICETREE=stm32mp157f-ev1 TF_A_CONFIG=optee-sdcard ELF_DEBUG_ENABLE='1' fip
+        NB: TF_A_DEVICETREE flag must be set to switch to correct board configuration.
+  The build results for this component are available in <FIP_DEPLOYDIR_ROOT>/fip
 
 ---------------------------
 6. Update software on board
