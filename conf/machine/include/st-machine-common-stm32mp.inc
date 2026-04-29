@@ -383,9 +383,9 @@ UBOOT_CONFIG:append:stm32mp25common = " ${@bb.utils.contains_any('BOOTSCHEME_LAB
 UBOOT_SPLASH_PORTRAIT_IMAGE = "splash_portrait"
 UBOOT_SPLASH_LANDSCAPE_IMAGE = "splash_landscape"
 
-PREFERRED_PROVIDER_u-boot-fw-utils:stm32mp1common ??= "libubootenv"
+PREFERRED_PROVIDER_u-boot-fw-utils ??= "libubootenv"
 
-MACHINE_EXTRA_RRECOMMENDS:append:stm32mp1common = " \
+MACHINE_ESSENTIAL_EXTRA_RDEPENDS:append = " \
     u-boot-fw-config-stm32mp \
 "
 
