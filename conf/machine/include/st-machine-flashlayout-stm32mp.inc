@@ -4,17 +4,17 @@ inherit flashlayout-stm32mp
 
 # Add specific dependencies to get all binaries generated before flashlayout files
 FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'fip-stm32mp', 'fip-stm32mp:do_deploy', '', d)}"
+FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'm33fw-stm32mp2', 'm33fw-stm32mp2:do_deploy', '', d)}"
 FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'virtual/trusted-firmware-a', 'virtual/trusted-firmware-a:do_deploy', '', d)}"
 FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'virtual/bootloader', 'virtual/bootloader:do_deploy', '', d)}"
 FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'virtual-optee-os', 'virtual-optee-os:do_deploy', '', d)}"
-FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'virtual/trusted-firmware-m', 'virtual/trusted-firmware-m:do_deploy', '', d)}"
 
 # for aarch64 support on aarch32 machine
 FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'lib64-fip-stm32mp', 'lib64-fip-stm32mp:do_deploy', '', d)}"
+FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'lib64-m33fw-stm32mp2', 'lib64-m33fw-stm32mp2:do_deploy', '', d)}"
 FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'virtual/lib64-trusted-firmware-a', 'virtual/lib64-trusted-firmware-a:do_deploy', '', d)}"
 FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'virtual/lib64-bootloader', 'virtual/lib64-bootloader:do_deploy', '', d)}"
 FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'lib64-virtual-optee-os', 'lib64-virtual-optee-os:do_deploy', '', d)}"
-FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'virtual/lib64-trusted-firmware-m', 'virtual/lib64-trusted-firmware-m:do_deploy', '', d)}"
 
 FLASHLAYOUT_SUFFIX = "${@bb.utils.contains('ENCRYPT_ENABLE', '1', '${ENCRYPT_SUFFIX}', '', d)}${@bb.utils.contains('SIGN_ENABLE', '1', '${SIGN_SUFFIX}', '', d)}.tsv"
 
@@ -98,14 +98,14 @@ FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emm
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-nor-emmc', 'nor-nor-emmc', '', d)}"
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-nor-sdcard', 'nor-nor-sdcard', '', d)}"
 FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', 'nor-sdcard', '', d)}"
-FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', bb.utils.contains('MACHINE_FEATURES', 'efi', 'sdcard sdcard-EFI', 'sdcard', d), '', d)}"
+FLASHLAYOUT_CONFIG_LABELS += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'sdcard', '', d)}"
 
 # Override for fastboot
 FLASHLAYOUT_CONFIG_LABELS:fastboot += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'emmc', '', d)}"
-FLASHLAYOUT_CONFIG_LABELS:fastboot += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', bb.utils.contains('MACHINE_FEATURES', 'efi', 'sdcard sdcard-EFI', 'sdcard', d), '', d)}"
+FLASHLAYOUT_CONFIG_LABELS:fastboot += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'sdcard', '', d)}"
 
 FLASHLAYOUT_CONFIG_LABELS:fastboot-opteemin += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'emmc', '', d)}"
-FLASHLAYOUT_CONFIG_LABELS:fastboot-opteemin += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', bb.utils.contains('MACHINE_FEATURES', 'efi', 'sdcard sdcard-EFI', 'sdcard', d), '', d)}"
+FLASHLAYOUT_CONFIG_LABELS:fastboot-opteemin += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'sdcard', 'sdcard', '', d)}"
 
 # Set by default this variable to 0, and set to 1 only when we are using st-example-image-*
 ST_EXAMPLE_IMAGE ??= "0"
@@ -169,11 +169,6 @@ FLASHLAYOUT_CONFIG_LABELS[sdcard] = "\
     ${@' '.join(['%s' % l for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'sdcard-m33td').split()]) if bb.utils.contains('MACHINE_FEATURES', 'm33td', True, False, d) else ''} \
     ${@' '.join(['%s' % l for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'sdcard').split()])} \
     ${@' '.join(['%s' % l for l in d.getVarFlag('PARTITIONS_CONFIG', 'sdcard').split()])} \
-    "
-FLASHLAYOUT_CONFIG_LABELS[sdcard-EFI] = "\
-    ${PARTITIONS_PROGRAMMER_CONFIG} \
-    ${@' '.join(['%s' % l for l in d.getVarFlag('PARTITIONS_BOOTLOADER_CONFIG', 'sdcard-EFI').split()])} \
-    ${@' '.join(['%s' % l for l in d.getVarFlag('PARTITIONS_CONFIG', 'sdcard-EFI').split()])} \
     "
 # nand + sdcard
 FLASHLAYOUT_CONFIG_LABELS[nand-2-128-256-sdcard] = "\
@@ -242,7 +237,6 @@ FLASHLAYOUT_TYPE_LABELS:nor-nor-emmc = "${@' '.join(dt for dt in '${STM32MP_DT_F
 FLASHLAYOUT_TYPE_LABELS:nor-nor-sdcard = "${@' '.join(dt for dt in '${STM32MP_DT_FILES_NOR_mb_sb}'.split() if dt in '${STM32MP_DT_FILES_SDCARD}'.split())}"
 # SDCARD
 FLASHLAYOUT_TYPE_LABELS:sdcard = "${STM32MP_DT_FILES_SDCARD}"
-FLASHLAYOUT_TYPE_LABELS:sdcard-EFI = "${STM32MP_DT_FILES_SDCARD}"
 # SPINAND
 FLASHLAYOUT_TYPE_LABELS:nand-2-128-256 = "${STM32MP_DT_FILES_SPINAND}"
 FLASHLAYOUT_TYPE_LABELS:nand-2-128-256-sdcard = "${STM32MP_DT_FILES_SPINAND}"
@@ -280,7 +274,6 @@ FLASHLAYOUT_PARTITION_LABELS:nor-nor-emmc = "${@' '.join([l.split(',')[1] for l 
 FLASHLAYOUT_PARTITION_LABELS:nor-nor-sdcard = "${@' '.join([l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nor-nor-sdcard').split()])}"
 FLASHLAYOUT_PARTITION_LABELS:nor-sdcard = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'nor-sdcard').split()])}"
 FLASHLAYOUT_PARTITION_LABELS:sdcard  = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'sdcard').split()])}"
-FLASHLAYOUT_PARTITION_LABELS:sdcard-EFI = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'sdcard-EFI').split()])}"
 
 # -----------------------------------------------------------------------------
 # Partition properties configuration
@@ -305,7 +298,6 @@ FLASHLAYOUT_PARTITION_ENABLE:${STM32MP_SSBL2_PROGRAMMER_NAME} = "-"
 FLASHLAYOUT_PARTITION_ENABLE:empty = "PE"
 # Need to make sure to delete partition that contains U-Boot env before update (gpt partitions only)
 FLASHLAYOUT_PARTITION_ENABLE:sdcard:${STM32MP_SSBL1_NAME} = "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', '', 'PD', d)}"
-FLASHLAYOUT_PARTITION_ENABLE:sdcard-EFI:${STM32MP_SSBL1_NAME} = "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', '', 'PD', d)}"
 FLASHLAYOUT_PARTITION_ENABLE:emmc:${STM32MP_SSBL1_NAME} = "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', '', 'PD', d)}"
 FLASHLAYOUT_PARTITION_ENABLE:${STM32MP_METADATA_NAME} = "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', 'PD', 'PED', d)}"
 
@@ -361,7 +353,6 @@ FLASHLAYOUT_PARTITION_DEVICE:nor-nor-emmc    = "none:${FLASHLAYOUT_PROGRAMMER_SE
 FLASHLAYOUT_PARTITION_DEVICE:nor-sdcard      = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE:NOR}:default,${DEVICE:SDCARD}:${FLASHLAYOUT_SDCARD_SECTIONS},${DEVICE:NOR}:bootdev:m33,${@bb.utils.contains('MACHINE_FEATURES', 'm33td', '${DEVICE:SDCARD}:bootdev:a35', '${DEVICE:NOR}:bootdev:a35', d)}"
 FLASHLAYOUT_PARTITION_DEVICE:nor-nor-sdcard  = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE:NOR}:default,${DEVICE:SDCARD}:${FLASHLAYOUT_SDCARD_ONLY_SECTIONS},${DEVICE:NOR}:bootdev:m33,${DEVICE:NOR}:bootdev:a35"
 FLASHLAYOUT_PARTITION_DEVICE:sdcard          = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE:SDCARD}:default"
-FLASHLAYOUT_PARTITION_DEVICE:sdcard-EFI      = "none:${FLASHLAYOUT_PROGRAMMER_SECTIONS},${DEVICE:SDCARD}:default"
 
 STM32MP_BOOT1_NAME = "${@bb.utils.contains('MACHINE_FEATURES', 'm33td', '${STM32MP_FSBLM1_NAME}', '${STM32MP_FSBL1_NAME}', d)}"
 STM32MP_BOOT2_NAME = "${@bb.utils.contains('MACHINE_FEATURES', 'm33td', '${STM32MP_FSBLM2_NAME}', '${STM32MP_FSBL2_NAME}', d)}"
@@ -380,7 +371,6 @@ FLASHLAYOUT_PARTITION_SIZE:nor-nor-sdcard:${STM32MP_ROOTFS_LABEL} = "4194304"
 FLASHLAYOUT_PARTITION_SIZE:nor-emmc:${STM32MP_ROOTFS_LABEL} = "3145728"
 FLASHLAYOUT_PARTITION_SIZE:nor-nor-emmc:${STM32MP_ROOTFS_LABEL} = "3145728"
 FLASHLAYOUT_PARTITION_SIZE:sdcard:${STM32MP_ROOTFS_LABEL}     = "4194304"
-FLASHLAYOUT_PARTITION_SIZE:sdcard-EFI:${STM32MP_ROOTFS_LABEL} = "4194304"
 FLASHLAYOUT_PARTITION_SIZE:nand-4-256-1024-sdcard:${STM32MP_ROOTFS_LABEL} = "4194304"
 FLASHLAYOUT_PARTITION_SIZE:nand-2-128-256-sdcard:${STM32MP_ROOTFS_LABEL} = "4194304"
 FLASHLAYOUT_PARTITION_SIZE:nand-4-256-512-sdcard:${STM32MP_ROOTFS_LABEL} = "4194304"

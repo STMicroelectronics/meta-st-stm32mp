@@ -3,6 +3,10 @@
 # Add specific scheme to provide flashlayout that will erase all storage devices
 FLASHLAYOUT_BOOTSCHEME_LABELS += "deleteall"
 
+# Do not count 'deleteall' flashlayout files as expected output: this is only
+# extra files to help cleaning devices
+FLASHLAYOUT_COUNT_LABELS:remove = "deleteall"
+
 # -----------------------------------------------------------------------------
 # Define config labels
 # -----------------------------------------------------------------------------
