@@ -7,6 +7,8 @@ SRC_URI:append:class-nativesdk = " file://environment.d-optee-sdk.sh"
 
 BBCLASSEXTEND = " nativesdk"
 
+S = "${UNPACKDIR}"
+
 do_configure[noexec] = "1"
 do_compile[noexec] = "1"
 
