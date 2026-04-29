@@ -7,9 +7,6 @@ inherit kernel
 inherit external-dt
 inherit multilib_header
 
-# For FIT image to expand properly for UBOOT_CONFIG vars
-include ${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'recipes-bsp/u-boot/u-boot-stm32mp-config.inc', '', d)}
-
 DEPENDS += "openssl-native util-linux-native libyaml-native"
 DEPENDS += "unifdef-native bison-native rsync-native"
 
@@ -133,7 +130,7 @@ correct_buildpaths() {
     done
 }
 do_install:append() {
-    # Install KERNEL_IMAGETYPE for kernel-imagebootfs package
+    # Install KERNEL_IMAGETYPE for kernel-image package
     install -m 0644 ${KERNEL_OUTPUT_DIR}/${KERNEL_IMAGETYPE} ${D}/${KERNEL_IMAGEDEST}
 
     install -d ${D}/${sysconfdir}/modprobe.d
@@ -190,11 +187,13 @@ python do_loadaddrcheck() {
         bb.fatal('Missing ST_KERNEL_LOADADDR value for ST kernel build: please define it in your machine.')
 }
 
-PACKAGES =+ "${KERNEL_PACKAGE_NAME}-headers ${KERNEL_PACKAGE_NAME}-imagebootfs"
+PACKAGES =+ "${KERNEL_PACKAGE_NAME}-headers"
 FILES:${KERNEL_PACKAGE_NAME}-headers = "${exec_prefix}/src/linux*"
 FILES:${KERNEL_PACKAGE_NAME}-devicetree += "/${KERNEL_DTBDEST}/*.dtb ${KERNEL_DTBDEST}/*.dtbo"
-FILES:${KERNEL_PACKAGE_NAME}-imagebootfs = "/${KERNEL_IMAGEDEST}/${KERNEL_IMAGETYPE}"
 FILES:${KERNEL_PACKAGE_NAME}-modules += "${sysconfdir}/modprobe.d"
 
-PACKAGES =+ "${@bb.utils.contains('MACHINE_FEATURES', 'efi', '${KERNEL_PACKAGE_NAME}-imageefi', '', d)} "
-FILES:${KERNEL_PACKAGE_NAME}-imageefi = "${EFI_PREFIX}/dtb/ ${EFI_FILES_PATH}"
+PACKAGES =+ "${@bb.utils.contains('MACHINE_FEATURES', 'efi', '${KERNEL_PACKAGE_NAME}-image-efi', '', d)} "
+FILES:${KERNEL_PACKAGE_NAME}-image-efi = "${EFI_PREFIX}/dtb/ ${EFI_FILES_PATH}"
+
+# Kernel-base if use to install the proper kernel image on file system to save space
+RRECOMMENDS:${KERNEL_PACKAGE_NAME}-base = "${@bb.utils.contains('MACHINE_FEATURES', 'efi', '${KERNEL_PACKAGE_NAME}-image-efi', '${KERNEL_PACKAGE_NAME}-image-${KERNEL_IMAGETYPE}', d)} "

@@ -287,11 +287,9 @@ KERNEL_EFI_ALT_NAME = "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'uImage',
 KERNEL_EFI_NAME:aarch64 = "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'Image', 'Image.gz', d)}"
 KERNEL_EFI_ALT_NAME:aarch64 = "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'Image.gz', 'Image', d)}"
 
-KERNEL_IMAGETYPE     = "${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'fitImage', '${KERNEL_EFI_NAME}', d)}"
+KERNEL_IMAGETYPE     = "${KERNEL_EFI_NAME}"
 KERNEL_ALT_IMAGETYPE = " vmlinux "
-KERNEL_ALT_IMAGETYPE =+ " ${@bb.utils.contains('MACHINE_FEATURES', 'fit', '${KERNEL_DEFAULT_NAME}', '${KERNEL_EFI_ALT_NAME}', d)} "
-
-KERNEL_CLASSES = " ${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'kernel-fitimage', 'kernel-uimage', d)} "
+KERNEL_ALT_IMAGETYPE =+ " ${KERNEL_EFI_ALT_NAME} "
 
 # Maxsize authorized for uncompressed kernel binary
 # Define to null to skip kernel image size check
@@ -302,6 +300,7 @@ KERNEL_CONFIG_DEPLOY ?= "1"
 
 # For fit usage
 UBOOT_ENTRYPOINT = "0xC4000000"
+KERNEL_CLASSES:append = " ${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'kernel-uimage kernel-fit-extra-artifacts', '', d)} "
 
 # List of device tree to install
 KERNEL_DEVICETREE ?= "${STM32MP_KERNEL_DEVICETREE}"
