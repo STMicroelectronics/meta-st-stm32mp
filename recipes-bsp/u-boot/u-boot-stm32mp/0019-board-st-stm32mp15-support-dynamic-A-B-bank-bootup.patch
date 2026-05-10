@@ -1,0 +1,104 @@
+From aa38c64e71a05c57b05700af43b97014097d596e Mon Sep 17 00:00:00 2001
+From: Dario Binacchi <dario.binacchi@amarulasolutions.com>
+Date: Mon, 18 May 2026 08:54:27 +0200
+Subject: [PATCH] board: st: stm32mp15: support dynamic A/B bank bootup
+
+Following commit 4300f9f4c5d7 ("board: st: stm32mp25: support dynamic
+A/B bank bootup"), this patch enables automatic detection of the active
+A/B bank on STM32MP15 platforms by retrieving partition GUIDs from FWU
+metadata.
+
+This ensures the system correctly identifies the bootable partitions
+even in multi-bank scenarios, falling back to a standard bootable flag
+scan if the UUIDs are missing.
+
+To enable A/B bank bootup on STM32MP15 boards, add the following Kconfig
+options to the  stm32mp15[_basic]_defconfig:
+
+ CONFIG_FWU_MULTI_BANK_UPDATE=y
+ CONFIG_FWU_MDATA=y
+ CONFIG_FWU_NUM_BANKS=2
+ CONFIG_FWU_NUM_IMAGES_PER_BANK=3
+ CONFIG_CMD_FWU_METADATA=y
+ CONFIG_FWU_MDATA_V2=y
+
+Signed-off-by: Dario Binacchi <dario.binacchi@amarulasolutions.com>
+Reviewed-by: Patrice Chotard <patrice.chotard@foss.st.com>
+Upstream-Status: Backport [https://source.denx.de/u-boot/u-boot/-/commit/560d8f32703ffa748197f6b782884952697669ff]
+---
+ board/st/stm32mp1/stm32mp1.c          | 33 +++++++++++++++++++++++++++
+ include/configs/stm32mp15_st_common.h | 15 ++++++++++++
+ 2 files changed, 48 insertions(+)
+
+diff --git a/board/st/stm32mp1/stm32mp1.c b/board/st/stm32mp1/stm32mp1.c
+index 9abb92b24e85..6add4c02867e 100644
+--- a/board/st/stm32mp1/stm32mp1.c
++++ b/board/st/stm32mp1/stm32mp1.c
+@@ -1359,4 +1359,37 @@ void fwu_plat_get_bootidx(uint *boot_idx)
+ 	*boot_idx = (readl(TAMP_FWU_BOOT_INFO_REG) >>
+ 		    TAMP_FWU_BOOT_IDX_OFFSET) & TAMP_FWU_BOOT_IDX_MASK;
+ }
++
++int fwu_platform_hook(struct udevice *dev, struct fwu_data *data)
++{
++	uint boot_idx;
++	efi_guid_t boot_uuid, root_uuid;
++	const efi_guid_t boot_type_guid = PARTITION_XBOOTLDR;
++	const efi_guid_t root_type_guid =
++		PARTITION_LINUX_FILE_SYSTEM_DATA_GUID;
++	char uuidbuf[UUID_STR_LEN + 1];
++	int retb, retr;
++
++	fwu_plat_get_bootidx(&boot_idx);
++
++	retb = fwu_mdata_get_image_guid(&boot_uuid, &boot_type_guid, boot_idx);
++	retr = fwu_mdata_get_image_guid(&root_uuid, &root_type_guid, boot_idx);
++
++	if (!retb && !retr) {
++		uuid_bin_to_str(boot_uuid.b, uuidbuf, UUID_STR_FORMAT_GUID);
++		env_set("boot_partuuid", uuidbuf);
++
++		uuid_bin_to_str(root_uuid.b, uuidbuf, UUID_STR_FORMAT_GUID);
++		env_set("root_partuuid", uuidbuf);
++	} else if (!retb && retr) {
++		log_warning("%s: found boot GUID but missing root GUID (%d)\n",
++			    __func__, retr);
++	} else if (!retr && retb) {
++		log_warning("%s: found root GUID but missing boot GUID (%d)\n",
++			    __func__, retb);
++	}
++
++	return 0;
++}
+ #endif /* CONFIG_FWU_MULTI_BANK_UPDATE */
++
+diff --git a/include/configs/stm32mp15_st_common.h b/include/configs/stm32mp15_st_common.h
+index 7b3b887a2f2d..30467ca68bae 100644
+--- a/include/configs/stm32mp15_st_common.h
++++ b/include/configs/stm32mp15_st_common.h
+@@ -8,7 +8,22 @@
+ #ifndef __CONFIG_STM32MP15_ST_COMMON_H__
+ #define __CONFIG_STM32MP15_ST_COMMON_H__
+ 
++#ifdef CONFIG_FWU_MULTI_BANK_UPDATE
++#define SCAN_DEV_FOR_BOOT_PARTS \
++	"setenv devplist; " \
++	"env exists boot_partuuid && " \
++		"part number ${devtype} ${devnum} ${boot_partuuid} devplist; " \
++	"env exists devplist || " \
++		"part list ${devtype} ${devnum} -bootable devplist; "
++
++#define ST_STM32MP15_FWU_ENV \
++	"altbootcmd=${bootcmd}\0"
++#else
++#define ST_STM32MP15_FWU_ENV
++#endif
++
+ #define STM32MP_BOARD_EXTRA_ENV \
++	ST_STM32MP15_FWU_ENV \
+ 	"usb_pgood_delay=2000\0" \
+ 	"console=ttySTM0\0" \
+ 	"splashimage=" __stringify(CONFIG_SYS_LOAD_ADDR) "\0" \
+-- 
+2.43.0
+

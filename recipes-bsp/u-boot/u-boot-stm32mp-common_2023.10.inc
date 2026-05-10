@@ -32,6 +32,8 @@ SRC_URI += "\
     file://0015-tools-Add-support-for-fwumdata-tool.patch \
     file://0016-tools-mkfwumdata-Remove-dependency-on-fwu_mdata.h-he.patch \
     file://0017-tools-build-fwumdata-with-tools-only_defconfig.patch \
+    file://0018-ARM-dts-stm32-add-FWU-metadata-node-for-stm32mp157f-.patch \
+    file://0019-board-st-stm32mp15-support-dynamic-A-B-bank-bootup.patch \
     "
 
 # debug and trace
@@ -48,7 +50,10 @@ SRC_URI += "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'file://fragment-03-
 SRC_URI += "${@bb.utils.contains('MACHINE_FEATURES', 'm33td', 'file://fragment-06-m33td-no-splashscreen.cfg;subdir=fragments/features', '', d)}"
 
 # fw-update-ab
-SRC_URI += "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update-ab', 'file://0010-configs-stm32mp25-enable-A-B-support-with-multiple-F.patch', '', d)}"
+SRC_URI += "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update-ab', ' \
+    file://0010-configs-stm32mp25-enable-A-B-support-with-multiple-F.patch \
+    file://0020-configs-stm32mp15-enable-A-B-support-with-multiple-F.patch \
+    ', '', d)}"
 
 U_BOOT_VERSION = "v2023.10"
 U_BOOT_SUBVERSION = "stm32mp"
