@@ -12,6 +12,7 @@ DEPENDS += "dtc-native bc-native"
 DEPENDS += "flex-native bison-native"
 DEPENDS += "python3-setuptools-native"
 
+
 SRC_URI = "git://github.com/u-boot/u-boot.git;protocol=https;branch=master"
 SRCREV  = "4459ed60cb1e0562bc5b40405e2b4b9bbf766d57"
 
@@ -20,6 +21,8 @@ SRC_URI += "\
     "
 
 SRC_URI += "file://0002-Fixup-SWIG-4.3-API-changed.patch"
+SRC_URI += "file://0003-BINMAN-use-importlib.resources-instead-of-pkg_resour.patch"
+
 # debug and trace
 SRC_URI += " ${@bb.utils.contains('ST_UBOOT_DEBUG_TRACE', '1', '', 'file://0098-silent_mode.patch', d)} "
 SRC_URI += "${@bb.utils.contains('ST_UBOOT_DEBUG_TRACE', '1', '', 'file://fragment-01-silent_mode.cfg;subdir=fragments/features', d)}"
