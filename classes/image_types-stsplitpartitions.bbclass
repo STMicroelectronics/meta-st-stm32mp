@@ -113,10 +113,11 @@ stoe_mkext234fs () {
 #stoe_mksquashfs <comp> <rootfs directory> <image name> <size> <extra image cmd>
 stoe_mksquashfs () {
     local comp=$1; shift
-    rootfs=$1; shift
-    image_name=$1;shift
-    size=$1
-    extra_imagecmd=""
+    local rootfs=$1; shift
+    local image_name=$1;shift
+    local size=$1
+    local extra_imagecmd=""
+    local suffix=""
 
     if [ $# -gt 1 ]; then
         shift
@@ -128,8 +129,8 @@ stoe_mksquashfs () {
     fi
 
     # Use the bitbake reproducible timestamp instead of the hardcoded squashfs one
-    export SOURCE_DATE_EPOCH=$(stat -c '%Y' ${size})
-    mksquashfs $rootfs ${IMGDEPLOYDIR}/image_name.squashfs${comp:+-}${suffix:-$comp} -noappend ${comp:+-comp }$comp $extra_imagecmd
+    export SOURCE_DATE_EPOCH=$(stat -c '%Y' ${rootfs})
+    mksquashfs $rootfs ${IMGDEPLOYDIR}/${image_name}.squashfs${comp:+-}${suffix:-$comp} -noappend ${comp:+-comp }$comp $extra_imagecmd
 }
 
 
