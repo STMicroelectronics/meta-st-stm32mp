@@ -1,0 +1,90 @@
+From 686ea981ba1c92897a5ac687081cc88ac68217b6 Mon Sep 17 00:00:00 2001
+From: Dario Binacchi <dario.binacchi@amarulasolutions.com>
+Date: Thu, 30 Apr 2026 10:06:07 +0200
+Subject: [PATCH] fwu: add helper to get image GUID by type and bank index
+
+Introduce fwu_mdata_get_image_guid() to retrieve a specific image GUID
+from the FWU metadata based on the bank index and image type GUID.
+
+This allows identifying the correct partition in multi-bank (A/B)
+scenarios, ensuring the correct image is targeted depending on the
+current bank.
+
+Signed-off-by: Dario Binacchi <dario.binacchi@amarulasolutions.com>
+Reviewed-by: Simon Glass <sjg@chromium.org>
+Acked-by: Ilias Apalodimas <ilias.apalodimas@linaro.org>
+Upstream-Status: Backport [https://source.denx.de/u-boot/u-boot/-/commit/97cdde6dfad31341d5efc9a8030b90049577ab90]
+---
+ include/fwu.h         | 11 +++++++++++
+ lib/fwu_updates/fwu.c | 33 +++++++++++++++++++++++++++++++++
+ 2 files changed, 44 insertions(+)
+
+diff --git a/include/fwu.h b/include/fwu.h
+index 865c239b66a4..94a379afcfc4 100644
+--- a/include/fwu.h
++++ b/include/fwu.h
+@@ -395,6 +395,17 @@ void fwu_populate_mdata_image_info(struct fwu_data *data);
+  */
+ int fwu_get_mdata_size(uint32_t *mdata_size);
+ 
++/**
++ * fwu_mdata_get_image_guid() - Get image GUID for a type and bank
++ * @image_guid: Pointer to be filled with the found image GUID
++ * @image_type_guid: Pointer to the image type GUID to search for
++ * @bank_index: Index of the bank
++ *
++ * Return: 0 if OK, -ve on error
++ */
++int fwu_mdata_get_image_guid(efi_guid_t *image_guid,
++			     const efi_guid_t *image_type_guid, u32 bank_index);
++
+ /**
+  * fwu_state_machine_updates() - Update FWU state of the platform
+  * @trial_state: Is platform transitioning into Trial State
+diff --git a/lib/fwu_updates/fwu.c b/lib/fwu_updates/fwu.c
+index 50793a7784c9..d5a4a65a9b67 100644
+--- a/lib/fwu_updates/fwu.c
++++ b/lib/fwu_updates/fwu.c
+@@ -216,6 +216,39 @@ int fwu_sync_mdata(struct fwu_mdata *mdata, int part)
+ 	return 0;
+ }
+ 
++/**
++ * fwu_mdata_get_image_guid() - Get image GUID for a type and bank
++ * @image_guid: Pointer to be filled with the found image GUID
++ * @image_type_guid: Pointer to the image type GUID to search for
++ * @bank_index: Index of the bank
++ *
++ * Return: 0 if OK, -ve on error
++ */
++int fwu_mdata_get_image_guid(efi_guid_t *image_guid,
++			     const efi_guid_t *image_type_guid, u32 bank_index)
++{
++	struct fwu_data *data = &g_fwu_data;
++	struct fwu_image_entry *image;
++	int i;
++
++	if (bank_index >= data->num_banks)
++		return -EINVAL;
++
++	for (i = 0; i < data->num_images; i++) {
++		image = &data->fwu_images[i];
++
++		if (!guidcmp(image_type_guid, &image->image_type_guid)) {
++			struct fwu_image_bank_info *bank;
++
++			bank = &image->img_bank_info[bank_index];
++			guidcpy(image_guid, &bank->image_guid);
++			return 0;
++		}
++	}
++
++	return -ENOENT;
++}
++
+ /**
+  * fwu_mdata_copies_allocate() - Allocate memory for metadata
+  * @mdata_size: Size of the metadata structure
+-- 
+2.43.0
+

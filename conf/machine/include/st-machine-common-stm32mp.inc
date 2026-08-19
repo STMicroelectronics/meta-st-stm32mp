@@ -80,6 +80,19 @@ MACHINE_FEATURES:append = " fip"
 # Enable firmware secure update feature
 MACHINE_FEATURES:append = " fw-update"
 
+# Optional A/B firmware update feature.
+# Uncomment to enable support for bootfs-a/b and rootfs-a/b partitions
+# required for atomic system updates.
+# Requires "fw-update".
+#MACHINE_FEATURES:append = " fw-update-ab"
+
+python () {
+    features = (d.getVar("MACHINE_FEATURES") or "").split()
+
+    if "fw-update-ab" in features and "fw-update" not in features:
+        bb.fatal("MACHINE_FEATURES 'fw-update-ab' requires 'fw-update'")
+}
+
 # Default serial consoles (TTYs) to enable using getty
 # Before kernel 4.18, serial console are ttyS3 but after is ttySTM0
 SERIAL_CONSOLE = "115200 ttySTM0"
@@ -439,6 +452,8 @@ TF_A_ENCRYPT_SUFFIX ?= "${@bb.utils.contains('ENCRYPT_ENABLE', '1', '${ENCRYPT_S
 # Configure TF-A to build the metadata binary
 TF_A_ENABLE_METADATA ?= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', '1', '0', d)}"
 TF_A_METADATA_BINARY ?= "metadata.bin"
+TF_A_METADATA_AB_BINARY:EMMC ?= "metadata-ab-emmc.bin"
+TF_A_METADATA_AB_BINARY:SDCARD ?= "metadata-ab-sdcard.bin"
 
 # Configure the default MTD_START_OFFSET
 TF_A_MTD_START_OFFSET_NAND    ?= "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '0', '0x00100000', '0x00200000', d)}"

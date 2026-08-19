@@ -1,0 +1,172 @@
+From 9cd0ca110c3991d2a1e9e8992c8b05bf8d9891f7 Mon Sep 17 00:00:00 2001
+From: Dario Binacchi <dario.binacchi@amarulasolutions.com>
+Date: Mon, 9 Mar 2026 08:22:42 +0100
+Subject: [PATCH 4/4] feat(st): enable A/B redundancy support
+
+Transition the STM32MP firmware management from a single-image to a
+multi-image bank structure to support a fully redundant A/B layout
+on STM32MP1 and STM32MP2 platforms.
+
+By increasing the images per bank count to 3, the FWU framework can
+now manage the FIP, BootFS, and RootFS partitions as a single redundant
+unit.
+
+To support this layout, define the required IO policies, block
+specifications, and partition GUIDs (XBOOTLDR and Linux FS) inside the
+common platform files. The definitions and the storage layout
+adjustments are conditionally guarded by the STM32MP_PSA_FWU_AB_SUPPORT
+flag to optimize internal SRAM usage when unused.
+
+Additionally, adjust the STM32_EXTRA_PARTS count on both STM32MP1 and
+STM32MP2 platform files to accommodate the mirrored layout slots when
+A/B redundancy is enabled.
+
+Change-Id: Ib072a29213b2721bb88b59a8f2f2d2270908dd90
+Signed-off-by: Dario Binacchi <dario.binacchi@amarulasolutions.com>
+Upstream-Status: Backport [https://git.trustedfirmware.org/plugins/gitiles/TF-A/trusted-firmware-a/+/15208d0117dfa16e6ed4db05c7518b06fd9f46e1]
+---
+ plat/st/common/stm32mp_fconf_io.c            | 24 +++++++++++++++++
+ plat/st/stm32mp1/include/plat_tbbr_img_def.h |  6 +++++
+ plat/st/stm32mp1/platform.mk                 |  5 ++++
+ plat/st/stm32mp2/include/plat_tbbr_img_def.h | 28 +++++++++++++++++---
+ plat/st/stm32mp2/platform.mk                 |  5 ++++
+ 5 files changed, 64 insertions(+), 4 deletions(-)
+
+diff --git a/plat/st/common/stm32mp_fconf_io.c b/plat/st/common/stm32mp_fconf_io.c
+index e12eded81fc0..c5f0af917bf6 100644
+--- a/plat/st/common/stm32mp_fconf_io.c
++++ b/plat/st/common/stm32mp_fconf_io.c
+@@ -32,6 +32,16 @@ static io_block_spec_t metadata_block_spec = {
+ 	.offset = 0,    /* To be filled at runtime */
+ 	.length = 0,    /* To be filled at runtime */
+ };
++#if STM32MP_PSA_FWU_AB_SUPPORT
++static io_block_spec_t bootfs_block_spec = {
++	.offset = 0,    /* To be filled at runtime */
++	.length = 0,    /* To be filled at runtime */
++};
++static io_block_spec_t rootfs_block_spec = {
++	.offset = 0,    /* To be filled at runtime */
++	.length = 0,    /* To be filled at runtime */
++};
++#endif /* STM32MP_PSA_FWU_AB_SUPPORT */
+ #endif
+ 
+ /* By default, STM32 platforms load images from the FIP */
+@@ -71,6 +81,20 @@ struct plat_io_policy policies[MAX_NUMBER_IDS] = {
+ 		.img_type_guid = NULL_GUID,
+ 		.check = open_storage
+ 	},
++#if STM32MP_PSA_FWU_AB_SUPPORT
++	[FWU_BOOTFS_ID] = {
++		.dev_handle = &storage_dev_handle,
++		.image_spec = (uintptr_t)&bootfs_block_spec,
++		.img_type_guid = XBOOTLDR_GUID,
++		.check = open_storage
++	},
++	[FWU_ROOTFS_ID] = {
++		.dev_handle = &storage_dev_handle,
++		.image_spec = (uintptr_t)&rootfs_block_spec,
++		.img_type_guid = LINUX_FILE_SYSTEM_DATA_GUID,
++		.check = open_storage
++	},
++#endif /* STM32MP_PSA_FWU_AB_SUPPORT */
+ #endif /* PSA_FWU_SUPPORT */
+ };
+ 
+diff --git a/plat/st/stm32mp1/include/plat_tbbr_img_def.h b/plat/st/stm32mp1/include/plat_tbbr_img_def.h
+index 984aae85b2a1..92509d2ede0e 100644
+--- a/plat/st/stm32mp1/include/plat_tbbr_img_def.h
++++ b/plat/st/stm32mp1/include/plat_tbbr_img_def.h
+@@ -35,6 +35,12 @@
+ #define STM32MP_CONFIG_CERT_ID		U(17)
+ 
+ /* Increase the MAX_NUMBER_IDS to match the authentication pool required */
++#if STM32MP_PSA_FWU_AB_SUPPORT
++#define FWU_BOOTFS_ID			U(19)
++#define FWU_ROOTFS_ID			U(20)
++#define MAX_NUMBER_IDS			U(21)
++#else
+ #define MAX_NUMBER_IDS			U(19)
++#endif	/* STM32MP_PSA_FWU_AB_SUPPORT */
+ 
+ #endif	/* STM32MP1_IMG_DEF_H */
+diff --git a/plat/st/stm32mp1/platform.mk b/plat/st/stm32mp1/platform.mk
+index e65443be8fc4..c1ca9c83b220 100644
+--- a/plat/st/stm32mp1/platform.mk
++++ b/plat/st/stm32mp1/platform.mk
+@@ -8,6 +8,11 @@
+ # metadata (2) and the FIP partitions (default is 2).
+ STM32_EXTRA_PARTS	:=	4
+ 
++ifeq (${STM32MP_PSA_FWU_AB_SUPPORT},1)
++# u-boot-env, bootfs-a, bootfs-b, vendorfs, rootfs-a and rootfs-b
++STM32_EXTRA_PARTS		:= $(shell expr $(STM32_EXTRA_PARTS) + 6)
++endif
++
+ include plat/st/common/common.mk
+ 
+ ARM_CORTEX_A7		:=	yes
+diff --git a/plat/st/stm32mp2/include/plat_tbbr_img_def.h b/plat/st/stm32mp2/include/plat_tbbr_img_def.h
+index e786dd2b12ba..8f0028e4eb72 100644
+--- a/plat/st/stm32mp2/include/plat_tbbr_img_def.h
++++ b/plat/st/stm32mp2/include/plat_tbbr_img_def.h
+@@ -40,15 +40,35 @@
+ #define STM32MP_CONFIG_CERT_ID		U(24)
+ #define GPT_IMAGE_ID			U(25)
+ 
++/* Increase the MAX_NUMBER_IDS to match the authentication pool required */
++#define MAX_NUMBER_IDS			U(26)
++
++/* Image IDs reserved by optional features:
++ * - DDR firmware uses ID 26
++ * - PSA FWU AB uses the next two available IDs
++ * - MAX_NUMBER_IDS is set to match the required authentication pool size
++ */
++
+ #if STM32MP_DDR_FIP_IO_STORAGE
++/* DDR firmware image ID */
+ #define DDR_FW_ID			U(26)
+-/* Increase the MAX_NUMBER_IDS to match the authentication pool required */
++#undef  MAX_NUMBER_IDS
+ #define MAX_NUMBER_IDS			U(27)
++#endif
+ 
++#if STM32MP_PSA_FWU_AB_SUPPORT
++/* PSA FWU AB image IDs */
++#if STM32MP_DDR_FIP_IO_STORAGE
++#define FWU_BOOTFS_ID			U(27)
++#define FWU_ROOTFS_ID			U(28)
++#undef  MAX_NUMBER_IDS
++#define MAX_NUMBER_IDS			U(29)
+ #else
+-/* Increase the MAX_NUMBER_IDS to match the authentication pool required */
+-#define MAX_NUMBER_IDS			U(26)
+-
++#define FWU_BOOTFS_ID			U(26)
++#define FWU_ROOTFS_ID			U(27)
++#undef  MAX_NUMBER_IDS
++#define MAX_NUMBER_IDS			U(28)
++#endif
+ #endif
+ 
+ #endif /* PLAT_TBBR_IMG_DEF_H */
+diff --git a/plat/st/stm32mp2/platform.mk b/plat/st/stm32mp2/platform.mk
+index 542e382dbd33..e0b42ca3db80 100644
+--- a/plat/st/stm32mp2/platform.mk
++++ b/plat/st/stm32mp2/platform.mk
+@@ -16,6 +16,11 @@ else
+ STM32_EXTRA_PARTS		:=	6
+ endif
+ 
++ifeq (${STM32MP_PSA_FWU_AB_SUPPORT},1)
++# u-boot-env, bootfs-a, bootfs-b, vendorfs, rootfs-a and rootfs-b
++STM32_EXTRA_PARTS		:= $(shell expr $(STM32_EXTRA_PARTS) + 6)
++endif
++
+ include plat/st/common/common.mk
+ 
+ CRASH_REPORTING			:=	1
+-- 
+2.43.0
+

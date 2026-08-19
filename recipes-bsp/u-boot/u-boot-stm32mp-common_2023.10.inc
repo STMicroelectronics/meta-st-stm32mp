@@ -17,6 +17,23 @@ SRCREV  = "4459ed60cb1e0562bc5b40405e2b4b9bbf766d57"
 
 SRC_URI += "\
     file://0001-v2023.10-stm32mp-r3.1.patch \
+    file://0002-part-Add-accessors-for-struct-disk_partition-uuid.patch \
+    file://0003-config_distro_bootcmd-make-possible-to-substitute-pa.patch \
+    file://0004-disk-part-implement-generic-function-part_get_info_b.patch \
+    file://0005-FWU-Add-platform-hook-support-for-fwu-metata.patch \
+    file://0006-lib-uuid-add-partition-type-GUID-for-extended-bootlo.patch \
+    file://0007-cmd-part-support-lookup-by-UUID.patch \
+    file://0008-fwu-add-helper-to-get-image-GUID-by-type-and-bank-in.patch \
+    file://0009-board-st-stm32mp25-support-dynamic-A-B-bank-bootup.patch \
+    file://0011-tools-gitignore-Add-mkfwumdata-to-the-git-ignore-fil.patch \
+    file://0012-tools-Reorganize-mkfwumdata-tool-into-fwumdata_src-d.patch \
+    file://0013-tools-mkfwumdata-Improve-error-message-specificity.patch \
+    file://0014-tools-mkfwumdata-Add-bank-count-validation-for-FWU-m.patch \
+    file://0015-tools-Add-support-for-fwumdata-tool.patch \
+    file://0016-tools-mkfwumdata-Remove-dependency-on-fwu_mdata.h-he.patch \
+    file://0017-tools-build-fwumdata-with-tools-only_defconfig.patch \
+    file://0018-ARM-dts-stm32-add-FWU-metadata-node-for-stm32mp157f-.patch \
+    file://0019-board-st-stm32mp15-support-dynamic-A-B-bank-bootup.patch \
     "
 
 # debug and trace
@@ -32,6 +49,11 @@ SRC_URI += "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'file://fragment-03-
 # M33TD: no splashscreen
 SRC_URI += "${@bb.utils.contains('MACHINE_FEATURES', 'm33td', 'file://fragment-06-m33td-no-splashscreen.cfg;subdir=fragments/features', '', d)}"
 
+# fw-update-ab
+SRC_URI += "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update-ab', ' \
+    file://0010-configs-stm32mp25-enable-A-B-support-with-multiple-F.patch \
+    file://0020-configs-stm32mp15-enable-A-B-support-with-multiple-F.patch \
+    ', '', d)}"
 
 U_BOOT_VERSION = "v2023.10"
 U_BOOT_SUBVERSION = "stm32mp"
