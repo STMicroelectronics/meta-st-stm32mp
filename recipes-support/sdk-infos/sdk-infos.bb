@@ -8,8 +8,19 @@ SRC_URI:stm32mp1common = " \
     file://README.HOW_TO.txt.stm32mp1;subdir=sources \
     \
     file://examples/sdk_compilation_stm32mp1_stm32mp135f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp1_sign_encrypt_stm32mp135f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp1_mx_stm32mp135f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp1_mx_sign_encrypt_stm32mp135f-dk.example;subdir=sources \
+    \
     file://examples/sdk_compilation_stm32mp1_stm32mp157f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp1_sign_stm32mp157f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp1_mx_stm32mp157f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp1_mx_sign_stm32mp157f-dk.example;subdir=sources \
+    \
     file://examples/sdk_compilation_stm32mp1_stm32mp157f-ev1.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp1_sign_stm32mp157f-ev1.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp1_mx_stm32mp157f-ev1.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp1_mx_sign_stm32mp157f-ev1.example;subdir=sources \
     "
 
 # stm32mp2
@@ -17,9 +28,24 @@ SRC_URI:stm32mp2common = " \
     file://README.HOW_TO.txt.stm32mp2;subdir=sources \
     \
     file://examples/sdk_compilation_stm32mp2_stm32mp215f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2_sign_encrypt_stm32mp215f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2_mx_stm32mp215f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2_mx_sign_encrypt_stm32mp215f-dk.example;subdir=sources \
+    \
     file://examples/sdk_compilation_stm32mp2_stm32mp235f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2_sign_encrypt_stm32mp235f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2_mx_stm32mp235f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2_mx_sign_encrypt_stm32mp235f-dk.example;subdir=sources \
+    \
     file://examples/sdk_compilation_stm32mp2_stm32mp257f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2_sign_encrypt_stm32mp257f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2_mx_stm32mp257f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2_mx_sign_encrypt_stm32mp257f-dk.example;subdir=sources \
+    \
     file://examples/sdk_compilation_stm32mp2_stm32mp257f-ev1.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2_sign_encrypt_stm32mp257f-ev1.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2_mx_stm32mp257f-ev1.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2_mx_sign_encrypt_stm32mp257f-ev1.example;subdir=sources \
     "
 
 # stm32mp2 m33td
@@ -27,13 +53,25 @@ SRC_URI:stm32mp2m33tdcommon = " \
     file://README.HOW_TO.txt.stm32mp2-m33td;subdir=sources \
     \
     file://examples/sdk_compilation_stm32mp2-m33td_stm32mp215f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2-m33td_sign_encrypt_stm32mp215f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2-m33td_mx_stm32mp215f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2-m33td_mx_sign_encrypt_stm32mp215f-dk.example;subdir=sources \
+    \
     file://examples/sdk_compilation_stm32mp2-m33td_stm32mp235f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2-m33td_sign_encrypt_stm32mp235f-dk.example;subdir=sources \
+    \
     file://examples/sdk_compilation_stm32mp2-m33td_stm32mp257f-dk.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2-m33td_sign_encrypt_stm32mp257f-dk.example;subdir=sources \
+    \
     file://examples/sdk_compilation_stm32mp2-m33td_stm32mp257f-ev1.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2-m33td_sign_encrypt_stm32mp257f-ev1.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2-m33td_mx_stm32mp257f-ev1.example;subdir=sources \
+    file://examples/sdk_compilation_stm32mp2-m33td_mx_sign_encrypt_stm32mp257f-ev1.example;subdir=sources \
     "
 
 SRC_URI:append = " \
     file://generated_build_script-stm32mpx.sh;subdir=sources/ \
+    file://create_signature_encryption_key.sh;subdir=sources/ \
     "
 
 S = "${UNPACKDIR}"
