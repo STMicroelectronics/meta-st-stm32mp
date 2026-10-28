@@ -39,6 +39,10 @@ ST_TOOLS_FOR_SDK_PERL:append = " \
     nativesdk-perl-module-file-spec-functions \
     nativesdk-perl-module-integer \
     nativesdk-perl-module-pod-text \
+    \
+    nativesdk-python3-dtschema \
+    nativesdk-python3-yamllint \
+    nativesdk-coreutils \
 "
 
 ST_TOOLS_FOR_SDK:append = " ${ST_TOOLS_FOR_SDK_PERL} "
