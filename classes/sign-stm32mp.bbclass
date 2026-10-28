@@ -323,7 +323,7 @@ sign_stm32mp_fw_m() {
 #    fi
 
     if [ -n "${prv_sign_key}" ]; then
-        bbnote "[sign_stm32mp_fw] Generate sign firwmare:"
+        bbnote "[sign_stm32mp_fw_m] Generate sign firwmare:"
         echo "[SIGNING CMD] ${SIGN_TOOL} \\
             -bin ${input_path} \\
             -o ${output} \\
@@ -334,6 +334,17 @@ sign_stm32mp_fw_m() {
             --header-version ${header_version} \\
             --type ${input_type} \\
             --silent"
+        echo "${SIGN_TOOL} \
+            -bin "${input_path}" \
+            -o "${output}" \
+            -of ${offset} \
+            --public-key ${pub_sign_key} \
+            --password XXX_SIGN_KEY_PASS_M_XXX \
+            --private-key ${prv_sign_key} \
+            --header-version ${header_version} \
+            --type ${input_type} \
+            --silent"  | sed "s|${RECIPE_SYSROOT}/||g" > "${output}.txt"
+
         ${SIGN_TOOL} \
             -bin "${input_path}" \
             -o "${output}" \
@@ -400,9 +411,21 @@ sign_copro_fw_m33() {
     # Override default env for SIGN_COPRO_TOOL
     [ -z "${SIGN_COPRO_TA_DEV_KIT_DIR}" ] || export TA_DEV_KIT_DIR="${SIGN_COPRO_TA_DEV_KIT_DIR}"
 
+    # for dumping command
+    dump_command_path_dir=$(dirname ${output} | sed "s#${D}##")
+    dump_command_name=$(basename ${output} | sed "s#\.elf##")
+
+    install -d ${WORKDIR}/cmd_dump/${dump_command_path_dir}
+
     bbnote "[sign_copro_fw_m33] Generate sign firwmare:"
     if [ -n "${m33_priv_ecc_sign_key}" ]; then
         bbnote "[sign_copro_fw_m33] Use ECC signature"
+        echo "${SIGN_COPRO_TOOL} \
+                ${input_nsecure} \
+                ${input_secure} \
+                --signature-key ${m33_priv_ecc_sign_key} --sign-info-key ${m33_info_ecc_sign_key} --sign-pass XXX_SIGN_COPRO_ECC_PASS_KEY_XXX \
+                --sign-ecc \
+                --output ${output}" | sed "s|${RECIPE_SYSROOT}/||g" > ${WORKDIR}/cmd_dump/${dump_command_path_dir}/${dump_command_name}.txt
         ${SIGN_COPRO_TOOL} \
                 ${input_nsecure} \
                 ${input_secure} \
@@ -411,6 +434,13 @@ sign_copro_fw_m33() {
                 --output ${output} || bbwarn "[sign_copro_fw_m33][ECC key] Failed to generate $(basename "${output}")"
         if [ -n "${m33_encrypt_key}" ]; then
             bbnote "[sign_copro_fw_m33] Use ECC key and encrypt firwmare"
+            echo "${SIGN_COPRO_TOOL} \
+                    ${input_nsecure} \
+                    ${input_secure} \
+                    --signature-key ${m33_priv_ecc_sign_key} --sign-info-key ${m33_info_ecc_sign_key} --sign-pass $XXX_SIGN_COPRO_ECC_PASS_KEY_XXX \
+                    --sign-ecc \
+                    --encrypt-key ${m33_encrypt_key} \
+                    --output ${output}" | sed "s|${RECIPE_SYSROOT}/||g" > ${WORKDIR}/cmd_dump/${dump_command_path_dir}/${dump_command_name}.txtt
             ${SIGN_COPRO_TOOL} \
                     ${input_nsecure} \
                     ${input_secure} \
@@ -422,14 +452,28 @@ sign_copro_fw_m33() {
     fi
     if [ -n "${m33_priv_rsa_sign_key}" ]; then
         bbnote "[sign_copro_fw_m33] Use RSA signature"
+        echo "${SIGN_COPRO_TOOL} \
+                ${input_nsecure} \
+                ${input_secure} \
+                --signature-key ${m33_priv_rsa_sign_key} --sign-info-key ${m33_info_rsa_sign_key} \
+                --sign-rsa \
+                --output ${output}" | sed "s|${RECIPE_SYSROOT}/||g" > ${WORKDIR}/cmd_dump/${dump_command_path_dir}/${dump_command_name}.txt
         ${SIGN_COPRO_TOOL} \
                 ${input_nsecure} \
                 ${input_secure} \
                 --signature-key ${m33_priv_rsa_sign_key} --sign-info-key ${m33_info_rsa_sign_key} \
                 --sign-rsa \
                 --output ${output} || bbwarn "[sign_copro_fw_m33][RSA key] Failed to generate $(basename "${output}")"
+
         if [ -n "${m33_encrypt_key}" ]; then
             bbnote "[sign_copro_fw_m33] Use RSA key and encrypt firwmare"
+            echo "${SIGN_COPRO_TOOL} \
+                    ${input_nsecure} \
+                    ${input_secure} \
+                    --signature-key ${m33_priv_rsa_sign_key} --sign-info-key ${m33_info_rsa_sign_key} \
+                    --sign-rsa \
+                    --encrypt-key ${m33_encrypt_key} \
+                    --output ${output}"| sed "s|${RECIPE_SYSROOT}/||g" > ${WORKDIR}/cmd_dump/${dump_command_path_dir}/${dump_command_name}.txt
             ${SIGN_COPRO_TOOL} \
                     ${input_nsecure} \
                     ${input_secure} \
@@ -441,12 +485,21 @@ sign_copro_fw_m33() {
     fi
     if [ "${SIGN_COPRO_ENABLE}" = "0" ] || [ "${SIGN_COPRO_DEFAULT}" = "1" ]; then
         bbnote "[sign_copro_fw_m33] Use default signature"
+        echo "${SIGN_COPRO_TOOL} \
+                ${input_nsecure} \
+                ${input_secure} \
+                --output ${output}"| sed "s|${RECIPE_SYSROOT}/||g" > ${WORKDIR}/cmd_dump/${dump_command_path_dir}/${dump_command_name}.txt
         ${SIGN_COPRO_TOOL} \
                 ${input_nsecure} \
                 ${input_secure} \
                 --output ${output} || bbwarn "[sign_copro_fw_m33][default] Failed to generate $(basename "${output}")"
         if [ -n "${m33_encrypt_key}" ]; then
             bbnote "[sign_copro_fw_m33] Use default key and encrypt firwmare"
+            echo "${SIGN_COPRO_TOOL} \
+                    ${input_nsecure} \
+                    ${input_secure} \
+                    --encrypt-key ${m33_encrypt_key} \
+                    --output ${output}"| sed "s|${RECIPE_SYSROOT}/||g" > ${WORKDIR}/cmd_dump/${dump_command_path_dir}/${dump_command_name}.txt
             ${SIGN_COPRO_TOOL} \
                     ${input_nsecure} \
                     ${input_secure} \
