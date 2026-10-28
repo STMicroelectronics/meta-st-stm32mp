@@ -721,7 +721,6 @@ if [ $NEED_TO_SIGN -eq 1 ]; then
     sign_single_key_pass="${SIGN_KEY_PASS}"
 fi
 # ---------------------------------------------------
-
 echo "------------------------------------"
 fiptool_output_file_suffix=""
 if [ $NEED_TO_ENCRYPT -eq 1 ]; then
@@ -732,6 +731,11 @@ if [ $NEED_TO_SIGN -eq 1 ]; then
     fiptool_output_temp_file=${FIP_DEPLOYDIR_FIP}/tmp-fip-$SEARCH_DTB-$SEARCH_STORAGE
     mkdir -p $fiptool_output_temp_file
 fi
+fiptool_output_file="${FIP_DEPLOYDIR_FIP}/fip-$SEARCH_DTB${fip_addons_name}$fiptool_output_file_suffix.bin"
+fiptool_output_file_dump="${FIP_DEPLOYDIR_FIP}/fip-$SEARCH_DTB${fip_addons_name}$fiptool_output_file_suffix.txt"
+echo " " > $fiptool_output_file_dump
+
+echo "------------------------------------"
 if [ $USE_ONLY_DDR -eq 1 ]; then
     # Signature for ddr fw
     if [ $NEED_TO_SIGN -eq 1 ]; then
@@ -739,7 +743,7 @@ if [ $USE_ONLY_DDR -eq 1 ]; then
         echo "CMD> $TOOLS_CERTTOOL -n --tfw-nvctr 0 --rot-key ${sign_key}" \
             "--rot-key-pwd ${sign_single_key_pass}" \
             "$fip_certconf_opt" \
-            "--ddr-fw $ddr_fw_file" | sed "s|--|\\\ \n\t--|g"
+            "--ddr-fw $ddr_fw_file" | sed "s|--|\\\ \n\t--|g" | sed "s|${FIP_DEPLOYDIR_ROOT}|<PATH>|g" | sed "s|${FIP_DEPLOYDIR_FIP}|<temp path>|g" >> $fiptool_output_file_dump
         if [ $DRY_RUN -eq 0 ]; then
             $TOOLS_CERTTOOL \
              -n --tfw-nvctr 0 \
@@ -757,25 +761,25 @@ else
             # The encryption key is already available in hexadecimal format, so just extract it from file
             encrypt_key="$(cat ${encrypt_key})"
         else
-            encrypt_key="$(hexdump -e '/1 "%02x"' ${encrypt_key})"
+            encrypt_key="$(hexdump -ve '/1 "%02x"' ${encrypt_key})"
         fi
 
         if [ $USE_BL32 -eq 0 ]; then
             # encrypt Optee header
             echo "CMD> $TOOLS_ENCTOOL --key ${encrypt_key} --nonce $DEFAULT_FIP_ENCRYPT_NONCE --fw-enc-status 0" \
-                "--in $optee_header_file --out $optee_header_encrypted_file " | sed "s|--|\\\ \n\t--|g"
+                "--in $optee_header_file --out $optee_header_encrypted_file " | sed "s|--|\\\ \n\t--|g" | sed "s|${FIP_DEPLOYDIR_ROOT}|<PATH>|g" | sed "s|${FIP_DEPLOYDIR_FIP}|<temp path>|g" >> $fiptool_output_file_dump
             if [ $DRY_RUN -eq 0 ]; then
                 $TOOLS_ENCTOOL --key ${encrypt_key} --nonce $DEFAULT_FIP_ENCRYPT_NONCE --fw-enc-status 0 \
                     --in $optee_header_file --out $optee_header_encrypted_file  || die "ENCTOOL optee header error"
             fi
             echo "CMD> $TOOLS_ENCTOOL --key ${encrypt_key} --nonce $DEFAULT_FIP_ENCRYPT_NONCE --fw-enc-status 0" \
-                "--in $optee_pager_file --out $optee_pager_encrypted_file" | sed "s|--|\\\ \n\t--|g"
+                "--in $optee_pager_file --out $optee_pager_encrypted_file" | sed "s|--|\\\ \n\t--|g" | sed "s|${FIP_DEPLOYDIR_ROOT}|<PATH>|g" | sed "s|${FIP_DEPLOYDIR_FIP}|<temp path>|g" >> $fiptool_output_file_dump
             if [ $DRY_RUN -eq 0 ]; then
                 $TOOLS_ENCTOOL --key ${encrypt_key} --nonce $DEFAULT_FIP_ENCRYPT_NONCE --fw-enc-status 0 \
                     --in $optee_pager_file --out $optee_pager_encrypted_file  || die "ENCTOOL optee pager error"
             fi
             echo "CMD> $TOOLS_ENCTOOL --key ${encrypt_key} --nonce $DEFAULT_FIP_ENCRYPT_NONCE --fw-enc-status 0" \
-                "--in  $optee_pageable_file --out $optee_pageable_encrypted_file " | sed "s|--|\\\ \n\t--|g"
+                "--in  $optee_pageable_file --out $optee_pageable_encrypted_file " | sed "s|--|\\\ \n\t--|g" | sed "s|${FIP_DEPLOYDIR_ROOT}|<PATH>|g" | sed "s|${FIP_DEPLOYDIR_FIP}|<temp path>|g" >> $fiptool_output_file_dump
             if [ $DRY_RUN -eq 0 ]; then
                 $TOOLS_ENCTOOL --key ${encrypt_key} --nonce $DEFAULT_FIP_ENCRYPT_NONCE --fw-enc-status 0 \
                     --in  $optee_pageable_file --out $optee_pageable_encrypted_file  || die "ENCTOOL optee pageable error"
@@ -784,13 +788,13 @@ else
 
         if [ $USE_BL31 -eq 1 ]; then
             echo "CMD> $TOOLS_ENCTOOL --key ${encrypt_key} --nonce $DEFAULT_FIP_ENCRYPT_NONCE --fw-enc-status 0" \
-                "--in $bl3x_fw_file --out $bl3x_fw_encrypted_file " | sed "s|--|\\\ \n\t--|g"
+                "--in $bl3x_fw_file --out $bl3x_fw_encrypted_file " | sed "s|--|\\\ \n\t--|g" | sed "s|${FIP_DEPLOYDIR_ROOT}|<PATH>|g" | sed "s|${FIP_DEPLOYDIR_FIP}|<temp path>|g" >> $fiptool_output_file_dump
             if [ $DRY_RUN -eq 0 ]; then
                 $TOOLS_ENCTOOL --key ${encrypt_key} --nonce $DEFAULT_FIP_ENCRYPT_NONCE --fw-enc-status 0 \
                     --in $bl3x_fw_file --out $bl3x_fw_encrypted_file || die "ENCTOOL bl3x fw error"
             fi
             echo "CMD> $TOOLS_ENCTOOL --key ${encrypt_key} --nonce $DEFAULT_FIP_ENCRYPT_NONCE --fw-enc-status 0" \
-                "--in $bl3x_dtb_file --out $bl3x_dtb_encrypted_file " | sed "s|--|\\\ \n\t--|g"
+                "--in $bl3x_dtb_file --out $bl3x_dtb_encrypted_file " | sed "s|--|\\\ \n\t--|g" | sed "s|${FIP_DEPLOYDIR_ROOT}|<PATH>|g" | sed "s|${FIP_DEPLOYDIR_FIP}|<temp path>|g" >> $fiptool_output_file_dump
             if [ $DRY_RUN -eq 0 ]; then
                 $TOOLS_ENCTOOL --key ${encrypt_key} --nonce $DEFAULT_FIP_ENCRYPT_NONCE --fw-enc-status 0 \
                     --in $bl3x_dtb_file --out $bl3x_dtb_encrypted_file || die "ENCTOOL bl3x dtb error"
@@ -824,7 +828,7 @@ else
             "$certool_opt" \
             "$fip_certconf_opt" \
             "$fip_certconf_opt_addons" \
-            "--tb-fw $fiptool_output_temp_file/bl2-fake.bin" | sed "s|--|\\\ \n\t--|g"
+            "--tb-fw $fiptool_output_temp_file/bl2-fake.bin" | sed "s|--|\\\ \n\t--|g" | sed "s|${FIP_DEPLOYDIR_ROOT}|<PATH>|g" | sed "s|${FIP_DEPLOYDIR_FIP}|<temp path>|g" >> $fiptool_output_file_dump
 
         if [ $DRY_RUN -eq 0 ]; then
             ${TOOLS_CERTTOOL} -n --tfw-nvctr 0 --ntfw-nvctr 0 --key-alg ecdsa --hash-alg sha256 \
@@ -838,13 +842,9 @@ else
     fi
 fi
 
-echo "------------------------------------"
-fiptool_output_file="${FIP_DEPLOYDIR_FIP}/fip-$SEARCH_DTB${fip_addons_name}$fiptool_output_file_suffix.bin"
-fiptool_output_file_dump="${FIP_DEPLOYDIR_FIP}/fip-$SEARCH_DTB${fip_addons_name}$fiptool_output_file_suffix.txt"
-
 # dump information about files
 echo "------------------------------------"
-echo "List of files: " > $fiptool_output_file_dump
+echo "List of files: " >> $fiptool_output_file_dump
 if [ $USE_ONLY_DDR -eq 1 ]; then
     printf " %-8s\n" "arm-trusted-firmware" >> $fiptool_output_file_dump
     [ $USE_DDR -eq 1 ]  && printf "%16s : %s\n" DDR_fw $ddr_fw_file_light >> $fiptool_output_file_dump
@@ -870,7 +870,7 @@ echo "Fip tool command:"  >> $fiptool_output_file_dump
 [ -d "${FIP_DEPLOYDIR_FIP}" ] || mkdir -p "${FIP_DEPLOYDIR_FIP}"
 echo "CMD> $TOOLS_FIPTOOL create $fiptool_opt $fip_certconf_opt_addons $fip_certconf_opt \\ " | sed "s|--|\\\ \n\t--|g"
 echo -e "\t$fiptool_output_file"
-echo "CMD> $TOOLS_FIPTOOL create $fiptool_opt $fip_certconf_opt_addons $fip_certconf_opt \\ " | sed "s|--|\\\ \n\t--|g" | sed "s|${FIP_DEPLOYDIR_ROOT}|<PATH>|g" >> $fiptool_output_file_dump
+echo "CMD> $TOOLS_FIPTOOL create $fiptool_opt $fip_certconf_opt_addons $fip_certconf_opt \\ " | sed "s|--|\\\ \n\t--|g" | sed "s|${FIP_DEPLOYDIR_ROOT}|<PATH>|g" | sed "s|${FIP_DEPLOYDIR_FIP}|<temp path>|g" >> $fiptool_output_file_dump
 echo -e "\t$fiptool_output_file" | sed "s|${FIP_DEPLOYDIR_FIP}|<PATH>/fip|g" >> $fiptool_output_file_dump
 
 if [ $DRY_RUN -eq 0 ]; then

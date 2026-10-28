@@ -1,7 +1,7 @@
 require tf-a-stm32mp-common.inc
 require tf-a-stm32mp.inc
 
-SUMMARY = "Trusted Firmware-A for STM32MP1"
+SUMMARY = "Trusted Firmware-A for STM32MP"
 LICENSE = "BSD-3-Clause"
 
 # Configure settings

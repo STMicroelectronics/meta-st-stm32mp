@@ -13,28 +13,11 @@ inherit external-dt
 require tf-a-stm32mp-config.inc
 
 # ------------------------------------
-# Set MBEDTLS support
-TFA_MBEDTLS_DIR ?= "mbedtls"
-# MBEDTLS v3.6.5
-SRC_URI_MBEDTLS = "git://github.com/ARMmbed/mbedtls.git;protocol=https;destsuffix=git/${TFA_MBEDTLS_DIR};nobranch=1;name=mbedtls"
-SRCREV_mbedtls = "e185d7fd85499c8ce5ca2a54f5cf8fe7dbe3f8df"
-LIC_FILES_CHKSUM_MBEDTLS = "file://mbedtls/LICENSE;md5=379d5819937a6c2f1ef1630d341e026d"
-LICENSE_MBEDTLS = "Apache-2.0"
-# Add MBEDTLS to our sources
-SRC_URI:append = " ${@bb.utils.contains('SIGN_ENABLE', '1', '${SRC_URI_MBEDTLS}', '', d)}"
-# Update license variables
-LICENSE:append = "${@bb.utils.contains('SIGN_ENABLE', '1', ' & ${LICENSE_MBEDTLS}', '', d)}"
-LIC_FILES_CHKSUM:append = "${@bb.utils.contains('SIGN_ENABLE', '1', ' ${LIC_FILES_CHKSUM_MBEDTLS}', '', d)}"
-# Add mbed TLS to version
-SRCREV_FORMAT:append = "${@bb.utils.contains('SIGN_ENABLE', '1', '_mbedtls', '', d)}"
-# ------------------------------------
-
 B = "${WORKDIR}/build"
 # Configure build dir for externalsrc class usage through devtool
 EXTERNALSRC_BUILD:pn-${PN} = "${WORKDIR}/build"
 
 DEPENDS += "dtc-native openssl-native"
-DEPENDS += "u-boot-tools-stm32mp-native"
 
 DEPENDS:append = " ${@bb.utils.contains('TF_A_ENABLE_DEBUG_WRAPPER', '1', 'stm32wrapper4dbg-native', '', d)}"
 DEPENDS:append = " stm32mp-ddr-phy"
@@ -70,7 +53,6 @@ ST_CROSS_COMPILE_BIN:aarch64 = "gcc-aarch64-none-elf/bin"
 ST_CROSS_COMPILE:aarch64 = "aarch64-none-elf-"
 ST_CROSS_COMPILE_BIN:stm32mp2common = "gcc-aarch64-none-elf/bin"
 ST_CROSS_COMPILE:stm32mp2common = "aarch64-none-elf-"
-
 
 EXTRA_OEMAKE += ' CROSS_COMPILE=${STAGING_DATADIR_NATIVE}/${ST_CROSS_COMPILE_BIN}/${ST_CROSS_COMPILE} '
 
@@ -143,11 +125,11 @@ TF_A_ENCRYPT_OF ?= "0x80000003"
 
 # Configure specific build flags
 EXTRA_OEMAKE += "${@bb.utils.contains('SIGN_ENABLE', '1', 'TRUSTED_BOARD_BOOT=1', '', d)}"
-EXTRA_OEMAKE += "${@bb.utils.contains('SIGN_ENABLE', '1', 'MBEDTLS_DIR=${S}/${TFA_MBEDTLS_DIR}', '', d)}"
 EXTRA_OEMAKE:append:stm32mp2common = " ${@bb.utils.contains('SIGN_ENABLE', '1', 'BRANCH_PROTECTION=0', '', d)} "
 
 EXTRA_OEMAKE += "${@bb.utils.contains('ENCRYPT_ENABLE', '1', 'DECRYPTION_SUPPORT=aes_gcm ENCRYPT_BL32=1', '', d)}"
 EXTRA_OEMAKE += "${@bb.utils.contains('ENCRYPT_ENABLE', '1', bb.utils.contains('FIP_BL31_ENABLE', '1', 'ENCRYPT_BL31=1', '', d), '', d)} "
+
 
 # Addons parameters for SIGN_TOOL
 SIGN_TOOL_EXTRA ?= ""
@@ -218,12 +200,13 @@ base_do_unpack:append () {
                 shutil.move(s, tfasrc)
                 os.symlink(tfasrc, s)
 }
-
+do_compile[progress] = "outof:^\[(\d+)/(\d+)\]\s+"
 do_compile() {
     unset LDFLAGS
     unset CFLAGS
     unset CPPFLAGS
-
+    count=$(echo ${TF_A_DEVICETREE} | sed 's|,||g' | wc -w)
+    id=1
     unset i
     for config in ${TF_A_CONFIG}; do
         i=$(expr $i + 1)
@@ -420,6 +403,18 @@ do_compile() {
                         --silent \
                         ${SIGN_TOOL_EXTRA_soc} \
                         ${tf_a_encrypt_opts}
+                    if [  "${SIGN_ENABLE}" = "1" -o "${ENCRYPT_ENABLE}" = "1" ]; then
+                        echo "${SIGN_TOOL} \
+                            -bin "${config}${soc_suffix}-${dt}${dt_suffix}/${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}" \
+                            -o "${config}${soc_suffix}-${dt}${dt_suffix}/${tfa_basename}-${dt}-${config}${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" \
+                            --password XXX_SIGN_KEY_PASS_XXX \
+                            --public-key $(ls -1 $(dirname ${sign_key})/publicKey*.pem | tr '\n' '\t') \
+                            --private-key ${sign_key} \
+                            --type fsbl \
+                            --silent \
+                            ${SIGN_TOOL_EXTRA_soc} \
+                            ${tf_a_encrypt_opts} " > "${build_dir}/${tfa_basename}-${dt}-${config}${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.txt"
+                    fi
                     if [ "${TF_A_ENABLE_DEBUG_WRAPPER}" = "1" ]; then
                          bbnote "${SIGN_TOOL} \
                             -bin "${build_dir}/debug-${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}" \
@@ -442,9 +437,23 @@ do_compile() {
                             --silent \
                             ${SIGN_TOOL_EXTRA_soc} \
                             ${tf_a_encrypt_opts}
+                        if [  "${SIGN_ENABLE}" = "1" -o "${ENCRYPT_ENABLE}" = "1" ]; then
+                            echo "${SIGN_TOOL} \
+                                -bin "${config}${soc_suffix}-${dt}${dt_suffix}/debug-${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}" \
+                                -o "${config}${soc_suffix}-${dt}${dt_suffix}/debug-${tfa_basename}-${dt}-${config}${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" \
+                                --password XXX_SIGN_KEY_PASS_XXX} \
+                                --public-key $(ls -1 $(dirname ${sign_key})/publicKey*.pem | tr '\n' '\t') \
+                                --private-key "${sign_key}" \
+                                --type fsbl \
+                                --silent \
+                                ${SIGN_TOOL_EXTRA_soc} \
+                                ${tf_a_encrypt_opts}" > "${build_dir}/debug-${tfa_basename}-${dt}-${config}${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.txt"
+                            fi
                     fi
                 fi
             fi
+            echo "[$id/$count] $config $dt generated"
+            id=$(expr $id + 1)
         done
     done
 }
@@ -484,6 +493,8 @@ export_binaries() {
                         # Install TF-A binary
                         if [ -f "${build_dir}/${tfa_basename}-${dt}-${config}.${TF_A_SUFFIX}" ]; then
                             install -m 644 "${build_dir}/${tfa_basename}-${dt}-${config}${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" "${fip_deploydir_tfa_base}/"
+                            [ -e "${build_dir}/${tfa_basename}-${dt}-${config}${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.txt" ] && \
+                            install -m 644 "${build_dir}/${tfa_basename}-${dt}-${config}${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.txt" "${fip_deploydir_tfa_base}/"
                             if [ "${TF_A_ENABLE_DEBUG_WRAPPER}" = "1" ]; then
                                 install -d "${fip_deploydir_tfa_base}/debug"
                                 install -m 644 "${build_dir}/debug-${tfa_basename}-${dt}-${config}${TF_A_ENCRYPT_SUFFIX}${TF_A_SIGN_SUFFIX}.${TF_A_SUFFIX}" "${fip_deploydir_tfa_base}/debug/"
@@ -560,8 +571,73 @@ export_binaries() {
             fi
         fi
     done # for config in ${TF_A_CONFIG}
-
 }
+
+devicetree_dump() {
+    local dest="${1}"
+    mkdir -p $dest/dts
+
+    unset i
+    for config in ${TF_A_CONFIG}; do
+        i=$(expr $i + 1)
+        # Initialize devicetree list and tf-a basename
+        dt_config=$(echo ${TF_A_DEVICETREE} | cut -d',' -f${i})
+        dt_suffix=$(echo ${TF_A_DT_SUFFIX} | cut -d',' -f${i})
+        [ "${EXTDT_USE_SUFFIX}" = "1" ] || dt_suffix=""
+        tfa_file_type=$(echo ${TF_A_FILES} | cut -d',' -f${i})
+        for dt in ${dt_config}; do
+            # Init soc suffix
+            soc_suffix=""
+            if [ -n "${STM32MP_SOC_NAME}" ]; then
+                for soc in ${STM32MP_SOC_NAME}; do
+                    [ "$(echo ${dt} | grep -c ${soc})" -eq 1 ] && soc_suffix="-${soc}"
+                done
+            fi
+            build_dir="${B}/${config}${soc_suffix}-${dt}${dt_suffix}"
+            for file_type in ${tfa_file_type}; do
+                case "${file_type}" in
+                    bl2)
+                        # Install BL2 devicetree
+                        if [ -f "${build_dir}/fdts/${dt}${dt_suffix}-${BL2_BASENAME}.dtb" ]; then
+                            # generate dtbs
+                            dtc -I dtb -O dts -o $dest/dts/${dt}${dt_suffix}-${BL2_BASENAME}-${config}.dts ${build_dir}/fdts/${dt}${dt_suffix}-${BL2_BASENAME}.dtb
+                            # generate yaml
+                            dtc -I dts -O yaml -o $dest/dts/${dt}${dt_suffix}-${BL2_BASENAME}-${config}.yaml $dest/dts/${dt}${dt_suffix}-${BL2_BASENAME}-${config}.dts || /bin/true
+                        fi
+                        ;;
+                    bl31)
+                        # Install BL31 devicetree
+                        if [ -f "${build_dir}/fdts/${dt}${dt_suffix}-${BL31_BASENAME}.${DT_SUFFIX}" ]; then
+                            # generate dtbs
+                            dtc -I dtb -O dts -o $dest/dts/${dt}${dt_suffix}-${BL31_BASENAME}-${config}.dts ${build_dir}/fdts/${dt}${dt_suffix}-${BL31_BASENAME}.dtb
+                            # generate yaml
+                            dtc -I dts -O yaml -o $dest/dts/${dt}${dt_suffix}-${BL31_BASENAME}-${config}.yaml $dest/dts/${dt}${dt_suffix}-${BL2_BASENAME}-${config}.dts || /bin/true
+                        fi
+                        ;;
+                    bl32)
+                        # Install BL32 devicetree
+                        if [ -f "${build_dir}/fdts/${dt}${dt_suffix}-${BL32_BASENAME}.${DT_SUFFIX}" ]; then
+                            # generate dtbs
+                            dtc -I dtb -O dts -o $dest/dts/${dt}${dt_suffix}-${BL32_BASENAME}-${config}.dts ${build_dir}/fdts/${dt}${dt_suffix}-${BL32_BASENAME}.dtb
+                            # generate yaml
+                            dtc -I dts -O yaml -o $dest/dts/${dt}${dt_suffix}-${BL32_BASENAME}-${config}.yaml $dest/dts/${dt}${dt_suffix}-${BL32_BASENAME}-${config}.dts || /bin/true
+                        fi
+                        ;;
+                    fwconfig)
+                        # Install fwconfig
+                        if [ -f "${build_dir}/fdts/${dt}${dt_suffix}-${FWCONFIG_NAME}.${DT_SUFFIX}" ]; then
+                            # generate dtbs
+                            dtc -I dtb -O dts -o $dest/dts/${dt}${dt_suffix}-${FWCONFIG_NAME}-${config}.dts ${build_dir}/fdts/${dt}${dt_suffix}-${FWCONFIG_NAME}.dtb
+                            # generate yaml
+                            dtc -I dts -O yaml -o $dest/dts/${dt}${dt_suffix}-${FWCONFIG_NAME}-${config}.yaml $dest/dts/${dt}${dt_suffix}-${FWCONFIG_NAME}-${config}.dts || /bin/true
+                        fi
+                        ;;
+                esac
+            done # for file_type in ${tfa_file_type}
+        done # for dt in ${dt_config}
+    done # for config in ${TF_A_CONFIG}
+}
+
 
 tf_a_sysroot_populate() {
   export_binaries ${SYSROOT_DESTDIR}${FIP_DIR_TFA_BASE}
@@ -572,6 +648,7 @@ SYSROOT_DIRS:append = " ${FIP_DIR_TFA_BASE}"
 do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}${FIP_DIR_TFA_BASE}"
 do_deploy() {
     export_binaries ${DEPLOYDIR}
+    devicetree_dump ${DEPLOYDIR}
 }
 
 addtask deploy before do_build after do_install

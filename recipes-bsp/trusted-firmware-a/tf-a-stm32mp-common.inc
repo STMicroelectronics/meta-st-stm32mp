@@ -9,17 +9,17 @@ CVE_PRODUCT = "arm:arm-trusted-firmware \
                arm:arm_trusted_firmware \
                arm_trusted_firmware_project:arm_trusted_firmware"
 
-SRC_URI = "git://git.trustedfirmware.org/TF-A/trusted-firmware-a.git;protocol=https;branch=lts-v2.10"
-SRCREV = "a07367a19a09d3c6c426446dd408d7e522ac068b"
+SRC_URI = "gitsm://git.trustedfirmware.org/TF-A/trusted-firmware-a;protocol=https;branch=lts-v2.14"
+SRCREV = "af70f52a9feceeaba58efbb07c6b9e0f41b7b030"
 
 SRC_URI += " \
-    file://0001-v2.10-stm32mp-r3.1.patch \
+    file://0001-v2.14-stm32mp-r1.patch \
      "
 
-TF_A_VERSION = "v2.10"
-TF_A_SUBVERSION = ".24"
+TF_A_VERSION = "v2.14"
+TF_A_SUBVERSION = ".8"
 TF_A_TARGET = "stm32mp"
-TF_A_RELEASE = "r3.1"
+TF_A_RELEASE = "r1"
 PV = "${TF_A_VERSION}${TF_A_SUBVERSION}-${TF_A_TARGET}-${TF_A_RELEASE}"
 
 ARCHIVER_ST_BRANCH = "${TF_A_VERSION}-${TF_A_TARGET}"
@@ -27,15 +27,13 @@ ARCHIVER_ST_REVISION = "${TF_A_VERSION}-${TF_A_TARGET}-${TF_A_RELEASE}"
 ARCHIVER_COMMUNITY_BRANCH = "lts-${TF_A_VERSION}"
 ARCHIVER_COMMUNITY_REVISION = "lts-${TF_A_VERSION}${TF_A_SUBVERSION}"
 
-S = "${WORKDIR}/git"
-
 # ---------------------------------
 # Configure devupstream class usage
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
 SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/arm-trusted-firmware.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
-SRCREV:class-devupstream = "104df6534404c5edf1dc1cd24e4d9ea939cfdd08"
+SRCREV:class-devupstream = "2b8feb9eee64107070cb0143931ae659b7b55d0e"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github

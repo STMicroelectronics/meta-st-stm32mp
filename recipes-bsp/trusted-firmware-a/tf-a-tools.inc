@@ -1,60 +1,54 @@
 FILESEXTRAPATHS:prepend := "${THISDIR}/tf-a-tools:${THISDIR}/tf-a-stm32mp:"
 
 SRC_URI:append = " \
-    file://0001-FIX-GCC-tools-overwrite.patch \
     file://0001-tools-allow-to-use-a-root-key-password-from-command-.patch \
+    file://0002-TOOLS-enable-native-target.patch \
     \
     file://create_st_fip_binary.sh \
     "
 
-DEPENDS += "dtc-native openssl"
+DEPENDS += "dtc-native openssl openssl-native"
+
+TFA_PLATFORM ?= "stm32mp2"
 
 COMPATIBLE_HOST:class-target = "null"
 
-HOSTCC:class-native = "${BUILD_CC}"
-HOSTCC:class-nativesdk = "${CC}"
+TOOL_HOSTCC:class-native = "${BUILD_CC}"
+TOOL_CFLASG:class-native = "${BUILD_CFLAGS}"
+TOOL_LDFLASG:class-native = "${BUILD_LDFLAGS}"
+TOOL_HOSTCC:class-nativesdk = "${CC}"
+TOOL_CFLASG:class-native = "${BUILD_CFLAGS}"
+TOOL_LDFLASG:class-native = "${BUILD_LDFLAGS}"
 
-EXTRA_OEMAKE += "HOSTCC='${HOSTCC}' OPENSSL_DIR='${STAGING_EXECPREFIXDIR}'"
-# EXTRA_OEMAKE += "certtool enctool fiptool"
-# EXTRA_OEMAKE += "PLAT=${TFA_PLATFORM}"
+EXTRA_OEMAKE += "V=1"
+EXTRA_OEMAKE += "HOSTCC='${TOOL_HOSTCC}' TOOLS_CFLAGS='${TOOL_CFLASG}' TOOLS_LDFLAGS='${TOOL_LDFLASG}'"
+EXTRA_OEMAKE += "OPENSSL_DIR='${STAGING_EXECPREFIXDIR}'"
+EXTRA_OEMAKE += "PLAT=${TFA_PLATFORM}"
+EXTRA_OEMAKE += "certtool enctool fiptool"
 
 do_configure[noexec] = "1"
 
-do_compile:class-native () {
-    # This is still needed to have the native fiptool executing properly by
-    # setting the RPATH
-    sed -e '/^LDOPTS/ s,$, \$\{BUILD_LDFLAGS},' \
-        -e '/^INCLUDE_PATHS/ s,$, \$\{BUILD_CFLAGS},' \
-        -i ${S}/tools/fiptool/Makefile
-    # This is still needed to have the native cert_create executing properly by
-    # setting the RPATH
-    sed -e '/^LIB_DIR/ s,$, \$\{BUILD_LDFLAGS},' \
-        -e '/^INC_DIR/ s,$, \$\{BUILD_CFLAGS},' \
-        -i ${S}/tools/cert_create/Makefile
-    # This is still needed to have the native fiptool executing properly by
-    # setting the RPATH
-    sed -e '/^LIB_DIR/ s,$, \$\{BUILD_LDFLAGS},' \
-        -e '/^INC_DIR/ s,$, \$\{BUILD_CFLAGS},' \
-        -i ${S}/tools/encrypt_fw/Makefile
+PARALLEL_MAKE = "-j 1"
 
-    oe_runmake PLAT=${TFA_PLATFORM} certtool enctool
-    oe_runmake PLAT_FIPTOOL_HELPER_MK=plat_fiptool/st/stm32mp2/plat_fiptool.mk PLAT_DIR=../../plat/st/stm32mp2 fiptool
-}
+do_compile:prepend:class-nativesdk () {
+    sed -i 's/-pedantic//' ${S}/tools/fiptool/Makefile
 
-do_compile:class-nativesdk () {
-    oe_runmake PLAT=${TFA_PLATFORM} certtool enctool
-    oe_runmake PLAT_FIPTOOL_HELPER_MK=plat_fiptool/st/stm32mp2/plat_fiptool.mk PLAT_DIR=../../plat/st/stm32mp2 fiptool
+    mkdir -p ${STAGING_EXECPREFIXDIR}/apps/
+    echo "#!/bin/sh"  > ${STAGING_EXECPREFIXDIR}/apps/openssl
+    echo "echo 'OpenSSL 3.5.5 27 Jan 2026 (Library: OpenSSL 3.5.5 27 Jan 2026)'" >> ${STAGING_EXECPREFIXDIR}/apps/openssl
+    chmod +x ${STAGING_EXECPREFIXDIR}/apps/openssl
 }
 
 do_install() {
     install -d ${D}${bindir}
     install -m 0755 \
-        ${B}/tools/fiptool/fiptool \
-        ${B}/tools/cert_create/cert_create \
-        ${B}/tools/encrypt_fw/encrypt_fw \
-        ${D}${bindir}
+        ${B}/build/${TFA_PLATFORM}/release/tools/fiptool/fiptool \
+        ${B}/build/${TFA_PLATFORM}/release/tools/cert_create/cert_create \
+        ${B}/build/${TFA_PLATFORM}/release/tools/encrypt_fw/encrypt_fw \
+        ${D}${bindir}/
 
-    install -m 0755 ${WORKDIR}/create_st_fip_binary.sh ${D}${bindir}
+    install -m 0755 ${UNPACKDIR}/create_st_fip_binary.sh ${D}${bindir}
 }
 
 BBCLASSEXTEND += "native nativesdk"
+INSANE_SKIP:${PN} += "buildpaths rpaths"
