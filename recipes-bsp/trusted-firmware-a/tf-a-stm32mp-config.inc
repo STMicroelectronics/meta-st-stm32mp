@@ -94,6 +94,78 @@ python () {
                     else:
                         d.appendVar('TF_A_DT_SUFFIX', '' + ',')
                     break
+
+    # manage available configuration
+    tfaconfigflagsav = d.getVarFlags('TF_A_CONFIG') or ""
+    # The "doc" varflag is special, we don't want to see it here
+    tfaconfigflagsav.pop('doc', None)
+    tfaconfigav = (d.getVar('TF_A_ARCHIVER_AVAILABLE_CONFIG') or "").split()
+    tfabasename = d.getVar('TF_A_BASENAME') or ""
+
+    if not tfaconfigav:
+        raise bb.parse.SkipRecipe("TF_A_ARCHIVER_AVAILABLE_CONFIG must be set in the %s machine configuration." % d.getVar("MACHINE"))
+    if (d.getVar('TF_A_EXTRA_OPTFLAGS_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use TF_A_EXTRA_OPTFLAGS_AVAILABLE as it is internal to TF_A_CONFIG var expansion.")
+    if (d.getVar('TF_A_BINARIES_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use TF_A_BINARIES_AVAILABLE as it is internal to TF_A_CONFIG var expansion.")
+    if (d.getVar('TF_A_MAKE_TARGET_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use TF_A_MAKE_TARGET_AVAILABLE as it is internal to TF_A_CONFIG var expansion.")
+    if (d.getVar('TF_A_DT_SUFFIX_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use TF_A_DT_SUFFIX_AVAILABLE as it is internal to TF_A_CONFIG var expansion.")
+
+    if (d.getVar('TF_A_DEVICETREE__AVAILABLE_INTERNAL') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use TF_A_DEVICETREE__AVAILABLE_INTERNAL as it is internal for var expansion.")
+    if (d.getVar('TF_A_DEVICETREE__AVAILABLE_EXTERNAL') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use TF_A_DEVICETREE__AVAILABLE_EXTERNAL as it is internal for var expansion.")
+
+    if (d.getVar('EXTERNAL_DT_ENABLED') or "0") == "1":
+        localdata = bb.data.createCopy(d)
+        localdata.setVar('EXTERNAL_DT_ENABLED', '0')
+
+    if len(tfaconfigav) > 0:
+        for config in tfaconfigav:
+            for f, v in tfaconfigflagsav.items():
+                if config == f:
+                    # Make sure to get var flag properly expanded
+                    v = d.getVarFlag('TF_A_CONFIG', config)
+                    if not v.strip():
+                        bb.fatal('[TF_A_ARCHIVER_AVAILABLE_CONFIG] Missing configuration for %s config' % config)
+                    items = v.split(',')
+                    if items[0] and len(items) > 6:
+                        raise bb.parse.SkipRecipe('Only <DEVICETREE>,<EXTRA_OPTFLAGS>,<BINARY_BASENAME>,<MAKE_TARGET>,<FILES TYPE>,<DT_SUFFIX> can be specified!')
+                    if (d.getVar('EXTERNAL_DT_ENABLED') or "0") == "1":
+                        internal_devicetree = localdata.getVarFlag('TF_A_CONFIG', config).split(',')[0]
+                        external_devicetree = ' '.join([dt for dt in items[0].split() if dt not in internal_devicetree.split()])
+                    else:
+                        internal_devicetree = items[0]
+                        external_devicetree = ''
+                    bb.debug(1, "Appending '%s' to TF_A_DEVICETREE__AVAILABLE_INTERNAL" % internal_devicetree)
+                    d.appendVar('TF_A_DEVICETREE__AVAILABLE_INTERNAL', internal_devicetree + ',')
+                    bb.debug(1, "Appending '%s' to TF_A_DEVICETREE__AVAILABLE_EXTERNAL" % external_devicetree)
+                    d.appendVar('TF_A_DEVICETREE__AVAILABLE_EXTERNAL', external_devicetree + ',')
+
+                    if len(items) > 1 and items[1]:
+                        bb.debug(1, "Appending '%s' to TF_A_EXTRA_OPTFLAGS." % items[1])
+                        d.appendVar('TF_A_EXTRA_OPTFLAGS_AVAILABLE', items[1] + ',')
+                    else:
+                        d.appendVar('TF_A_EXTRA_OPTFLAGS_AVAILABLE', '' + ',')
+                    if len(items) > 2 and items[2]:
+                        bb.debug(1, "Appending '%s' to TF_A_BINARIES_AVAILABLE." % items[2])
+                        d.appendVar('TF_A_BINARIES_AVAILABLE', items[2].strip() + ',')
+                    else:
+                        bb.debug(1, "Appending '%s' to TF_A_BINARIES_AVAILABLE." % tfabasename)
+                        d.appendVar('TF_A_BINARIES_AVAILABLE', tfabasename + ',')
+                    if len(items) > 3 and items[3]:
+                        bb.debug(1, "Appending '%s' to TF_A_MAKE_TARGET_AVAILABLE." % items[3])
+                        d.appendVar('TF_A_MAKE_TARGET_AVAILABLE', items[3] + ',')
+                    else:
+                        d.appendVar('TF_A_MAKE_TARGET_AVAILABLE', 'all' + ',')
+                    if len(items) > 5 and items[5]:
+                        bb.debug(1, "Appending '%s' to TF_A_DT_SUFFIX_AVAILABLE." % items[5])
+                        d.appendVar('TF_A_DT_SUFFIX_AVAILABLE', items[5].strip() + ',')
+                    else:
+                        d.appendVar('TF_A_DT_SUFFIX_AVAILABLE', '' + ',')
+                    break
 }
 
 # -----------------------------------------------
@@ -107,7 +179,10 @@ python () {
 #                           <dt suffix>
 #                          "
 #
-TF_A_CONFIG_OPTS_fwupdate ?= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', 'PSA_FWU_SUPPORT=1', '', d)}"
+TF_A_CONFIG_OPTS_fwupdate ?= " \
+    ${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', 'PSA_FWU_SUPPORT=1', '', d)} \
+    ${@bb.utils.contains('MACHINE_FEATURES', 'fw-update-ab', 'STM32MP_PSA_FWU_AB_SUPPORT=1', '', d)} \
+"
 TF_A_CONFIG_OPTS_features ?= "${@bb.utils.contains('MACHINE_FEATURES', 'm33td', 'STM32MP_M33_TDCID=1', '', d)}"
 TF_A_CONFIG_OPTS_optee    ?= "${@bb.utils.contains('TUNE_FEATURES', 'aarch64', 'SPD=opteed', 'AARCH32_SP=optee', d)}"
 
@@ -116,6 +191,11 @@ TF_A_CONFIG_MAKE_TARGET ?= "all"
 TF_A_CONFIG_MAKE_EXTRAS ?= "dtbs"
 TF_A_CONFIG_DEPLOY_FTYPE ?= "bl2 ${@bb.utils.contains('FIP_BL31_ENABLE', '1', 'bl31', '', d)}"
 TF_A_CONFIG_DEPLOY_EXTRA ?= "fwconfig"
+
+TF_A_ARCHIVER_AVAILABLE_CONFIG ??= " \
+        optee-emmc optee-nand optee-nor optee-sdcard optee-spinand optee-programmer-uart optee-programmer-usb \
+        opteemin-emmc opteemin-nand opteemin-nor opteemin-sdcard opteemin-spinand opteemin-programmer-uart opteemin-programmer-usb \
+"
 
 TF_A_CONFIG_OPTS_EXTDT ?= "${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', 'TFA_EXTERNAL_DT=${STAGING_EXTDT_DIR}/${EXTDT_DIR_TF_A}', '', d)}"
 TF_A_CONFIG_OPTS_EXTDT_programmer ?= "${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', 'TFA_EXTERNAL_DT=${STAGING_EXTDT_DIR}/${EXTDT_DIR_TF_A_SERIAL}', '', d)}"

@@ -9,6 +9,9 @@ COPYLEFT_LICENSE_INCLUDE:append = " BSD-3* "
 
 inherit archiver_stm32mp_clean
 
+# for metadata generation
+METADATA_TOOL_NAME ??= "mkfwumdata"
+
 archiver_create_makefile_for_sdk() {
     mkdir -p ${ARCHIVER_OUTDIR}
     cat << EOF > ${ARCHIVER_OUTDIR}/Makefile.sdk.${MACHINE}
@@ -41,17 +44,17 @@ TF_A_DEVICETREE_SUFFIX ?=
 TF_A_MAKE_TARGET ?=
 TF_A_EXTRA_OPTFLAGS ?=
 
-# Default TF-A metadata template
-TF_A_METADATA_JSON ?= \$(SRC_PATH)/${TF_A_METADATA_JSON}
-
 EXTDT_DIR_TF_A ?= ${EXTDT_DIR_TF_A}
 EXTDT_DIR_TF_A_SERIAL ?= ${EXTDT_DIR_TF_A_SERIAL}
 
+SIGN_ENABLE ?= 0
+ENCRYPT_ENABLE ?= 0
+
 EOF
     unset i
-    for config in ${TF_A_CONFIG}; do
+    for config in ${TF_A_ARCHIVER_AVAILABLE_CONFIG}; do
         i=$(expr $i + 1)
-        extra_optflags=$(echo "${TF_A_EXTRA_OPTFLAGS}" | cut -d',' -f${i})
+        extra_optflags=$(echo "${TF_A_EXTRA_OPTFLAGS_AVAILABLE}" | cut -d',' -f${i})
         if $(echo $config | grep -q "programmer") ; then
             extra_optflag=$(echo ${extra_optflags} | sed 's|TFA_EXTERNAL_DT='"${STAGING_EXTDT_DIR}/${EXTDT_DIR_TF_A_SERIAL}"'|TFA_EXTERNAL_DT=\$(EXTDT_DIR)/\$(EXTDT_DIR_TF_A_SERIAL)|' )
         else
@@ -59,16 +62,22 @@ EOF
         fi
         cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk.${MACHINE}
 # Init default config settings
-TF_A_DEVICETREE_INTERNAL_$config ?= $(echo ${TF_A_DEVICETREE_INTERNAL} | cut -d',' -f${i})
-TF_A_DEVICETREE_EXTERNAL_$config ?= $(echo ${TF_A_DEVICETREE_EXTERNAL} | cut -d',' -f${i})
+TF_A_DEVICETREE_INTERNAL_$config ?= $(echo ${TF_A_DEVICETREE__AVAILABLE_INTERNAL} | cut -d',' -f${i})
+TF_A_DEVICETREE_EXTERNAL_$config ?= $(echo ${TF_A_DEVICETREE__AVAILABLE_EXTERNAL} | cut -d',' -f${i})
 TF_A_DEVICETREE_$config = \$(TF_A_DEVICETREE_INTERNAL_${config}) \$(if \$(EXTDT_DIR),\$(TF_A_DEVICETREE_EXTERNAL_${config}))
-TF_A_DEVICETREE_SUFFIX_$config ?= $(echo ${TF_A_DT_SUFFIX} | cut -d',' -f${i})
+TF_A_DEVICETREE_SUFFIX_$config ?= $(echo ${TF_A_DT_SUFFIX_AVAILABLE} | cut -d',' -f${i})
 TF_A_EXTRA_OPTFLAGS_$config ?= ${extra_optflag}
-TF_A_BINARY_$config ?= $(echo ${TF_A_BINARIES} | cut -d',' -f${i})
-TF_A_MAKE_TARGET_$config ?= $(echo ${TF_A_MAKE_TARGET} | cut -d',' -f${i})
+TF_A_BINARY_$config ?= $(echo ${TF_A_BINARIES_AVAILABLE} | cut -d',' -f${i})
+TF_A_MAKE_TARGET_$config ?= $(echo ${TF_A_MAKE_TARGET_AVAILABLE} | cut -d',' -f${i})
 EOF
     done
     extra_oemake_for_cross_compile=$(echo ${EXTRA_OEMAKE} | sed 's|CROSS_COMPILE='"${STAGING_DATADIR_NATIVE}/${ST_CROSS_COMPILE_BIN}/"'|CROSS_COMPILE=|' )
+    extra_oemake_for_cross_compile=$(echo ${extra_oemake_for_cross_compile} | sed 's|DEBUG=[01]*||' )
+    extra_oemake_for_cross_compile=$(echo ${extra_oemake_for_cross_compile} | sed 's|LOG_LEVEL=[0-9]*||' )
+    extra_sign_oemake=${@bb.utils.contains('MACHINEOVERRIDES', 'stm32mp2common', 'BRANCH_PROTECTION=0', '', d)}
+    extra_encrypt_oemake=${@bb.utils.contains('FIP_BL31_ENABLE', '1', 'ENCRYPT_BL31=1', '', d)}
+    extra_debug=${@bb.utils.contains('ST_TF_A_DEBUG_TRACE', '1', 'DEBUG=${ST_TF_A_DEBUG}', '', d)}
+    extra_log_level=${@bb.utils.contains('ST_TF_A_DEBUG_TRACE', '1', '${ST_TF_A_LOG_LEVEL_DEBUG}', '${ST_TF_A_LOG_LEVEL_RELEASE}', d)}
     cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk.${MACHINE}
 
 # Force to Add SUFFIX to devicetree
@@ -108,6 +117,52 @@ LD =
 NM =
 # Define default make options
 EXTRA_OEMAKE ?= $extra_oemake_for_cross_compile
+
+SIGN_OEMAKE =
+ifeq (\$(SIGN_ENABLE), 1)
+   SIGN_OEMAKE ?= TRUSTED_BOARD_BOOT=1 MBEDTLS_DIR=\$(SRC_PATH)/mbedtls $extra_sign_oemake
+endif
+ENCRYPT_OEMAKE =
+ifeq (\$(ENCRYPT_ENABLE), 1)
+   ENCRYPT_OEMAKE ?= DECRYPTION_SUPPORT=aes_gcm ENCRYPT_BL32=1 $extra_encrypt_oemake
+endif
+ifdef TF_A_DEBUG
+   ifeq (\$(TF_A_DEBUG), 1)
+     DEBUG_OEMAKE ?= DEBUG=1
+   endif
+else
+     DEBUG_OEMAKE ?= $extra_debug
+endif
+ifdef TF_A_LOG_LEVEL
+     LOG_OEMAKE ?= LOG_LEVEL=\$(TF_A_LOG_LEVEL)
+else
+     LOG_OEMAKE ?= LOG_LEVEL=$extra_log_level
+endif
+
+TF_A_FIRMWARE_UPDATE ?= 1
+ifdef TF_A_FIRMWARE_UPDATE
+   ifeq (\$(TF_A_FIRMWARE_UPDATE), 1)
+     FWU_OEMAKE ?= PSA_FWU_SUPPORT=1
+   else
+     FWU_OEMAKE ?= PSA_FWU_SUPPORT=0
+   endif
+else
+     FWU_OEMAKE ?=
+endif
+TF_A_FIRMWARE_UPDATE_AB ?= 0
+ifdef TF_A_FIRMWARE_UPDATE_AB
+   ifeq (\$(TF_A_FIRMWARE_UPDATE_AB), 1)
+     FWU_AB_OEMAKE ?= STM32MP_PSA_FWU_AB_SUPPORT=1 PSA_FWU_SUPPORT=1
+   else
+     FWU_AB_OEMAKE ?= STM32MP_PSA_FWU_AB_SUPPORT=0
+   endif
+else
+    FWU_AB_OEMAKE ?=
+endif
+
+EXTRA_OEMAKE_ADDONS = \$(SIGN_OEMAKE) \$(ENCRYPT_OEMAKE) \$(DEBUG_OEMAKE) \$(LOG_OEMAKE) \$(FWU_OEMAKE) \$(FWU_AB_OEMAKE)
+
+METADATA_NAME ?= metadata_custom.bin
 
 # Display TF-A config details
 define tf-configs
@@ -150,7 +205,7 @@ tf-\$(1)-\$(2): \$(4)
 			if [ "\$(2)" = "stm32mp15" ]; then \\
 				(echo \$(1) | grep "optee-" && echo "STM32MP1_OPTEE_IN_SYSRAM=1" > "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-sysram.txt"); \\
 			fi; \\
-			\$(MAKE) \$(EXTRA_OEMAKE) -C \$(SRC_PATH) \\
+			\$(MAKE) \$(EXTRA_OEMAKE) \$(EXTRA_OEMAKE_ADDONS) -C \$(SRC_PATH) \\
 				BUILD_PLAT="\$(BLD_PATH)/\$(1)-\$(dt)\$(3)" \\
 				DTB_FILE_NAME="\$(dt)\$(3).dtb" \\
 				\$(if \$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS),\$(TF_A_EXTRA_OPTFLAGS_\$(1))) \\
@@ -193,7 +248,8 @@ EOF
     fi
     cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk.${MACHINE}
 			fi ; \\
-			\$(MAKE) \$(EXTRA_OEMAKE) -C \$(SRC_PATH) \\
+			unset AS LDFLAGS CFLAGS CPPFLAGS CC CPP AR LD NM; \\
+			\$(MAKE) \$(EXTRA_OEMAKE) \$(EXTRA_OEMAKE_ADDONS) -C \$(SRC_PATH) \\
 				BUILD_PLAT="\$(BLD_PATH)/\$(1)-\$(dt)\$(3)" \\
 				DTB_FILE_NAME="\$(dt)\$(3).dtb" \\
 				\`cat "\$(BLD_PATH)/\$(1)-\$(dt)\$(3)/\$(dt)\$(3)-sysram.txt"\` \\
@@ -310,7 +366,14 @@ help: \$(tf-check-config)
 	@echo "  Do not forget to set FIP deploydir folders (such as FIP_DEPLOYDIR_ROOT) to provide path to needed binaries"
 	@echo ""
 	@echo "METADATA configuration:"
-	@echo "  TF_A_METADATA_TOOL_ARGS = \$(TF_A_METADATA_TOOL_ARGS)"
+	@echo "  METADATA_TOOL_ARGS = \$(METADATA_TOOL_ARGS)"
+	@echo "  METADATA_NAME      = \$(METADATA_NAME)"
+	@echo ""
+	@echo "DEBUG options:"
+	@echo "  opt= \$(DEBUG_OEMAKE) \$(LOG_OEMAKE)"
+	@echo ""
+	@echo "Functionality options:"
+	@echo "  opt= \$(FWU_OEMAKE) \$(FWU_AB_OEMAKE)"
 	@echo ""
 	@echo "Available targets:"
 	@echo "  all      : build TF-A binaries for defined config(s)"
@@ -352,12 +415,27 @@ fip: \$(deploy-targets)
 	@echo "***** FIP binary available under: \$(if \$(FIP_DEPLOYDIR_FIP),\$(FIP_DEPLOYDIR_FIP),\$(FIP_DEPLOYDIR_ROOT)/) *****"
 
 host_tools:
-	@\$(MAKE) --no-print-directory -C \$(SRC_PATH)/tools/stm32image
+	@\$(MAKE) --no-print-directory -C \$(SRC_PATH)/tools/stm32image BUILD_PLAT=\$(SRC_PATH)/build
 
 metadata:
-	@mkdir -p \$(DEPLOYDIR)
-	${TF_A_METADATA_TOOL_NAME} ${TF_A_METADATA_TOOL_ARGS} \$(DEPLOYDIR)/${TF_A_METADATA_BINARY}
-	@echo "***** metadata generation done under: \$(DEPLOYDIR)/${TF_A_METADATA_BINARY} *****"
+	@mkdir -p \$(DEPLOYDIR)/../metadata
+	if [ -n "\$(METADATA_TOOL_ARGS)" ]; then \\
+		${METADATA_TOOL_NAME} \${METADATA_TOOL_ARGS} \$(DEPLOYDIR)/../metadata/\$(METADATA_NAME); \\
+	else \\
+		${METADATA_TOOL_NAME} ${METADATA_TOOL_ARGS_DEFAULT} \$(DEPLOYDIR)/../metadata/${METADATA_BINARY_DEFAULT}; \\
+		${METADATA_TOOL_NAME} ${METADATA_TOOL_AB_ARGS_EMMC} \$(DEPLOYDIR)/../metadata/${METADATA_AB_BINARY_EMMC}; \\
+		${METADATA_TOOL_NAME} ${METADATA_TOOL_AB_ARGS_NOR_EMMC} \$(DEPLOYDIR)/../metadata/${METADATA_AB_BINARY_NOR_EMMC}; \\
+		${METADATA_TOOL_NAME} ${METADATA_TOOL_AB_ARGS_NAND_EMMC} \$(DEPLOYDIR)/../metadata/${METADATA_AB_BINARY_NAND_EMMC}; \\
+		${METADATA_TOOL_NAME} ${METADATA_TOOL_AB_ARGS_SPINAND_EMMC} \$(DEPLOYDIR)/../metadata/${METADATA_AB_BINARY_SPINAND_EMMC}; \\
+		${METADATA_TOOL_NAME} ${METADATA_TOOL_AB_ARGS_SDCARD} \$(DEPLOYDIR)/../metadata/${METADATA_AB_BINARY_SDCARD}; \\
+		${METADATA_TOOL_NAME} ${METADATA_TOOL_AB_ARGS_NOR_SDCARD} \$(DEPLOYDIR)/../metadata/${METADATA_AB_BINARY_NOR_SDCARD}; \\
+		${METADATA_TOOL_NAME} ${METADATA_TOOL_AB_ARGS_NAND_SDCARD} \$(DEPLOYDIR)/../metadata/${METADATA_AB_BINARY_NAND_SDCARD}; \\
+		${METADATA_TOOL_NAME} ${METADATA_TOOL_AB_ARGS_SPINAND_SDCARD} \$(DEPLOYDIR)/../metadata/${METADATA_AB_BINARY_SPINAND_SDCARD}; \\
+		${METADATA_TOOL_NAME} ${METADATA_TOOL_AB_ARGS_NOR} \$(DEPLOYDIR)/../metadata/${METADATA_AB_BINARY_NOR}; \\
+		${METADATA_TOOL_NAME} ${METADATA_TOOL_AB_ARGS_NAND} \$(DEPLOYDIR)/../metadata/${METADATA_AB_BINARY_NAND}; \\
+		${METADATA_TOOL_NAME} ${METADATA_TOOL_AB_ARGS_SPINAND} \$(DEPLOYDIR)/../metadata/${METADATA_AB_BINARY_SPINAND}; \\
+	fi
+	@echo "***** metadata generation done under: \$(DEPLOYDIR)/metadata *****"
 
 stm32: \$(deploy-targets)
 	@echo "***** TF-A binary available under: \$(DEPLOYDIR)/ *****"
@@ -370,7 +448,7 @@ stm32: \$(deploy-targets)
 # Set TF-A make rules
 \$(foreach config, \$(TF_A_CONFIG), \\
 	\$(foreach soc, ${STM32MP_SOC_NAME}, \\
-		\$(eval \$(call tf-rules,\$(config),\$(soc),\$(if \$(EXTDT_SUFFIX_CONFIG),\$(if \$(TF_A_DEVICETREE_SUFFIX),\$(TF_A_DEVICETREE_SUFFIX),\$(TF_A_DEVICETREE_SUFFIX_\$(config)))),host_tools chk-conf-\$(config))) \\
+		\$(eval \$(call tf-rules,\$(config),\$(soc),\$(if \$(EXTDT_SUFFIX_CONFIG),\$(if \$(TF_A_DEVICETREE_SUFFIX),\$(TF_A_DEVICETREE_SUFFIX),\$(TF_A_DEVICETREE_SUFFIX_\$(config)))),chk-conf-\$(config))) \\
 	) \\
 )
 
