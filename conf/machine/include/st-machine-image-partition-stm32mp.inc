@@ -52,6 +52,11 @@ def partImage2partConfig(d, config, localoverride=None, fstype=None):
         copy = '1'
     # Set string for PARTITIONS_CONFIG item: <binary_name>,<partlabel>,<size>,<type>,<copy>
     part_format = bin_name + ',' + items[1] + ',' + items[3] + ',' + items[4] + ',' + copy
+    # Manage specific duplication for fw-update-ab
+    if 'fw-update-ab' in d.getVar('MACHINE_FEATURES'):
+        part_format_a = bin_name + ',' + items[1] + '-a' + ',' + items[3] + ',' + items[4] + ',' + copy
+        part_format_b =       '' + ',' + items[1] + '-b' + ',' + items[3] + ',' + items[4] + ',' + copy
+        part_format = part_format_a + ' ' + part_format_b
     return part_format
 
 # =========================================================================
@@ -101,7 +106,8 @@ STM32MP_SSBL2_SIZE ?= "${STM32MP_SSBL1_SIZE}"
 STM32MP_UENV_DATA ?= ""
 STM32MP_UENV_NAME ?= "u-boot-env"
 STM32MP_UENV_SIZE ?= "512"
-STM32MP_METADATA_DATA ?= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', 'arm-trusted-firmware/${TF_A_METADATA_BINARY}', '', d)}"
+STM32MP_METADATA_NAME_BINARY = "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update-ab', 'metadata-ab-<DEVICE>.bin', '${METADATA_BINARY_DEFAULT}', d)}"
+STM32MP_METADATA_DATA ?= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', 'metadata/${STM32MP_METADATA_NAME_BINARY}', '', d)}"
 STM32MP_METADATA_NAME ?= "metadata"
 STM32MP_METADATA_ENABLE ?= "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '1', '1', '0', d)}"
 STM32MP_METADATA_SIZE ?= "256"

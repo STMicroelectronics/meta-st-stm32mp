@@ -141,17 +141,6 @@ TF_A_ENCRYPT_DC:stm32mp2common ?= "0x25205f0e"
 TF_A_ENCRYPT_IMGVER ?= "0"
 TF_A_ENCRYPT_OF ?= "0x80000003"
 
-# Set metadata generation
-TF_A_ENABLE_METADATA ??= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', '1', '0', d)}"
-TF_A_METADATA_NAME ?= "metadata"
-TF_A_METADATA_SUFFIX ?= "bin"
-TF_A_METADATA_BINARY ??= "${TF_A_METADATA_NAME}.${TF_A_METADATA_SUFFIX}"
-
-TF_A_METADATA_TOOL_NAME ?= "mkfwumdata"
-TF_A_METADATA_TOOL ?= "${STAGING_BINDIR_NATIVE}/${TF_A_METADATA_TOOL_NAME}"
-TF_A_METADATA_TOOL_VERSION ?= "2"
-TF_A_METADATA_TOOL_ARGS ?= "-g -i 1 -b 2 -v ${TF_A_METADATA_TOOL_VERSION} ${DEVICE_TYPEUUID_FWU_MDATA},${DEVICE_TYPEUUID_FIP},${DEVICE_PARTUUID_FIP_A},${DEVICE_PARTUUID_FIP_B}"
-
 # Configure specific build flags
 EXTRA_OEMAKE += "${@bb.utils.contains('SIGN_ENABLE', '1', 'TRUSTED_BOARD_BOOT=1', '', d)}"
 EXTRA_OEMAKE += "${@bb.utils.contains('SIGN_ENABLE', '1', 'MBEDTLS_DIR=${S}/${TFA_MBEDTLS_DIR}', '', d)}"
@@ -283,10 +272,6 @@ do_compile() {
             fi
             build_dir="${B}/${config}${soc_suffix}-${dt}${dt_suffix}"
             mkdir -p "${build_dir}"
-            if [ "${TF_A_ENABLE_METADATA}" = "1" ]; then
-                rm -rf "${build_dir}/${TF_A_METADATA_NAME}.${TF_A_METADATA_SUFFIX}"
-                ${TF_A_METADATA_TOOL} ${TF_A_METADATA_TOOL_ARGS} "${B}/${TF_A_METADATA_NAME}.${TF_A_METADATA_SUFFIX}"
-            fi
 
             # generate dt to check the content
             oe_runmake -C "${S}" BUILD_PLAT="${build_dir}" DTB_FILE_NAME="${dt}${dt_suffix}.dtb" ${extra_opt} ${soc_extra_opt} dtbs
@@ -462,11 +447,6 @@ do_compile() {
             fi
         done
     done
-
-    if [ "${TF_A_ENABLE_METADATA}" = "1" ]; then
-        rm -rf "${B}/${TF_A_METADATA_NAME}.${TF_A_METADATA_SUFFIX}"
-        ${TF_A_METADATA_TOOL} ${TF_A_METADATA_TOOL_ARGS} "${B}/${TF_A_METADATA_NAME}.${TF_A_METADATA_SUFFIX}"
-    fi
 }
 
 export_binaries() {
@@ -581,12 +561,6 @@ export_binaries() {
         fi
     done # for config in ${TF_A_CONFIG}
 
-    if [ "${TF_A_ENABLE_METADATA}" = "1" ]; then
-        install -d "${fip_deploydir_tfa_base}"
-        if [ -f "${B}/${TF_A_METADATA_NAME}.${TF_A_METADATA_SUFFIX}" ]; then
-            install -m 644 "${B}/${TF_A_METADATA_NAME}.${TF_A_METADATA_SUFFIX}" "${fip_deploydir_tfa_base}/${TF_A_METADATA_BINARY}"
-        fi
-    fi
 }
 
 tf_a_sysroot_populate() {

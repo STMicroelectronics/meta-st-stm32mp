@@ -8,6 +8,7 @@ require conf/machine/include/st-machine-flashlayout-deleteall-stm32mp.inc
 require conf/machine/include/st-machine-flashlayout-extensible-stm32mp.inc
 require conf/machine/include/st-machine-image-partition-stm32mp.inc
 require conf/machine/include/st-machine-storage-device-stm32mp.inc
+require conf/machine/include/st-machine-metadata.inc
 require conf/machine/include/st-machine-sdk-stm32mp.inc
 
 # Define specific common layer name
@@ -449,10 +450,6 @@ TF_A_CONFIG += "${@bb.utils.contains('TF_A_SSP_ENABLE', '1', 'uart-ssp usb-ssp',
 TF_A_SIGN_SUFFIX ?= "${@bb.utils.contains('SIGN_ENABLE', '1', '${SIGN_SUFFIX}', '', d)}"
 TF_A_ENCRYPT_SUFFIX ?= "${@bb.utils.contains('ENCRYPT_ENABLE', '1', '${ENCRYPT_SUFFIX}', '', d)}"
 
-# Configure TF-A to build the metadata binary
-TF_A_ENABLE_METADATA ?= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update', '1', '0', d)}"
-TF_A_METADATA_BINARY ?= "metadata.bin"
-
 # Configure the default MTD_START_OFFSET
 TF_A_MTD_START_OFFSET_NAND    ?= "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '0', '0x00100000', '0x00200000', d)}"
 TF_A_MTD_START_OFFSET_NOR     ?= "${@bb.utils.contains('ENABLE_FLASHLAYOUT_CONFIG_FWUP', '0', '0x00080000', '0x00100000', d)}"
@@ -660,3 +657,16 @@ WESTON_HDMI_MODE:stm32mp2common ?= "1920x1080"
 # =========================================================================
 # For efi configuration
 EFI_PROVIDER = ""
+# =========================================================================
+# Firmware update A/B
+# =========================================================================
+# Optional A/B firmware update feature.
+
+python () {
+    features = (d.getVar("MACHINE_FEATURES") or "").split()
+
+    if "fw-update-ab" in features and "fw-update" not in features:
+        bb.fatal("MACHINE_FEATURES 'fw-update-ab' requires 'fw-update'")
+}
+MACHINE_ESSENTIAL_EXTRA_RDEPENDS += " ${@bb.utils.contains('MACHINE_FEATURES', 'fw-update-ab', 'u-boot-fwumdata-config-stm32mp', '', d)} "
+MACHINE_ESSENTIAL_EXTRA_RDEPENDS += " ${@bb.utils.contains('MACHINE_FEATURES', 'fw-update-ab', 'bootcount', '', d)} "

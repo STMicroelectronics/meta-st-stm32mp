@@ -9,6 +9,8 @@ FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'virtual
 FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'virtual/bootloader', 'virtual/bootloader:do_deploy', '', d)}"
 FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'virtual-optee-os', 'virtual-optee-os:do_deploy', '', d)}"
 
+FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'metadata', 'metadata:do_deploy', '', d)}"
+
 # for aarch64 support on aarch32 machine
 FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'lib64-fip-stm32mp', 'lib64-fip-stm32mp:do_deploy', '', d)}"
 FLASHLAYOUT_DEPEND_TASKS += "${@bb.utils.contains('EXTRA_IMAGEDEPENDS', 'lib64-m33fw-stm32mp2', 'lib64-m33fw-stm32mp2:do_deploy', '', d)}"
