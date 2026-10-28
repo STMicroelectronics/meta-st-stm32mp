@@ -1,6 +1,6 @@
 inherit core-image
 
-IMAGE_CLASSES +=" image_types-stfat"
+IMAGE_CLASSES += " image_types-stfat"
 
 # Disable flashlayout generation for the partition image as this is supposed
 # to be done only for complete image
