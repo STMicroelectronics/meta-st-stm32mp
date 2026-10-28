@@ -5,7 +5,7 @@ require gcc-aarch64-none-elf_${PV}.inc
 
 inherit nativesdk
 
-FILES:${PN}-doc = "${datadir}/gcc-arm-none-eabi/share/doc"
+FILES:${PN}-doc = "${datadir}/gcc-aarch64-none-elf/share/doc"
 
 FILES:${PN}-staticdev = "${datadir}/gcc-aarch64-none-elf/*/*/*.a \
                          ${datadir}/gcc-aarch64-none-elf/*/*/*/*.a \
