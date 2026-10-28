@@ -153,7 +153,7 @@ We highly preconize to build outside kernel source tree in a dedicated build dir
     $ cd <directory to kernel source code>
     $> export OUTPUT_BUILD_DIR=$PWD/../build
     $> mkdir -p ${OUTPUT_BUILD_DIR}
-    $> make O="${OUTPUT_BUILD_DIR}" defconfig fragment*.config
+    $> make HOSTPKG_CONFIG=pkg-config-native O="${OUTPUT_BUILD_DIR}" defconfig fragment*.config
 
     If there are some fragments, apply them
     * manually one by one:
@@ -193,11 +193,11 @@ inside the dedicated build directory).
     * Build kernel images ([uImage|Image.gz] and vmlinux) and device tree (dtbs)
     $> [ "${ARCH}" = "arm" ] && imgtarget="uImage" || imgtarget="Image.gz"
     $> export IMAGE_KERNEL=${imgtarget}
-    $> make ${IMAGE_KERNEL} vmlinux dtbs LOADADDR=##LOADADDR## O="${OUTPUT_BUILD_DIR}"
+    $> make HOSTPKG_CONFIG=pkg-config-native ${IMAGE_KERNEL} vmlinux dtbs LOADADDR=##LOADADDR## O="${OUTPUT_BUILD_DIR}"
     * Build kernel module
-    $> make modules O="${OUTPUT_BUILD_DIR}"
+    $> make HOSTPKG_CONFIG=pkg-config-native modules O="${OUTPUT_BUILD_DIR}"
     * Generate output build artifacts
-    $> make INSTALL_MOD_PATH="${OUTPUT_BUILD_DIR}/install_artifact" modules_install O="${OUTPUT_BUILD_DIR}"
+    $> make HOSTPKG_CONFIG=pkg-config-native INSTALL_MOD_PATH="${OUTPUT_BUILD_DIR}/install_artifact" modules_install O="${OUTPUT_BUILD_DIR}"
     $> mkdir -p ${OUTPUT_BUILD_DIR}/install_artifact/boot/
     $> cp ${OUTPUT_BUILD_DIR}/arch/${ARCH}/boot/${IMAGE_KERNEL} ${OUTPUT_BUILD_DIR}/install_artifact/boot/
     $> find ${OUTPUT_BUILD_DIR}/arch/${ARCH}/boot/dts/ -name 'st*.dtb' -exec cp '{}' ${OUTPUT_BUILD_DIR}/install_artifact/boot/ \;
@@ -218,7 +218,7 @@ inside the dedicated build directory).
 * Compile and install on a build directory (different of kernel source code directory)
     $ cd <directory to kernel source code>
     * Build device tree (dtbs)
-    $ make ${IMAGE_KERNEL}  O="${OUTPUT_BUILD_DIR}" KBUILD_EXTDTS="${EXTDT_DIR}/linux" <name of external devicetree .dtb>
+    $ make HOSTPKG_CONFIG=pkg-config-native ${IMAGE_KERNEL}  O="${OUTPUT_BUILD_DIR}" KBUILD_EXTDTS="${EXTDT_DIR}/linux" <name of external devicetree .dtb>
     $ mkdir -p ${OUTPUT_BUILD_DIR}/install_artifact/boot/
     $ cp ${OUTPUT_BUILD_DIR}/arch/${ARCH}/boot/${IMAGE_KERNEL} ${OUTPUT_BUILD_DIR}/install_artifact/boot/
     $ find ${OUTPUT_BUILD_DIR}/arch/${ARCH}/boot/dts/ -name 'st*.dtb' -exec cp '{}' ${OUTPUT_BUILD_DIR}/install_artifact/boot/ \;
@@ -409,30 +409,30 @@ Update Starter Package bootfs with new generated dtb and uImage or Image.gz
     $@E> cd  ##LINUX_TARBASE##
     $@E> for p in `ls -1 ../*.patch`; do patch -p1 < $p; done
     $@E> echo "" > .scmversion
-    $@S> export KERNEL_BUILDDIR=$(readlink -e <your_build_subdir_path>)
+    $@S> export KERNEL_BUILDDIR=$(realpath <your_build_subdir_path>)
     $ cd ..
     $ cd ..
     $@P> cd ##BP##-##PR##
     $@P> cd ##LINUX_TARBASE##
 
-    $@c> export OUTPUT_BUILD_DIR=<your_build_subdir_path>
+    $@S> export OUTPUT_BUILD_DIR=<your_build_subdir_path>
     $@c> mkdir -p $OUTPUT_BUILD_DIR
     $@c> echo "" > $OUTPUT_BUILD_DIR/.scmversion
 
-##CASE_stm32mp1##    $@c> make O="${OUTPUT_BUILD_DIR}" multi_v7_defconfig fragment*.config
-##CASE_stm32mp2##    $@c> make O="${OUTPUT_BUILD_DIR}" defconfig fragment*.config
-##CASE_stm32mp2-m33td##    $@c> make O="${OUTPUT_BUILD_DIR}" defconfig fragment*.config
+##CASE_stm32mp1##    $@c> make HOSTPKG_CONFIG=pkg-config-native O="${OUTPUT_BUILD_DIR}" ${VERBOSE_PARAM} defconfig fragment*.config
+##CASE_stm32mp2##    $@c> make HOSTPKG_CONFIG=pkg-config-native O="${OUTPUT_BUILD_DIR}" ${VERBOSE_PARAM} defconfig fragment*.config
+##CASE_stm32mp2-m33td##    $@c> make HOSTPKG_CONFIG=pkg-config-native O="${OUTPUT_BUILD_DIR}" ${VERBOSE_PARAM} defconfig fragment*.config
 
-    $@c> for f in `ls -1 ../fragment*.config`; do scripts/kconfig/merge_config.sh -m -r -O ${OUTPUT_BUILD_DIR} ${OUTPUT_BUILD_DIR}/.config $f; done
+    Apply fragment on configuration where <kernel_fragment_list> can be `ls -1 ../fragment*.config`
+    $@c> [ -z "$KERNEL_FRAGMENT_LIST" ] || for f in <kernel_fragment_list>; do scripts/kconfig/merge_config.sh -m -r -O ${OUTPUT_BUILD_DIR} ${OUTPUT_BUILD_DIR}/.config $f; done
     $@c> (yes '' || true) | make oldconfig O="${OUTPUT_BUILD_DIR}"
 
-    $@C> export OUTPUT_BUILD_DIR=<your_build_subdir_path>
-    $@MC> make O="${OUTPUT_BUILD_DIR}" ${PARALLEL_MAKE} menuconfig
-##CASE_stm32mp1##    $@CI> make O="${OUTPUT_BUILD_DIR}" ${PARALLEL_MAKE} uImage vmlinux dtbs LOADADDR=##LOADADDR## KBUILD_EXTDTS=<externaldt_path>/<externaldt_linux_path>
-##CASE_stm32mp2##    $@CI> make O="${OUTPUT_BUILD_DIR}" ${PARALLEL_MAKE} Image.gz vmlinux dtbs KBUILD_EXTDTS=<externaldt_path>/<externaldt_linux_path>
-##CASE_stm32mp2-m33td##    $@CI> make O="${OUTPUT_BUILD_DIR}" ${PARALLEL_MAKE} Image.gz vmlinux dtbs KBUILD_EXTDTS=<externaldt_path>/<externaldt_linux_path>
-    $@CM> make O="${OUTPUT_BUILD_DIR}" ${PARALLEL_MAKE} modules
-    $@CM> make O="${OUTPUT_BUILD_DIR}" ${PARALLEL_MAKE} INSTALL_MOD_PATH="${OUTPUT_BUILD_DIR}/install_artifact" modules_install
+    $@MC> make HOSTPKG_CONFIG=pkg-config-native O="${OUTPUT_BUILD_DIR}" menuconfig
+##CASE_stm32mp1##    $@CI> make HOSTPKG_CONFIG=pkg-config-native O="${OUTPUT_BUILD_DIR}" ${VERBOSE_PARAM} uImage vmlinux dtbs LOADADDR=##LOADADDR## KBUILD_EXTDTS=<externaldt_path>/<externaldt_linux_path>
+##CASE_stm32mp2##    $@CI> make HOSTPKG_CONFIG=pkg-config-native O="${OUTPUT_BUILD_DIR}" ${VERBOSE_PARAM} Image.gz vmlinux dtbs KBUILD_EXTDTS=<externaldt_path>/<externaldt_linux_path>
+##CASE_stm32mp2-m33td##    $@CI> make HOSTPKG_CONFIG=pkg-config-native O="${OUTPUT_BUILD_DIR}" ${VERBOSE_PARAM} Image.gz vmlinux dtbs KBUILD_EXTDTS=<externaldt_path>/<externaldt_linux_path>
+    $@CM> make HOSTPKG_CONFIG=pkg-config-native O="${OUTPUT_BUILD_DIR}" ${VERBOSE_PARAM} modules
+    $@CM> make HOSTPKG_CONFIG=pkg-config-native O="${OUTPUT_BUILD_DIR}" ${VERBOSE_PARAM} INSTALL_MOD_PATH="${OUTPUT_BUILD_DIR}/install_artifact" modules_install
     $@CI> mkdir -p ${OUTPUT_BUILD_DIR}/install_artifact/boot/
 
 ##CASE_stm32mp1##    $@CI> cp ${OUTPUT_BUILD_DIR}/arch/arm/boot/uImage ${OUTPUT_BUILD_DIR}/install_artifact/boot/
@@ -446,8 +446,7 @@ Update Starter Package bootfs with new generated dtb and uImage or Image.gz
     @> find . -name "*.ko" | xargs $STRIP --strip-debug --remove-section=.comment --remove-section=.note --preserve-dates
 
 # to deploy
-   $@F> export FIP_DEPLOYDIR_ROOT=<your_deploy_dir_path>
-   $@F> export OUTPUT_BUILD_DIR=<your_build_subdir_path>
+   $@S> export FIP_DEPLOYDIR_ROOT=<your_deploy_dir_path>
 
    $@F> mkdir -p ${FIP_DEPLOYDIR_ROOT}/kernel
 ##CASE_stm32mp1##    $@F> cp ${OUTPUT_BUILD_DIR}/install_artifact/boot/uImage ${FIP_DEPLOYDIR_ROOT}/kernel

@@ -7,9 +7,6 @@ inherit kernel
 inherit external-dt
 inherit multilib_header
 
-# For FIT image to expand properly for UBOOT_CONFIG vars
-include ${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'recipes-bsp/u-boot/u-boot-stm32mp-config.inc', '', d)}
-
 DEPENDS += "openssl-native util-linux-native libyaml-native"
 DEPENDS += "unifdef-native bison-native rsync-native"
 
@@ -104,6 +101,29 @@ do_compile:prepend() {
     fi
 }
 
+DEPENDS += "python3-dtschema-native python3-yamllint-native"
+DEPENDS += "coreutils-native"
+inherit python3native
+do_dtbs_check() {
+    for dtbf in ${KERNEL_DEVICETREE}; do
+        echo "############################################################"
+        echo "CMD> make -C ${S} O=${B} CHECK_DTBS=y ${dtbf}"
+        oe_runmake -C ${S} O=${B}  CC="${KERNEL_CC}" LD="${KERNEL_LD}" CHECK_DTBS=y ${dtbf}
+    done
+}
+do_dtbs_check[depends] += "virtual/kernel:do_configure"
+do_dtbs_check[depends] += "${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTDT_SRC_PROVIDER}:do_configure', '', d)}"
+addtask do_dtbs_check
+
+do_dt_binding_check() {
+    echo "############################################################"
+    echo "CMD> make -C ${S} O=${B} dt_binding_check DT_SCHEMA_FILES=stm32"
+    oe_runmake -C ${S} O=${B}  CC="${KERNEL_CC}" LD="${KERNEL_LD}" dt_binding_check DT_SCHEMA_FILES=stm32
+}
+do_dt_binding_check[depends] += "virtual/kernel:do_configure"
+do_dt_binding_check[depends] += "${@bb.utils.contains('EXTERNAL_DT_ENABLED', '1', '${EXTDT_SRC_PROVIDER}:do_configure', '', d)}"
+addtask do_dt_binding_check
+
 # ---------------------------------------------------------------------
 # stub for devicetree which are located on st directory
 do_install:prepend() {
@@ -133,11 +153,6 @@ correct_buildpaths() {
     done
 }
 do_install:append() {
-    # Workaround fitImage build limitations in Yocto scarthgap
-    if [ "${KERNEL_IMAGETYPE}" = 'fitImage' ] && [ ! -e ${KERNEL_OUTPUT_DIR}/${KERNEL_IMAGETYPE} ]; then
-        ln -sf ${KERNEL_IMAGETYPE}-none ${KERNEL_OUTPUT_DIR}/${KERNEL_IMAGETYPE}
-    fi
-
     # Install KERNEL_IMAGETYPE for kernel-image package
     install -m 0644 ${KERNEL_OUTPUT_DIR}/${KERNEL_IMAGETYPE} ${D}/${KERNEL_IMAGEDEST}
 
@@ -174,6 +189,19 @@ do_install:append() {
     correct_buildpaths
 }
 # ---------------------------------------------------------------------
+devicetree_dump() {
+    mkdir -p $deployDir/dts
+    cd $deployDir
+    for dtb in $(ls -1 *.dtb);
+    do
+        [ -h $dtb ] && continue
+        dtb_base_name=`basename $dtb .dtb`
+        # generate dtbs
+        dtc -I dtb -O dts -o $deployDir/dts/${dtb_base_name}.dts $dtb
+        # generate yaml
+        dtc -I dts -O yaml -o $deployDir/dts/${dtb_base_name}.yaml $deployDir/dts/${dtb_base_name}.dts  || /bin/true
+    done
+}
 do_deploy:append() {
     if [ ${MODULE_TARBALL_DEPLOY} = "1" ] && (grep -q -i -e '^CONFIG_MODULES=y$' .config); then
         mkdir -p ${D}${root_prefix}/lib
@@ -183,6 +211,7 @@ do_deploy:append() {
     if [ ${KERNEL_CONFIG_DEPLOY} = "1" ] && [ -f "${D}/boot/config-${KERNEL_VERSION}" ]; then
         install -m 0644 ${D}/boot/config-${KERNEL_VERSION} $deployDir
     fi
+    devicetree_dump
 }
 do_deploy[depends] += " virtual/kernel:do_package "
 
