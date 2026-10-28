@@ -56,6 +56,7 @@ Otherwise, to manage optee-os source code without git, you must extract the
 tarball now and apply the patch:
 
     $> tar xf ##BP##-##PR##.tar.xz
+    $> gunzip *.patch.gz
     $> cd ##BP##
     $> tar xf ../fonts.tar.gz
     $> for p in `ls -1 ../*.patch`; do patch -p1 < $p; done
@@ -80,6 +81,7 @@ you have 3 solutions to use git
 4.2 Create Git from tarball
 ---------------------------
     $ tar xf ##BP##-##PR##.tar.xz
+    $ gunzip *.patch.gz
     $ cd ##BP##
     $ test -d .git || git init . && git add . && git commit -m "optee-os source code" && git gc
     $ git checkout -b WORKING
@@ -98,6 +100,7 @@ MANDATORY: You must update sources
     Revision: ##ARCHIVER_COMMUNITY_REVISION##
 
     $ git clone git://github.com/OP-TEE/optee_os.git
+    $ gunzip *.patch.gz
     $ cd optee_os
     $ git checkout -b WORKING ##ARCHIVER_COMMUNITY_REVISION##
     $ tar xf <path to patch>/fonts.tar.gz
@@ -116,6 +119,8 @@ According to your needs, there are 2 propositions to generate optee-os artifacts
 --------------------------------------
 If not already done, extract the artifacts from Starter Package tarball, for example:
     $ tar xf en.FLASH-##MACHINE##-*.tar.xz
+Gunzip the patches if needed
+    $ gunzip *.patch.gz
 Move to Starter Package root folder,
     $ cd <your_starter_package_dir_path>
 Cleanup Starter Package from original optee-os artifacts first
@@ -178,7 +183,8 @@ Please use STM32CubeProgrammer and only tick the ssbl-boot and fip partitions (m
 -----------------------------------------------------------------
 If not already done, extract the artifacts from Starter Package tarball, for example:
     # tar xf en.FLASH-stm32mp*-*.tar.xz
-
+Gunzip the patches if needed
+    $ gunzip *.patch.gz
 Move to Starter Package root folder,
     #> cd <your_starter_package_dir_path>
 Cleanup Starter Package from original optee-os artifacts first
@@ -193,6 +199,7 @@ Then the new Starter Package is ready to use for "Image flashing" on board (more
 -------------------------------
     $@E> cd ##BP##-##PR##
     $@E> tar xf ##BP##-##PR##.tar.xz
+    $@E> gunzip *.patch.gz
     $@E> cd ##BP##
     $@E> tar xf ../fonts.tar.gz
     $@E> for p in `ls -1 ../*.patch`; do patch -p1 < $p; done
@@ -201,6 +208,11 @@ Then the new Starter Package is ready to use for "Image flashing" on board (more
     $ cd ..
     $@P> cd ##BP##-##PR##
     $@P> cd ##BP##
+
+    Help:
+##CASE_stm32mp1##    $@H> make -f $PWD/../Makefile.sdk.stm32mp1 help
+##CASE_stm32mp2##    $@H> make -f $PWD/../Makefile.sdk.stm32mp2 help
+##CASE_stm32mp2-m33td##    $@H> make -f $PWD/../Makefile.sdk.stm32mp2-m33td help
 
 ##CASE_stm32mp1##    "your_board_name" is like stm32mp157f-dk2 or stm32mp135f-mx-mycustomboard
 ##CASE_stm32mp1##    "your_storage_boot_scheme_security" is like optee or opteemin or optee-programmer or opteemin-programmer
@@ -227,7 +239,7 @@ Then the new Starter Package is ready to use for "Image flashing" on board (more
 ##CASE_stm32mp2##    For runtime binaries
 ##CASE_stm32mp2##    $@C> make -f $PWD/../Makefile.sdk.stm32mp2 OPTEE_CONFIG=<your_storage_boot_scheme_security> CFG_EMBED_DTB_SOURCE_FILE=<your_board_name> DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee EXTDT_DIR=<externaldt_path> EXTDT_DIR_OPTEE=<externaldt_optee_path>  optee
 ##CASE_stm32mp2##    For flashing binaries
-##CASE_stm32mp2##    $@PC> make -f $PWD/../Makefile.sdk.stm32mp2 OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=<your_board_name> DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee EXTDT_DIR=<externaldt_path> EXTDT_DIR_OPTEE=<externaldt_optee_path>  optee
+##CASE_stm32mp2##    $@PC> make -f $PWD/../Makefile.sdk.stm32mp2 OPTEE_CONFIG=optee-programmer CFG_EMBED_DTB_SOURCE_FILE=<your_board_name> DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee EXTDT_DIR=<externaldt_path> EXTDT_DIR_OPTEE_SERIAL=<externaldt_optee_path>  optee
 ##CASE_stm32mp2##    Support of both type of TA: TA_arm64 and TA_arm32
 ##CASE_stm32mp2##    $ make -f $PWD/../Makefile.sdk.stm32mp2 OPTEE_CONFIG=optee TA32_64=1 CFG_EMBED_DTB_SOURCE_FILE=<your_board_name> DEPLOYDIR=$FIP_DEPLOYDIR_ROOT/optee optee
 ##CASE_stm32mp2##    Example with external dt:

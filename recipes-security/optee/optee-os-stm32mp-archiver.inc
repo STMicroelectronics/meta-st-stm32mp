@@ -59,12 +59,22 @@ CPPFLAGS =
 
 # Define default make options
 EXTRA_OEMAKE = $(echo "${EXTRA_OEMAKE}" | sed "s|LIBGCC_LOCATE_CFLAGS=[^ ]* |LIBGCC_LOCATE_CFLAGS=\$(KCFLAGS) |" | \
-                sed 's,CFG_EXT_DTS='"${STAGING_EXTDT_DIR}/${EXTDT_DIR_OPTEE}"',CFG_EXT_DTS=\$(EXTDT_DIR)/\$(EXTDT_DIR_OPTEE),')
+                sed 's,CFG_EXT_DTS='"${STAGING_EXTDT_DIR}/${EXTDT_DIR_OPTEE}"',CFG_EXT_DTS=\$(EXTDT_DIR)/\$(EXTDT_DIR_OPTEE),' | \
+                sed 's|CFG_TEE_CORE_LOG_LEVEL=[0-9]*||' | sed 's|CFG_TEE_CORE_DEBUG=[yn]||')
 
 # support of TA_arm64 and TA_arm32
 SDK_CROSS_COMPILE_TA_ARM32_TOOLCHAIN ?= \$(OECORE_NATIVE_SYSROOT)/usr/share/gcc-arm-none-eabi/bin/arm-none-eabi-
 ifeq (\$(TA32_64),1)
 EXTRA_OEMAKE += CROSS_COMPILE_ta_arm32=\${SDK_TA_ARM32_TOOLCHAIN} supported-ta-targets='ta_arm64 ta_arm32'
+endif
+
+# debug parameters
+OPTEE_LOG_LEVEL ?= ${ST_OPTEE_DEBUG_LOG_LEVEL}
+OPTEE_DEBUG_CORE ?= ${ST_OPTEE_CORE_DEBUG}
+ifeq (\$(OPTEE_DEBUG_CORE), y)
+DEBUG_OEMAKE ?= CFG_TEE_CORE_DEBUG=y LOG_LEVEL=\$(OPTEE_LOG_LEVEL)
+else
+DEBUG_OEMAKE ?= CFG_TEE_CORE_DEBUG=n LOG_LEVEL=\$(OPTEE_LOG_LEVEL)
 endif
 
 # Display Optee-os config details (optee-configs <CONFIG>)
@@ -100,7 +110,7 @@ endef
 define optee-rules-by-dt
 tee-\$(1)-\$(2)-\$(3): chk-conf-\$(1)
 	@mkdir -p \$(BLD_PATH)/\$(1)-\$(3); \\
-	\$(MAKE) \$(EXTRA_OEMAKE) \\
+	\$(MAKE) \$(EXTRA_OEMAKE) \$(DEBUG_OEMAKE) \\
 		\$(OPTEE_EXTRA_OPTFLAGS_\$(1)) \\
 		-C \$(SRC_PATH) PREFIX=\$(SDKTARGETSYSROOT) \\
 		O=\$(BLD_PATH)/\$(1)-\$(3) \\
@@ -154,6 +164,9 @@ help: \$(optee-check-config)
 	@echo "  EXTDT_DIR = \$(EXTDT_DIR)"
 	@echo "Support of TA_arm64 and TA_arm32"
 	@echo "  TA32_64   = \$(TA32_64)"
+	@echo ""
+	@echo "Debug paramters:"
+	@echo " opt =  \$(DEBUG_OEMAKE)"
 	@echo ""
 	@echo "FIP configuration:"
 	@echo "  Do not forget to set FIP deploydir folders (such as FIP_DEPLOYDIR_ROOT) to provide path to needed binaries"

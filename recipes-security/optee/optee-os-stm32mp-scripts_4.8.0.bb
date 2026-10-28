@@ -12,7 +12,7 @@ do_compile[noexec] = "1"
 
 do_install() {
     install -d ${D}${bindir}
-    install -m 755 ${WORKDIR}/scripts/st_copro_firmware_signature.sh ${D}${bindir}
+    install -m 755 ${UNPACKDIR}/scripts/st_copro_firmware_signature.sh ${D}${bindir}
 
     # Install optee scripts
     install -d ${D}${datadir}/optee/scripts

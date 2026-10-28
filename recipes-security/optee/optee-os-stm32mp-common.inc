@@ -40,16 +40,34 @@ ST_OPTEE_CORE_DEBUG:stm32mp15common ?= "n"
 # Set default OPTEE-OS config
 OPTEE_CONFIG ??= ""
 
-EXTRA_OEMAKE = "PLATFORM=${OPTEEMACHINE}"
-EXTRA_OEMAKE += "CROSS_COMPILE_core=${HOST_PREFIX}"
-EXTRA_OEMAKE += "${@bb.utils.contains('TUNE_FEATURES', 'aarch64', 'ARCH=arm CFG_ARM64_core=y CROSS_COMPILE_ta_arm64=${HOST_PREFIX}', 'ARCH=arm CFG_ARM32_core=y CROSS_COMPILE_ta_arm32=${HOST_PREFIX}', d)}"
+OPTEE_ARCH = "null"
+OPTEE_ARCH:arm = "arm32"
+OPTEE_ARCH:aarch64 = "arm64"
+OPTEE_ARCH:virtclass-multilib-lib64 = "arm64"
+
+TA_TARGET = "ta-targets=ta_${OPTEE_ARCH}"
+TA_TARGET:virtclass-multilib-lib64 = "supported-ta-targets='ta_arm64 ta_arm32'"
+
+OPTEE_CORE = "${@d.getVar('OPTEE_ARCH').upper()}"
+
+EXTRA_OEMAKE = " \
+    PLATFORM=${OPTEEMACHINE} \
+    ARCH=arm \
+    CFG_${OPTEE_CORE}_core=y \
+    CROSS_COMPILE_core=${HOST_PREFIX} \
+    CROSS_COMPILE_ta_${OPTEE_ARCH}=${HOST_PREFIX} \
+   ${TA_TARGET} \
+    \
+    HOST_PREFIX=${HOST_PREFIX} \
+    CROSS_COMPILE64=${HOST_PREFIX} \
+    "
+
 EXTRA_OEMAKE += "NOWERROR=1"
-EXTRA_OEMAKE += "LDFLAGS="
+
 # debug and trace
 EXTRA_OEMAKE += "${@bb.utils.contains('ST_OPTEE_DEBUG_TRACE', '1', 'CFG_TEE_CORE_LOG_LEVEL=${ST_OPTEE_DEBUG_LOG_LEVEL} CFG_TEE_CORE_DEBUG=${ST_OPTEE_CORE_DEBUG}', '', d)}"
 
 EXTRA_OEMAKE:append:virtclass-multilib-lib64 = " CROSS_COMPILE_ta_arm32=${STAGING_DATADIR_NATIVE}/gcc-arm-none-eabi/bin/arm-none-eabi- "
-EXTRA_OEMAKE:append:virtclass-multilib-lib64 = " supported-ta-targets='ta_arm64 ta_arm32' "
 
 DEBUG_PREFIX_MAP:virtclass-multilib-lib64 ?= " \
  -fmacro-prefix-map=${S}=${TARGET_DBGSRC_DIR} \
@@ -60,6 +78,12 @@ DEBUG_PREFIX_MAP:virtclass-multilib-lib64 ?= " \
  -fmacro-prefix-map=${STAGING_DIR_HOST}= \
  -fdebug-prefix-map=${STAGING_DIR_NATIVE}= \
 "
+
+# python3-cryptography needs the legacy provider, so set OPENSSL_MODULES to the
+# right path until this is relocated automatically.
+export OPENSSL_MODULES = "${STAGING_LIBDIR_NATIVE}/ossl-modules"
+
+CFLAGS += "--sysroot=${STAGING_DIR_HOST}"
 
 # --------------------------------------------
 # Export TA config
@@ -104,11 +128,18 @@ do_configure:prepend(){
     chmod 755 ${S}/scripts/bin_to_c.py
 }
 
-do_compile() {
-    export CFLAGS="${CFLAGS} --sysroot=${STAGING_DIR_HOST}"
-    export OPENSSL_MODULES=${STAGING_LIBDIR_NATIVE}/ossl-modules/
+AFLAGS[unexport] = "1"
+LDFLAGS[unexport] = "1"
+CPPFLAGS[unexport] = "1"
+AS[unexport] = "1"
+LD[unexport] = "1"
 
+do_compile[progress] = "outof:^\[(\d+)/(\d+)\]\s+"
+do_compile() {
+    count_dt=$(echo ${OPTEE_DEVICETREE} | sed 's|,||g' | wc -w)
+    count=$(expr $count_dt + 1)
     unset i
+    id=1
     for config in ${OPTEE_CONFIG}; do
         i=$(expr $i + 1)
         # Initialize devicetree list and tf-a basename
@@ -116,12 +147,16 @@ do_compile() {
         extra_opt=$(echo ${OPTEE_EXTRA_OPTFLAGS} | cut -d',' -f${i})
         for dt in ${dt_config}; do
             oe_runmake -C ${S} O=${B}/${config}-${dt} CFG_EMBED_DTB_SOURCE_FILE=${dt}.dts ${extra_opt}
+            echo "[$id/$count] $config $dt generated"
+            id=$(expr $id + 1)
         done
     done
     # generate export-ta
     # Need to use the profile = secure_and_system_services
     if [ -n "${OPTEE_CONFIG}" ]; then
         oe_runmake -C ${S} O=${ST_OPTEE_EXPORT_TA_OUTDIR} CFG_EMBED_DTB_SOURCE_FILE=${ST_OPTEE_EXPORT_TA_REF_BOARD} CFG_STM32MP_PROFILE=secure_and_system_services ${ST_OPTEE_EXPORT_TA_OEMAKE_EXTRA}
+        echo "[$id/$count] "
+        id=$(expr $id + 1)
     fi
 }
 
@@ -212,7 +247,28 @@ export_binaries() {
         done
     done
 }
+# --------------------------------------------
+devicetree_dump() {
+    local dest="${1}"
 
+    mkdir -p $dest/dts
+    unset i
+    for config in ${OPTEE_CONFIG}; do
+        i=$(expr $i + 1)
+        # Initialize devicetree list and tf-a basename
+        dt_config=$(echo ${OPTEE_DEVICETREE} | cut -d',' -f${i})
+        extra_opt=$(echo ${OPTEE_EXTRA_OPTFLAGS} | cut -d',' -f${i})
+        for dt in ${dt_config}; do
+            dtb_base_name=`basename $dt .dtb`
+            [ -f $dest/dts/${dtb_base_name}.dts ] && continue
+            # generate dtbs
+            dtc -I dtb -O dts -o $dest/dts/${dtb_base_name}.dts ${B}/${config}-${dt}/core/arch/arm/dts/${dt}.dtb
+            # generate yaml
+            dtc -I dts -O yaml -o $dest/dts/${dtb_base_name}.yaml $dest/dts/${dtb_base_name}.dts || /bin/true
+        done
+    done
+}
+# --------------------------------------------
 optee_sysroot_populate() {
     export_binaries ${SYSROOT_DESTDIR}${FIP_DIR_OPTEE}
 }
@@ -222,6 +278,7 @@ SYSROOT_DIRS:append = " ${FIP_DIR_OPTEE}"
 do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}${FIP_DIR_OPTEE}"
 do_deploy() {
     export_binaries ${DEPLOYDIR}
+    devicetree_dump ${DEPLOYDIR}
 }
 addtask deploy before do_build after do_compile
 
@@ -230,7 +287,7 @@ PACKAGES =+ "${PN}-dev-sdk"
 
 FILES:${PN}-ta-avb = "${base_libdir}/optee_armtz/023f8f1a-292a-432b-8fc4-de8471358067.ta"
 RPROVIDES:${PN}-ta-avb += "virtual-optee-os-ta-avb"
-ALLOW_EMPTY:${PN-TA-avb} = "1"
+ALLOW_EMPTY:${PN}-ta-avb = "1"
 
 FILES:${PN}-ta-pkcs11 = "${base_libdir}/optee_armtz/fd02c9da-306c-48c7-a49c-bbd827ae86ee.ta"
 RPROVIDES:${PN}-ta-pkcs11 += "virtual-optee-os-ta-pkcs11"
@@ -255,11 +312,16 @@ INSANE_SKIP:${PN}-dev = "staticdev"
 
 FILES:${PN}-dev-sdk = "${SDKPATH}"
 INSANE_SKIP:${PN}-dev-sdk = "staticdev buildpaths"
+RRECOMMENDS:${PN}-dev = ""
 ALLOW_EMPTY:${PN}-dev-sdk = "1"
 
-INHIBIT_PACKAGE_STRIP = "1"
+
 # ---------------------------------------------------------------------
-# Avoid QA Issue: contains reference to TMPDIR [buildpaths]
+# Avoid QA Issue: TA contains reference to TMPDIR [buildpaths]
 INSANE_SKIP:${PN} += "buildpaths"
 INSANE_SKIP:${PN}-src += "buildpaths"
 INSANE_SKIP:${PN}-dev += "buildpaths"
+
+INSANE_SKIP:${PN} += "textrel"
+INSANE_SKIP:${PN}-dev += "staticdev"
+INHIBIT_PACKAGE_STRIP = "1"
