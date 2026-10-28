@@ -71,18 +71,20 @@ do_deploy() {
             fi
             FIP_PARAM_SIGN=""
             if [ "${SIGN_ENABLE}" = "1" ]; then
-               sign_key="${SIGN_KEY_PATH_LIST}"
-                if [ $(echo ${SIGN_KEY_PASS} | wc -w) -gt 1 ]; then
-                    sign_single_key_pass=$(echo ${SIGN_KEY_PASS} | cut -d' ' -f1)
-                else
-                    sign_single_key_pass="${SIGN_KEY_PASS}"
-                fi
+                sign_key="${SIGN_KEY_PATH_LIST}"
                 if [ -n "${STM32MP_SOC_NAME}" ]; then
                     unset k
                     for soc in ${STM32MP_SOC_NAME}; do
                         k=$(expr $k + 1)
                         [ "$(echo ${dt} | grep -c ${soc})" -eq 1 ] && sign_key=$(echo ${SIGN_KEY_PATH_LIST} | cut -d',' -f${k})
+                        [ "$(echo ${dt} | grep -c ${soc})" -eq 1 ] && sign_single_key_pass=$(echo ${SIGN_KEY_PASS_FOR_SPECIFIC_KEY_LIST} | cut -d',' -f${k})
                     done
+                else
+                    if [ $(echo ${SIGN_KEY_PASS_FOR_SPECIFIC_KEY} | wc -w) -gt 1 ]; then
+                        sign_single_key_pass=$(echo ${SIGN_KEY_PASS_FOR_SPECIFIC_KEY} | cut -d' ' -f1)
+                    else
+                        sign_single_key_pass="${SIGN_KEY_PASS_FOR_SPECIFIC_KEY}"
+                    fi
                 fi
                 FIP_PARAM_SIGN="--sign --signature-key $sign_key --signature-key-pass $sign_single_key_pass"
             fi
@@ -118,6 +120,19 @@ do_deploy() {
                         \n${DT_SUFFIX_SEARCH} \
                         \n--search-soc-name ${soc_suffix} \
                         \n--output ${DEPLOYDIR}/${FIP_DIR_FIP}"
+                    if [  "${SIGN_ENABLE}" = "1" -o "${ENCRYPT_ENABLE}" = "1" ]; then
+                        echo "FIP_DEPLOYDIR_ROOT=${RECIPE_SYSROOT} \
+                        ${FIP_WRAPPER} \
+                        ${FIP_PARAM_BLxx} \
+                        ${FIP_PARAM_SIGN} \
+                        ${STORAGE_SEARCH} \
+                        --use-ddr --generate-only-ddr \
+                        --search-configuration ${config}\
+                        --search-devicetree ${dt} \
+                        ${DT_SUFFIX_SEARCH} \
+                        --search-soc-name ${soc_suffix} \
+                        --output ${DEPLOYDIR}/${FIP_DIR_FIP}" > ${DEPLOYDIR}/${FIP_DIR_FIP}/fip-ddr-${dt}-${config}-cmd.txt
+                    fi
                     echo "********************************************"
                     FIP_DEPLOYDIR_ROOT="${RECIPE_SYSROOT}" \
                     ${FIP_WRAPPER} \
@@ -149,6 +164,20 @@ do_deploy() {
                     \n${DT_SUFFIX_SEARCH} \
                     \n--search-soc-name ${soc_suffix} \
                     \n--output ${DEPLOYDIR}/${FIP_DIR_FIP}"
+            if [  "${SIGN_ENABLE}" = "1" -o "${ENCRYPT_ENABLE}" = "1" ]; then
+                echo "FIP_DEPLOYDIR_ROOT=${RECIPE_SYSROOT} \
+                    ${FIP_WRAPPER} \
+                    ${FIP_PARAM_BLxx} \
+                    ${FIP_PARAM_SIGN} \
+                    ${FIP_PARAM_ddr} \
+                    ${STORAGE_SEARCH} \
+                    ${SECOND_CONFSEARCH} \
+                    --search-configuration ${config} \
+                    --search-devicetree ${dt} \
+                    ${DT_SUFFIX_SEARCH} \
+                    --search-soc-name ${soc_suffix} \
+                    --output ${DEPLOYDIR}/${FIP_DIR_FIP}" > ${DEPLOYDIR}/${FIP_DIR_FIP}/fip-${dt}-${config}-cmd.txt
+            fi
             echo "****************************************"
             FIP_DEPLOYDIR_ROOT="${RECIPE_SYSROOT}" \
             ${FIP_WRAPPER} \
