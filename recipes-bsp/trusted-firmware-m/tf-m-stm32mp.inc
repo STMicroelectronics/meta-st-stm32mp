@@ -385,7 +385,7 @@ sign_bl2_fw() {
             # Get bl2 bin radix name
             bl2_name="$(echo "${bl2}" | sed 's#\.'"${BL2_SUFFIX}"'$##')"
             # Sign bl2
-            sign_stm32mp_fw \
+            sign_stm32mp_fw_m \
                     "${bl2}" \
                     "cm33" \
                     "${soc}" \
@@ -399,7 +399,7 @@ sign_bl2_fw() {
             # Get bl2 bin radix name
             bl2_wrapper_name="$(echo "${bl2_wrapper}" | sed 's#\.'"${BL2_SUFFIX}"'$##')"
             # Sign bl2
-            sign_stm32mp_fw \
+            sign_stm32mp_fw_m \
                     "${bl2_wrapper}" \
                     "cm33" \
                     "${soc}" \

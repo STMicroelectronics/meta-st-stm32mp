@@ -13,7 +13,12 @@ SIGN_ENABLE ??= "0"
 SIGN_HEADER_VERSION ??= ""
 SIGN_KEY ??= ""
 SIGN_KEY_PASS ??= ""
+SIGN_KEY_PASS_FOR_SPECIFIC_KEY ??= ""
 SIGN_KEY_PUB ??= ""
+SIGN_KEY_M ??= ""
+SIGN_KEY_PASS_M ??= ""
+SIGN_KEY_PASS_M_FOR_SPECIFC_KEY ??= ""
+SIGN_KEY_PUB_M ??= ""
 SIGN_M33DDR_KEY ??= ""
 SIGN_M33DDR_KEY_PASS ??= ""
 SIGN_M33FW_KEY ??= ""
@@ -168,6 +173,38 @@ python __anonymous() {
         # Init SIGN_KEY_PASS_LIST from SIGN_KEY settings
         init_keylist_from('SIGN_KEY_PASS_LIST', 'SIGN_KEY_PASS', 'STM32MP_SOC_NAME', d, getPath='0')
 
+        # Check for internal use of SIGN_KEY_PASS_FOR_SPECIFIC_KEY_LIST
+        if d.getVar('SIGN_KEY_PASS_FOR_SPECIFIC_KEY_LIST'):
+            raise bb.parse.SkipRecipe("[sign-stm32mp] You cannot use SIGN_KEY_PASS_FOR_SPECIFIC_KEY_LIST as it is internal to sign-stm32mp.bbclass.")
+        # Init SIGN_KEY_PASS_LIST from SIGN_KEY settings
+        init_keylist_from('SIGN_KEY_PASS_FOR_SPECIFIC_KEY_LIST', 'SIGN_KEY_PASS_FOR_SPECIFIC_KEY', 'STM32MP_SOC_NAME', d, getPath='0')
+
+
+        # Check for internal use of SIGN_KEY_M_PATH_LIST
+        if d.getVar('SIGN_KEY_M_PATH_LIST'):
+            raise bb.parse.SkipRecipe("[sign-stm32mp] You cannot use SIGN_KEY_M_PATH_LIST as it is internal to sign-stm32mp.bbclass.")
+        # Init SIGN_KEY_M_PATH_LIST from SIGN_KEY_M settings
+        init_keylist_from('SIGN_KEY_M_PATH_LIST', 'SIGN_KEY_M', 'STM32MP_SOC_NAME', d)
+
+        # Check for internal use of SIGN_KEY_PUB_M_PATH_LIST
+        if d.getVar('SIGN_KEY_PUB_M_PATH_LIST'):
+            raise bb.parse.SkipRecipe("[sign-stm32mp] You cannot use SIGN_KEY_PUB_M_PATH_LIST as it is internal to sign-stm32mp.bbclass.")
+        # Init SIGN_KEY_PUB_M_PATH_LIST from SIGN_KEY_PUB_M settings
+        init_keylist_from('SIGN_KEY_PUB_M_PATH_LIST', 'SIGN_KEY_PUB_M', 'STM32MP_SOC_NAME', d)
+
+        # Check for internal use of SIGN_KEY_PASS_M_LIST
+        if d.getVar('SIGN_KEY_PASS_M_LIST'):
+            raise bb.parse.SkipRecipe("[sign-stm32mp] You cannot use SIGN_KEY_PASS_M_LIST as it is internal to sign-stm32mp.bbclass.")
+        # Init SIGN_KEY_PASS_M_LIST from SIGN_KEY_M settings
+        init_keylist_from('SIGN_KEY_PASS_M_LIST', 'SIGN_KEY_PASS_M', 'STM32MP_SOC_NAME', d, getPath='0')
+
+        # Check for internal use of SIGN_KEY_PASS_M_FOR_SPECIFIC_KEY_LIST
+        if d.getVar('SIGN_KEY_PASS_M_FOR_SPECIFIC_KEY_LIST'):
+            raise bb.parse.SkipRecipe("[sign-stm32mp] You cannot use SIGN_KEY_PASS_M_FOR_SPECIFIC_KEY_LIST as it is internal to sign-stm32mp.bbclass.")
+        # Init SIGN_KEY_PASS_LIST from SIGN_KEY settings
+        init_keylist_from('SIGN_KEY_PASS_M_FOR_SPECIFIC_KEY_LIST', 'SIGN_KEY_PASS_M_FOR_SPECIFIC_KEY', 'STM32MP_SOC_NAME', d, getPath='0')
+
+
         if 'm33td' in d.getVar('MACHINE_FEATURES').split() or 'm33copro' in  d.getVar('MACHINE_FEATURES').split():
             if d.getVar('SIGN_M33DDR_KEY_PATH_LIST'):
                 raise bb.parse.SkipRecipe("[sign-stm32mp] You cannot use SIGN_M33DDR_KEY_PATH_LIST as it is internal to sign-stm32mp.bbclass.")
@@ -256,7 +293,7 @@ python __anonymous() {
 #
 # Handle sign and encrypt process
 #
-sign_stm32mp_fw() {
+sign_stm32mp_fw_m() {
     local input_path=$1
     local input_type=$2
     local soc_conf=$3
@@ -273,9 +310,9 @@ sign_stm32mp_fw() {
             k=$(expr $k + 1)
             if [ "${soc}" = "${soc_conf}" ] ; then
                 header_version=$(echo ${SIGN_HEADER_VERSION_LIST} | cut -d',' -f${k})
-                pub_sign_key=$(echo ${SIGN_KEY_PUB_PATH_LIST} | cut -d',' -f${k})
-                prv_sign_key=$(echo ${SIGN_KEY_PATH_LIST} | cut -d',' -f${k})
-                pwd_sign_key=$(echo ${SIGN_KEY_PASS_LIST} | cut -d',' -f${k})
+                pub_sign_key=$(echo ${SIGN_KEY_PUB_M_PATH_LIST} | cut -d',' -f${k})
+                prv_sign_key=$(echo ${SIGN_KEY_M_PATH_LIST} | cut -d',' -f${k})
+                pwd_sign_key=$(echo ${SIGN_KEY_PASS_M_LIST} | cut -d',' -f${k})
                 break
             fi
         done
