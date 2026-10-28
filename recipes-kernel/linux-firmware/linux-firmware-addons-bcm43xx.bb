@@ -84,6 +84,10 @@ do_install:stm32mp2common() {
     ln -sf brcmfmac43439-sdio.txt brcmfmac43439-sdio.st,stm32mp257f-dk-ca35tdcid-ostl.txt
     ln -sf BCM4343A2.hcd BCM.st,stm32mp257f-dk-ca35tdcid-ostl.hcd
 
+    ln -sf brcmfmac43439-sdio.bin brcmfmac43439-sdio.st,stm32mp257f-dk-ca35tdcid-ostl-ucsi.bin
+    ln -sf brcmfmac43439-sdio.txt brcmfmac43439-sdio.st,stm32mp257f-dk-ca35tdcid-ostl-ucsi.txt
+    ln -sf BCM4343A2.hcd BCM.st,stm32mp257f-dk-ca35tdcid-ostl-ucsi.hcd
+
     ln -sf brcmfmac43439-sdio.bin brcmfmac43439-sdio.st,stm32mp257f-dk-ca35tdcid-ostl-m33-examples.bin
     ln -sf brcmfmac43439-sdio.txt brcmfmac43439-sdio.st,stm32mp257f-dk-ca35tdcid-ostl-m33-examples.txt
     ln -sf BCM4343A2.hcd BCM.st,stm32mp257f-dk-ca35tdcid-ostl-m33-examples.hcd
@@ -91,6 +95,10 @@ do_install:stm32mp2common() {
     ln -sf brcmfmac43439-sdio.bin brcmfmac43439-sdio.st,stm32mp235f-dk.bin
     ln -sf brcmfmac43439-sdio.txt brcmfmac43439-sdio.st,stm32mp235f-dk.txt
     ln -sf BCM4343A2.hcd BCM.st,stm32mp235f-dk.hcd
+
+    ln -sf brcmfmac43439-sdio.bin brcmfmac43439-sdio.st,stm32mp235f-dk-ca35tdcid-ostl-ucsi.bin
+    ln -sf brcmfmac43439-sdio.txt brcmfmac43439-sdio.st,stm32mp235f-dk-ca35tdcid-ostl-ucsi.txt
+    ln -sf BCM4343A2.hcd BCM.st,stm32mp235f-dk-ca35tdcid-ostl-ucsi.hcd
 
    # ---- 4773 2AE module----
    if [ "${FIRMWARE_STM32MP215F_DK_BRCM_MODULE_2AE}" = "1" ]; then
