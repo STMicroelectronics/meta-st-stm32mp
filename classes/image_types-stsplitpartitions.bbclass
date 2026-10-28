@@ -98,10 +98,10 @@ stoe_mkext234fs () {
     bbdebug 1 "Actual Partition size: `ls -l --block-size=k ${IMGDEPLOYDIR}/$image_name.$fstype | awk -F' ' '{print($5)}' | sed 's/K//'`"
     if [ $(ls -1 ${rootfs}/ | wc -l) -gt 0 ]; then
         bbdebug 1 Executing "mkfs.$fstype -F $extra_imagecmd ${IMGDEPLOYDIR}/$image_name.$fstype -d $rootfs"
-        mkfs.$fstype -F $extra_imagecmd ${IMGDEPLOYDIR}/$image_name.$fstype -d $rootfs
+        mkfs.$fstype -t $fstype -F $extra_imagecmd ${IMGDEPLOYDIR}/$image_name.$fstype -d $rootfs
     else
         bbdebug 1 Executing "mkfs.$fstype -F $extra_imagecmd ${IMGDEPLOYDIR}/$image_name.$fstype"
-        mkfs.$fstype -F $extra_imagecmd ${IMGDEPLOYDIR}/$image_name.$fstype
+        mkfs.$fstype -t $fstype -F $extra_imagecmd ${IMGDEPLOYDIR}/$image_name.$fstype
     fi
     # Error codes 0-3 indicate successfull operation of fsck (no errors or errors corrected)
     fsck.$fstype -pvfD ${IMGDEPLOYDIR}/$image_name.$fstype || [ $? -le 3 ]
@@ -447,23 +447,37 @@ stsplitted_partition_create_fs() {
     boot*|vendor*)
         diff_size=$(expr $size - $CALCULATED_SIZE)
         if [ ${diff_size} -gt 32768 ]; then
-            partition_size=$CALCULATED_SIZE
+            if [ $CALCULATED_SIZE -gt 32768 ]; then
+                partition_size=$CALCULATED_SIZE
+            else
+                partition_size=$size
+            fi
         else
             partition_size=$size
         fi
         ;;
     *)
         partition_size=$CALCULATED_SIZE
+        if [ $CALCULATED_SIZE -lt 16384 ]; then
+            if [ $size -gt 16384 ]; then
+                # for to 16MB, if size inferior to 8MB an ext4 fs is seen as ext2
+                # and if is lower than 16MB we can see some issue with resize2fs
+                partition_size=16384
+            fi
+        fi
         ;;
     esac
     if [ ${partition_size} -gt ${size} ]; then
         partition_size=${size}
     fi
     bbnote "Preffered size for image size ${label} -> ${partition_size}"
-    for fs in ${IMAGE_FSTYPES} ${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'vfat', '', d)}; do
+    fs_type=$(echo ${IMAGE_FSTYPES} ${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'vfat', '', d)} | uniq)
+    bbnote "List of fs supported: ${fs_type}"
+    for fs in ${fs_type}; do
         if [ -n "${not_supported_fs}" ]; then
             $(echo ${not_supported_fs} | grep -q ${fs}) && continue;
         fi
+        bbnote "Generate ${fs} for ${label}"
         case ${fs} in
         ext2)
             stoe_mkext234fs ext2 ${src_splitted_part} ${image_name} ${partition_size} ${EXTRA_IMAGECMD:ext2} -L ${label}
