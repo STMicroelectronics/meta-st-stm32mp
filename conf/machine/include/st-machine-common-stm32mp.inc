@@ -153,7 +153,7 @@ STM32MP_DT_FILES_ALL_NOR += "${STM32MP_DT_FILES_NOR_mb}"
 STM32MP_DT_FILES_ALL_NOR += "${STM32MP_DT_FILES_NOR_mb_sb}"
 # Concatenate all device tree per storage for all partition configurations
 STM32MP_DT_FILES_NOR ??= ""
-STM32MP_DT_FILES_NOR:append =" ${@' '.join(dt_file for dt_file in list(dict.fromkeys((d.getVar('STM32MP_DT_FILES_ALL_NOR') or '').split())))} "
+STM32MP_DT_FILES_NOR:append = " ${@' '.join(dt_file for dt_file in list(dict.fromkeys((d.getVar('STM32MP_DT_FILES_ALL_NOR') or '').split())))} "
 
 STM32MP_DT_FILES_ALL += "${STM32MP_DT_FILES_EMMC}"
 STM32MP_DT_FILES_ALL += "${STM32MP_DT_FILES_NAND}"
@@ -220,7 +220,7 @@ IMAGE_FSTYPES ?= "${WKS_IMAGE_FSTYPES} tar.xz"
 # Partitions configuration
 ENABLE_PARTITIONS_IMAGE ??= "1"
 IMAGE_CLASSES += "st-partitions-image"
-IMAGE_CLASSES += "${@bb.utils.contains('ENABLE_PARTITIONS_IMAGE', '1', 'image_types-stsplitpartitions', '', d)}"
+IMAGE_CLASSES += "image_types-stsplitpartitions"
 IMAGE_FSTYPES += "${@bb.utils.contains('ENABLE_PARTITIONS_IMAGE', '1', 'stsplitpartitions','', d)}"
 
 # Append ext4 FSTYPES to default ones for emmc and sdcard volumes
@@ -287,11 +287,9 @@ KERNEL_EFI_ALT_NAME = "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'uImage',
 KERNEL_EFI_NAME:aarch64 = "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'Image', 'Image.gz', d)}"
 KERNEL_EFI_ALT_NAME:aarch64 = "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'Image.gz', 'Image', d)}"
 
-KERNEL_IMAGETYPE     = "${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'fitImage', '${KERNEL_EFI_NAME}', d)}"
+KERNEL_IMAGETYPE     = "${KERNEL_EFI_NAME}"
 KERNEL_ALT_IMAGETYPE = " vmlinux "
-KERNEL_ALT_IMAGETYPE =+ " ${@bb.utils.contains('MACHINE_FEATURES', 'fit', '${KERNEL_DEFAULT_NAME}', '${KERNEL_EFI_ALT_NAME}', d)} "
-
-KERNEL_CLASSES = " ${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'kernel-fitimage', 'kernel-uimage', d)} "
+KERNEL_ALT_IMAGETYPE =+ " ${KERNEL_EFI_ALT_NAME} "
 
 # Maxsize authorized for uncompressed kernel binary
 # Define to null to skip kernel image size check
@@ -302,6 +300,7 @@ KERNEL_CONFIG_DEPLOY ?= "1"
 
 # For fit usage
 UBOOT_ENTRYPOINT = "0xC4000000"
+KERNEL_CLASSES:append = " ${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'kernel-uimage kernel-fit-extra-artifacts', '', d)} "
 
 # List of device tree to install
 KERNEL_DEVICETREE ?= "${STM32MP_KERNEL_DEVICETREE}"
@@ -332,8 +331,8 @@ ST_CMD_LINE_DEBUG_TRACE ?= "loglevel=1 quiet"
 ST_KERNEL_DEFAULT_IMAGE ?= "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'kernel-image-efi', 'kernel-image-uimage', d)}"
 ST_KERNEL_DEFAULT_IMAGE:aarch64 ?= "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'kernel-image-efi', 'kernel-image-image.gz', d)}"
 
-ST_KERNEL_IMAGE_PACKAGE ??= "${@bb.utils.contains('MACHINE_FEATURES', 'fit', 'kernel-image-fitimage', '${ST_KERNEL_DEFAULT_IMAGE}', d)}"
-
+ST_KERNEL_FIT_IMAGE ?= "${PREFERRED_PROVIDER_virtual/kernel}-fitimage"
+ST_KERNEL_IMAGE_PACKAGE ??= "${@bb.utils.contains('MACHINE_FEATURES', 'fit', '${ST_KERNEL_FIT_IMAGE}', '${ST_KERNEL_DEFAULT_IMAGE}', d)}"
 
 # Variable to manage EXTLINUX
 ST_EXTLINUX_PACKAGE ??= "${@bb.utils.contains('MACHINE_FEATURES', 'efi', 'stm32mp-efi', 'stm32mp-extlinux', d)}"

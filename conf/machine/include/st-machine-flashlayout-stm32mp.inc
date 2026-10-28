@@ -114,7 +114,7 @@ ST_EXAMPLE_IMAGE ??= "0"
 FLASHLAYOUT_CONFIG_LABELS:remove = "${@bb.utils.contains('ST_EXAMPLE_IMAGE', '1', 'nand-4-256-1024', '', d)}"
 FLASHLAYOUT_CONFIG_LABELS:remove = "${@bb.utils.contains('ST_EXAMPLE_IMAGE', '1', 'nand-2-128-256', '', d)}"
 FLASHLAYOUT_CONFIG_LABELS:remove = "${@bb.utils.contains('ST_EXAMPLE_IMAGE', '1', 'nand-4-256-512', '', d)}"
-FLASHLAYOUT_CONFIG_LABELS:remove = "${@bb.utils.contains('ST_EXAMPLE_IMAGE', '1', 'nand-cusstom', '', d)}"
+FLASHLAYOUT_CONFIG_LABELS:remove = "${@bb.utils.contains('ST_EXAMPLE_IMAGE', '1', 'nand-custom', '', d)}"
 
 FLASHLAYOUT_PARTITION_EMPTY_CONFIG = "none,empty,0,Binary"
 
