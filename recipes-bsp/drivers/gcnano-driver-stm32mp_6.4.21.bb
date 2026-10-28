@@ -1,17 +1,17 @@
 SUMMARY = "GCNano kernel drivers"
-LICENSE = "GPL-1.0-only & MIT"
+LICENSE = "GPL-2.0-only & MIT"
 # Note get md5sum with: $ head -n 19 Makefile | md5sum
 LIC_FILES_CHKSUM = "file://Makefile;endline=19;md5=9b60522ab24b25fa2833058e76c41216"
 
 SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries.git;protocol=https;branch=gcnano-${GCNANO_VERSION}-binaries"
-SRCREV = "36c58f64e9e9512a4aead194f47bee9b26615ee5"
+SRCREV = "c981b5605ac964e0700ca84eb379407f92f8ce6d"
 
 GCNANO_VERSION = "6.4.21"
-GCNANO_RELEASE = "r1"
+GCNANO_RELEASE = "r2"
 
 PV = "${GCNANO_VERSION}-${GCNANO_RELEASE}"
 
-S = "${WORKDIR}/git/${BPN}"
+S = "${UNPACKDIR}/${BP}/${BPN}"
 
 include gcnano-driver-stm32mp.inc
 

@@ -48,6 +48,7 @@ tarball now:
 
     $> tar xf ##BP##-##PR##.tar.xz
     $> cd ##BP##
+    $> for p in `ls -1 ../*.patch`; do patch -p1 < $p; done
 
 You can now move to section 5 [Compile gcnano kernel module source code].
 

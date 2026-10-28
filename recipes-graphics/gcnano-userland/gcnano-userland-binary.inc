@@ -6,14 +6,14 @@ LIC_FILES_CHKSUM = "file://${GCNANO_TAR_FILENAME}/LICENSE;md5=0e85fa534ee3a1a7f5
 DEPENDS += " libdrm wayland "
 
 SRC_URI = "git://github.com/STMicroelectronics/gcnano-binaries.git;protocol=https;branch=gcnano-${GCNANO_VERSION}-binaries"
-SRCREV = "36c58f64e9e9512a4aead194f47bee9b26615ee5"
+SRCREV = "c981b5605ac964e0700ca84eb379407f92f8ce6d"
 
 PV = "${GCNANO_VERSION}+${GCNANO_DATE}"
 
 GCNANO_VERSION = "6.4.21"
 
-GCNANO_DATE:stm32mp1common = "20250226"
-GCNANO_DATE:stm32mp2common = "20250226"
+GCNANO_DATE:stm32mp1common = "20260917"
+GCNANO_DATE:stm32mp2common = "20260917"
 
 GCNANO_PACKAGECONFIG = "egl gbm glesv1 glesv2 vg"
 
