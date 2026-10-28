@@ -21,6 +21,8 @@
 #                                    Measured in 1/10 of a second.
 # UBOOT_EXTLINUX_DEFAULT_LABEL     - Target to be selected by default after
 #                                    the timeout period
+# UBOOT_EXTLINUX_PROMPT            - Display prompt (0 or 1)
+
 #
 # If there's only one label system will boot automatically and menu won't be
 # created. If you want to use more than one labels, e.g linux and alternate,
@@ -82,6 +84,7 @@ UBOOT_EXTLINUX_FDTDIR ??= "../"
 UBOOT_EXTLINUX_KERNEL_IMAGE ?= "/${KERNEL_IMAGETYPE}"
 UBOOT_EXTLINUX_KERNEL_ARGS ?= "rootwait rw"
 UBOOT_EXTLINUX_TIMEOUT ?= "20"
+UBOOT_EXTLINUX_PROMPT ??= ""
 
 def create_extlinux_file(cfile, labels, config, data):
     """
@@ -110,6 +113,10 @@ def create_extlinux_file(cfile, labels, config, data):
             timeout =  localdata.getVar('UBOOT_EXTLINUX_TIMEOUT')
             if timeout:
                 cfgfile.write('TIMEOUT %s\n' % (timeout))
+
+            prompt = localdata.getVar('UBOOT_EXTLINUX_PROMPT')
+            if prompt:
+                cfgfile.write('PROMPT %s\n' % (prompt))
 
             if len(labels.split()) > 1:
                 default = None
@@ -292,7 +299,7 @@ python do_create_multiextlinux_config() {
                     bb.note(">>> Create %s/%s_extlinux.conf file for %s labels" % (subdir, config, extra_extlinuxlabels))
                     create_extlinux_file(extra_cfile, extra_extlinuxlabels, config, d)
 }
-addtask create_multiextlinux_config before do_compile
+addtask create_multiextlinux_config before do_compile after do_unpack
 
 do_create_multiextlinux_config[dirs] += "${B}"
 do_create_multiextlinux_config[cleandirs] += "${B}"
@@ -301,7 +308,7 @@ do_create_multiextlinux_config[cleandirs] += "${B}"
 # need to make sure to add each variables to the vardeps list.
 UBOOT_EXTLINUX_TARGET_VARS = "FIT LABELS BOOTPREFIXES TIMEOUT DEFAULT_LABEL TARGETS_EXTRA_CONFIG"
 do_create_multiextlinux_config[vardeps] += "${@' '.join(['UBOOT_EXTLINUX:%s:%s' % (v, l) for v in d.getVar('UBOOT_EXTLINUX_TARGET_VARS').split() for l in d.getVar('UBOOT_EXTLINUX_TARGETS').split()])}"
-UBOOT_EXTLINUX_LABELS_VARS = "CONSOLE MENU_DESCRIPTION ROOT KERNEL_IMAGE FDTDIR FDT KERNEL_ARGS INITRD FIT"
+UBOOT_EXTLINUX_LABELS_VARS = "CONSOLE MENU_DESCRIPTION ROOT KERNEL_IMAGE FDTDIR FDT KERNEL_ARGS INITRD FIT FDTOVERLAYS"
 UBOOT_EXTLINUX_LABELS_CONFIGURED = "${@' '.join(dict.fromkeys(' '.join('%s' % d.getVar('UBOOT_EXTLINUX_LABELS:%s' % o) for o in d.getVar('UBOOT_EXTLINUX_TARGETS').split()).split()))}"
 UBOOT_EXTLINUX_LABELS_CONFIGURED += "${@' '.join(dict.fromkeys(' '.join('%s' % d.getVar('UBOOT_EXTLINUX_TARGETS_EXTRA_CONFIG:%s' % o) for o in d.getVar('UBOOT_EXTLINUX_TARGETS').split()).split()))}"
 do_create_multiextlinux_config[vardeps] += "${@' '.join(['UBOOT_EXTLINUX:%s:%s' % (v, l) for v in d.getVar('UBOOT_EXTLINUX_LABELS_VARS').split() for l in d.getVar('UBOOT_EXTLINUX_LABELS_CONFIGURED').split()])}"
