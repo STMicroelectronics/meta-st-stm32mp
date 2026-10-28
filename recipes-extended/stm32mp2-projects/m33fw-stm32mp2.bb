@@ -91,6 +91,17 @@ do_deploy() {
                                 \n${ddr_sign_version} \
                                 \n${image_confirm} \
                                 \n--output ${DEPLOYDIR}"
+            if [  "${SIGN_ENABLE}" = "1" -o "${ENCRYPT_ENABLE}" = "1" ]; then
+                echo "${M33FW_WRAPPER} \
+                    --ddrfw \
+                    --devicetree ${dt} \
+                    --bootsuffix-m33 ${suffix_bootm33} \
+                    ${ddr_priv_sign_key} \
+                    ${ddr_pass_sign_key} \
+                    ${ddr_sign_version} \
+                    ${image_confirm} \
+                    --output ${DEPLOYDIR}" | sed "s|${RECIPE_SYSROOT}/||g" > "${DEPLOYDIR}/m33fw-ddr-cmd-${dt}${suffix_bootm33}.txt"
+            fi
             echo "****************************************"
             ${M33FW_WRAPPER} \
                     --ddrfw \
@@ -101,7 +112,6 @@ do_deploy() {
                     ${ddr_sign_version} \
                     ${image_confirm} \
                     --output ${DEPLOYDIR}
-
             echo "****************************************"
             bbnote "M33 firmware command details:
                         \n${M33FW_WRAPPER} \
@@ -114,6 +124,18 @@ do_deploy() {
                                 \n${m33_sign_version} \
                                 \n${image_confirm} \
                                 \n--output ${DEPLOYDIR}"
+            if [  "${SIGN_ENABLE}" = "1" -o "${ENCRYPT_ENABLE}" = "1" ]; then
+                echo "${M33FW_WRAPPER} \
+                    --m33fw \
+                    --devicetree ${dt} \
+                    --bootsuffix-m33 ${suffix_bootm33} \
+                    --bootsuffix-a35 ${suffix_boota35} \
+                    ${m33_priv_sign_key} \
+                    ${m33_pass_sign_key} \
+                    ${m33_sign_version} \
+                    ${image_confirm} \
+                    --output ${DEPLOYDIR}" | sed "s|${RECIPE_SYSROOT}/||g" > "${DEPLOYDIR}/m33fw-cmd-${dt}${suffix_boota35}${suffix_bootm33}.txt"
+            fi
             echo "****************************************"
             ${M33FW_WRAPPER} \
                     --m33fw \

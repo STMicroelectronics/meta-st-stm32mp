@@ -68,7 +68,7 @@ EOF
     cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk.${MACHINE}
 
 # Append toolchain path for SDK
-PATH += :\$(OECORE_NATIVE_SYSROOT)/usr/share/gcc-arm-none-eabi/bin
+PATH := \$(OECORE_NATIVE_SYSROOT)/usr/share/gcc-arm-none-eabi/bin:\$(PATH)
 # Unset CMAKE_TOOLCHAIN_FILE for SDK
 CMAKE_TOOLCHAIN_FILE =
 
@@ -127,10 +127,10 @@ m33td-\$(1)-\$(2)-\$(3)-\$(4)-\$(5):
 		exit 1 ; \\
 	fi;
 	@mkdir -p "\$(BLD_PATH)/\$(1)-\$(2)-\$(3)-\$(4)"
-	cd "\$(SRC_PATH)/\$(if \$(M33FW_PROJECT_PATH),\$(M33FW_PROJECT_PATH),\$(M33FW_PROJECT_PATH_\$(5)))"; \\
+	cd \$(SRC_PATH)/; \\
+	cd "\$(if \$(M33FW_PROJECT_PATH),\$(M33FW_PROJECT_PATH),\$(SRC_PATH)/\$(M33FW_PROJECT_PATH_\$(5)))"; \\
 	cmake -G"Unix Makefiles" \\
 		-DTFM_BUILD_DIR="\$(TF_M_BUILD_PATH)/\$(1)-\$(2)/spe" \\
-		-S "\$(SRC_PATH)/\$(if \$(M33FW_PROJECT_PATH),\$(M33FW_PROJECT_PATH),\$(M33FW_PROJECT_PATH_\$(5)))" \\
 		-B "\$(BLD_PATH)/\$(1)-\$(2)-\$(3)-\$(4)" \\
 		\$(if \$(M33FW_EXTRA_OPTFLAGS),\$(M33FW_EXTRA_OPTFLAGS),\$(M33FW_EXTRA_OPTFLAGS_\$(4))) || { echo "[M33PROJECT CMAKE ERROR] M33FW_CONFIG=\$(1), M33FW_PROJECT_NAME=\$(3), M33FW_PROJECT_PATH=\$(3), M33FW_PROJECT_BUILDCONF=\$(4), devicetree=\$(2)"; exit 1; } ; \\
 	cd "\$(BLD_PATH)/\$(1)-\$(2)-\$(3)-\$(4)"; \\
@@ -233,7 +233,7 @@ clean:
 		echo "[INFO] No device tree file configured: skip \$(@) target"; \\
 	fi
 
-m33fw: \$(m33td-deploy)
+m33fw:
 	@\$(call dt-check)
 	@if [ -e "\$(BLD_PATH)/dt-check" ]; then \\
 		for m33fwconfig in \$(M33FW_CONFIG) ; do \\

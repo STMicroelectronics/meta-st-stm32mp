@@ -33,7 +33,7 @@ do_compile() {
             rm -rf ${B}/Projects/${project}/build
             export PATH=${STAGING_DATADIR_NATIVE}/gcc-arm-none-eabi/bin:${STAGING_BINDIR_NATIVE}:$PATH
             # generate Makefile
-            ${STAGING_BINDIR_NATIVE}/cmake -G"Unix Makefiles" -B ${B}/Projects/${project}/build
+            ${STAGING_BINDIR_NATIVE}/cmake -G"Unix Makefiles" -B ${B}/Projects/${project}/build -DCMAKE_POLICY_VERSION_MINIMUM=3.5
             # build
             cd ${B}/Projects/${project}/build; ${STAGING_BINDIR_NATIVE}/make all
         done

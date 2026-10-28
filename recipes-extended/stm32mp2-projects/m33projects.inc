@@ -15,7 +15,7 @@ DEPENDS += "${@oe.utils.ifelse(d.getVar('M33PROJECT_TF_M_TRUSTZONE') == '1', 'tf
 inherit m33fw-utils-stm32mp
 
 # Default service for systemd
-inherit systemd update-rc.d python3native
+inherit systemd update-rc.d python3native deploy
 SRC_URI:append = " file://st-m33firmware-load-default.sh"
 SRC_URI:append = " file://st-m33firmware-load.service"
 SRC_URI:append = " file://shutdown-stm32mp2-m33.sh"
@@ -30,7 +30,7 @@ M33_BOARDS_START_AT_STARTUP ?= ""
 # Init default installation path
 M33_FOLDER ?= "Cube-M33-examples"
 M33_INSTALLDIR ?= "${prefix}/local"
-M33_OUTPUT_4USERFS = "${M33_INSTALLDIR}/${M33_FOLDER}"
+M33_OUTPUT = "${M33_INSTALLDIR}/${M33_FOLDER}"
 
 # M33 sign settings
 M33_SBOOTADDR  ??= "0x80000000"
@@ -136,15 +136,15 @@ do_install() {
             fi
 
             # Install M33 firmwares
-            install -d ${D}${M33_OUTPUT_4USERFS}/${INSTALL_PROJ}/lib/firmware/
+            install -d ${D}${M33_OUTPUT}/${INSTALL_PROJ}/lib/firmware/
             no_elf_found="true"
             if [ -e "${builddir}/${prj_name}${M33_FW_TYPE}.elf" ]; then
                 no_elf_found="false"
-                install -m 0755 ${builddir}/${prj_name}${M33_FW_TYPE}.elf ${D}${M33_OUTPUT_4USERFS}/${INSTALL_PROJ}/lib/firmware/
+                install -m 0755 ${builddir}/${prj_name}${M33_FW_TYPE}.elf ${D}${M33_OUTPUT}/${INSTALL_PROJ}/lib/firmware/
             fi
             if [ -e "${builddir}/${prj_name}${M33_FW_TYPE}_stripped.elf" ]; then
                 no_elf_found="false"
-                install -m 0755 ${builddir}/${prj_name}${M33_FW_TYPE}_stripped.elf ${D}${M33_OUTPUT_4USERFS}/${INSTALL_PROJ}/lib/firmware/
+                install -m 0755 ${builddir}/${prj_name}${M33_FW_TYPE}_stripped.elf ${D}${M33_OUTPUT}/${INSTALL_PROJ}/lib/firmware/
             fi
             if ${no_elf_found}; then
                 bbfatal "[${board}] No ${prj_name}${M33_FW_TYPE} elf file(s) to install from ${builddir}/"
@@ -152,19 +152,19 @@ do_install() {
 
             # Install sh and README files if any for each example
             if [ -e ${builddir}/fw_cortex_m33.sh ]; then
-                install -m 0755 ${builddir}/fw_cortex_m33.sh ${D}${M33_OUTPUT_4USERFS}/${INSTALL_PROJ}
+                install -m 0755 ${builddir}/fw_cortex_m33.sh ${D}${M33_OUTPUT}/${INSTALL_PROJ}
             fi
             if [ -e ${m33prj_srcdir}/Remoteproc/README ]; then
-                install -m 0755 ${m33prj_srcdir}/Remoteproc/README ${D}${M33_OUTPUT_4USERFS}/${INSTALL_PROJ}
+                install -m 0755 ${m33prj_srcdir}/Remoteproc/README ${D}${M33_OUTPUT}/${INSTALL_PROJ}
             fi
             #FIXME temporary: add firmware to permit to load the project at runtime
-            install -m 0755 ${WORKDIR}/fw_cortex_m33.sh ${D}${M33_OUTPUT_4USERFS}/${INSTALL_PROJ}/
+            install -m 0755 ${UNPACKDIR}/fw_cortex_m33.sh ${D}${M33_OUTPUT}/${INSTALL_PROJ}/
 
             # Configure default copro firmware to launch
             if [ "${m33fw_default_proj}" = "${prj_name}" ]; then
                 for sb in ${M33_BOARDS_START_AT_STARTUP}; do
                     if $(echo ${sb} | grep -q ${board}) ; then
-                        echo "${INSTALL_PROJ}" > ${D}${M33_OUTPUT_4USERFS}/${INSTALL_PROJ}/default.${sb}
+                        echo "${INSTALL_PROJ}" > ${D}${M33_OUTPUT}/${INSTALL_PROJ}/default.${sb}
                     fi
                 done
             fi
@@ -185,9 +185,9 @@ do_install() {
             sed -i -e "s:##BOARDS_LIST##:${M33_BOARDS_START_AT_STARTUP}:g" \
             ${D}${base_sbindir}/st-m33firmware-load-default.sh
 
-            sed -i -e "s:@userfs_mount_point@:${M33_OUTPUT_4USERFS}:g" \
+            sed -i -e "s:@userfs_mount_point@:${M33_OUTPUT}:g" \
             ${D}${sysconfdir}/init.d/st-m33firmware-load-default.sh
-            sed -i -e "s:@userfs_mount_point@:${M33_OUTPUT_4USERFS}:g" \
+            sed -i -e "s:@userfs_mount_point@:${M33_OUTPUT}:g" \
             ${D}${base_sbindir}/st-m33firmware-load-default.sh
         fi
 
@@ -217,8 +217,8 @@ sign_copro() {
         else
             ns_subpath="$(echo "${board}" | tr '[:lower:]' '[:upper:]')"
         fi
-        bbnote "[${board}] Check for non secure firmware under ${M33_OUTPUT_4USERFS}/${ns_subpath}"
-        for ns_elf in $(find "${D}${M33_OUTPUT_4USERFS}/${ns_subpath}" -name "*.elf"); do
+        bbnote "[${board}] Check for non secure firmware under ${M33_OUTPUT}/${ns_subpath}"
+        for ns_elf in $(find "${D}${M33_OUTPUT}/${ns_subpath}" -name "*.elf"); do
             bbnote "[${board}] Non Secure firmware: $(basename "${ns_elf}")"
             # Get NS elf radix name
             ns_name="$(echo "${ns_elf}" | sed 's#\.elf$##')"
@@ -264,6 +264,33 @@ sign_copro() {
     done
 }
 
+do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}/m33-projects"
+do_deploy() {
+    for board in ${M33FW_BOARDS}; do
+        bbnote "[${board}] Run sign/encrypt for M33 firmwares"
+        soc_conf=""
+        for soc in ${STM32MP_SOC_NAME}; do
+            [ "$(echo ${board} | grep -c ${soc})" -eq 1 ] && { soc_conf="${soc}"; break ; }
+        done
+        [ -n "${soc_conf}" ] || continue
+
+        if [ "$(echo "${M33FW_BOARDS}" | wc -w)" -eq 1 ]; then
+            board_name=""
+        else
+            board_name=$(echo "${board}" | tr '[:lower:]' '[:upper:]')
+        fi
+        for ns_signed_file in $(find "${WORKDIR}/cmd_dump/${M33_OUTPUT}/${board_name}/" -name "*.txt"); do
+            # deploy only dump of signed command
+            dir=$(dirname ${ns_signed_file} | sed "s|${WORKDIR}/cmd_dump/${M33_OUTPUT}||")
+            bbnote "create <$dir> "
+            install -d ${DEPLOYDIR}/${dir}
+            cp ${ns_signed_file} ${DEPLOYDIR}/${dir}/
+        done
+    done
+}
+addtask deploy before do_package after do_install
+do_clean[cleandirs] += " ${WORKDIR}/cmd_dump"
+
 # -----------------------------------------------------------
 # specific for service: start copro m33 firwmare at boot time
 SYSTEMD_PACKAGES += " m33projects-stm32mp2 "
@@ -279,7 +306,7 @@ INHIBIT_SYSROOT_STRIP = "1"
 
 FILES:${PN} += "${nonarch_base_libdir}/firmware ${sysconfdir}/init.d ${systemd_unitdir}/system ${systemd_unitdir}/system-shutdown"
 # Configure package split
-FILES:${PN} += "${M33_OUTPUT_4USERFS}"
+FILES:${PN} += "${M33_OUTPUT}"
 RDEPENDS:${PN} += "busybox"
 
 # Avoid QA issue because binaries are for an Arm architecture but the platform is an AArch64
