@@ -4,9 +4,9 @@ LICENSE = "BSD-3-Clause"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=1787eff1a4fbd59457aa553b09394653"
 
 SRC_URI = "git://github.com/STMicroelectronics/st-openstlinux-application.git;protocol=https;branch=main"
-SRCREV = "2b959612ed8162190dd086e1bbc923dc6182990e"
+SRCREV = "62f0d0b0ea4bca81f55a3042284d47ceebe86919"
 
-PV = "1.0+git-${@d.getVar('SRCREV')[0:8]}"
+PV = "1.1+git-${@d.getVar('SRCREV')[0:8]}"
 
 S = "${UNPACKDIR}/${BP}/rpmsg_fwu"
 
