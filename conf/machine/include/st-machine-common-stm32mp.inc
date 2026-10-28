@@ -110,6 +110,7 @@ EXTDT_SUFFIX_SPINAND ?= ""
 # Configure external-dt to consider
 EXTDT_ROOTDIR:stm32mp1common = "stm32mp1/"
 EXTDT_ROOTDIR:stm32mp2common = "${@bb.utils.contains('MACHINE_FEATURES', 'm33td', 'stm32mp2/m33-td/', 'stm32mp2/a35-td/', d)}"
+EXTDT_ROOTDIR:stm32mp2aarch32common = "stm32mp2-aarch32/"
 
 EXTERNAL_DEVICETREE_EMMC ??= ""
 EXTERNAL_DEVICETREE_NAND ??= ""
@@ -464,6 +465,7 @@ ST_TF_A_DEBUG_TRACE ?= "${@bb.utils.contains('ST_DEBUG_TRACE', '1', '1', '0', d)
 TF_M_SIGN_SUFFIX ?= "${@bb.utils.contains('SIGN_ENABLE', '1', '${SIGN_SUFFIX}', '', d)}"
 TF_M_ENCRYPT_SUFFIX ?= "${@bb.utils.contains('ENCRYPT_ENABLE', '1', '${ENCRYPT_SUFFIX}', '', d)}"
 
+TFM_PROFILE ?= "profile_medium"
 # =========================================================================
 # optee
 # =========================================================================

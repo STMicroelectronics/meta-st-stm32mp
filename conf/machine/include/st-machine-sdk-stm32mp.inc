@@ -11,6 +11,7 @@ ST_TOOLS_FOR_SDK = " \
     nativesdk-ncurses-libncursesw \
     nativesdk-perf \
     nativesdk-gdb-stm32mp-addons \
+    nativesdk-make \
     "
 
 # for TF-A on aarch64
@@ -55,6 +56,8 @@ ST_TOOLS_FOR_SDK:append = " \
     nativesdk-dtc \
     nativesdk-flex \
     nativesdk-gnutls \
+    nativesdk-gnutls-dev \
+    nativesdk-python3-dtc \
     "
 
 # For support of python module for optee-os
@@ -124,6 +127,11 @@ ST_TOOLS_FOR_SDK:append:stm32mp2common = " \
     nativesdk-libpciaccess \
     "
 
+# cve check
+ST_TOOLS_FOR_SDK:append = " \
+    nativesdk-python3-sbom-cve-check \
+    "
+
 # Make sure to append mkimage to SDK for kernel uImage build
 ST_DEPENDENCIES_BUILD_FOR_SDK = " \
     ${@bb.utils.contains('KERNEL_IMAGETYPE', 'uImage', 'nativesdk-u-boot-mkimage', '', d)} \
@@ -166,10 +174,9 @@ MULTILIB_ST_AARCH32 = " \
     gcc-cross-canadian-arm \
     gdb-cross-canadian-arm \
     meta-environment-${MACHINE} \
-    lib64-optee-os-stm32mp-dev \
-    lib64-optee-os-stm32mp-dev-sdk \
     "
 TOOLCHAIN_HOST_TASK:append:stm32mp2aarch32common = " ${MULTILIB_ST_AARCH32} "
+TOOLCHAIN_TARGET_TASK:append:stm32mp2aarch32common = " lib64-optee-os-stm32mp-dev-sdk "
 
 MULTILIB_ST_STM32MP1 = " \
     optee-os-stm32mp-dev \
