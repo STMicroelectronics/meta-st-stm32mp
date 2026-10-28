@@ -10,6 +10,7 @@ FIP_SUFFIX   ?= "bin"
 
 # Set default TF-A FIP config
 FIP_CONFIG ?= ""
+FIP_ARCHIVER_AVAILABLE_CONFIG ?= ""
 
 # Default FIP config:
 #   There are two options implemented to select two different firmware and each
@@ -133,6 +134,87 @@ python () {
                     d.appendVar('FIP_DEVICETREE_EXTERNAL', external_devicetree + ',')
 
                     break
+
+
+    # Manage FIP config available settings
+    fipconfigavflags = d.getVarFlags('FIP_CONFIG')
+    if fipconfigavflags is not None:
+        # The "doc" varflag is special, we don't want to see it here
+        fipconfigavflags.pop('doc', None)
+    fipconfigav = (d.getVar('FIP_ARCHIVER_AVAILABLE_CONFIG') or "").split()
+    if not fipconfigav:
+        raise bb.parse.SkipRecipe("FIP_ARCHIVER_AVAILABLE_CONFIG must be set in the %s machine configuration." % d.getVar("MACHINE"))
+    if (d.getVar('FIP_BL32_AVAILABLE_CONF') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use FIP_BL32_AVAILABLE_CONF as it is internal to FIP_ARCHIVER_AVAILABLE_CONFIG var expansion.")
+    if (d.getVar('FIP_DEVICETREE_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use FIP_DEVICETREE_AVAILABLE as it is internal to FIP_ARCHIVER_AVAILABLE_CONFIG var expansion.")
+    if (d.getVar('FIP_DEVICETREE_AVAILABLE_SUFFIX') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use FIP_DEVICETREE_AVAILABLE_SUFFIX as it is internal to FIP_ARCHIVER_AVAILABLE_CONFIG var expansion.")
+    if (d.getVar('FIP_SEARCH_CONF_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use FIP_SEARCH_CONF_AVAILABLE as it is internal to FIP_ARCHIVER_AVAILABLE_CONFIG var expansion.")
+    if (d.getVar('FIP_DEVICE_CONF_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use FIP_DEVICE_CONF_AVAILABLE as it is internal to FIP_ARCHIVER_AVAILABLE_CONFIG var expansion.")
+
+    if (d.getVar('FIP_DEVICETREE_AVAILABLE_INTERNAL') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use FIP_DEVICETREE_AVAILABLE_INTERNAL as it is internal for var expansion.")
+    if (d.getVar('FIP_DEVICETREE_AVAILABLE_EXTERNAL') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use FIP_DEVICETREE_AVAILABLE_EXTERNAL as it is internal for var expansion.")
+
+    if (d.getVar('EXTERNAL_DT_ENABLED') or "0") == "1":
+        localdata = bb.data.createCopy(d)
+        localdata.setVar('EXTERNAL_DT_ENABLED', '0')
+
+    if len(fipconfigav) > 0:
+        # Init internal fip firmware config
+        fip_config_fw_tfa = d.getVar('FIP_CONFIG_FW_TFA') or ""
+        fip_config_fw_tee = d.getVar('FIP_CONFIG_FW_TEE') or ""
+        for config in fipconfigav:
+            for f, v in fipconfigavflags.items():
+                if config == f:
+                    # Make sure to get var flag properly expanded
+                    v = d.getVarFlag('FIP_CONFIG', config)
+                    if not v.strip():
+                        bb.fatal('[FIP_ARCHIVER_AVAILABLE_CONFIG] Missing configuration for %s config' % config)
+                    items = v.split(',')
+                    if items[0] and len(items) > 5:
+                        raise bb.parse.SkipRecipe('Only <BL32_CONF>, <DT_CONFIG>, <DT_SUFFIX>, <SEARCH_CONF> and <DEVICE_CONF> can be specified! (items={})'.format(items))
+                    # Set internal vars
+                    if items[0] == fip_config_fw_tfa or items[0] == fip_config_fw_tee:
+                        bb.debug(1, "Appending '%s' to FIP_BL32_AVAILABLE_CONF" % items[0])
+                        d.appendVar('FIP_BL32_AVAILABLE_CONF', items[0].strip() + ',')
+                    else:
+                        bb.fatal('[FIP_ARCHIVER_AVAILABLE_CONFIG] Wrong configuration for %s config: %s should be one of %s or %s' % (config,items[0],fip_config_fw_tfa,fip_config_fw_tee))
+                    if items[2]:
+                        bb.debug(1, "Appending '%s' to FIP_DEVICETREE_AVAILABLE_SUFFIX." % items[2])
+                        d.appendVar('FIP_DEVICETREE_AVAILABLE_SUFFIX', items[2].strip() + ',')
+                    else:
+                        d.appendVar('FIP_DEVICETREE_AVAILABLE_SUFFIX', '' + ',')
+                    if items[3]:
+                        bb.debug(1, "Appending '%s' to FIP_SEARCH_CONF_AVAILABLE" % items[0])
+                        d.appendVar('FIP_SEARCH_CONF_AVAILABLE', items[3].strip() + ',')
+                    else:
+                        bb.fatal('[FIP_ARCHIVER_AVAILABLE_CONFIG] Wrong configuration for <UBOOT_CONF>. It must be specified')
+                    if len(items) == 5:
+                        bb.debug(1, "Appending '%s' to FIP_DEVICE_CONF_AVAILABLE" % items[4])
+                        d.appendVar('FIP_DEVICE_CONF_AVAILABLE', items[4].strip() + ',')
+                    else:
+                        d.appendVar('FIP_DEVICE_CONF_AVAILABLE', ',')
+                    bb.debug(1, "Appending '%s' to FIP_DEVICETREE" % items[1])
+                    d.appendVar('FIP_DEVICETREE', items[1] + ',')
+
+                    if (d.getVar('EXTERNAL_DT_ENABLED') or "0") == "1":
+                        internal_devicetree = localdata.getVarFlag('FIP_CONFIG', config).split(',')[1]
+                        external_devicetree = ' '.join([dt for dt in items[1].split() if dt not in internal_devicetree.split()])
+                    else:
+                        internal_devicetree = items[1]
+                        external_devicetree = ''
+                    bb.debug(1, "Appending '%s' to FIP_DEVICETREE_AVAILABLE_INTERNAL" % internal_devicetree)
+                    d.appendVar('FIP_DEVICETREE_AVAILABLE_INTERNAL', internal_devicetree + ',')
+                    bb.debug(1, "Appending '%s' to FIP_DEVICETREE_AVAILABLE_EXTERNAL" % external_devicetree)
+                    d.appendVar('FIP_DEVICETREE_AVAILABLE_EXTERNAL', external_devicetree + ',')
+
+                    break
+
 }
 
 archiver_create_fiptool_wrapper_for_sdk() {
@@ -160,17 +242,18 @@ declare -A FIP_DEVICETREE_SUFFIX_ARRAY
 declare -A FIP_SEARCH_CONF_ARRAY
 declare -A FIP_DEVICE_CONF_ARRAY
 EOF
-    for config in ${FIP_CONFIG}; do
+    i=0
+    for config in ${FIP_ARCHIVER_AVAILABLE_CONFIG}; do
         i=$(expr $i + 1)
         cat << EOF >> ${ARCHIVER_OUTDIR}/${FIPTOOL_WRAPPER}
-FIP_BL32_CONF_ARRAY[${config}]="$(echo ${FIP_BL32_CONF} | cut -d',' -f${i})"
-FIP_DEVICETREE_INTERNAL_ARRAY[${config}]="$(echo ${FIP_DEVICETREE_INTERNAL} | cut -d',' -f${i})"
-FIP_DEVICETREE_EXTERNAL_ARRAY[${config}]="$(echo ${FIP_DEVICETREE_EXTERNAL} | cut -d',' -f${i})"
+FIP_BL32_CONF_ARRAY[${config}]="$(echo ${FIP_BL32_AVAILABLE_CONF} | cut -d',' -f${i})"
+FIP_DEVICETREE_INTERNAL_ARRAY[${config}]="$(echo ${FIP_DEVICETREE_AVAILABLE_INTERNAL} | cut -d',' -f${i})"
+FIP_DEVICETREE_EXTERNAL_ARRAY[${config}]="$(echo ${FIP_DEVICETREE_AVAILABLE_EXTERNAL} | cut -d',' -f${i})"
 FIP_DEVICETREE_ARRAY[${config}]="\${FIP_DEVICETREE_INTERNAL_ARRAY[${config}]}"
 [ -z "\${EXTDT_DIR:-}" ] || FIP_DEVICETREE_ARRAY[${config}]+=" \${FIP_DEVICETREE_EXTERNAL_ARRAY[${config}]}"
-FIP_DEVICETREE_SUFFIX_ARRAY[${config}]="$(echo ${FIP_DEVICETREE_SUFFIX} | cut -d',' -f${i})"
-FIP_SEARCH_CONF_ARRAY[${config}]="$(echo ${FIP_SEARCH_CONF} | cut -d',' -f${i})"
-FIP_DEVICE_CONF_ARRAY[${config}]="$(echo ${FIP_DEVICE_CONF} | cut -d',' -f${i})"
+FIP_DEVICETREE_SUFFIX_ARRAY[${config}]="$(echo ${FIP_DEVICETREE_AVAILABLE_SUFFIX} | cut -d',' -f${i})"
+FIP_SEARCH_CONF_ARRAY[${config}]="$(echo ${FIP_SEARCH_CONF_AVAILABLE} | cut -d',' -f${i})"
+FIP_DEVICE_CONF_ARRAY[${config}]="$(echo ${FIP_DEVICE_CONF_AVAILABLE} | cut -d',' -f${i})"
 EOF
     done
     unset i
@@ -313,7 +396,7 @@ for config in \$FIP_CONFIG; do
 
         FIP_PARAM_ddr=""
         if [ -d "\$FIP_DEPLOYDIR_FWDDR" ]; then
-            if \$(echo ${MACHINE_FEATURES} | grep -q 'm33td') ; then
+            if \$(echo ${@bb.utils.filter('MACHINE_FEATURES', 'm33td', d) } | grep -q 'm33td') ; then
                 if [ -n "\${device_conf}" ] && \$(echo \${device_conf} | grep -qE '(usb|uart)') ; then
                         FIP_PARAM_ddr="--use-ddr"
                     fi

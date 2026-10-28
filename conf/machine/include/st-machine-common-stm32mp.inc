@@ -54,7 +54,14 @@ BOOTSCHEME_LABELS ??= "optee opteemin fastboot fastboot-opteemin"
 # boot device
 # =========================================================================
 # List of supported boot devices
-BOOTDEVICE_LABELS ??= "emmc nor-emmc nand-4-256-1024 nor-sdcard sdcard nand-4-256-1024-sdcard"
+BOOTDEVICE_LABELS ??= "\
+    emmc                    \
+    nand-4-256-1024         \
+    nand-4-256-1024-sdcard  \
+    nor-emmc                \
+    nor-sdcard              \
+    sdcard                  \
+    "
 
 # =========================================================================
 # Machine settings
@@ -69,10 +76,13 @@ MACHINE_FEATURES:append = " initrd "
 
 # Configure autoresize for any of the 'ext4' storage devices (through InitRD image)
 MACHINE_FEATURES:append = " ${@bb.utils.contains_any('BOOTDEVICE_LABELS', \
-                ['emmc', 'nor-sdcard', \
-                'nand-4-256-1024-sdcard', 'nand-4-256-512-sdcard', 'nand-2-128-256-sdcard', 'nand-custom-sdcard',\
-                'sdcard'], \
-                'autoresize', '', d)} "
+                [ \
+                'emmc', \
+                'nand-4-256-1024-sdcard', 'nand-4-256-512-sdcard', 'nand-2-128-256-sdcard', 'nand-custom-sdcard', \
+                'nand-4-256-1024-emmc', 'nand-4-256-512-emmc', 'nand-2-128-256-emmc', 'nand-custom-emmc', \
+                'nor-emmc', 'nor-sdcard', \
+                'sdcard' \
+                ], 'autoresize', '', d)} "
 
 # Use FIP image for boot loaders
 MACHINE_FEATURES:append = " fip"
@@ -226,11 +236,13 @@ IMAGE_FSTYPES += "${@bb.utils.contains('ENABLE_PARTITIONS_IMAGE', '1', 'stsplitp
 # Append ext4 FSTYPES to default ones for emmc and sdcard volumes
 IMAGE_FSTYPES += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'emmc nor-sdcard nor-nor-sdcard nor-emmc nor-nor-emmc sdcard', 'ext4', '', d)}"
 IMAGE_FSTYPES += "${@bb.utils.contains('STM32MP_MACHINE_HAVE_NAND_SDCARD', '1', 'ext4', '', d)}"
+IMAGE_FSTYPES += "${@bb.utils.contains('STM32MP_MACHINE_HAVE_NAND_EMMC', '1', 'ext4', '', d)}"
 
 # Append ubi FSTYPES to default ones for nand volumes
 IMAGE_FSTYPES += "${@bb.utils.contains('STM32MP_MACHINE_HAVE_NAND', '1', 'multiubi','', d)}"
 
 IMAGE_FSTYPES += "${@bb.utils.contains('STM32MP_MACHINE_HAVE_NAND_SDCARD', '1', 'ubootenvmultiubi', '', d)}"
+IMAGE_FSTYPES += "${@bb.utils.contains('STM32MP_MACHINE_HAVE_NAND_EMMC', '1', 'ubootenvmultiubi', '', d)}"
 
 # Define specific EXT4 command line:
 #   - Create minimal inode number (as it is done by default in image_types.bbclass)
@@ -403,9 +415,10 @@ TF_A_TOOLS_PLATFORM ?= "stm32mp2"
 # Configure trusted-firmware-a build
 # Manage specific config settings
 TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'optee-emmc', '', d), '', d)}"
-TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard', 'optee-nand', '', d), '', d)}"
-TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-4-256-512 nand-4-256-512-sdcard', 'optee-spinand', '', d), '', d)}"
-TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-custom nand-custom-sdcard', bb.utils.contains('CUSTOM_NAND_TYPE', 'fmc', 'optee-nand', 'optee-spinand', d), '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard nand-4-256-1024-emmc', 'optee-nand', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-2-128-256-emmc', 'optee-spinand', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-512 nand-4-256-512-sdcard nand-4-256-512-emmc', 'optee-spinand', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-custom nand-custom-sdcard nand-custom-emmc', bb.utils.contains('CUSTOM_NAND_TYPE', 'fmc', 'optee-nand', 'optee-spinand', d), '', d), '', d)}"
 TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'optee-nor', '', d), '', d)}"
 TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emmc', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'optee-emmc', 'optee-nor', d), '', d), '', d)}"
 TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-nor-emmc', 'optee-nor', '', d), '', d)}"
@@ -415,9 +428,10 @@ TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.
 TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'optee-programmer-usb', '', d), '', d)}"
 TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('STM32MP_DEVICETREE_PROGRAMMER_ENABLE', '1', 'optee-programmer-uart', '', d), '', d)}"
 TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'opteemin-emmc', '', d), '', d)}"
-TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard', 'opteemin-nand', '', d), '', d)}"
-TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-4-256-512 nand-4-256-512-sdcard', 'opteemin-spinand', '', d), '', d)}"
-TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-custom nand-custom-sdcard', bb.utils.contains('CUSTOM_NAND_TYPE', 'fmc', 'opteemin-nand', 'opteemin-spinand', d), '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard nand-4-256-1024-emmc', 'opteemin-nand', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-2-128-256-emmc', 'opteemin-spinand', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-512 nand-4-256-512-sdcard nand-4-256-512-emmc', 'opteemin-spinand', '', d), '', d)}"
+TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-custom nand-custom-sdcard nand-custom-emmc', bb.utils.contains('CUSTOM_NAND_TYPE', 'fmc', 'opteemin-nand', 'opteemin-spinand', d), '', d), '', d)}"
 TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'opteemin-nor', '', d), '', d)}"
 TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emmc', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'opteemin-emmc', 'opteemin-nor', d), '', d), '', d)}"
 TF_A_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'opteemin-sdcard', 'opteemin-nor', d), '', d), '', d)}"
@@ -498,6 +512,7 @@ M33FW_CONFIG[m33td_sdcard]     ?= "${STM32MP_DT_FILES_SDCARD},sdcard,sdcard"
 # Default configuration for signing trusted-firmware-a binary
 M33FW_SIGN_SUFFIX ?= "${SIGN_SUFFIX}"
 
+M33FW_CONFIG_AVAILABLE = "m33td_emmc m33td_nor m33td_nor-emmc m33td_nor-sdcard m33td_sdcard"
 # =========================================================================
 # fip
 # =========================================================================
@@ -506,9 +521,10 @@ EXTRA_IMAGEDEPENDS += "fip-stm32mp"
 
 # Configure fip build
 FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'optee-emmc', '', d), '', d)}"
-FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-4-256-512 nand-4-256-512-sdcard', 'optee-spinand', '', d), '', d)}"
-FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard', 'optee-nand', '', d), '', d)}"
-FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-custom nand-custom-sdcard', bb.utils.contains('CUSTOM_NAND_TYPE', 'fmc', 'optee-nand', 'optee-spinand', d), '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-2-128-256-emmc', 'optee-spinand', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-512 nand-4-256-512-sdcard nand-4-256-512-emmc', 'optee-spinand', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard nand-4-256-1024-emmc', 'optee-nand', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-custom nand-custom-sdcard nand-custom-emmc', bb.utils.contains('CUSTOM_NAND_TYPE', 'fmc', 'optee-nand', 'optee-spinand', d), '', d), '', d)}"
 FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'optee-nor', '', d), '', d)}"
 FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emmc', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'optee-emmc', 'optee-nor', d), '', d), '', d)}"
 FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'optee-sdcard', 'optee-nor', d), '', d), '', d)}"
@@ -521,9 +537,10 @@ FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.c
 FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'optee', bb.utils.contains('MACHINE_FEATURES', 'm33td', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nor-nor-emmc nor-nor-sdcard', 'optee-nor', '', d), '', d), '', d)}"
 
 FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'emmc', 'opteemin-emmc', '', d), '', d)}"
-FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-4-256-512 nand-4-256-512-sdcard', 'opteemin-spinand', '', d), '', d)}"
-FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard', 'opteemin-nand', '', d), '', d)}"
-FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-custom nand-custom-sdcard', bb.utils.contains('CUSTOM_NAND_TYPE', 'fmc', 'opteemin-nand', 'opteemin-spinand', d), '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-2-128-256-emmc', 'opteemin-spinand', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-512 nand-4-256-512-sdcard nand-4-256-512-emmc', 'opteemin-spinand', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard nand-4-256-1024-emmc', 'opteemin-nand', '', d), '', d)}"
+FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-custom nand-custom-sdcard nand-custom-emmc', bb.utils.contains('CUSTOM_NAND_TYPE', 'fmc', 'opteemin-nand', 'opteemin-spinand', d), '', d), '', d)}"
 FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'opteemin-nor', '', d), '', d)}"
 FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-emmc', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'opteemin-emmc', 'opteemin-nor', d), '', d), '', d)}"
 FIP_CONFIG_ALL += "${@bb.utils.contains('BOOTSCHEME_LABELS', 'opteemin', bb.utils.contains('BOOTDEVICE_LABELS', 'nor-sdcard', bb.utils.contains('MACHINE_FEATURES', 'm33td', 'opteemin-sdcard', 'opteemin-nor', d), '', d), '', d)}"
@@ -575,6 +592,10 @@ FIP_CONFIG[opteemin-programmer-usb] ?= "optee,${STM32MP_DEVICETREE_PROGRAMMER},,
 FIP_CONFIG[fastboot-opteemin-emmc]   ?= "optee,${STM32MP_DT_FILES_EMMC},,fastboot-emmc:opteemin-programmer,opteemin-emmc"
 FIP_CONFIG[fastboot-opteemin-sdcard] ?= "optee,${STM32MP_DT_FILES_SDCARD},,fastboot-sdcard:opteemin-programmer,opteemin-sdcard"
 
+FIP_ARCHIVER_AVAILABLE_CONFIG = " \
+    optee-emmc optee-nand optee-nor optee-sdcard optee-spinand optee-programmer-uart optee-programmer-usb \
+    opteemin-emmc opteemin-nand opteemin-nor opteemin-sdcard opteemin-spinand opteemin-programmer-uart opteemin-programmer-usb \
+"
 # =========================================================================
 # RPMSG
 # =========================================================================

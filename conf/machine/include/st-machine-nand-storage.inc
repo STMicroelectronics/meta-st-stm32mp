@@ -3,6 +3,7 @@
 STM32MP_MACHINE_HAVE_NAND ??= "${@bb.utils.contains_any('BOOTDEVICE_LABELS', \
                 ['nand-4-256-1024', 'nand-4-256-512', 'nand-2-128-256', \
                  'nand-4-256-1024-sdcard', 'nand-4-256-512-sdcard', 'nand-2-128-256-sdcard', \
+                 'nand-4-256-1024-emmc', 'nand-4-256-512-emmc', 'nand-2-128-256-emmc', \
                  'nand-custom', 'nand-custom-sdcard'], '1', '0', d)}"
 
 STM32MP_MACHINE_HAVE_NAND_ONLY ??= "${@bb.utils.contains_any('BOOTDEVICE_LABELS', \
@@ -13,6 +14,10 @@ STM32MP_MACHINE_HAVE_NAND_SDCARD ??= "${@bb.utils.contains_any('BOOTDEVICE_LABEL
                 ['nand-4-256-1024-sdcard', 'nand-4-256-512-sdcard', 'nand-2-128-256-sdcard', \
                  'nand-custom-sdcard'], '1', '0', d)}"
 
+STM32MP_MACHINE_HAVE_NAND_EMMC ??= "${@bb.utils.contains_any('BOOTDEVICE_LABELS', \
+                ['nand-4-256-1024-emmc', 'nand-4-256-512-emmc', 'nand-2-128-256-emmc', \
+                 'nand-custom-emmc'], '1', '0', d)}"
+
 
 # UBI Configuration
 IMAGE_CLASSES += "image_types-stnand-uboot-ubi"
@@ -22,10 +27,10 @@ IMAGE_CLASSES += "image_types-stnand-uboot-ubi"
 #      nand_<PageSize>_<BlockSize>-<StorageSize>
 #      nor_<BlockSize>
 #   Like that a same UBI partition can be used for severals NAND/NOR providers
-MULTIUBI_BUILD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard', 'nand_4_256_1024', '', d)}"
-MULTIUBI_BUILD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard', 'nand_2_128_256', '', d)}"
-MULTIUBI_BUILD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-512 nand-4-256-512-sdcard', 'nand_4_256_512', '', d)}"
-MULTIUBI_BUILD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-custom nand-custom-sdcard', 'nand_custom', '', d)}"
+MULTIUBI_BUILD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-1024 nand-4-256-1024-sdcard nand-4-256-1024-emmc', 'nand_4_256_1024', '', d)}"
+MULTIUBI_BUILD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-2-128-256 nand-2-128-256-sdcard nand-2-128-256-emmc', 'nand_2_128_256', '', d)}"
+MULTIUBI_BUILD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-4-256-512 nand-4-256-512-sdcard nand-4-256-512-emmc', 'nand_4_256_512', '', d)}"
+MULTIUBI_BUILD += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'nand-custom nand-custom-sdcard nand-custom-emmc', 'nand_custom', '', d)}"
 
 # Nand supported:
 # - nand-4-256-1024

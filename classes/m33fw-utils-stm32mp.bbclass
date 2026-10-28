@@ -132,6 +132,69 @@ python () {
     else:
         bb.debug(1, "[M33FW_CONFIG] Empty configuration for M33FW_CONFIG")
 
+
+    # manage available M33FW_CONFIG
+    m33fwconfigflagsav = d.getVarFlags('M33FW_CONFIG') or ""
+    # The "doc" varflag is special, we don't want to see it here
+    m33fwconfigflagsav.pop('doc', None)
+    m33fwconfigav = (d.getVar('M33FW_CONFIG_AVAILABLE') or "").split()
+
+    if (d.getVar('M33FW_DEVICETREE_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use M33FW_DEVICETREE_AVAILABLE as it is internal to M33FW_CONFIG var expansion.")
+    if (d.getVar('M33FW_DEVICETREE_EXTERNAL_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use M33FW_DEVICETREE_EXTERNAL_AVAILABLE as it is internal for var expansion.")
+    if (d.getVar('M33FW_DEVICETREE_INTERNAL_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use M33FW_DEVICETREE_INTERNAL_AVAILABLE as it is internal for var expansion.")
+    if (d.getVar('M33FW_BOOT_SUFFIX_M33_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use M33FW_BOOT_SUFFIX_M33_AVAILABLE as it is internal to M33FW_CONFIG var expansion.")
+    if (d.getVar('M33FW_BOOT_SUFFIX_A35_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use M33FW_BOOT_SUFFIX_A35_AVAILABLE as it is internal to M33FW_CONFIG var expansion.")
+
+    if (d.getVar('EXTERNAL_DT_ENABLED') or "0") == "1":
+        localdata = bb.data.createCopy(d)
+        localdata.setVar('EXTERNAL_DT_ENABLED', '0')
+
+    if len(m33fwconfigav) > 0:
+        for config in m33fwconfigav:
+            found = False
+            for f, v in m33fwconfigflagsav.items():
+                if config == f:
+                    found = True
+                    # Make sure to get var flag properly expanded
+                    v = d.getVarFlag('M33FW_CONFIG', config)
+                    if not v.strip():
+                        bb.fatal('[M33FW_CONFIG] Empty configuration for %s config' % config)
+                    items = v.split(',')
+                    if items[0] and len(items) > 3:
+                        raise bb.parse.SkipRecipe('Only <DEVICETREE>,<BOOT_SUFFIX_M33>,<BOOT_SUFFIX_A35> can be specified! (%s: %s, %s)' % (config,items[0],len(items)))
+                    # Set internal vars
+                    bb.debug(1, "Appending '%s' to M33FW_DEVICETREE_AVAILABLE" % items[0])
+                    d.appendVar('M33FW_DEVICETREE_AVAILABLE', items[0] + ',')
+
+                    if (d.getVar('EXTERNAL_DT_ENABLED') or "0") == "1":
+                        internal_devicetree = localdata.getVarFlag('M33FW_CONFIG', config).split(',')[0]
+                        external_devicetree = ' '.join([dt for dt in items[0].split() if dt not in internal_devicetree.split()])
+                    else:
+                        internal_devicetree = items[0]
+                        external_devicetree = ''
+                    bb.debug(1, "Appending '%s' to M33FW_DEVICETREE_INTERNAL_AVAILABLE" % internal_devicetree)
+                    d.appendVar('M33FW_DEVICETREE_INTERNAL_AVAILABLE', internal_devicetree + ',')
+                    bb.debug(1, "Appending '%s' to M33FW_DEVICETREE_EXTERNAL_AVAILABLE" % external_devicetree)
+                    d.appendVar('M33FW_DEVICETREE_EXTERNAL_AVAILABLE', external_devicetree + ',')
+
+                    if len(items) > 1 and items[1]:
+                        bb.debug(1, "Appending '%s' to M33FW_BOOT_SUFFIX_M33_AVAILABLE." % items[1])
+                        d.appendVar('M33FW_BOOT_SUFFIX_M33_AVAILABLE', items[1].strip() + ',')
+                    else:
+                        d.appendVar('M33FW_BOOT_SUFFIX_M33_AVAILABLE', '' + ',')
+                    if len(items) > 2 and items[2]:
+                        bb.debug(1, "Appending '%s' to M33FW_BOOT_SUFFIX_A35_AVAILABLE." % items[2])
+                        d.appendVar('M33FW_BOOT_SUFFIX_A35_AVAILABLE', items[2].strip() + ',')
+                    else:
+                        d.appendVar('M33FW_BOOT_SUFFIX_A35_AVAILABLE', '' + ',')
+
+                    break
+
     # Configure M33FW_FIRMWARE
     m33fwboards = (d.getVar('M33FW_BOARDS') or "").split()
 
