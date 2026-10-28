@@ -25,6 +25,7 @@ do_archiver_git_uri:append() {
             -e "s|##TF_M_PATH_SCP_FW##|${TF_M_PATH_SCP_FW}|g" \
             -e "s|##TF_M_PATH_STM32MP2_HAL_DRIVER##|${TF_M_PATH_STM32MP2_HAL_DRIVER}|g" \
             -e "s|##TF_M_PATH_STM32MP2_CMSIS_DEVICE##|${TF_M_PATH_STM32MP2_CMSIS_DEVICE}|g" \
+            -e "s|##TF_M_PATH_STM32MP2_STL_LIB##|${TF_M_PATH_STM32MP2_STL_LIB}|g" \
             -e "s|##TF_M_PATH_STM32MP2_LOW_POWER##|${TF_M_PATH_STM32MP2_LOW_POWER}|g" \
             -e "s|##ARCHIVER_REVISION_QCBOR##|${ARCHIVER_REVISION_QCBOR}|g" \
             -e "s|##ARCHIVER_REVISION_MCUBOOT##|${ARCHIVER_REVISION_MCUBOOT}|g" \
@@ -83,6 +84,8 @@ TF_M_BOOTDEV ?=
 TF_M_DT_BL2_SUFFIX ?=
 TF_M_DT_TFM_SUFFIX ?=
 
+TF_M_PROFILE ?= ${TFM_PROFILE}
+
 # Add SUFFIX to devicetree
 EXTDT_SUFFIX ?= 1
 
@@ -100,18 +103,18 @@ endif
 # Init default config settings
 EOF
     unset i
-    for config in ${M33FW_CONFIG}; do
+    for config in ${M33FW_CONFIG_AVAILABLE}; do
         i=$(expr $i + 1)
         cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk.${MACHINE}
-M33FW_DEVICETREE_INTERNAL_$config ?= $(echo ${M33FW_DEVICETREE_INTERNAL} | cut -d',' -f${i})
-M33FW_DEVICETREE_EXTERNAL_$config ?= $(echo ${M33FW_DEVICETREE_EXTERNAL} | cut -d',' -f${i})
+M33FW_DEVICETREE_INTERNAL_$config ?= $(echo ${M33FW_DEVICETREE_INTERNAL_AVAILABLE} | cut -d',' -f${i})
+M33FW_DEVICETREE_EXTERNAL_$config ?= $(echo ${M33FW_DEVICETREE_EXTERNAL_AVAILABLE} | cut -d',' -f${i})
 M33FW_DEVICETREE_$config = \$(M33FW_DEVICETREE_INTERNAL_${config}) \$(if \$(EXTDT_DIR),\$(M33FW_DEVICETREE_EXTERNAL_${config}))
-M33FW_BOOT_SUFFIX_M33_$config ?= $(echo ${M33FW_BOOT_SUFFIX_M33} | cut -d',' -f${i})
-M33FW_BOOT_SUFFIX_A35_$config ?= $(echo ${M33FW_BOOT_SUFFIX_A35} | cut -d',' -f${i})
-TF_M_EXTRA_OPTFLAGS_$config ?= $(echo ${TF_M_EXTRA_OPTFLAGS} | cut -d',' -f${i})
-TF_M_BOOTDEV_$config ?= $(echo ${TF_M_BOOTDEV} | cut -d',' -f${i})
-TF_M_DT_BL2_SUFFIX_$config ?= $(echo ${TF_M_DT_BL2_SUFFIX} | cut -d',' -f${i})
-TF_M_DT_TFM_SUFFIX_$config ?= $(echo ${TF_M_DT_TFM_SUFFIX} | cut -d',' -f${i})
+M33FW_BOOT_SUFFIX_M33_$config ?= $(echo ${M33FW_BOOT_SUFFIX_M33_AVAILABLE} | cut -d',' -f${i})
+M33FW_BOOT_SUFFIX_A35_$config ?= $(echo ${M33FW_BOOT_SUFFIX_A35_AVAILABLE} | cut -d',' -f${i})
+TF_M_EXTRA_OPTFLAGS_$config ?= $(echo ${TF_M_EXTRA_OPTFLAGS_AVAILABLE} | cut -d',' -f${i})
+TF_M_BOOTDEV_$config ?= $(echo ${TF_M_BOOTDEV_AVAILABLE} | cut -d',' -f${i})
+TF_M_DT_BL2_SUFFIX_$config ?= $(echo ${TF_M_DT_BL2_SUFFIX_AVAILABLE} | cut -d',' -f${i})
+TF_M_DT_TFM_SUFFIX_$config ?= $(echo ${TF_M_DT_TFM_SUFFIX_AVAILABLE} | cut -d',' -f${i})
 EOF
     done
     unset k
@@ -137,6 +140,7 @@ TF_M_PATH_PSA_ADAC ?= \$(SRC_PATH)/${TF_M_PATH_PSA_ADAC}
 TF_M_PATH_SCP_FW ?= \$(SRC_PATH)/${TF_M_PATH_SCP_FW}
 TF_M_PATH_STM32MP2_HAL_DRIVER ?= \$(SRC_PATH)/${TF_M_PATH_STM32MP2_HAL_DRIVER}
 TF_M_PATH_STM32MP2_CMSIS_DEVICE ?= \$(SRC_PATH)/${TF_M_PATH_STM32MP2_CMSIS_DEVICE}
+TF_M_PATH_STM32MP2_STL_LIB ?= \$(SRC_PATH)/${TF_M_PATH_STM32MP2_STL_LIB}
 TF_M_PATH_STM32MP2_LOW_POWER ?= \$(SRC_PATH)/${TF_M_PATH_STM32MP2_LOW_POWER}
 
 # Define default make options
@@ -154,6 +158,7 @@ EXTRA_OECMAKE ?= $(echo "${EXTRA_OECMAKE}" | sed -e 's#-DCONFIG_TFM_SOURCE_PATH=
                                                     -e 's#-DCMSIS_DEVICE_MP2_PATH=[^[:space:]]*##' \
                                                     -e 's#-DSTM32CUBE_STL_PATH=[^[:space:]]*##' \
                                                     -e 's#-DSTM32MP2_LP_PATH=[^[:space:]]*##' \
+                                                    -e 's#-DTFM_PROFILE=[^[:space:]]*##' \
                 )
 # Append source configuration
 EXTRA_OECMAKE +=  -DTFM_VERSION='${TF_M_VERSION}'
@@ -169,11 +174,25 @@ EXTRA_OECMAKE += \$(if \$(findstring 1,\$(TF_M_EXTERNAL_SOURCES)), -DPLATFORM_PS
 EXTRA_OECMAKE += \$(if \$(findstring 1,\$(TF_M_EXTERNAL_SOURCES)), -DSCP_FW_PATH=\$(TF_M_PATH_SCP_FW))
 EXTRA_OECMAKE += \$(if \$(findstring 1,\$(TF_M_EXTERNAL_SOURCES)), -DSTM32MP2XX_HAL_DRIVER_PATH=\$(TF_M_PATH_STM32MP2_HAL_DRIVER))
 EXTRA_OECMAKE += \$(if \$(findstring 1,\$(TF_M_EXTERNAL_SOURCES)), -DCMSIS_DEVICE_MP2_PATH=\$(TF_M_PATH_STM32MP2_CMSIS_DEVICE))
+EXTRA_OECMAKE += \$(if \$(findstring 1,\$(TF_M_EXTERNAL_SOURCES)), -DSTM32CUBE_STL_PATH=\$(TF_M_PATH_STM32MP2_STL_LIB))
 EXTRA_OECMAKE += \$(if \$(findstring 1,\$(TF_M_EXTERNAL_SOURCES)), -DSTM32MP2_LP_PATH=\$(TF_M_PATH_STM32MP2_LOW_POWER))
+EXTRA_OECMAKE += -DTFM_PROFILE=\$(TF_M_PROFILE)
+
 
 # Append toolchain path for SDK
 \$(if \$(OECORE_NATIVE_SYSROOT),,\$(error OECORE_NATIVE_SYSROOT is not defined: you should source SDK environement before build))
 PATH := \$(OECORE_NATIVE_SYSROOT)/usr/share/gcc-arm-none-eabi/bin:\$(PATH)
+
+# Reset default variables
+LDFLAGS =
+CFLAGS =
+CPPFLAGS =
+CC =
+CPP =
+AS =
+AR =
+LD =
+NM =
 
 # Make sure about gcc version
 GCCVERSION = \$(shell \$(OECORE_NATIVE_SYSROOT)/usr/share/gcc-arm-none-eabi/bin/arm-none-eabi-gcc -dumpversion)
@@ -260,7 +279,7 @@ tfm-\$(1)-\$(2)-\$(3): chk-conf-\$(1)
 		fi; \\
 	else \\
 		if [ -e "\$(SRC_PATH)/platform/ext/target/stm/common/devicetree/dts/arm/stm/\$(3)\$(DTS_TYPE_S).dts" ]; then \\
-			echo "\$(3)\$(DTS_TYPE_NS).${DTS_SUFFIX}" > "$\(BLD_PATH)/\$(1)-\$(3)/dt_tfm_subdirpath_ns"; \\
+			echo "\$(3)\$(DTS_TYPE_NS).${DTS_SUFFIX}" > "\$(BLD_PATH)/\$(1)-\$(3)/dt_tfm_subdirpath_ns"; \\
 			echo "\$(3)\$(DTS_TYPE_S).${DTS_SUFFIX}" > "\$(BLD_PATH)/\$(1)-\$(3)/dt_tfm_subdirpath_s"; \\
 			echo "\$(3)\$(BL2_TYPE).${DTS_SUFFIX}" > "\$(BLD_PATH)/\$(1)-\$(3)/dt_bl2_subdirpath_bl2"; \\
 			echo "\$(SRC_PATH)/${DTS_SUB_PATH}" > "\$(BLD_PATH)/\$(1)-\$(3)/dt_dirpath"; \\
@@ -340,6 +359,7 @@ tfm-deploy := \$(foreach config, \$(TF_M_CONFIG), \\
 
 # Set dependencies list for building all
 DEPS = \$(tfm-deploy)
+DEPS += m33fw
 
 help: \$(tfm-check-config)
 	@echo ""
@@ -422,7 +442,7 @@ clean:
 		echo "[INFO] No device tree file configured: skip \$(@) target"; \\
 	fi
 
-m33fw: \$(tfm-deploy)
+m33fw:
 	@\$(call dt-check)
 	@if [ -e "\$(BLD_PATH)/dt-check" ]; then \\
 		for config in \$(TF_M_CONFIG) ; do \\

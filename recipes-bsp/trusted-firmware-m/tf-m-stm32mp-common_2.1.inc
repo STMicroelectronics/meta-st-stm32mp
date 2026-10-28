@@ -1,7 +1,7 @@
 FILESEXTRAPATHS:prepend := "${THISDIR}/tf-m-stm32mp:"
 
 LICENSE = "BSD-3-Clause & Apache-2.0"
-LIC_FILES_CHKSUM = "file://license.rst;md5=07f368487da347f3c7bd0fc3085f3afa"
+LIC_FILES_CHKSUM = "file://license.rst;md5=002a64dec64b82c58a203a94bee7b2a1"
 
 SRC_URI = "git://git.trustedfirmware.org/TF-M/trusted-firmware-m.git;protocol=https;nobranch=1;name=tfm"
 
@@ -30,8 +30,8 @@ SRC_URI:append = " git://github.com/STMicroelectronics/cmsis-device-mp2.git;prot
 SRC_URI:append = " git://github.com/STMicroelectronics/stm32mp2-low-power.git;protocol=https;name=mp2-low-power;destsuffix=${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_LOW_POWER};nobranch=1"
 
 # The required dependencies are documented in tf-m/config/config_base.cmake
-# TF-Mv 2.1.4
-SRCREV_tfm = "03d02d6feed02583c41acfe7147d1117678797a3"
+# TF-Mv 2.1.5
+SRCREV_tfm = "b874925d866fe9f2f2c4fa99a944ecaf41def2ae"
 
 TF_M_PATH_EXTERNAL = "external"
 # qcbor
@@ -54,8 +54,8 @@ ARCHIVER_REVISION_STM32MP2_CMSIS_CORE = "v5.9.0"
 SRCREV_cmsiscore = "1a2f783395dd72778a98ebe7771f36ca1c30a35e"
 # mbedtls
 TF_M_PATH_MBEDCRYPTO = "external/mbedtls"
-ARCHIVER_REVISION_MBEDCRYPTO = "v3.6.5"
-SRCREV_mbedtls = "e185d7fd85499c8ce5ca2a54f5cf8fe7dbe3f8df"
+ARCHIVER_REVISION_MBEDCRYPTO = "v3.6.6"
+SRCREV_mbedtls = "0bebf8b8c7f07abe3571ded48a11aa907a1ffb20"
 # ddr-phy
 TF_M_PATH_DDR_PHY_BIN_SRC = "external/stm32-ddr-phy-binary"
 ARCHIVER_REVISION_DDR_PHY_BIN_SRC = "v1.0-stm32mp"
@@ -66,24 +66,24 @@ ARCHIVER_REVISION_PSA_ADAC = "v1.0-stm32mp-r1"
 SRCREV_psa-adac = "519a66d262882ead7069e308d9f9c24d62178393"
 # scp-firmware
 TF_M_PATH_SCP_FW = "external/scp-firmware"
-ARCHIVER_REVISION_SCP_FW = "v2.13.0-stm32mp-r3.1"
-SRCREV_scp-firmware = "35c0ea144a02c08ec30bb4deea40adc7ecbfe511"
+ARCHIVER_REVISION_SCP_FW = "v2.16.0-stm32mp-r1"
+SRCREV_scp-firmware = "9e3ad31b21a4d2567205fc1e63023aa0b4b444ce"
 # stm32mp2xx_hal_driver
 TF_M_PATH_STM32MP2_HAL_DRIVER = "external/stm32mp2xx_hal_driver"
 ARCHIVER_URL_STM32MP2_HAL_DRIVER = "https://github.com/STMicroelectronics/stm32mp2xx-hal-driver.git"
-ARCHIVER_REVISION_STM32MP2_DRIVER = "v1.3.1"
-SRCREV_stm32mp2haldriver = "a5e4d92ae2983d315b496fae282d22f6c30b4964"
+ARCHIVER_REVISION_STM32MP2_DRIVER = "v1.4.0"
+SRCREV_stm32mp2haldriver = "8b673f24d8483844ba993009cdce1bfb74477b21"
 # stm32mp2xx_cmsis_device
 TF_M_PATH_STM32MP2_CMSIS_DEVICE = "external/cmsis_device_mp2"
 ARCHIVER_URL_STM32MP2_CMSIS_DEVICE = "https://github.com/STMicroelectronics/cmsis-device-mp2.git"
-ARCHIVER_REVISION_STM32MP2_CMSIS_DEVICE = "v1.3.1"
-SRCREV_cmsisdevicemp2 = "dbda522fd850568d48e7ac2768825c4a23743302"
+ARCHIVER_REVISION_STM32MP2_CMSIS_DEVICE = "v1.4.0"
+SRCREV_cmsisdevicemp2 = "98836326088ca520a78573db14eefe674a649c72"
 
 # stm32mp2-low-power
 TF_M_PATH_STM32MP2_LOW_POWER = "external/stm32_lp_fw"
-ARCHIVER_URL_MP2_LOW_POWER = "https://github.com/STMicroelectronics/stm32mp2-low-power/"
-ARCHIVER_REVISION_MP2_LOW_POWER = "v1.1.0"
-SRCREV_mp2-low-power = "4dec370354b45bc6f6badc118b418426bea1d98d"
+ARCHIVER_URL_MP2_LOW_POWER = "https://github.com/STMicroelectronics/stm32mp2-low-power.git"
+ARCHIVER_REVISION_MP2_LOW_POWER = "v1.2.0"
+SRCREV_mp2-low-power = "9e46607e71dd2e2fc5076717f9aa582d3a27ae30"
 
 SRCREV_FORMAT = "tfm"
 
@@ -91,18 +91,16 @@ UPSTREAM_CHECK_GITTAGREGEX = "^TF-Mv(?P<pver>\d+(\.\d+)+)$"
 
 # ST Patches
 SRC_URI += "\
-    file://0001-v2.1.4-stm32mp-r2.1.patch.gz \
+    file://0001-v2.1.5-stm32mp-r1.patch.gz \
 "
 
-TF_M_VERSION = "2.1.4"
+TF_M_VERSION = "2.1.5"
 TF_M_SUBVERSION = "stm32mp"
-TF_M_RELEASE = "r2.1"
+TF_M_RELEASE = "r1"
 PV = "v${TF_M_VERSION}-${TF_M_SUBVERSION}-${TF_M_RELEASE}"
 
-#ARCHIVER_ST_BRANCH = "v${TF_M_VERSION}-${TF_M_SUBVERSION}"
-ARCHIVER_ST_BRANCH = "v${TF_M_VERSION}-${TF_M_SUBVERSION}-w2544"
-#ARCHIVER_ST_REVISION = "${PV}"
-ARCHIVER_ST_REVISION = "v${TF_M_VERSION}-${TF_M_SUBVERSION}-r13"
+ARCHIVER_ST_BRANCH = "v2.1.0-${TF_M_SUBVERSION}"
+ARCHIVER_ST_REVISION = "${PV}"
 ARCHIVER_COMMUNITY_BRANCH = "v${TF_M_VERSION}"
 ARCHIVER_COMMUNITY_REVISION = "v${TF_M_VERSION}"
 
@@ -110,7 +108,7 @@ ARCHIVER_COMMUNITY_REVISION = "v${TF_M_VERSION}"
 # included inside tf-m source code.
 # For archiver class, in order to extract all source code in a row, we configure
 # tf-m extrenal source inside tf-m git source code
-TF_M_EXTERNAL_SOURCES_ROOTDIR = "${@'git' if bb.data.inherits_class('archiver', d) and not bb.data.inherits_class('devtool-source', d) else 'tf-m-external-src'}"
+TF_M_EXTERNAL_SOURCES_ROOTDIR = "${@'${BP}' if bb.data.inherits_class('archiver', d) and not bb.data.inherits_class('devtool-source', d) else 'tf-m-external-src'}"
 
 # Configure TFM external sources
 TF_M_EXTERNAL_SOURCES ??= "1"
@@ -118,17 +116,17 @@ TF_M_EXTERNAL_SOURCES ??= "1"
 # Don't let FetchContent download more sources during do_configure
 TF_M_EXTERNAL_SOURCES_OECMAKE += "-DFETCHCONTENT_FULLY_DISCONNECTED=ON "
 # Path to extra components
-TF_M_EXTERNAL_SOURCES_OECMAKE += "-DQCBOR_PATH=${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_QCBOR} "
-TF_M_EXTERNAL_SOURCES_OECMAKE += "-DMCUBOOT_PATH=${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_MCUBOOT} "
-TF_M_EXTERNAL_SOURCES_OECMAKE += "-DCMSIS_PATH=${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_CMSIS} "
-TF_M_EXTERNAL_SOURCES_OECMAKE += "-DCMSIS_CORE_PATH=${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_CORE} "
-TF_M_EXTERNAL_SOURCES_OECMAKE += "-DMBEDCRYPTO_PATH=${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_MBEDCRYPTO} "
-TF_M_EXTERNAL_SOURCES_OECMAKE += "-DDDR_PHY_BIN_SRC_PATH=${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_DDR_PHY_BIN_SRC} "
-TF_M_EXTERNAL_SOURCES_OECMAKE += "-DPLATFORM_PSA_ADAC_SOURCE_PATH=${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_PSA_ADAC} "
-TF_M_EXTERNAL_SOURCES_OECMAKE += "-DSCP_FW_PATH=${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_SCP_FW} "
-TF_M_EXTERNAL_SOURCES_OECMAKE += "-DSTM32MP2XX_HAL_DRIVER_PATH=${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_HAL_DRIVER} "
-TF_M_EXTERNAL_SOURCES_OECMAKE += "-DCMSIS_DEVICE_MP2_PATH=${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_DEVICE} "
-TF_M_EXTERNAL_SOURCES_OECMAKE += "-DSTM32MP2_LP_PATH=${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_LOW_POWER} "
+TF_M_EXTERNAL_SOURCES_OECMAKE += "-DQCBOR_PATH=${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_QCBOR} "
+TF_M_EXTERNAL_SOURCES_OECMAKE += "-DMCUBOOT_PATH=${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_MCUBOOT} "
+TF_M_EXTERNAL_SOURCES_OECMAKE += "-DCMSIS_PATH=${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_CMSIS} "
+TF_M_EXTERNAL_SOURCES_OECMAKE += "-DCMSIS_CORE_PATH=${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_CORE} "
+TF_M_EXTERNAL_SOURCES_OECMAKE += "-DMBEDCRYPTO_PATH=${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_MBEDCRYPTO} "
+TF_M_EXTERNAL_SOURCES_OECMAKE += "-DDDR_PHY_BIN_SRC_PATH=${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_DDR_PHY_BIN_SRC} "
+TF_M_EXTERNAL_SOURCES_OECMAKE += "-DPLATFORM_PSA_ADAC_SOURCE_PATH=${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_PSA_ADAC} "
+TF_M_EXTERNAL_SOURCES_OECMAKE += "-DSCP_FW_PATH=${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_SCP_FW} "
+TF_M_EXTERNAL_SOURCES_OECMAKE += "-DSTM32MP2XX_HAL_DRIVER_PATH=${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_HAL_DRIVER} "
+TF_M_EXTERNAL_SOURCES_OECMAKE += "-DCMSIS_DEVICE_MP2_PATH=${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_DEVICE} "
+TF_M_EXTERNAL_SOURCES_OECMAKE += "-DSTM32MP2_LP_PATH=${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_LOW_POWER} "
 
 EXTRA_OECMAKE += "${@bb.utils.contains('TF_M_EXTERNAL_SOURCES', '1', '${TF_M_EXTERNAL_SOURCES_OECMAKE}', '', d)}"
 
@@ -138,8 +136,8 @@ EXTRA_OECMAKE += "${@bb.utils.contains('TF_M_EXTERNAL_SOURCES', '1', '${TF_M_EXT
 # ---------------------------------
 BBCLASSEXTEND = "devupstream:target"
 
-SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/trusted-firmware-m.git;protocol=https;nobranch=1"
-SRCREV:class-devupstream = "4603997f315947feec89fc674b87b49a5d55655f"
+SRC_URI:class-devupstream = "git://github.com/STMicroelectronics/trusted-firmware-m.git;protocol=https;branch=${ARCHIVER_ST_BRANCH}"
+SRCREV:class-devupstream = "b793e7e99d58bbd5264207c8139b4118953ecf95"
 
 # ---------------------------------
 # Configure default preference to manage dynamic selection between tarball and github
@@ -156,44 +154,44 @@ DEFAULT_PREFERENCE = "${@bb.utils.contains('STM32MP_SOURCE_SELECTION', 'github',
 # Make sure to apply them in submodule to avoid failure with 'devtool modify'
 apply_local_patches() {
     if [ "${TF_M_EXTERNAL_SOURCES}" = "1" ]; then
-        cd ${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_QCBOR}
+        cd ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_QCBOR}
         for fp in ${S}/lib/ext/qcbor/*.patch; do
             git am ${fp}
         done
-        cd ${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_MCUBOOT}
+        cd ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_MCUBOOT}
         if [ $(ls -1 ${S}/lib/ext/mcuboot/*.patch 2>/dev/null | wc -l) -gt 0 ]; then
             for fp in ${S}/lib/ext/mcuboot/*.patch; do
                 git am ${fp}
             done
         fi
-        cd ${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_CMSIS}
+        cd ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_CMSIS}
         if [ $(ls -1 ${S}/lib/ext/cmsis/*.patch 2>/dev/null | wc -l) -gt 0 ]; then
             for fp in ${S}/lib/ext/cmsis/*.patch; do
                 git am ${fp}
             done
         fi
-        cd ${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_MBEDCRYPTO}
+        cd ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_MBEDCRYPTO}
         if [ $(ls -1 ${S}/lib/ext/mbedcrypto/*.patch 2>/dev/null | wc -l) -gt 0 ]; then
             for fp in ${S}/lib/ext/mbedcrypto/*.patch; do
                 git am ${fp}
             done
         fi
-        cd ${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_CORE}
-        if [ ! -e ${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_CORE}/CMakeLists.txt ]; then
+        cd ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_CORE}
+        if [ ! -e ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_CORE}/CMakeLists.txt ]; then
             if [ -e ${S}/platform/ext/target/stm/common/stm32mp2xx/lib/cmsis-core/CMakeLists.txt ]; then
-                cp ${S}/platform/ext/target/stm/common/stm32mp2xx/lib/cmsis-core/CMakeLists.txt ${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_CORE}/
+                cp ${S}/platform/ext/target/stm/common/stm32mp2xx/lib/cmsis-core/CMakeLists.txt ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_CORE}/
             fi
         fi
-        cd ${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_DEVICE}
-        if [ ! -e ${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_DEVICE}/CMakeLists.txt ]; then
+        cd ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_DEVICE}
+        if [ ! -e ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_DEVICE}/CMakeLists.txt ]; then
             if [ -e ${S}/platform/ext/target/stm/common/stm32mp2xx/lib/cmsis-device-mp2/CMakeLists.txt ]; then
-                cp ${S}/platform/ext/target/stm/common/stm32mp2xx/lib/cmsis-device-mp2/CMakeLists.txt ${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_DEVICE}/
+                cp ${S}/platform/ext/target/stm/common/stm32mp2xx/lib/cmsis-device-mp2/CMakeLists.txt ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_CMSIS_DEVICE}/
             fi
         fi
-        cd ${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_HAL_DRIVER}
-        if [ ! -e ${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_HAL_DRIVER}/CMakeLists.txt ]; then
+        cd ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_HAL_DRIVER}
+        if [ ! -e ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_HAL_DRIVER}/CMakeLists.txt ]; then
             if [ -e ${S}/platform/ext/target/stm/common/stm32mp2xx/lib/stm32mp2xx-hal-driver/CMakeLists.txt ]; then
-                cp ${S}/platform/ext/target/stm/common/stm32mp2xx/lib/stm32mp2xx-hal-driver/CMakeLists.txt ${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_HAL_DRIVER}/
+                cp ${S}/platform/ext/target/stm/common/stm32mp2xx/lib/stm32mp2xx-hal-driver/CMakeLists.txt ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_STM32MP2_HAL_DRIVER}/
             fi
         fi
         cd -

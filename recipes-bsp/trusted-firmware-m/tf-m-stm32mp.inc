@@ -25,10 +25,10 @@ DEPENDS += "cmake-native \
             python3-pyyaml-native \
             python3-pyelftools-native \
             python3-pycryptodomex-native \
+            dtc-native \
 "
 DEPENDS:append = " ${@bb.utils.contains('TF_M_ENABLE_DEBUG_WRAPPER', '1', 'stm32wrapper4dbg-native', '', d)}"
 
-S = "${WORKDIR}/git"
 B = "${WORKDIR}/build"
 
 PACKAGECONFIG ??= ""
@@ -74,6 +74,9 @@ TF_M_DEBUG ?= "${@bb.utils.contains('MACHINE_FEATURES', 'm33td', '0', '1', d)}"
 # Handle TF_M_DEBUG parameter
 EXTRA_OECMAKE += "${@bb.utils.contains('TF_M_DEBUG', '1', '-DCMAKE_BUILD_TYPE=Debug', '-DCMAKE_BUILD_TYPE=Relwithdebinfo', d)}"
 
+# Initialize oecmake prepend variable to empty string, can be used to prepend a command before cmake command
+STM32MP_OECMAKE_PREPEND ??= ""
+
 # TFM Profile: medium
 TFM_PROFILE ??= "profile_medium"
 EXTRA_OECMAKE += " ${@'-DTFM_PROFILE=${TFM_PROFILE}' if ((d.getVar('TFM_PROFILE') or '') != '') else ''}"
@@ -93,6 +96,8 @@ BB_HASH_IGNORE_MISMATCH = "1"
 # python3-cryptography needs the legacy provider, so set OPENSSL_MODULES to the
 # right path until this is relocated automatically.
 export OPENSSL_MODULES = "${STAGING_LIBDIR_NATIVE}/ossl-modules"
+
+TF_M_BUILD_REF_SOURCE ?= "${S}"
 
 do_configure() {
     :
@@ -190,7 +195,7 @@ do_compile() {
                 -DTFM_TOOLCHAIN_FILE=${S}/toolchain_GNUARM.cmake \
                 ${EXTRA_OECMAKE} \
                 ${extra_opt} \
-                -S ${S} -B ${build_path}/spe \
+                -S ${TF_M_BUILD_REF_SOURCE} -B ${build_path}/spe \
                 ${extra_oecmake_platform} \
                 ${extra_oecmake_board_s} \
                 ${extra_oecmake_board_ns} \
@@ -202,7 +207,7 @@ do_compile() {
                 -DTFM_TOOLCHAIN_FILE=${S}/toolchain_GNUARM.cmake \
                 ${EXTRA_OECMAKE} \
                 ${extra_opt} \
-                -S ${S} -B ${build_path}/spe \
+                -S ${TF_M_BUILD_REF_SOURCE} -B ${build_path}/spe \
                 ${extra_oecmake_platform} \
                 ${extra_oecmake_board_s} \
                 ${extra_oecmake_board_ns} \
@@ -210,8 +215,8 @@ do_compile() {
                 ${extra_oecmake_bl2} \
                 ${extra_oecmake_ext_dir} \
                 ${PACKAGECONFIG_CONFARGS}
-            echo "BL2 & TFM_S: cmake --build ${build_path}/spe -- install"
-            cmake --build ${build_path}/spe -- install
+            echo "BL2 & TFM_S: ${STM32MP_OECMAKE_PREPEND} cmake --build ${build_path}/spe -- install"
+            ${STM32MP_OECMAKE_PREPEND} cmake --build ${build_path}/spe -- install
         done
     done
 }
@@ -260,14 +265,14 @@ tf_m_sysroot_populate() {
                     # Copy tf-m build content on shared directory
                     output_path_config="${SYSROOT_DESTDIR}${datadir}/tf-m/${config}-${dt}"
                     install -d ${output_path_config}/spe/api_ns/interface
-                    cp -ar ${output_path}/spe/api_ns/interface/* ${output_path_config}/spe/api_ns/interface
+                    cp -a -r --preserve=mode,timestamps --no-preserve=ownership ${output_path}/spe/api_ns/interface/* ${output_path_config}/spe/api_ns/interface
                     install -d ${output_path_config}/spe/api_ns/common
-                    cp -ar ${output_path}/spe/api_ns/common/* ${output_path_config}/spe/api_ns/common
+                    cp -a -r --preserve=mode,timestamps --no-preserve=ownership ${output_path}/spe/api_ns/common/* ${output_path_config}/spe/api_ns/common
                     install -d ${output_path_config}/spe/generated/devicetree/platform_s
-                    [ -e ${output_path}/spe/generated/devicetree/platform_s/devicetree_generated.h ] && cp -ar ${output_path}/spe/generated/devicetree/platform_s/devicetree_generated.h ${output_path_config}/spe/generated/devicetree/platform_s/
-                    [ -e ${output_path}/spe/build-spe/generated/devicetree/platform_s/devicetree_generated.h ] && cp -ar ${output_path}/spe/build-spe/generated/devicetree/platform_s/devicetree_generated.h ${output_path_config}/spe/generated/devicetree/platform_s/
+                    [ -e ${output_path}/spe/generated/devicetree/platform_s/devicetree_generated.h ] && cp -a -r --preserve=mode,timestamps --no-preserve=ownership ${output_path}/spe/generated/devicetree/platform_s/devicetree_generated.h ${output_path_config}/spe/generated/devicetree/platform_s/
+                    [ -e ${output_path}/spe/build-spe/generated/devicetree/platform_s/devicetree_generated.h ] && cp -a -r --preserve=mode,timestamps --no-preserve=ownership ${output_path}/spe/build-spe/generated/devicetree/platform_s/devicetree_generated.h ${output_path_config}/spe/generated/devicetree/platform_s/
                     install -d ${output_path_config}/spe/api_ns/image_signing/
-                    cp -ar ${output_path}/spe/api_ns/image_signing/* ${output_path_config}/spe/api_ns/image_signing/
+                    cp -a -r --preserve=mode,timestamps --no-preserve=ownership ${output_path}/spe/api_ns/image_signing/* ${output_path_config}/spe/api_ns/image_signing/
                     install -d ${output_path_config}/spe/api_ns/bin
 
                     install -m 0644  ${output_path}/spe/api_ns/bin/bl2.stm32 ${output_path_config}/spe/api_ns/bin/
@@ -286,6 +291,7 @@ SYSROOT_DIRS += "${M33FW_DIR_TFM}"
 do_deploy[sstate-outputdirs] = "${DEPLOY_DIR_IMAGE}${M33FW_DIR_TFM}"
 do_deploy() {
     install -d ${DEPLOYDIR}
+    install -d ${DEPLOYDIR}/dts
     unset i
     for config in ${M33FW_CONFIG}; do
         i=$(expr $i + 1)
@@ -312,11 +318,17 @@ do_deploy() {
                 if [ -e "${output_path}/spe/build-spe/generated/devicetree/platform_bl2/out.${DTS_SUFFIX}" ]; then
                     install -d ${DEPLOYDIR}/bl2/debug
                     install -m 0644 ${output_path}/spe/build-spe/generated/devicetree/platform_bl2/out.${DTS_SUFFIX} ${DEPLOYDIR}/bl2/debug/${dt}${suffix_bootm33}-${BL2_NAME}.${DTS_SUFFIX}
+                    # generate dtbs
+                    install -m 0644 ${output_path}/spe/build-spe/generated/devicetree/platform_bl2/out.${DTS_SUFFIX} ${DEPLOYDIR}/dts/${dt}${suffix_bootm33}-${BL2_NAME}.dts
+                    dtc -I dts -O yaml -o ${DEPLOYDIR}/dts/${dt}${suffix_bootm33}-${BL2_NAME}.yaml ${DEPLOYDIR}/dts/${dt}${suffix_bootm33}-${BL2_NAME}.dts  || /bin/true
                 fi
                 # Add device tree for debug
                 if [ -e "${output_path}/spe/generated/devicetree/platform_bl2/out.${DTS_SUFFIX}" ]; then
                     install -d ${DEPLOYDIR}/bl2/debug
                     install -m 0644 ${output_path}/spe/generated/devicetree/platform_bl2/out.${DTS_SUFFIX} ${DEPLOYDIR}/bl2/debug/${dt}${suffix_bootm33}-${BL2_NAME}.${DTS_SUFFIX}
+                    # generate dtbs
+                    install -m 0644 ${output_path}/spe/generated/devicetree/platform_bl2/out.${DTS_SUFFIX} ${DEPLOYDIR}/dts/${dt}${suffix_bootm33}-${BL2_NAME}.dts
+                    dtc -I dts -O yaml -o ${DEPLOYDIR}/dts/${dt}${suffix_bootm33}-${BL2_NAME}.yaml ${DEPLOYDIR}/dts/${dt}${suffix_bootm33}-${BL2_NAME}.dts  || /bin/true
                 fi
                 if [ -n "${ELF_DEBUG_ENABLE}" ]; then
                     if [ -e "${output_path}/spe/bin/${BL2_NAME}.${TF_M_ELF_SUFFIX}" ]; then
@@ -344,12 +356,17 @@ do_deploy() {
             if [ -e "${output_path}/spe/build-spe/generated/devicetree/platform_s/out.${DTS_SUFFIX}" ]; then
                 install -d ${DEPLOYDIR}/debug
                 install -m 0644 ${output_path}/spe/build-spe/generated/devicetree/platform_s/out.${DTS_SUFFIX} ${DEPLOYDIR}/debug/${dt}${suffix_bootm33}${suffix_boota35}-${TF_M_NAME}${TF_M_TYPE_S}.${DTS_SUFFIX}
+                # generate dtbs
+                install -m 0644 ${output_path}/spe/build-spe/generated/devicetree/platform_s/out.${DTS_SUFFIX} ${DEPLOYDIR}/dts/${dt}${suffix_bootm33}${suffix_boota35}-${TF_M_NAME}${TF_M_TYPE_S}.dts
+                dtc -I dts -O yaml -o ${DEPLOYDIR}/dts/${dt}${suffix_bootm33}${suffix_boota35}-${TF_M_NAME}${TF_M_TYPE_S}.yaml ${DEPLOYDIR}/dts/${dt}${suffix_bootm33}${suffix_boota35}-${TF_M_NAME}${TF_M_TYPE_S}.dts  || /bin/true
             fi
             if [ -e "${output_path}/spe/generated/devicetree/platform_s/out.${DTS_SUFFIX}" ]; then
                 install -d ${DEPLOYDIR}/debug
                 install -m 0644 ${output_path}/spe/generated/devicetree/platform_s/out.${DTS_SUFFIX} ${DEPLOYDIR}/debug/${dt}${suffix_bootm33}${suffix_boota35}-${TF_M_NAME}${TF_M_TYPE_S}.${DTS_SUFFIX}
+                # generate dtbs
+                install -m 0644 ${output_path}/spe/generated/devicetree/platform_s/out.${DTS_SUFFIX} ${DEPLOYDIR}/dts/${dt}${suffix_bootm33}${suffix_boota35}-${TF_M_NAME}${TF_M_TYPE_S}.dts
+                dtc -I dts -O yaml -o ${DEPLOYDIR}/dts/${dt}${suffix_bootm33}${suffix_boota35}-${TF_M_NAME}${TF_M_TYPE_S}.yaml ${DEPLOYDIR}/dts/${dt}${suffix_bootm33}${suffix_boota35}-${TF_M_NAME}${TF_M_TYPE_S}.dts  || /bin/true
             fi
-
             if [ -e "${output_path}/spe/bin/${TF_M_NAME}${TF_M_TYPE_S}.hex" ]; then
                 install -d ${DEPLOYDIR}/debug
                 install -m 0644 ${output_path}/spe/bin/${TF_M_NAME}${TF_M_TYPE_S}.hex ${DEPLOYDIR}/debug/${TF_M_NAME}-${dt}${suffix_bootm33}${suffix_boota35}${TF_M_TYPE_S}.hex

@@ -12,15 +12,13 @@ BBCLASSEXTEND = "native nativesdk"
 
 DEPENDS:class-native = ""
 
-S = "${WORKDIR}/git"
-
 do_compile[noexec] = "1"
 
 do_install() {
     # Install assemble and signing firmware script
     install -d ${D}${bindir}
-    install -m 755 ${WORKDIR}/scripts/create_st_m33fw_binary.sh ${D}${bindir}
-    install -m 755 ${WORKDIR}/scripts/st_m33td_firmware_signature.sh ${D}${bindir}
+    install -m 755 ${UNPACKDIR}/scripts/create_st_m33fw_binary.sh ${D}${bindir}
+    install -m 755 ${UNPACKDIR}/scripts/st_m33td_firmware_signature.sh ${D}${bindir}
     # Update version
     sed 's/^SIGN_VERSION=.*$/SIGN_VERSION=${SIGN_VERSION:-'"${TF_M_VERSION}"'}/' -i ${D}${bindir}/st_m33td_firmware_signature.sh
     # Install default MCUBOOT keys
@@ -34,9 +32,14 @@ do_install() {
     install -d ${D}${datadir}/tf-m/scripts/wrapper
     install -m 0755 ${S}/bl2/ext/mcuboot/scripts/wrapper/wrapper.py ${D}${datadir}/tf-m/scripts/wrapper
     # Install imgtool suite
-    install -m 0755 ${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_MCUBOOT}/scripts/imgtool.py ${D}${datadir}/tf-m/scripts/wrapper
-    install -d ${D}${datadir}/tf-m/scripts/wrapper/imgtool
-    cp -arf ${WORKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_MCUBOOT}/scripts/imgtool/* ${D}${datadir}/tf-m/scripts/wrapper/imgtool/
+    install -m 0755 ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_MCUBOOT}/scripts/imgtool.py ${D}${datadir}/tf-m/scripts/wrapper
+    install -d ${D}${datadir}/tf-m/scripts/wrapper/imgtool/keys
+    for f in $(find ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_MCUBOOT}/scripts/imgtool/ -maxdepth 1 -type f ); do
+        install -m 0755 $f ${D}${datadir}/tf-m/scripts/wrapper/imgtool/
+    done
+    for f in $(find ${UNPACKDIR}/${TF_M_EXTERNAL_SOURCES_ROOTDIR}/${TF_M_PATH_MCUBOOT}/scripts/imgtool/keys -maxdepth 1 -type f ); do
+        install -m 0644 $f ${D}${datadir}/tf-m/scripts/wrapper/imgtool/keys
+    done
 }
 
 FILES:${PN} = "${datadir}/tf-m"

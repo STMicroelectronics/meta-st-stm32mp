@@ -137,7 +137,6 @@ Add external TF-M source code:
     $ cd ##TF_M_PATH_STM32MP2_CMSIS_DEVICE##
     $ git checkout -b WORKING ##ARCHIVER_REVISION_STM32MP2_CMSIS_DEVICE##
     $ cd arm-trusted-firmware-m
-    $ cd arm-trusted-firmware-m
     $ git clone ##ARCHIVER_URL_MP2_LOW_POWER## ##TF_M_PATH_STM32MP2_LOW_POWER##
     $ cd ##TF_M_PATH_STM32MP2_LOW_POWER##
     $ git checkout -b WORKING ##ARCHIVER_REVISION_MP2_LOW_POWER##
@@ -261,6 +260,11 @@ Then the new Starter Package is ready to use for "Image flashing" on board (more
 
     $@S> export M33FW_DEPLOYDIR_ROOT=<your_deploy_dir_path>
     $@S> export TF_M_BUILD_PATH=$PWD/<your_build_subdir_path>
+
+    Help:
+##CASE_stm32mp1##    $@H> make -f $PWD/../Makefile.sdk.stm32mp1 help
+##CASE_stm32mp2##    $@H> ake -f $PWD/../Makefile.sdk.stm32mp2 help
+##CASE_stm32mp2-m33td##    $@H> make -f $PWD/../Makefile.sdk.stm32mp2-m33td help
 
 ##CASE_stm32mp2-m33td##    "your_board_name" is like stm32mp257f-dk or stm32mp215f-mx-mycustomboard
 ##CASE_stm32mp2-m33td##    "your_storage_boot_scheme_cortex_m" is like m33td_emmc, m33td_nor, m33td_nor-emmc, m33td_nor-sdcard, m33td_sdcard

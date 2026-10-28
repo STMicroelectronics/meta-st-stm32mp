@@ -22,8 +22,8 @@ SIGN_VERSION=${SIGN_VERSION:-0.1}
 TFM_DEV_KIT_DIR="${TFM_DEV_KIT_DIR:-}"
 M33FW_ASMB="${M33FW_ASMB:-${TFM_DEV_KIT_DIR}/scripts/assemble.py}"
 M33FW_SIGN="${M33FW_SIGN:-${TFM_DEV_KIT_DIR}/scripts/wrapper/wrapper.py}"
-TFM_KEYS_FRST="${TFM_KEYS_FRST:-$TFM_DEV_KIT_DIR/keys/root-ec-p256.pem}"
-TFM_KEYS_SCND="${TFM_KEYS_SCND:-$TFM_DEV_KIT_DIR/keys/root-ec-p256_1.pem}"
+TFM_KEYS_FRST="${TFM_KEYS_FRST:-${TFM_DEV_KIT_DIR}/keys/root-ec-p256.pem}"
+TFM_KEYS_SCND="${TFM_KEYS_SCND:-${TFM_DEV_KIT_DIR}/keys/root-ec-p256_1.pem}"
 
 # Variable
 DEFAULT_KEYS="${TFM_KEYS_FRST}"

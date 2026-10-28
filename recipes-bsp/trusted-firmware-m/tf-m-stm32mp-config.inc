@@ -66,6 +66,60 @@ python () {
                     break
             if not found:
                 raise bb.parse.SkipRecipe('[TF_M_CONFIG] The selected TF_M_CONFIG key %s has no match in %s' % (config, tfmconfigflags.keys()))
+
+    # manage available configuration
+    tfmconfigflagsav = d.getVarFlags('TF_M_CONFIG') or ""
+    # The "doc" varflag is special, we don't want to see it here
+    tfmconfigflagsav.pop('doc', None)
+    m33fwconfigav = (d.getVar('M33FW_CONFIG_AVAILABLE') or "").split()
+
+    if (d.getVar('TF_M_EXTRA_OPTFLAGS_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use TF_M_EXTRA_OPTFLAGS_AVAILABLE as it is internal to M33FW_CONFIG_AVAILABLE var expansion.")
+    if (d.getVar('TF_M_BOOTDEV_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use TF_M_BOOTDEV_AVAILABLE as it is internal to M33FW_CONFIG_AVAILABLE var expansion.")
+    if (d.getVar('TF_M_DT_BL2_SUFFIX_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use TF_M_DT_BL2_SUFFIX_AVAILABLE as it is internal to M33FW_CONFIG_AVAILABLE var expansion.")
+    if (d.getVar('TF_M_DT_TFM_SUFFIX_AVAILABLE') or "").split():
+        raise bb.parse.SkipRecipe("You cannot use TF_M_DT_TFM_SUFFIX_AVAILABLE as it is internal to M33FW_CONFIG_AVAILABLE var expansion.")
+
+    if len(m33fwconfigav) > 0:
+        for config in m33fwconfigav:
+            found = False
+            for f, v in tfmconfigflagsav.items():
+                if config == f:
+                    found = True
+                    # Make sure to get var flag properly expanded
+                    v = d.getVarFlag('TF_M_CONFIG', config)
+                    if not v.strip():
+                        bb.fatal('[M33FW_CONFIG_AVAILABLE] Empty configuration for %s config' % config)
+                    items = v.split(',')
+                    if items[0] and len(items) > 5:
+                        raise bb.parse.SkipRecipe('Only <EXTRA_OPTFLAGS>,<BOOTDEV>,<DT_BL2_SUFFIX>,<DT_TFM_SUFFIX> can be specified! (%s: %s, %s)' % (config,items[0],len(items)))
+                    # Set internal vars
+                    if items[0]:
+                        bb.debug(1, "Appending '%s' to TF_M_EXTRA_OPTFLAGS_AVAILABLE." % items[0])
+                        d.appendVar('TF_M_EXTRA_OPTFLAGS_AVAILABLE', items[0] + ',')
+                    else:
+                        d.appendVar('TF_M_EXTRA_OPTFLAGS_AVAILABLE', '' + ',')
+                    if len(items) > 1 and items[1]:
+                        bb.debug(1, "Appending '%s' to TF_M_BOOTDEV_AVAILABLE." % items[1])
+                        d.appendVar('TF_M_BOOTDEV_AVAILABLE', items[1].strip() + ',')
+                    else:
+                        d.appendVar('TF_M_BOOTDEV', '' + ',')
+                    if len(items) > 2 and items[2]:
+                        bb.debug(1, "Appending '%s' to TF_M_DT_BL2_SUFFIX_AVAILABLE." % items[2])
+                        d.appendVar('TF_M_DT_BL2_SUFFIX_AVAILABLE', items[2].strip() + ',')
+                    else:
+                        d.appendVar('TF_M_DT_BL2_SUFFIX_AVAILABLE', '' + ',')
+                    if len(items) > 3 and items[3]:
+                        bb.debug(1, "Appending '%s' to TF_M_DT_TFM_SUFFIX_AVAILABLE." % items[3])
+                        d.appendVar('TF_M_DT_TFM_SUFFIX_AVAILABLE', items[3].strip() + ',')
+                    else:
+                        d.appendVar('TF_M_DT_TFM_SUFFIX_AVAILABLE', '' + ',')
+                    break
+            if not found:
+                raise bb.parse.SkipRecipe('[M33FW_CONFIG_AVAILABLE] The selected M33FW_CONFIG_AVAILABLE key %s has no match in %s' % (config, tfmconfigflagsav.keys()))
+
 }
 
 # -----------------------------------------------
@@ -82,6 +136,8 @@ TF_M_CONFIG_OPTS_copro += "-DSTM32_M33TDCID=OFF"
 TF_M_CONFIG_OPTS_copro += "-DNS=OFF"
 TF_M_CONFIG_OPTS_m33td += "-DSTM32_M33TDCID=ON"
 TF_M_CONFIG_OPTS_m33td += "-DNS=ON"
+
+M33FW_CONFIG_AVAILABLE ?= "m33td_emmc m33td_nor m33td_nor-emmc m33td_nor-sdcard m33td_sdcard"
 
 # Config for slave boot
 # tf-m elf for m33 copro signature (only requires devicetree and platform list)
