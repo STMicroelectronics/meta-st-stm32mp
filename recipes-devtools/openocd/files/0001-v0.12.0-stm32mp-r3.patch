@@ -1,11 +1,10 @@
-From 8fb925b0ac5d6d33a3ea389ee3aeba6e0b357619 Mon Sep 17 00:00:00 2001
+From c33ca52e2281e46c574240a97f5148d3bcda704d Mon Sep 17 00:00:00 2001
 From: Christophe Priouzeau <christophe.priouzeau@foss.st.com>
 Date: Mon, 21 Oct 2024 10:45:52 +0200
-Subject: [PATCH] v0.12.0-stm32mp-r2.1
+Subject: [PATCH] v0.12.0-stm32mp-r3
 
----
 Upstream-Status: Pending [specific to ST boards]
-
+---
  doc/openocd.texi                        |  69 +++++
  src/helper/Makefile.am                  |   2 +
  src/helper/bitfield.h                   |  60 ++++
@@ -13,12 +12,14 @@ Upstream-Status: Pending [specific to ST boards]
  src/jtag/drivers/stlink_usb.c           |  34 ++-
  src/server/gdb_server.c                 |   6 +-
  src/target/Makefile.am                  |   2 +
+ src/target/aarch64.c                    |   8 -
  src/target/armv7m.h                     |   3 +
  src/target/armv7m_cache.c               | 367 ++++++++++++++++++++++++
  src/target/armv7m_cache.h               |  57 ++++
+ src/target/armv8_cache.c                | 111 +++----
  src/target/breakpoints.c                |  22 +-
  src/target/breakpoints.h                |   6 +-
- src/target/cortex_a.c                   | 253 ++++++++++++++--
+ src/target/cortex_a.c                   | 262 +++++++++++++++--
  src/target/cortex_m.c                   |  82 ++++++
  src/target/cortex_m.h                   |  40 +++
  src/target/target.c                     | 272 +++++++++++++++++-
@@ -27,11 +28,11 @@ Upstream-Status: Pending [specific to ST boards]
  tcl/board/stm32mp23x_dk.cfg             |  11 +
  tcl/board/stm32mp25x_dk.cfg             |  11 +
  tcl/target/stm32mp13x.cfg               |  61 +++-
- tcl/target/stm32mp15x.cfg               |  98 +++++--
+ tcl/target/stm32mp15x.cfg               | 103 +++++--
  tcl/target/stm32mp21x.cfg               | 249 ++++++++++++++++
- tcl/target/stm32mp23x.cfg               | 234 +++++++++++++++
- tcl/target/stm32mp25x.cfg               | 256 +++++++++++++++++
- 25 files changed, 2144 insertions(+), 94 deletions(-)
+ tcl/target/stm32mp23x.cfg               | 236 +++++++++++++++
+ tcl/target/stm32mp25x.cfg               | 261 +++++++++++++++++
+ 27 files changed, 2224 insertions(+), 154 deletions(-)
  create mode 100644 src/helper/bitfield.h
  create mode 100644 src/helper/string_choices.h
  create mode 100644 src/target/armv7m_cache.c
@@ -357,6 +358,32 @@ index 1fc7d2afa..a3e13efb2 100644
  	%D%/armv7m_trace.h \
  	%D%/armv8.h \
  	%D%/armv8_dpm.h \
+diff --git a/src/target/aarch64.c b/src/target/aarch64.c
+index 6a70b2ddf..4b24b4388 100644
+--- a/src/target/aarch64.c
++++ b/src/target/aarch64.c
+@@ -1318,10 +1318,6 @@ static int aarch64_set_breakpoint(struct target *target,
+ 		if (retval != ERROR_OK)
+ 			return retval;
+ 
+-		armv8_cache_d_inner_flush_virt(armv8,
+-				breakpoint->address & 0xFFFFFFFFFFFFFFFEULL,
+-				breakpoint->length);
+-
+ 		retval = target_write_memory(target,
+ 				breakpoint->address & 0xFFFFFFFFFFFFFFFEULL,
+ 				breakpoint->length, 1, code);
+@@ -1588,10 +1584,6 @@ static int aarch64_unset_breakpoint(struct target *target, struct breakpoint *br
+ 	} else {
+ 		/* restore original instruction (kept in target endianness) */
+ 
+-		armv8_cache_d_inner_flush_virt(armv8,
+-				breakpoint->address & 0xFFFFFFFFFFFFFFFEULL,
+-				breakpoint->length);
+-
+ 		if (breakpoint->length == 4) {
+ 			retval = target_write_memory(target,
+ 					breakpoint->address & 0xFFFFFFFFFFFFFFFEULL,
 diff --git a/src/target/armv7m.h b/src/target/armv7m.h
 index 2878dd1c7..f2af5e9d2 100644
 --- a/src/target/armv7m.h
@@ -814,6 +841,170 @@ index 000000000..12c3a2ad3
 +	struct target *target);
 +
 +#endif /* OPENOCD_TARGET_ARMV7M_CACHE_H */
+diff --git a/src/target/armv8_cache.c b/src/target/armv8_cache.c
+index 66d4e0080..3e9223798 100644
+--- a/src/target/armv8_cache.c
++++ b/src/target/armv8_cache.c
+@@ -19,25 +19,28 @@
+ #define CACHE_LEVEL_HAS_D_CACHE		0x2
+ #define CACHE_LEVEL_HAS_I_CACHE		0x1
+ 
+-static int armv8_d_cache_sanity_check(struct armv8_common *armv8)
+-{
+-	struct armv8_cache_common *armv8_cache = &armv8->armv8_mmu.armv8_cache;
+-
+-	if (armv8_cache->d_u_cache_enabled)
+-		return ERROR_OK;
+-
+-	return ERROR_TARGET_INVALID;
+-}
+-
+-static int armv8_i_cache_sanity_check(struct armv8_common *armv8)
+-{
+-	struct armv8_cache_common *armv8_cache = &armv8->armv8_mmu.armv8_cache;
+-
+-	if (armv8_cache->i_cache_enabled)
+-		return ERROR_OK;
+-
+-	return ERROR_TARGET_INVALID;
+-}
++/*
++ * From ARM DDI0487L.a
++ * "Arm(R) Architecture Reference Manual for A-profile architecture":
++ *
++ * B2.7.4.2 Synchronization and coherency issues between data and instruction
++ * accesses
++ *   For Non-cacheable or Write-Through accesses, the clean data cache by VA
++ *   instruction is not required. However, the invalidate instruction cache
++ *   instruction is required because the Armv8-A AArch64 architecture allows
++ *   Non-cacheable accesses to be held in an instruction cache. See
++ *   Non-cacheable accesses and instruction caches.
++ *
++ * D7.5.7 Non-cacheable accesses and instruction caches
++ *   In AArch64 state, instruction accesses to Non-cacheable Normal memory can
++ *   be held in instruction caches.
++ *
++ * We can thus skip D-Cache operations when the D-Cache is off, but we still
++ * need to run "dsb".
++ * At least in AArch64 state, we cannot skip I-Cache operations, even when the
++ * I-Cache is off. We also need "dsb" to complete the transfer and "isb" to
++ * invalidate the instruction pipeline.
++ */
+ 
+ static int armv8_cache_d_inner_flush_level(struct armv8_common *armv8, struct armv8_cachesize *size, int cl)
+ {
+@@ -75,21 +78,25 @@ static int armv8_cache_d_inner_clean_inval_all(struct armv8_common *armv8)
+ 	int cl;
+ 	int retval;
+ 
+-	retval = armv8_d_cache_sanity_check(armv8);
+-	if (retval != ERROR_OK)
+-		return retval;
+-
+ 	retval = dpm->prepare(dpm);
+ 	if (retval != ERROR_OK)
+ 		goto done;
+ 
+-	for (cl = 0; cl < cache->loc; cl++) {
+-		/* skip i-only caches */
+-		if (cache->arch[cl].ctype < CACHE_LEVEL_HAS_D_CACHE)
+-			continue;
++	if (cache->d_u_cache_enabled)
++		for (cl = 0; cl < cache->loc; cl++) {
++			/* skip i-only caches */
++			if (cache->arch[cl].ctype < CACHE_LEVEL_HAS_D_CACHE)
++				continue;
+ 
+-		armv8_cache_d_inner_flush_level(armv8, &cache->arch[cl].d_u_size, cl);
+-	}
++			retval = armv8_cache_d_inner_flush_level(armv8,
++					&cache->arch[cl].d_u_size, cl);
++			if (retval != ERROR_OK)
++				goto done;
++		}
++
++	retval = dpm->instr_execute(dpm, armv8_opcode(armv8, ARMV8_OPC_DSB_SY));
++	if (retval != ERROR_OK)
++		goto done;
+ 
+ 	retval = dpm->finish(dpm);
+ 	return retval;
+@@ -109,29 +116,31 @@ int armv8_cache_d_inner_flush_virt(struct armv8_common *armv8, target_addr_t va,
+ 	target_addr_t va_line, va_end;
+ 	int retval;
+ 
+-	retval = armv8_d_cache_sanity_check(armv8);
+-	if (retval != ERROR_OK)
+-		return retval;
+-
+ 	retval = dpm->prepare(dpm);
+ 	if (retval != ERROR_OK)
+ 		goto done;
+ 
+-	va_line = va & (-linelen);
+-	va_end = va + size;
++	if (armv8_cache->d_u_cache_enabled) {
++		va_line = va & (-linelen);
++		va_end = va + size;
+ 
+-	while (va_line < va_end) {
+-		/* DC CIVAC */
+-		/* Aarch32: DCCIMVAC: ARMV4_5_MCR(15, 0, 0, 7, 14, 1) */
+-		retval = dpm->instr_write_data_r0_64(dpm,
+-				armv8_opcode(armv8, ARMV8_OPC_DCCIVAC), va_line);
+-		if (retval != ERROR_OK)
+-			goto done;
+-		va_line += linelen;
++		while (va_line < va_end) {
++			/* DC CIVAC */
++			/* Aarch32: DCCIMVAC: ARMV4_5_MCR(15, 0, 0, 7, 14, 1) */
++			retval = dpm->instr_write_data_r0_64(dpm,
++					armv8_opcode(armv8, ARMV8_OPC_DCCIVAC), va_line);
++			if (retval != ERROR_OK)
++				goto done;
++			va_line += linelen;
++		}
+ 	}
+ 
++	retval = dpm->instr_execute(dpm, armv8_opcode(armv8, ARMV8_OPC_DSB_SY));
++	if (retval != ERROR_OK)
++		goto done;
++
+ 	dpm->finish(dpm);
+-	return retval;
++	return ERROR_OK;
+ 
+ done:
+ 	LOG_ERROR("d-cache invalidate failed");
+@@ -148,10 +157,6 @@ int armv8_cache_i_inner_inval_virt(struct armv8_common *armv8, target_addr_t va,
+ 	target_addr_t va_line, va_end;
+ 	int retval;
+ 
+-	retval = armv8_i_cache_sanity_check(armv8);
+-	if (retval != ERROR_OK)
+-		return retval;
+-
+ 	retval = dpm->prepare(dpm);
+ 	if (retval != ERROR_OK)
+ 		goto done;
+@@ -168,8 +173,16 @@ int armv8_cache_i_inner_inval_virt(struct armv8_common *armv8, target_addr_t va,
+ 		va_line += linelen;
+ 	}
+ 
++	retval = dpm->instr_execute(dpm, armv8_opcode(armv8, ARMV8_OPC_DSB_SY));
++	if (retval != ERROR_OK)
++		goto done;
++
++	retval = dpm->instr_execute(dpm, armv8_opcode(armv8, ARMV8_OPC_ISB_SY));
++	if (retval != ERROR_OK)
++		goto done;
++
+ 	dpm->finish(dpm);
+-	return retval;
++	return ERROR_OK;
+ 
+ done:
+ 	LOG_ERROR("d-cache invalidate failed");
 diff --git a/src/target/breakpoints.c b/src/target/breakpoints.c
 index c39a98057..20d9f3e63 100644
 --- a/src/target/breakpoints.c
@@ -864,7 +1055,7 @@ index 64c0ce2a5..8a6e77de3 100644
  static inline void watchpoint_set(struct watchpoint *watchpoint, unsigned int number)
  {
 diff --git a/src/target/cortex_a.c b/src/target/cortex_a.c
-index 2de77c960..73b543871 100644
+index 2de77c960..790db2570 100644
 --- a/src/target/cortex_a.c
 +++ b/src/target/cortex_a.c
 @@ -66,6 +66,12 @@ static int cortex_a_set_hybrid_breakpoint(struct target *target,
@@ -958,7 +1149,30 @@ index 2de77c960..73b543871 100644
  /*  restore cp15_control_reg at resume */
  static int cortex_a_restore_cp15_control_reg(struct target *target)
  {
-@@ -819,13 +896,27 @@ static int cortex_a_halt(struct target *target)
+@@ -116,7 +193,10 @@ static int cortex_a_prep_memaccess(struct target *target, int phys_access)
+ 	int mmu_enabled = 0;
+ 
+ 	if (phys_access == 0) {
+-		arm_dpm_modeswitch(&armv7a->dpm, ARM_MODE_SVC);
++		// Switch to ARM_MODE_SVC only if we are in ARM_MODE_USR
++		if (armv7a->arm.core_mode == ARM_MODE_USR)
++			arm_dpm_modeswitch(&armv7a->dpm, ARM_MODE_SVC);
++
+ 		cortex_a_mmu(target, &mmu_enabled);
+ 		if (mmu_enabled)
+ 			cortex_a_mmu_modify(target, 1);
+@@ -151,7 +231,9 @@ static int cortex_a_post_memaccess(struct target *target, int phys_access)
+ 					0, 0, 3, 0,
+ 					cortex_a->cp15_dacr_reg);
+ 		}
+-		arm_dpm_modeswitch(&armv7a->dpm, ARM_MODE_ANY);
++		// Switch back if we were in ARM_MODE_USR
++		if (armv7a->arm.core_mode == ARM_MODE_USR)
++			arm_dpm_modeswitch(&armv7a->dpm, ARM_MODE_ANY);
+ 	} else {
+ 		int mmu_enabled = 0;
+ 		cortex_a_mmu(target, &mmu_enabled);
+@@ -819,13 +901,27 @@ static int cortex_a_halt(struct target *target)
  }
  
  static int cortex_a_internal_restore(struct target *target, int current,
@@ -987,7 +1201,7 @@ index 2de77c960..73b543871 100644
  	if (!debug_execution)
  		target_free_all_working_areas(target);
  
-@@ -851,11 +942,10 @@ static int cortex_a_internal_restore(struct target *target, int current,
+@@ -851,11 +947,10 @@ static int cortex_a_internal_restore(struct target *target, int current,
  #endif
  
  	/* current = 1: continue on current pc, otherwise continue at <address> */
@@ -1002,7 +1216,7 @@ index 2de77c960..73b543871 100644
  
  	/* Make sure that the Armv7 gdb thumb fixups does not
  	 * kill the return address
-@@ -883,6 +973,13 @@ static int cortex_a_internal_restore(struct target *target, int current,
+@@ -883,6 +978,13 @@ static int cortex_a_internal_restore(struct target *target, int current,
  	arm->pc->dirty = true;
  	arm->pc->valid = true;
  
@@ -1016,7 +1230,7 @@ index 2de77c960..73b543871 100644
  	/* restore dpm_mode at system halt */
  	arm_dpm_modeswitch(&armv7a->dpm, ARM_MODE_ANY);
  	/* called it now before restoring context because it uses cpu
-@@ -970,14 +1067,13 @@ static int cortex_a_restore_smp(struct target *target, int handle_breakpoints)
+@@ -970,14 +1072,13 @@ static int cortex_a_restore_smp(struct target *target, int handle_breakpoints)
  {
  	int retval = 0;
  	struct target_list *head;
@@ -1032,7 +1246,7 @@ index 2de77c960..73b543871 100644
  					handle_breakpoints, 0);
  			retval += cortex_a_internal_restart(curr);
  		}
-@@ -998,7 +1094,13 @@ static int cortex_a_resume(struct target *target, int current,
+@@ -998,7 +1099,13 @@ static int cortex_a_resume(struct target *target, int current,
  		target_call_event_callbacks(target, TARGET_EVENT_RESUMED);
  		return 0;
  	}
@@ -1047,7 +1261,7 @@ index 2de77c960..73b543871 100644
  	if (target->smp) {
  		target->gdb_service->core[0] = -1;
  		retval = cortex_a_restore_smp(target, handle_breakpoints);
-@@ -1010,11 +1112,11 @@ static int cortex_a_resume(struct target *target, int current,
+@@ -1010,11 +1117,11 @@ static int cortex_a_resume(struct target *target, int current,
  	if (!debug_execution) {
  		target->state = TARGET_RUNNING;
  		target_call_event_callbacks(target, TARGET_EVENT_RESUMED);
@@ -1061,7 +1275,7 @@ index 2de77c960..73b543871 100644
  	}
  
  	return ERROR_OK;
-@@ -1169,6 +1271,29 @@ static int cortex_a_set_dscr_bits(struct target *target,
+@@ -1169,6 +1276,29 @@ static int cortex_a_set_dscr_bits(struct target *target,
  	return retval;
  }
  
@@ -1091,7 +1305,7 @@ index 2de77c960..73b543871 100644
  static int cortex_a_step(struct target *target, int current, target_addr_t address,
  	int handle_breakpoints)
  {
-@@ -1178,7 +1303,6 @@ static int cortex_a_step(struct target *target, int current, target_addr_t addre
+@@ -1178,7 +1308,6 @@ static int cortex_a_step(struct target *target, int current, target_addr_t addre
  	struct breakpoint *breakpoint = NULL;
  	struct breakpoint stepbreakpoint;
  	struct reg *r;
@@ -1099,7 +1313,7 @@ index 2de77c960..73b543871 100644
  
  	if (target->state != TARGET_HALTED) {
  		LOG_TARGET_ERROR(target, "not halted");
-@@ -1203,10 +1327,59 @@ static int cortex_a_step(struct target *target, int current, target_addr_t addre
+@@ -1203,10 +1332,59 @@ static int cortex_a_step(struct target *target, int current, target_addr_t addre
  			cortex_a_unset_breakpoint(target, breakpoint);
  	}
  
@@ -1160,7 +1374,7 @@ index 2de77c960..73b543871 100644
  		? 2 : 4;
  	stepbreakpoint.type = BKPT_HARD;
  	stepbreakpoint.is_set = false;
-@@ -1227,15 +1400,34 @@ static int cortex_a_step(struct target *target, int current, target_addr_t addre
+@@ -1227,15 +1405,34 @@ static int cortex_a_step(struct target *target, int current, target_addr_t addre
  	if (retval != ERROR_OK)
  		return retval;
  
@@ -1200,7 +1414,7 @@ index 2de77c960..73b543871 100644
  			return ERROR_FAIL;
  		}
  	}
-@@ -1252,12 +1444,16 @@ static int cortex_a_step(struct target *target, int current, target_addr_t addre
+@@ -1252,12 +1449,16 @@ static int cortex_a_step(struct target *target, int current, target_addr_t addre
  
  	target->debug_reason = DBG_REASON_BREAKPOINT;
  
@@ -1220,7 +1434,7 @@ index 2de77c960..73b543871 100644
  	return ERROR_OK;
  }
  
-@@ -1703,7 +1899,6 @@ static int cortex_a_set_watchpoint(struct target *target, struct watchpoint *wat
+@@ -1703,7 +1904,6 @@ static int cortex_a_set_watchpoint(struct target *target, struct watchpoint *wat
  	uint32_t address;
  	uint8_t address_mask;
  	uint8_t byte_address_select;
@@ -1228,7 +1442,7 @@ index 2de77c960..73b543871 100644
  	struct cortex_a_common *cortex_a = target_to_cortex_a(target);
  	struct armv7a_common *armv7a = &cortex_a->armv7a_common;
  	struct cortex_a_wrp *wrp_list = cortex_a->wrp_list;
-@@ -1761,6 +1956,22 @@ static int cortex_a_set_watchpoint(struct target *target, struct watchpoint *wat
+@@ -1761,6 +1961,22 @@ static int cortex_a_set_watchpoint(struct target *target, struct watchpoint *wat
  		break;
  	}
  
@@ -2003,7 +2217,7 @@ index bcf25c904..844852cd4 100644
 -$_CHIPNAME.ap1 configure -event examine-start       {dap init}
 -$_CHIPNAME.ap1 configure -event examine-end         {dbgmcu_enable_debug}
 diff --git a/tcl/target/stm32mp15x.cfg b/tcl/target/stm32mp15x.cfg
-index bcdda73e9..080db8c84 100644
+index bcdda73e9..ce9b97fd0 100644
 --- a/tcl/target/stm32mp15x.cfg
 +++ b/tcl/target/stm32mp15x.cfg
 @@ -18,6 +18,11 @@ if { [info exists CHIPNAME] } {
@@ -2018,7 +2232,7 @@ index bcdda73e9..080db8c84 100644
  if { [info exists CPUTAPID] } {
  	set _CPUTAPID $CPUTAPID
  } else {
-@@ -42,15 +47,13 @@ if { [using_jtag] } {
+@@ -42,20 +47,21 @@ if { [using_jtag] } {
  
  dap create $_CHIPNAME.dap -chain-position $_CHIPNAME.tap -ignore-syspwrupack
  
@@ -2036,7 +2250,16 @@ index bcdda73e9..080db8c84 100644
  target create $_CHIPNAME.cm4 cortex_m -dap $_CHIPNAME.dap -ap-num 2 -defer-examine
  
  targets $_CHIPNAME.cpu0
-@@ -96,7 +99,16 @@ proc axi_nsecure {} {
+ 
+-target smp $_CHIPNAME.cpu0 $_CHIPNAME.cpu1
++if {$EN_CA7_0 && $EN_CA7_1} {
++	target smp $_CHIPNAME.cpu0 $_CHIPNAME.cpu1
++}
++
+ $_CHIPNAME.cpu0 cortex_a maskisr on
+ $_CHIPNAME.cpu1 cortex_a maskisr on
+ $_CHIPNAME.cpu0 cortex_a dacrfixup on
+@@ -96,7 +102,16 @@ proc axi_nsecure {} {
  
  axi_secure
  
@@ -2054,7 +2277,7 @@ index bcdda73e9..080db8c84 100644
  	# set debug enable bits in DBGMCU_CR to get ap2 and cm4 visible
  	catch {$::_CHIPNAME.ap1 mww 0xe0081004 0x00000007}
  	# freeze watchdog 1 and 2 on cores halted
-@@ -104,30 +116,72 @@ proc dbgmcu_enable_debug {} {
+@@ -104,30 +119,72 @@ proc dbgmcu_enable_debug {} {
  	catch {$::_CHIPNAME.ap1 mww 0xe008104c 0x00000008}
  }
  
@@ -2401,10 +2624,10 @@ index 000000000..1251bac59
 +}
 diff --git a/tcl/target/stm32mp23x.cfg b/tcl/target/stm32mp23x.cfg
 new file mode 100644
-index 000000000..e50911ced
+index 000000000..c73a63667
 --- /dev/null
 +++ b/tcl/target/stm32mp23x.cfg
-@@ -0,0 +1,234 @@
+@@ -0,0 +1,236 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +
 +# STMicroelectronics STM32MP23x
@@ -2484,7 +2707,9 @@ index 000000000..e50911ced
 +
 +targets $_CHIPNAME.a35_0
 +
-+target smp $_CHIPNAME.a35_0 $_CHIPNAME.a35_1
++if {$EN_CA35_0 && $EN_CA35_1} {
++	target smp $_CHIPNAME.a35_0 $_CHIPNAME.a35_1
++}
 +
 +reset_config srst_gates_jtag srst_pulls_trst
 +
@@ -2641,10 +2866,10 @@ index 000000000..e50911ced
 +}
 diff --git a/tcl/target/stm32mp25x.cfg b/tcl/target/stm32mp25x.cfg
 new file mode 100644
-index 000000000..01518c6b6
+index 000000000..2e440ba88
 --- /dev/null
 +++ b/tcl/target/stm32mp25x.cfg
-@@ -0,0 +1,256 @@
+@@ -0,0 +1,261 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +
 +# STMicroelectronics STM32MP25x
@@ -2730,7 +2955,9 @@ index 000000000..01518c6b6
 +
 +targets $_CHIPNAME.a35_0
 +
-+target smp $_CHIPNAME.a35_0 $_CHIPNAME.a35_1
++if {$EN_CA35_0 && $EN_CA35_1} {
++	target smp $_CHIPNAME.a35_0 $_CHIPNAME.a35_1
++}
 +
 +reset_config srst_gates_jtag srst_pulls_trst
 +
@@ -2901,6 +3128,9 @@ index 000000000..01518c6b6
 +		return
 +	}
 +}
++
++# workaround for flexgen 44 disabled by Linux boot
++$_CHIPNAME.swo configure -event pre-enable {$::_CHIPNAME.axi mww 0x442012d4 0x45}
 -- 
 2.43.0
 

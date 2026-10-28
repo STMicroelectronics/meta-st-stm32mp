@@ -5,8 +5,8 @@ CVE_PRODUCT = "openocd:open_on-chip_debugger"
 inherit pkgconfig autotools-brokensep gettext
 
 SRC_URI:append = " \
-    git://github.com/msteveb/jimtcl.git;protocol=https;destsuffix=git/jimtcl;nobranch=1;name=jimtcl                         \
-    git://gitlab.zapb.de/libjaylink/libjaylink.git;protocol=https;destsuffix=git/src/jtag/drivers/libjaylink;nobranch=1;name=libjaylink \
+    git://github.com/msteveb/jimtcl.git;protocol=https;destsuffix=${BP}/jimtcl;nobranch=1;name=jimtcl                         \
+    git://gitlab.zapb.de/libjaylink/libjaylink.git;protocol=https;destsuffix=${BP}/src/jtag/drivers/libjaylink;nobranch=1;name=libjaylink \
     "
 
 SRCREV_jimtcl = "3920cedd1cdd4702720773f0637b780f79be6158"
