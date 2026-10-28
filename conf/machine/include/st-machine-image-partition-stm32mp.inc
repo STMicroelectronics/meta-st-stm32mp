@@ -1,18 +1,32 @@
 #@DESCRIPTION: partition images configuration for STM32 systems
 
-def partImage2partConfig(d, config, fstype=None):
+def partImage2partConfig(d, config, localoverride=None, fstype=None):
     """
     Convert PARTTIONS_IMAGES['config'] setting format to format expected to feed
     PARTITIONS_CONFIG[xxx].
+    Manage local override to allow PARTITIONS_IMAGES items update following the
+    'localoverride' provided. Note that this override has the highest priority
+    except the 'forcevarialbe' one.
     Manage <image_name> update respect to 'fstype' provided and apply the rootfs
     namming or standard partition image one.
         FROM: <image_name>,<partition_label>,<mountpoint>,<size>,<type>[,<copy>,<limit fs>]
         TO  : <binary_name>,<partition_label>,<size>,<type>,<copy>
     """
-    items = d.getVarFlag('PARTITIONS_IMAGES', config).split(',') or ""
+    # Manage specific override
+    localdata = bb.data.createCopy(d)
+    if localoverride:
+        overrides = localdata.getVar('OVERRIDES')
+        overrides = d.getVar('OVERRIDES')
+        if not overrides:
+            bb.fatal('OVERRIDES not defined')
+        # Insert new override with (n-1) priority (n is highest priority)
+        overrideItems = overrides.split(":")
+        overrideItems.insert(-1, localoverride)
+        localdata.setVar('OVERRIDES', ":".join(overrideItems))
+    # Init items from localdata
+    items = localdata.getVarFlag('PARTITIONS_IMAGES', config).split(',') or ""
     if len(items) > 7:
         bb.fatal('[partImage2partConfig] Wrong settings for PARTTIONS_IMAGES[%s] : %s' % (config, items))
-    overrides = d.getVar('OVERRIDES')
     bin_suffix = '-${MACHINE}'
     machine =  d.getVar('MACHINE')
     addons_partition = ""
@@ -263,7 +277,7 @@ STM32MP_ROOTFS_IMAGE ?= "${IMAGE_BASENAME}"
 
 STM32MP_ROOTFS_LABEL ?= "rootfs"
 # Configure the rootfs size (total_size of storage - bootfs - vendorfs - userfs = total size - 336M)
-# limit to size for emmc (4GB)
+# Proposed value for rootfs is 3GB, based on EMMC maximum size (4GB)
 STM32MP_ROOTFS_SIZE  ?= "3145728"
 
 STM32MP_USERFS_IMAGE      ?= "${IMAGE_BASENAME}"
@@ -277,11 +291,8 @@ STM32MP_VENDORFS_LABEL      ?= "vendorfs"
 STM32MP_VENDORFS_MOUNTPOINT ?= "/vendor"
 # Proposed value for vendorfs is 16MB
 STM32MP_VENDORFS_SIZE       ?= "16384"
-# Override vendorfs size to 48MB
+# Override vendorfs size to 48MB for stm32mp2 machine to allow proper image partition creation
 STM32MP_VENDORFS_SIZE:stm32mp2common ?= "49152"
-
-# limit size of rootfs
-STM32MP_ROOTFS_SIZE:emmc ?= "3145728"
 
 # <image_name>,<partition_label>,<mountpoint>,<size>,<type>,<copy>,fs not supported
 PARTITIONS_IMAGES[bootfs]   ?= "${STM32MP_BOOTFS_IMAGE},${STM32MP_BOOTFS_LABEL},${STM32MP_BOOTFS_MOUNTPOINT},${STM32MP_BOOTFS_SIZE},${STM32MP_BOOTFS_TYPE},0"
@@ -302,7 +313,9 @@ STM32MP_UBIFS_DATA ?= "${IMAGE_LINK_NAME}_<CONFIG>_${STM32MP_UBIFS_MULTIVOLUME_S
 STM32MP_UBIFS_NAME ?= "ubifs"
 STM32MP_UBIFS_SIZE ?= ""
 
+# =========================================================================
 # Partitions configuration
+# =========================================================================
 PARTITIONS_CONFIG += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'emmc nor-emmc nor-nor-emmc', 'emmc', '', d)}"
 PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-2-128-256', 'nand-2-128-256', '', d)}"
 PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-4-256-512', 'nand-4-256-512', '', d)}"
@@ -311,9 +324,30 @@ PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nand-custom', '
 PARTITIONS_CONFIG += "${@bb.utils.contains('BOOTDEVICE_LABELS', 'nor', 'nor', '', d)}"
 PARTITIONS_CONFIG += "${@bb.utils.contains_any('BOOTDEVICE_LABELS', 'sdcard nor-sdcard nor-nor-sdcard', 'sdcard', d)}"
 
+# Configure storage usage: add empty partition as last partition to avoid ext4
+# filesytem resize to consume the whole remaining storage size
+# (this could be time consumming at first boot))
+ENABLE_SHRINK_STORAGE ??= "1"
+
+# Override partition size per PARTITIONS_CONFIG
+#   - default vendorfs size to 250MB
+STM32MP_VENDORFS_SIZE:emmc ?= "256000"
+STM32MP_VENDORFS_SIZE:sdcard ?= "256000"
+#   - default rootfs size for EMMC (4GB) to 3GB
+STM32MP_ROOTFS_SIZE:emmc ?= "3145728"
+#   - default rootfs size for NAND
+STM32MP_ROOTFS_SIZE:nand_2_128_256 ?= "210000"
+STM32MP_ROOTFS_SIZE:nand_4_256_512 ?= "414000"
+STM32MP_ROOTFS_SIZE:nand_4_256_1024 ?= "704512"
+#   - default rootfs size for SDCARD to 8GB (or 4GB for AB)
+STM32MP_ROOTFS_SIZE:sdcard ?= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update-ab', '4194304', '8388608', d)}"
+#   - default userfs size for SDCARD to 4GB (or 2GB for AB)
+STM32MP_USERFS_SIZE:sdcard ?= "${@bb.utils.contains('MACHINE_FEATURES', 'fw-update-ab', '2097152', '4194304', d)}"
+
+
 # <binary_name>,<partlabel>,<size>,<type>,<copy>
 PARTITIONS_CONFIG[emmc] ?= "\
-    ${@' '.join(['%s' % partImage2partConfig(d, config, '${PARTITIONS_SUFFIX}') for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    ${@' '.join(['%s' % partImage2partConfig(d, config, 'emmc', '${PARTITIONS_SUFFIX}') for config in d.getVar('PARTITIONS_IMAGES').split()])} \
     "
 PARTITIONS_CONFIG[nand-2-128-256] ?= "\
     ${STM32MP_UBIFS_DATA},${STM32MP_UBIFS_NAME},${STM32MP_UBIFS_SIZE},System,1 \
@@ -328,10 +362,11 @@ PARTITIONS_CONFIG[nand-custom] ?= "\
     ${STM32MP_UBIFS_DATA},${STM32MP_UBIFS_NAME},${STM32MP_UBIFS_SIZE},System,1 \
     "
 PARTITIONS_CONFIG[nor] ?= "\
-    ${@' '.join(['%s' % partImage2partConfig(d, config, '${PARTITIONS_SUFFIX}') for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    ${@' '.join(['%s' % partImage2partConfig(d, config, 'nor', '${PARTITIONS_SUFFIX}') for config in d.getVar('PARTITIONS_IMAGES').split()])} \
     "
 PARTITIONS_CONFIG[sdcard] ?= "\
-    ${@' '.join(['%s' % partImage2partConfig(d, config, '${PARTITIONS_SUFFIX}') for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    ${@' '.join(['%s' % partImage2partConfig(d, config, 'sdcard', '${PARTITIONS_SUFFIX}') for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    ${@bb.utils.contains('ENABLE_SHRINK_STORAGE', '1', 'none,shrink,0,FileSystem,0', '', d)} \
     "
 # =========================================================================
 # UBI multi-volume configuration : data, label, size (Kbytes), [empty]
@@ -349,30 +384,25 @@ STM32MP_MULTIUBI_UENV2_NAME ?= "U-Boot-env-2"
 STM32MP_MULTIUBI_UENV2_LABEL = "uboot_config_r"
 STM32MP_MULTIUBI_UENV2_SIZE ?= "${STM32MP_MULTIUBI_UENV1_SIZE}"
 
-# limit size of rootfs
-STM32MP_ROOTFS_SIZE:nand_4_256_1024 ?= "704512"
-STM32MP_ROOTFS_SIZE:nand_4_256_512 ?= "414000"
-STM32MP_ROOTFS_SIZE:nand_2_128_256 ?= "210000"
-
 STM32MP_UBI_VOLUME_nand_4_256_1024 ?= "\
     ${STM32MP_MULTIUBI_UENV1_NAME},${STM32MP_MULTIUBI_UENV1_LABEL},${STM32MP_MULTIUBI_UENV1_SIZE},empty \
     ${STM32MP_MULTIUBI_UENV2_NAME},${STM32MP_MULTIUBI_UENV2_LABEL},${STM32MP_MULTIUBI_UENV2_SIZE},empty \
-    ${@' '.join(['%s' % partImage2partConfig(d, config) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    ${@' '.join(['%s' % partImage2partConfig(d, config, 'nand_4_256_1024') for config in d.getVar('PARTITIONS_IMAGES').split()])} \
     "
 STM32MP_UBI_VOLUME_nand_4_256_512 ?= "\
     ${STM32MP_MULTIUBI_UENV1_NAME},${STM32MP_MULTIUBI_UENV1_LABEL},${STM32MP_MULTIUBI_UENV1_SIZE},empty \
     ${STM32MP_MULTIUBI_UENV2_NAME},${STM32MP_MULTIUBI_UENV2_LABEL},${STM32MP_MULTIUBI_UENV2_SIZE},empty \
-    ${@' '.join(['%s' % partImage2partConfig(d, config) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    ${@' '.join(['%s' % partImage2partConfig(d, config, 'nand_4_256_512') for config in d.getVar('PARTITIONS_IMAGES').split()])} \
     "
 STM32MP_UBI_VOLUME_nand_2_128_256 ?= "\
     ${STM32MP_MULTIUBI_UENV1_NAME},${STM32MP_MULTIUBI_UENV1_LABEL},${STM32MP_MULTIUBI_UENV1_SIZE},empty \
     ${STM32MP_MULTIUBI_UENV2_NAME},${STM32MP_MULTIUBI_UENV2_LABEL},${STM32MP_MULTIUBI_UENV2_SIZE},empty \
-    ${@' '.join(['%s' % partImage2partConfig(d, config) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    ${@' '.join(['%s' % partImage2partConfig(d, config, 'nand_2_128_256') for config in d.getVar('PARTITIONS_IMAGES').split()])} \
     "
 STM32MP_UBI_VOLUME_nand_custom ?= "\
     ${STM32MP_MULTIUBI_UENV1_NAME},${STM32MP_MULTIUBI_UENV1_LABEL},${STM32MP_MULTIUBI_UENV1_SIZE},empty \
     ${STM32MP_MULTIUBI_UENV2_NAME},${STM32MP_MULTIUBI_UENV2_LABEL},${STM32MP_MULTIUBI_UENV2_SIZE},empty \
-    ${@' '.join(['%s' % partImage2partConfig(d, config) for config in d.getVar('PARTITIONS_IMAGES').split()])} \
+    ${@' '.join(['%s' % partImage2partConfig(d, config, 'nand_custom') for config in d.getVar('PARTITIONS_IMAGES').split()])} \
     "
 
 # example of nand mapping for UBI_VOLUME

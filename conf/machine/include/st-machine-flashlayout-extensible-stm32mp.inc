@@ -22,6 +22,7 @@ FLASHLAYOUT_TYPE_LABELS:extensible = "${@' '.join(dt for dt in '${STM32MP_DT_FIL
 # -----------------------------------------------------------------------------
 FLASHLAYOUT_PARTITION_LABELS:extensible  = "${@' '.join(['%s' % l.split(',')[1] for l in d.getVarFlag('FLASHLAYOUT_CONFIG_LABELS', 'sdcard').split()])}"
 FLASHLAYOUT_PARTITION_LABELS:extensible:remove = "userfs"
+FLASHLAYOUT_PARTITION_LABELS:extensible:remove = "shrink"
 
 # -----------------------------------------------------------------------------
 # The 'extensible' bootscheme is a trick to generate flashlayout files without

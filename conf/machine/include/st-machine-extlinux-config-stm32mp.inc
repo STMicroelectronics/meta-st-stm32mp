@@ -44,9 +44,21 @@ UBOOT_EXTLINUX_BOOTPREFIXES:target-emmc = "${DEVICE:EMMC}_"
 UBOOT_EXTLINUX_BOOTPREFIXES:target-nand = "${DEVICE:NAND}_"
 # Define ROOT overrides for each target
 UBOOT_EXTLINUX_ROOT:target-nand = "ubi.mtd=UBI rootfstype=ubifs root=ubi0:rootfs"
-UBOOT_EXTLINUX_ROOT:target-sdcard = "root=PARTUUID=${DEVICE_PARTUUID_ROOTFS:SDCARD}"
+python __anonymous() {
+    ab_enabled = bb.utils.contains('MACHINE_FEATURES', 'fw-update-ab', True, False, d)
+
+    targets = {
+        "target-emmc": "DEVICE_PARTUUID_ROOTFS:EMMC",
+        "target-sdcard": "DEVICE_PARTUUID_ROOTFS:SDCARD"
+    }
+
+    for target, default_partuuid in targets.items():
+        partuuid = "${root_partuuid}" if ab_enabled else d.getVar(default_partuuid, True)
+        d.setVar("UBOOT_EXTLINUX_ROOT:%s" % target, "root=PARTUUID=%s" % partuuid)
+}
+
 UBOOT_EXTLINUX_ROOT:target-nor = "root=/dev/mtdblock6"
-UBOOT_EXTLINUX_ROOT:target-emmc = "root=PARTUUID=${DEVICE_PARTUUID_ROOTFS:EMMC}"
+
 # Define INITRD overrides for nand target
 UBOOT_EXTLINUX_INITRD:target-nand = ""
 
