@@ -1,11 +1,13 @@
 FILESEXTRAPATHS:prepend := "${THISDIR}/u-boot-stm32mp:"
 
-require u-boot-stm32mp-common_2023.10.inc
+require u-boot-stm32mp-common_2026.04.inc
 
-PACKAGES += "${PN}-mkfwumdata"
+PACKAGES += "${PN}-mkfwumdata ${PN}-fwumdata"
 
-inherit python3native
+inherit python3native pkgconfig
 DEPENDS += "swig-native gnutls util-linux openssl"
+DEPENDS += "dtc-native python3-dtc-native"
+
 export STAGING_INCDIR = "${STAGING_INCDIR_NATIVE}"
 
 EXTRA_OEMAKE:class-target = 'CROSS_COMPILE="${TARGET_PREFIX}" CC="${CC} ${CFLAGS} ${LDFLAGS}" HOSTCC="${BUILD_CC} ${BUILD_CFLAGS} ${BUILD_LDFLAGS}" STRIP=true V=1'
@@ -21,12 +23,16 @@ SED_CONFIG_EFI:armeb = ''
 SED_CONFIG_EFI:aarch64 = ''
 SED_CONFIG_EFI:loongarch64 = ''
 
+# DTC issue with U-BOOT: need to force to use an external DTC
+OE_DTC_PATH ?= "${STAGING_BINDIR_NATIVE}/dtc"
+EXTRA_OEMAKE += " DTC=${OE_DTC_PATH} "
+
 B = "${WORKDIR}/build"
 do_compile() {
     # Yes, this is crazy. If you build on a system with git < 2.14 from scratch, the tree will
     # be marked as "dirty" and the version will include "-dirty", leading to a reproducibility problem.
     # The issue is the inode count for Licnses/README changing due to do_populate_lic hardlinking a
-    # copy of the file. We avoid this by ensuring the index is updated with a "git diff" before the
+    # copy ofthe file. We avoid this by ensuring the index is updated with a "git diff" before the
     # u-boot machinery tries to determine the version.
     #
     # build$ ../git/scripts/setlocalversion ../git
@@ -52,13 +58,18 @@ do_install() {
 	install -d ${D}${bindir}
 
 	# mkimage
-	install -m 0755 tools/mkfwumdata ${D}${bindir}/
+	install -m 0755 ${B}/tools/mkfwumdata ${D}${bindir}/
+	if [ -e ${B}/tools/fwumdata ]; then
+		install -m 0755 ${B}/tools/fwumdata ${D}${bindir}/
+	fi
 }
 
 ALLOW_EMPTY:${PN} = "1"
 FILES:${PN} = ""
-FILES:${PN}-mkfwumdata = "${bindir}/mkfwumdata"
+FILES:${PN}-mkfwumdata = "${bindir}/mkfwumdata "
+FILES:${PN}-fwumdata = "${bindir}/fwumdata "
+ALLOW_EMPTY:${PN}-fwumdata = "1"
 
-RDEPENDS:${PN} += "${PN}-mkfwumdata"
+RDEPENDS:${PN} += "${PN}-mkfwumdata ${PN}-fwumdata"
 
 BBCLASSEXTEND = "native nativesdk"

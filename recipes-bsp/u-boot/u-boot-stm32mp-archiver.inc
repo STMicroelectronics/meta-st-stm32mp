@@ -29,6 +29,8 @@ EXTDT_DIR_UBOOT_SERIAL ?= ${EXTDT_DIR_UBOOT_SERIAL}
 # Set default FIP config
 FIP_CONFIG ?= ${@' '.join(d for d in '${FIP_CONFIG}'.split() if not 'fastboot-' in d)}
 
+DTC_PATH ?= \$(OECORE_NATIVE_SYSROOT)/usr/bin/dtc
+DTC_OPTS ?= DTC=\$(DTC_PATH)
 EOF
     if [ -n "${UBOOT_CONFIG}" ]; then
         # Initialize type suffix list
@@ -43,19 +45,19 @@ EOF
             for type in ${UBOOT_CONFIG}; do
                 j=$(expr $j + 1);
                 if [ $j -eq $i ]; then
-                    for binary in ${UBOOT_BINARIES}; do
-                        k=$(expr $k + 1);
-                        if [ $k -eq $i ]; then
-                            # Skip any fastboot config
-                            echo ${type} | grep '^fastboot-' && continue
-                            type_suffix=$(echo ${type} | cut -d'_' -f1)
-                            type_suffix_list="${type_suffix_list} ${type_suffix}"
-                            if $(echo ${type} | grep -q "fastboot\|programmer") ; then
-                                opt=$(echo ${make_opt} | sed 's|EXT_DTS='"${STAGING_EXTDT_DIR}/${EXTDT_DIR_UBOOT_SERIAL}"'|EXT_DTS=\$(EXTDT_DIR)/\$(EXTDT_DIR_UBOOT_SERIAL)|' )
-                            else
-                                opt=$(echo ${make_opt} | sed 's|EXT_DTS='"${STAGING_EXTDT_DIR}/${EXTDT_DIR_UBOOT}"'|EXT_DTS=\$(EXTDT_DIR)/\$(EXTDT_DIR_UBOOT)|' )
-                            fi
-                            cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk.${MACHINE}
+                    binary_data=$(uboot_config_get_indexed_value "${UBOOT_CONFIG_BINARY}" $i)
+                    binary=$(echo ${binary_data} | sed -e 's/^[[:space:]]*//g')
+                    if [ -n "${binary}" ]; then
+                        # Skip any fastboot config
+                        echo ${type} | grep '^fastboot-' && continue
+                        type_suffix=$(echo ${type} | cut -d'_' -f1)
+                        type_suffix_list="${type_suffix_list} ${type_suffix}"
+                        if $(echo ${type} | grep -q "fastboot\|programmer") ; then
+                            opt=$(echo ${make_opt} | sed 's|EXT_DTS='"${STAGING_EXTDT_DIR}/${EXTDT_DIR_UBOOT_SERIAL}"'|EXT_DTS=\$(EXTDT_DIR)/\$(EXTDT_DIR_UBOOT_SERIAL)|' )
+                        else
+                            opt=$(echo ${make_opt} | sed 's|EXT_DTS='"${STAGING_EXTDT_DIR}/${EXTDT_DIR_UBOOT}"'|EXT_DTS=\$(EXTDT_DIR)/\$(EXTDT_DIR_UBOOT)|' )
+                        fi
+                        cat << EOF >> ${ARCHIVER_OUTDIR}/Makefile.sdk.${MACHINE}
 # Init default config settings
 UBOOT_BINARY_${type_suffix}_${config} ?= ${binary}
 UBOOT_DEVICETREE_INTERNAL_${type_suffix}_${config} ?= ${devicetree_internal}
@@ -65,9 +67,7 @@ UBOOT_DEFCONFIG_${type_suffix} += ${config}
 UBOOT_MAKE_OPTS_${type_suffix}_${config} = \$(if \$(EXTDT_DIR),${opt})
 
 EOF
-                        fi
-                    done
-                    unset k
+                    fi
                 fi
             done
             unset j
@@ -83,6 +83,13 @@ EOF
 LDFLAGS =
 CFLAGS =
 CPPFLAGS =
+
+ifneq (\$(OECORE_NATIVE_SYSROOT),)
+$(warning using HOST_PKG_CONFIG_LIBDIR=OECORE_NATIVE_SYSROOT/usr/lib/pkgconfig)
+HOST_PKG_CONFIG_LIBDIR=\$(OECORE_NATIVE_SYSROOT)/usr/lib/pkgconfig
+else
+HOST_PKG_CONFIG_LIBDIR=
+endif
 
 UBOOT_LOCALVERSION = ${UBOOT_LOCALVERSION}
 
@@ -121,8 +128,11 @@ endef
 define configure-rules
 configure-\$(1):: version
 	@mkdir -p \$(BLD_PATH)/\$(1)
-	@echo \$(UBOOT_LOCALVERSION) > \$(BLD_PATH)/\$(1)/.scmversion
-	\$(MAKE) -C \$(SRC_PATH) O=\$(BLD_PATH)/\$(1) \$(1) || { echo "[CONFIGURE ERROR] For defconfig: \$(1)"; exit 1; } ;
+	@[ -e \$(BLD_PATH)/\$(1)/.scmversion ] || echo \$(UBOOT_LOCALVERSION) > \$(BLD_PATH)/\$(1)/.scmversion
+	@[ -e \$(BLD_PATH)/\$(1)/.config ] || \$(MAKE) -C \$(SRC_PATH) O=\$(BLD_PATH)/\$(1) \$(1); \
+		[ -n "\$(UBOOT_FRAGMENT_LIST)" ] && scripts/kconfig/merge_config.sh -m -O \$(BLD_PATH)/\$(1) \$(BLD_PATH)/\$(1)/.config \$(UBOOT_FRAGMENT_LIST); \
+		(yes '' || true) | make -C \$(SRC_PATH) O=\$(BLD_PATH)/\$(1) oldconfig \
+		|| { echo "[CONFIGURE ERROR] For defconfig: \$(1)"; exit 1; } ;
 endef
 
 # Configure U-Boot make rules (uboot-rules <defconfig> <config> <binary>)
@@ -133,10 +143,11 @@ uboot-\$(1):: configure-\$(1) chk-conf-\$(1)
 	@\$(foreach dt, \$(if \$(DEVICE_TREE),\$(DEVICE_TREE),\$(UBOOT_DEVICETREE_\$(2)_\$(1))), \\
 		\$(MAKE) -C \$(SRC_PATH) \\
 			\$(UBOOT_MAKE_OPTS_\$(2)_\$(1)) \\
+			\$(DTC_OPTS) HOST_PKG_CONFIG_LIBDIR=\$(HOST_PKG_CONFIG_LIBDIR) \\
 			O=\$(BLD_PATH)/\$(1) \\
-			DEVICE_TREE=\$(dt) \\
-			DEVICE_TREE_EXT=\$(dt).dtb || { echo "[U-BOOT BUILD ERROR] defconfig: \$(1) DEVICE_TREE=\$(dt)"; exit 1; } ; \\
-		cp -f \$(BLD_PATH)/\$(1)/\$(3) \$(BLD_PATH)/\$(1)/u-boot-\$(dt)-\$(2).\$(shell echo \$(3) | cut -d'.' -f2) || { echo "[U-BOOT BUILD ERROR] Cannot copy \$(3) for defconfig: \$(1) and DEVICE_TREE=\$(dt)"; exit 1; } ; \\
+			DEVICE_TREE=st/\$(dt) \\
+			DEVICE_TREE_EXT=\$(dt) || { echo "[U-BOOT BUILD ERROR] defconfig: \$(1) DEVICE_TREE=st/\$(dt)"; exit 1; } ; \\
+		cp -f \$(BLD_PATH)/\$(1)/\$(3) \$(BLD_PATH)/\$(1)/u-boot-\$(dt)-\$(2).\$(shell echo \$(3) | cut -d'.' -f2) || { echo "[U-BOOT BUILD ERROR] Cannot copy \$(3) for defconfig: \$(1) and DEVICE_TREE=st/\$(dt)"; exit 1; } ; \\
 	)
 endef
 
@@ -167,6 +178,11 @@ deploy-targets := \$(foreach config, \$(if \$(UBOOT_CONFIG),\$(UBOOT_CONFIG),\$(
 						\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(config))), deploy-\$(defconfig)) \\
 					)
 
+# Configure overall deploy rules list
+configure-targets := \$(foreach config, \$(if \$(UBOOT_CONFIG),\$(UBOOT_CONFIG),\$(UBOOT_CONFIGS)), \\
+						\$(foreach defconfig, \$(if \$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG),\$(UBOOT_DEFCONFIG_\$(config))), configure-\$(defconfig)) \\
+					)
+
 # Set dependencies list for building all
 DEPS = \$(deploy-targets)
 
@@ -182,6 +198,9 @@ help: \$(uboot-check-config)
 	@echo "  UBOOT_BINARY"
 	@echo "  DEVICE_TREE"
 	@echo ""
+	@echo "List of Fragments to apply:"
+	@echo "  UBOOT_FRAGMENTS= \$(UBOOT_FRAGMENT_LIST)"
+	@echo ""
 	@echo "U-Boot folder configuration:"
 	@echo "  SRC_PATH  = \$(SRC_PATH)"
 	@echo "  BLD_PATH  = \$(BLD_PATH)"
@@ -193,6 +212,7 @@ help: \$(uboot-check-config)
 	@echo "Available targets:"
 	@echo "  all   : default target to build U-Boot binaries for defined config(s)"
 	@echo "  fip   : build FIP binaries"
+	@echo "  configure : build U-Boot configuration for defined config(s)"
 	@echo "  uboot : build U-Boot binaries for defined config(s)"
 	@echo "  clean : clean build directories from generated files"
 
@@ -213,6 +233,9 @@ fip: \$(deploy-targets)
 		\$(FIPTOOLDIR)/fiptool-stm32mp.${MACHINE} || { echo "[FIP BUILD ERROR] FIP_CONFIG=\$\$fipconfig \$(if \$(DEVICE_TREE),FIP_DEVICETREE=\$(DEVICE_TREE))"; exit 1; } ; \\
 	done
 	@echo "***** FIP binary available under: \$(if \$(FIP_DEPLOYDIR_FIP),\$(FIP_DEPLOYDIR_FIP),\$(FIP_DEPLOYDIR_ROOT)/) *****"
+
+configure: \$(configure-targets)
+	@echo "***** U-BOOT configuration *****"
 
 uboot: \$(deploy-targets)
 	@echo "***** U-BOOT binary available under: \$(DEPLOYDIR)/ *****"
