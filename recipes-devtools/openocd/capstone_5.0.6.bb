@@ -8,8 +8,6 @@ DEPENDS = ""
 SRC_URI = "git://github.com/capstone-engine/capstone.git;protocol=https;branch=v5"
 SRCREV = "accf4df62f1fba6f92cae692985d27063552601c"
 
-S = "${WORKDIR}/git"
-
 inherit cmake
 
 EXTRA_OECMAKE += " -DBUILD_SHARED_LIBS=ON "

@@ -66,7 +66,7 @@ do_configure:append() {
         if [ ! -z ${KERNEL_EXTERNAL_DEFCONFIG} ];
         then
             bbnote "Kernel customized: configuration of linux STM by using external DEFCONFIG"
-            install -m 0644 ${WORKDIR}/${KERNEL_EXTERNAL_DEFCONFIG} ${B}/.config
+            install -m 0644 ${UNPACKDIR}/${KERNEL_EXTERNAL_DEFCONFIG} ${B}/.config
             yes '' | oe_runmake -C ${S} O=${B} CC="${KERNEL_CC}" LD="${KERNEL_LD}" oldconfig
         else
             bbwarn "You must specify KERNEL_DEFCONFIG or KERNEL_EXTERNAL_DEFCONFIG"
@@ -79,7 +79,7 @@ do_configure:append() {
         for f in ${KERNEL_CONFIG_FRAGMENTS}
         do
             bbnote "file = $f"
-            # Check if the config fragment was copied into the WORKDIR from
+            # Check if the config fragment was copied into the UNPACKDIR from
             # the OE meta data
             if [ ! -e "$f" ]
             then
@@ -94,7 +94,7 @@ do_configure:append() {
     fi
 
     yes '' | oe_runmake -C ${S} O=${B} CC="${KERNEL_CC}" LD="${KERNEL_LD}" oldconfig
-    #oe_runmake -C ${S} O=${B} savedefconfig && cp ${B}/defconfig ${WORKDIR}/defconfig.saved
+    #oe_runmake -C ${S} O=${B} savedefconfig && cp ${B}/defconfig ${UNPACKDIR}/defconfig.saved
 }
 
 do_compile:prepend() {
@@ -153,7 +153,7 @@ do_install:append() {
     fi
     #modprobe dependencies
     install -d ${D}/${sysconfdir}/modprobe.d/
-    install -m 0644 ${WORKDIR}/modprobe.d/* ${D}/${sysconfdir}/modprobe.d/
+    install -m 0644 ${UNPACKDIR}/modprobe.d/* ${D}/${sysconfdir}/modprobe.d/
 
     # efi
     if ${@bb.utils.contains('MACHINE_FEATURES','efi','true','false',d)}; then

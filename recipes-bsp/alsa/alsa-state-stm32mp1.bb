@@ -19,16 +19,16 @@ SRC_URI = " \
     file://asound-stm32mp15yx-dk.state  \
     "
 
-S = "${WORKDIR}"
+S = "${UNPACKDIR}"
 
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 RDEPENDS:${PN} = "alsa-state alsa-state-script"
 
 do_install() {
     install -d ${D}${sysconfdir}
-    install -m 0644 ${WORKDIR}/*.conf ${D}${sysconfdir}/
+    install -m 0644 ${UNPACKDIR}/*.conf ${D}${sysconfdir}/
     install -d ${D}/${localstatedir}/lib/alsa
-    install -m 0644 ${WORKDIR}/*.state ${D}${localstatedir}/lib/alsa
+    install -m 0644 ${UNPACKDIR}/*.state ${D}${localstatedir}/lib/alsa
 
     # create link to support all packages configuration
     for p in a b c d e f;

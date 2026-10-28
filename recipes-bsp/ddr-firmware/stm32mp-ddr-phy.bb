@@ -7,8 +7,6 @@ SRCREV = "77447cf214eadf128e487fcb10a4a78cd4ab6d56"
 
 PV = "A2022.11"
 
-S = "${WORKDIR}/git"
-
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
 

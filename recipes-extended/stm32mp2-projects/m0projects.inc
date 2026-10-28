@@ -4,7 +4,7 @@ COMPATIBLE_MACHINE = "(stm32mp2common)"
 
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
-B = "${S}"
+S = "${UNPACKDIR}/${BP}"
 
 DEPENDS += "gcc-arm-none-eabi-native cmake-native"
 
@@ -17,7 +17,7 @@ M0_BOARDS ?= ""
 # Init default installation path
 M0_FOLDER ?= "Cube-M0-examples"
 M0_INSTALLDIR ?= "${prefix}/local"
-M0_OUTPUT_4USERFS = "${M0_INSTALLDIR}/${M0_FOLDER}"
+M0_OUTPUT = "${M0_INSTALLDIR}/${M0_FOLDER}"
 
 M0_ELF_NOT_STRIPPED ??= "0"
 
@@ -68,14 +68,14 @@ do_install() {
             BIN_NAME_NS="${BIN_NAME}_NonSecure"
 
             # Install M0 firmwares
-            install -d ${D}${M0_OUTPUT_4USERFS}/${INSTALL_PROJ}/lib/firmware/
-            install -m 0755 ${B}/Projects/${PROJ_DIR}/${BIN_NAME_NS}_stripped.elf ${D}${M0_OUTPUT_4USERFS}/${INSTALL_PROJ}/lib/firmware/
-            install -m 0755 ${B}/Projects/${PROJ_DIR}/${BIN_NAME_NS}.bin ${D}${M0_OUTPUT_4USERFS}/${INSTALL_PROJ}/lib/firmware/
+            install -d ${D}${M0_OUTPUT}/${INSTALL_PROJ}/lib/firmware/
+            install -m 0755 ${B}/Projects/${PROJ_DIR}/${BIN_NAME_NS}_stripped.elf ${D}${M0_OUTPUT}/${INSTALL_PROJ}/lib/firmware/
+            install -m 0755 ${B}/Projects/${PROJ_DIR}/${BIN_NAME_NS}.bin ${D}${M0_OUTPUT}/${INSTALL_PROJ}/lib/firmware/
             if [ "${M0_ELF_NOT_STRIPPED}" = "1" ]; then
-                install -m 0755 ${B}/Projects/${PROJ_DIR}/${BIN_NAME_NS}.elf ${D}${M0_OUTPUT_4USERFS}/${INSTALL_PROJ}/lib/firmware/
+                install -m 0755 ${B}/Projects/${PROJ_DIR}/${BIN_NAME_NS}.elf ${D}${M0_OUTPUT}/${INSTALL_PROJ}/lib/firmware/
             fi
             # Install sh and README files if any for each example
-            install -m 0755 ${WORKDIR}/fw_cortex_m0.sh ${D}${M0_OUTPUT_4USERFS}/${INSTALL_PROJ}/
+            install -m 0755 ${UNPACKDIR}/fw_cortex_m0.sh ${D}${M0_OUTPUT}/${INSTALL_PROJ}/
         done
     done
 }
@@ -87,7 +87,7 @@ INHIBIT_SYSROOT_STRIP = "1"
 
 FILES:${PN} += "${nonarch_base_libdir}/firmware ${sysconfdir}/init.d ${systemd_unitdir}/system ${systemd_unitdir}/system-shutdown"
 # Configure package split
-FILES:${PN} += "${M0_OUTPUT_4USERFS}"
+FILES:${PN} += "${M0_OUTPUT}"
 RDEPENDS:${PN} += "busybox"
 
 # Avoid QA issue because binaries are for an Arm architecture but the platform is an AArch64

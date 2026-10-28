@@ -9,7 +9,6 @@ inherit pkgconfig autotools-brokensep gettext
 SRC_URI = "git://github.com/1udo6arre/svd-tools.git;protocol=https;branch=master"
 SRCREV = "5b7b813481877a3b6fb8f96b4f0d413b47fb987a"
 
-S = "${WORKDIR}/git"
 
 BBCLASSEXTEND = "native nativesdk"
 

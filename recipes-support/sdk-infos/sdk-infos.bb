@@ -36,7 +36,7 @@ SRC_URI:append = " \
     file://generated_build_script-stm32mpx.sh;subdir=sources/ \
     "
 
-S = "${WORKDIR}/sources"
+S = "${UNPACKDIR}"
 
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 COMPATIBLE_MACHINE = "(stm32mpcommon)"

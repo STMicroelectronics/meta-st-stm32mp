@@ -23,16 +23,16 @@ SRC_URI = " \
     file://asound-stm32mp25yx-ev1.state \
     "
 
-S = "${WORKDIR}"
+S = "${UNPACKDIR}"
 
 COMPATIBLE_MACHINE = "(stm32mp2common)"
 RDEPENDS:${PN} = "alsa-state alsa-state-script"
 
 do_install() {
     install -d ${D}${sysconfdir}
-    install -m 0644 ${WORKDIR}/*.conf ${D}${sysconfdir}/
+    install -m 0644 ${UNPACKDIR}/*.conf ${D}${sysconfdir}/
     install -d ${D}/${localstatedir}/lib/alsa
-    install -m 0644 ${WORKDIR}/*.state ${D}${localstatedir}/lib/alsa
+    install -m 0644 ${UNPACKDIR}/*.state ${D}${localstatedir}/lib/alsa
 
     # create link to support all packages configuration: mp25
     for p in a b c d e f; # a b c d e f

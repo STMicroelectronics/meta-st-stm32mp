@@ -7,6 +7,8 @@ LIC_FILES_CHKSUM = "file://${COREBASE}/meta/files/common-licenses/MIT;md5=0835ad
 
 SRC_URI = "file://create_sdcard_from_flashlayout.sh"
 
+S = "${UNPACKDIR}"
+
 BBCLASSEXTEND = "native nativesdk"
 
 RDEPENDS:${PN}:append = " bash "
@@ -18,14 +20,15 @@ inherit deploy
 SCRIPT_DEPLOYDIR ?= "scripts"
 
 do_configure() {
-    if [ -e ${WORKDIR}/create_sdcard_from_flashlayout.sh ]; then
+    if [ -e ${UNPACKDIR}/create_sdcard_from_flashlayout.sh ]; then
         bbnote "Update DEFAULT_ROOTFS_PARTITION_SIZE to ${STM32MP_ROOTFS_SIZE}"
-        sed 's/^DEFAULT_ROOTFS_PARTITION_SIZE=\${ROOTFS_SIZE:.*$/DEFAULT_ROOTFS_PARTITION_SIZE=\${ROOTFS_SIZE:-'"${STM32MP_ROOTFS_SIZE}"'}/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
-        if [ ${STM32MP_ROOTFS_SIZE} -gt 1887232 ]; then
+        sed 's/^DEFAULT_ROOTFS_PARTITION_SIZE=\${ROOTFS_SIZE:.*$/DEFAULT_ROOTFS_PARTITION_SIZE=\${ROOTFS_SIZE:-'"${STM32MP_ROOTFS_SIZE:sdcard}"'}/' -i ${UNPACKDIR}/create_sdcard_from_flashlayout.sh
+        if [ ${STM32MP_ROOTFS_SIZE:sdcard} -gt 1887232 ]; then
             # rootfs > 1.8GB then put sdcard raw size = STM32MP_ROOTFS_SIZE + 1.8GB
-            raw_size=$(expr ${STM32MP_ROOTFS_SIZE} / 1024 )
-            raw_size=$(expr $raw_size + 1843)
-            sed 's/DEFAULT_RAW_SIZE=\${SDCARD_SIZE:.*}$/DEFAULT_RAW_SIZE=\${SDCARD_SIZE:-'"$raw_size"'}/' -i ${WORKDIR}/create_sdcard_from_flashlayout.sh
+            raw_size=$(expr ${STM32MP_ROOTFS_SIZE:sdcard}  + ${STM32MP_USERFS_SIZE:sdcard})
+            raw_size=$(expr $raw_size / 1024)
+            raw_size=$(expr $raw_size + 2050)
+            sed 's/DEFAULT_RAW_SIZE=\${SDCARD_SIZE:.*}$/DEFAULT_RAW_SIZE=\${SDCARD_SIZE:-'"$raw_size"'}/' -i ${UNPACKDIR}/create_sdcard_from_flashlayout.sh
         fi
 
         bbnote "Update DEFAULT_SDCARD_PARTUUID to ${DEVICE_PARTUUID_ROOTFS:SDCARD}"
@@ -42,7 +45,7 @@ do_configure() {
 
 do_install() {
     install -d ${D}/${bindir}
-    install -m 0755 ${WORKDIR}/create_sdcard_from_flashlayout.sh ${D}/${bindir}
+    install -m 0755 ${UNPACKDIR}/create_sdcard_from_flashlayout.sh ${D}/${bindir}
 }
 
 do_deploy() {
@@ -50,6 +53,6 @@ do_deploy() {
 }
 do_deploy:class-native() {
     install -d ${DEPLOYDIR}/${SCRIPT_DEPLOYDIR}
-    install -m 0755 ${WORKDIR}/create_sdcard_from_flashlayout.sh ${DEPLOYDIR}/${SCRIPT_DEPLOYDIR}/
+    install -m 0755 ${UNPACKDIR}/create_sdcard_from_flashlayout.sh ${DEPLOYDIR}/${SCRIPT_DEPLOYDIR}/
 }
 addtask deploy before do_build after do_compile

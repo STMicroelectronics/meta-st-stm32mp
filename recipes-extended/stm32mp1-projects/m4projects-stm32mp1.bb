@@ -7,8 +7,6 @@ SRCREV  = "525d2499658d817a9e669eb17e66390906954895"
 
 PV = "1.7.0"
 
-S = "${WORKDIR}/git"
-
 require recipes-extended/stm32mp1-projects/m4projects.inc
 
 PROJECTS_LIST_EV1 = " \

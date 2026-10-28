@@ -7,7 +7,7 @@ COMPATIBLE_MACHINE = "(stm32mp2common)"
 
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
-B = "${WORKDIR}/build"
+B = "${S}"
 
 DEPENDS += "gcc-arm-none-eabi-native cmake-native ninja-native"
 

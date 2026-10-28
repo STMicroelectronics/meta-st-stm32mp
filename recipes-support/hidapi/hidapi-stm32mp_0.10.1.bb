@@ -13,8 +13,6 @@ SRCREV = "f6d0073fcddbdda24549199445e844971d3c9cef"
 
 PV = "0.10.1-git.${SRCPV}"
 
-S = "${WORKDIR}/git"
-
 inherit autotools pkgconfig
 
 BBCLASSEXTEND += "native nativesdk"

@@ -289,14 +289,14 @@ do_install() {
         vkvers=$(echo ${vklib} | awk -F'.so.' '{print $2}')
 
         install -m 0755 -d "${D}${sysconfdir}/vulkan/icd.d"
-        sed -e "s#%VULKANLIB%#${vklib}#" -e "s#%VULKANVERSION%#${vkvers}#" ${WORKDIR}/vulkan_icd.json.template > ${D}${sysconfdir}/vulkan/icd.d/${GCNANO_VULKAN_ICD}
+        sed -e "s#%VULKANLIB%#${vklib}#" -e "s#%VULKANVERSION%#${vkvers}#" ${UNPACKDIR}/vulkan_icd.json.template > ${D}${sysconfdir}/vulkan/icd.d/${GCNANO_VULKAN_ICD}
     fi
 
     # Install profile script to export required environment variables to allow OpenVX kernel program
     # to be built at runtime
     if [ -n "$(echo ${GCNANO_PACKAGECONFIG} | grep 'vx')" ]; then
         install -m 0755 -d "${D}${sysconfdir}/profile.d"
-        sed "s#%VIVANTE_SDK_DIR%#${exec_prefix}#" ${WORKDIR}/openvx_profile.sh.template > ${D}${sysconfdir}/profile.d/openvx_profile.sh
+        sed "s#%VIVANTE_SDK_DIR%#${exec_prefix}#" ${UNPACKDIR}/openvx_profile.sh.template > ${D}${sysconfdir}/profile.d/openvx_profile.sh
     fi
 }
 

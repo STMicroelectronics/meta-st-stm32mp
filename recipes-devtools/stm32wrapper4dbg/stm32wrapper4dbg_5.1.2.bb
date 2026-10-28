@@ -6,8 +6,6 @@ LIC_FILES_CHKSUM = "file://COPYING;md5=7c6588c98f2a3299681e1bc746c60490"
 SRC_URI = "git://github.com/STMicroelectronics/stm32wrapper4dbg;protocol=https;branch=main"
 SRCREV = "239390db4412c3e919ee5c4b9e2dedf7391b7eaf"
 
-S = "${WORKDIR}/git"
-
 BBCLASSEXTEND += "native nativesdk"
 
 do_install() {

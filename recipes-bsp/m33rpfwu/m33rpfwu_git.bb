@@ -8,7 +8,7 @@ SRCREV = "2b959612ed8162190dd086e1bbc923dc6182990e"
 
 PV = "1.0+git-${@d.getVar('SRCREV')[0:8]}"
 
-S = "${WORKDIR}/git/rpmsg_fwu"
+S = "${UNPACKDIR}/${BP}/rpmsg_fwu"
 
 do_compile() {
 	oe_runmake

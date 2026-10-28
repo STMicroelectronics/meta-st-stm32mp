@@ -8,8 +8,11 @@ LIC_FILES_CHKSUM = "file://${COREBASE}/meta/files/common-licenses/BSD-3-Clause;m
 SRC_URI = " \
     file://gdbinit \
 "
+
+S = "${UNPACKDIR}"
+
 do_install() {
    install -d ${D}/${bindir}/
-   install -m 0644 ${WORKDIR}/gdbinit ${D}/${bindir}/
+   install -m 0644 ${UNPACKDIR}/gdbinit ${D}/${bindir}/
 }
 BBCLASSEXTEND += "native nativesdk"

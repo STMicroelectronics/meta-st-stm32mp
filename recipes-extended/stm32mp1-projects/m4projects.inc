@@ -34,7 +34,7 @@ BUILD_CONFIG ?= "Debug"
 # Init default installation path
 M4_FOLDER ?= "Cube-M4-examples"
 M4_INSTALLDIR ?= "${prefix}/local"
-M4_OUTPUT_4USERFS = "${M4_INSTALLDIR}/${M4_FOLDER}"
+M4_OUTPUT = "${M4_INSTALLDIR}/${M4_FOLDER}"
 
 # Use gcc bare toolchain
 EXTRA_OEMAKE += "CROSS_COMPILE=${RECIPE_SYSROOT_NATIVE}${datadir}/gcc-arm-none-eabi/bin/arm-none-eabi-"
@@ -66,11 +66,11 @@ do_compile() {
                 mkdir -p ${PROJECT_DIR}/out/${BUILD_CONFIG}
 
                 bbnote "Parsing M4 project to get file list and build flags for ${project}"
-                ${PYTHON} ${WORKDIR}/parse_project_config.py "${PROJECT_APP}" "${BUILD_CONFIG}" "${PROJECT_DIR}"
+                ${PYTHON} ${UNPACKDIR}/parse_project_config.py "${PROJECT_APP}" "${BUILD_CONFIG}" "${PROJECT_DIR}"
                 bbnote "Cleaning M4 project : ${project}"
-                oe_runmake -f ${WORKDIR}/Makefile.stm32 BIN_NAME=${BIN_NAME} PROJECT_DIR=${PROJECT_DIR} clean
+                oe_runmake -f ${UNPACKDIR}/Makefile.stm32 BIN_NAME=${BIN_NAME} PROJECT_DIR=${PROJECT_DIR} clean
                 bbnote "Building M4 project : ${project}"
-                oe_runmake -f ${WORKDIR}/Makefile.stm32 BIN_NAME=${BIN_NAME} PROJECT_DIR=${PROJECT_DIR} all
+                oe_runmake -f ${UNPACKDIR}/Makefile.stm32 BIN_NAME=${BIN_NAME} PROJECT_DIR=${PROJECT_DIR} all
             fi
         done
     done
@@ -90,15 +90,15 @@ do_install() {
                 BIN_NAME=$(basename ${project})
 
                 # Install M4 firmwares
-                install -d ${D}${M4_OUTPUT_4USERFS}/${project}/lib/firmware/
-                install -m 0755 ${B}/${project}/out/${BUILD_CONFIG}/${BIN_NAME}.elf ${D}${M4_OUTPUT_4USERFS}/${project}/lib/firmware/
+                install -d ${D}${M4_OUTPUT}/${project}/lib/firmware/
+                install -m 0755 ${B}/${project}/out/${BUILD_CONFIG}/${BIN_NAME}.elf ${D}${M4_OUTPUT}/${project}/lib/firmware/
 
                 # Install sh and README files if any for each example
                 if [ -e ${S}/Projects/${project}/Remoteproc/fw_cortex_m4.sh ]; then
-                    install -m 0755 ${S}/Projects/${project}/Remoteproc/fw_cortex_m4.sh ${D}${M4_OUTPUT_4USERFS}/${project}
+                    install -m 0755 ${S}/Projects/${project}/Remoteproc/fw_cortex_m4.sh ${D}${M4_OUTPUT}/${project}
                 fi
                 if [ -e ${S}/Projects/${project}/Remoteproc/README ]; then
-                    install -m 0755 ${S}/Projects/${project}/Remoteproc/README ${D}${M4_OUTPUT_4USERFS}/${project}
+                    install -m 0755 ${S}/Projects/${project}/Remoteproc/README ${D}${M4_OUTPUT}/${project}
                 fi
             fi
         done
@@ -110,18 +110,18 @@ do_install() {
             # Install systemd service
             install -d ${D}${sysconfdir}/init.d/
             install -d ${D}${base_sbindir}/
-            install -m 0755 ${WORKDIR}/st-m4firmware-load-default.sh ${D}${sysconfdir}/init.d/st-m4firmware-load-default.sh
-            install -m 0755 ${WORKDIR}/st-m4firmware-load-default.sh ${D}${base_sbindir}/st-m4firmware-load-default.sh
-            install -m 0755 ${WORKDIR}/shutdown-stm32mp1-m4.sh ${D}${base_sbindir}/shutdown-stm32mp1-m4.sh
+            install -m 0755 ${UNPACKDIR}/st-m4firmware-load-default.sh ${D}${sysconfdir}/init.d/st-m4firmware-load-default.sh
+            install -m 0755 ${UNPACKDIR}/st-m4firmware-load-default.sh ${D}${base_sbindir}/st-m4firmware-load-default.sh
+            install -m 0755 ${UNPACKDIR}/shutdown-stm32mp1-m4.sh ${D}${base_sbindir}/shutdown-stm32mp1-m4.sh
 
             sed -i -e "s:@default_fw@:${DEFAULT_COPRO_FIRMWARE}:" \
             ${D}${sysconfdir}/init.d/st-m4firmware-load-default.sh
             sed -i -e "s:@default_fw@:${DEFAULT_COPRO_FIRMWARE}:" \
             ${D}${base_sbindir}/st-m4firmware-load-default.sh
 
-            sed -i -e "s:@userfs_mount_point@:${M4_OUTPUT_4USERFS}:" \
+            sed -i -e "s:@userfs_mount_point@:${M4_OUTPUT}:" \
             ${D}${sysconfdir}/init.d/st-m4firmware-load-default.sh
-            sed -i -e "s:@userfs_mount_point@:${M4_OUTPUT_4USERFS}:" \
+            sed -i -e "s:@userfs_mount_point@:${M4_OUTPUT}:" \
             ${D}${base_sbindir}/st-m4firmware-load-default.sh
         fi
 
@@ -129,8 +129,8 @@ do_install() {
         if ${@bb.utils.contains('DISTRO_FEATURES','systemd','true','false',d)}; then
             install -d ${D}${systemd_unitdir}/system
             install -d ${D}${systemd_unitdir}/system-shutdown
-            install -m 644 ${WORKDIR}/st-m4firmware-load.service ${D}/${systemd_unitdir}/system
-            install -m 755 ${WORKDIR}/shutdown-stm32mp1-m4.sh ${D}/${systemd_unitdir}/system-shutdown
+            install -m 644 ${UNPACKDIR}/st-m4firmware-load.service ${D}/${systemd_unitdir}/system
+            install -m 755 ${UNPACKDIR}/shutdown-stm32mp1-m4.sh ${D}/${systemd_unitdir}/system-shutdown
         fi
     fi
 }
@@ -150,7 +150,7 @@ INHIBIT_SYSROOT_STRIP = "1"
 
 FILES:${PN} += "${nonarch_base_libdir}/firmware ${sysconfdir}/init.d ${systemd_unitdir}/system ${systemd_unitdir}/system-shutdown"
 # Configure package split
-FILES:${PN} += "${M4_OUTPUT_4USERFS}"
+FILES:${PN} += "${M4_OUTPUT}"
 RDEPENDS:${PN} += "busybox"
 
 # ---------------------------------------------------------------------

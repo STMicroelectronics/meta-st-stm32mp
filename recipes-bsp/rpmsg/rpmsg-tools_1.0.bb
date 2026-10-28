@@ -13,7 +13,7 @@ SRC_URI = " \
     file://72-rpmsg.rules \
 "
 
-S = "${WORKDIR}"
+S = "${UNPACKDIR}"
 
 do_configure[noexec] = "1"
 
@@ -26,11 +26,11 @@ do_compile() {
 do_install() {
     install -d ${D}${bindir}
     # add GUID for rpmsg_create_ept
-    install -m 2755 ${WORKDIR}/rpmsg_create_ept ${D}${bindir}
+    install -m 2755 ${S}/rpmsg_create_ept ${D}${bindir}
 
     # instal udev rules
     install -d ${D}${sysconfdir}/udev/rules.d
-    install -o root -g rpmsg -m 0644 ${WORKDIR}/72-rpmsg.rules ${D}${sysconfdir}/udev/rules.d/
+    install -o root -g rpmsg -m 0644 ${S}/72-rpmsg.rules ${D}${sysconfdir}/udev/rules.d/
 }
 
 FILES:${PN} += "${sysconfdir} ${bindir}"

@@ -21,7 +21,6 @@ GCNANO_PACKAGECONFIG:append = " ${@bb.utils.contains('MACHINE_FEATURES', 'openvx
 GCNANO_PACKAGECONFIG:append = " ${@bb.utils.contains('MACHINE_FEATURES', 'opencl', 'cl', '', d)}"
 GCNANO_PACKAGECONFIG:append = " ${@bb.utils.contains('MACHINE_FEATURES', 'vulkan', 'vulkan', '', d)}"
 
-S = "${WORKDIR}/git"
 B = "${S}/${GCNANO_TAR_FILENAME}"
 
 #------------------------------------------

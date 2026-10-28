@@ -7,7 +7,7 @@ LICENSE = "GPL-2.0-only"
 LIC_FILES_CHKSUM = "file://COPYING;md5=f8fee3d59797546cffab04f3b88b2d44"
 
 SRC_URI = "git://github.com/draios/sysdig.git;branch=dev;protocol=https;name=sysdig \
-           git://github.com/falcosecurity/libs;protocol=https;branch=master;name=falco;subdir=git/falcosecurity-libs \
+           git://github.com/falcosecurity/libs;protocol=https;branch=master;name=falco;subdir=${BP}/falcosecurity-libs \
            file://0001-Add-cstdint-for-uintXX_t-types.patch;patchdir=./falcosecurity-libs \
            file://0001-cmake-Pass-PROBE_NAME-via-CFLAGS.patch \
            file://0002-fix-driver-fix-build-on-linux-6.2.patch;patchdir=./falcosecurity-libs \
@@ -21,8 +21,6 @@ SRCREV_FORMAT = "sysdig"
 PV = "0.28.0+git${SRCPV}"
 
 COMPATIBLE_MACHINE = "(stm32mpcommon)"
-
-S = "${WORKDIR}/git"
 
 # Inherit of cmake for configure step
 inherit cmake pkgconfig
