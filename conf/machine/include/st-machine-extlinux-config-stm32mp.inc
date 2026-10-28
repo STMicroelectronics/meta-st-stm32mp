@@ -17,7 +17,7 @@ UBOOT_EXTLINUX_SPLASH:stm32mp2m33tdcommon ?= "${@bb.utils.contains('MACHINE_FEAT
 
 UBOOT_EXTLINUX_KERNEL_ARGS ?= "rootwait rw"
 UBOOT_EXTLINUX_KERNEL_ARGS:append = " ${@bb.utils.contains('ST_DEBUG_TRACE', '1', '', '${ST_CMD_LINE_DEBUG_TRACE}', d)} "
-UBOOT_EXTLINUX_KERNEL_ARGS:append:stm32mp2common = " earlycon"
+UBOOT_EXTLINUX_KERNEL_ARGS:append = " earlycon"
 
 # -----------------------------------------------------------------------------
 # Configurations
