@@ -106,6 +106,7 @@ ST_TOOLS_FOR_SDK:append = " \
 ST_TOOLS_FOR_SDK:append = " \
     nativesdk-tf-a-tools \
     nativesdk-u-boot-tools-stm32mp \
+    nativesdk-swig-env-sdk \
     "
 
 # M33 firmware generation
