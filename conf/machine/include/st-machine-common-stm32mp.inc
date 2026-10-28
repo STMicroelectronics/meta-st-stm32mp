@@ -601,6 +601,11 @@ MACHINE_ESSENTIAL_EXTRA_RDEPENDS += " rpmsg-tools"
 MACHINE_ESSENTIAL_EXTRA_RDEPENDS += " ${@bb.utils.contains('MACHINE_FEATURES', 'm33td', 'm33rpfwu', '', d)} "
 
 # =========================================================================
+# cpufreq boost
+# needed when rt kernel is not present
+# =========================================================================
+MACHINE_ESSENTIAL_EXTRA_RDEPENDS += " ${@bb.utils.contains('MACHINE_FEATURES', 'rt', '', 'st-cpufreq-boost', d)} "
+# =========================================================================
 # Xserver
 # =========================================================================
 #XSERVER ?= " \
