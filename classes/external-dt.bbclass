@@ -69,15 +69,11 @@ python __anonymous() {
             found = True
             extdt_dir = os.path.join(d.getVar('STAGING_EXTDT_DIR'), sub_path)
             break
-    if not found:
-        bb.debug(1,'[external-dt] No specific external-dt subfolder defined for %s recipe: the whole STAGING_EXTDT_DIR folder (%s) is used to feed CONFIGURE_FILES' % (package, d.getVar('STAGING_EXTDT_DIR')))
-        bb.debug(1,'[external-dt] Update EXTDT_DIR_CONFIG and set specific subfolder if needed:\n\tEXTDT_DIR_CONFIG: %s)' % d.getVar('EXTDT_DIR_CONFIG'))
-        extdt_dir = d.getVar('STAGING_EXTDT_DIR')
+    if found:
+        extdt_src_configure(d, extdt_dir)
 
-    extdt_src_configure(d, extdt_dir)
-
-    bb.debug(1,'[external-dt] Append file-checksums with configure files for do_configure on %s recipe' % package)
-    d.appendVarFlag('do_configure', 'file-checksums', ' ${@extdt_srctree_configure_hash_files(d)}')
+        bb.debug(1,'[external-dt] Append file-checksums with configure files for do_configure on %s recipe' % package)
+        d.appendVarFlag('do_configure', 'file-checksums', ' ${@extdt_srctree_configure_hash_files(d)}')
 }
 
 def extdt_srctree_configure_hash_files(d):
