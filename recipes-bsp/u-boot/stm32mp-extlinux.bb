@@ -10,10 +10,10 @@ SRC_URI = "file://boot.scr.cmd"
 
 S = "${UNPACKDIR}"
 B = "${WORKDIR}/build"
-PV = "3.1.2"
+
+PV = "3.1.3"
 
 inherit kernel-arch extlinuxconf-stm32mp
-
 
 UBOOT_EXTLINUX_BOOTSCR = "${UNPACKDIR}/boot.scr.cmd"
 UBOOT_EXTLINUX_BOOTSCR_IMG = "${B}/boot.scr.uimg"
